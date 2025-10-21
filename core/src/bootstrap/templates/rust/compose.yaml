@@ -1,0 +1,17 @@
+name: "rust-project"
+
+services:
+  rust-dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+
+    volumes:
+      - ../..:/workspaces:cached
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    command: sleep infinity
+
+    environment:
+      DOCKER_CONTAINER: "true"
+      RUST_BACKTRACE: "1"

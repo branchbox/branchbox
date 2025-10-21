@@ -1,0 +1,52 @@
+// For format details, see https://containers.dev/implementors/json_reference/
+{
+  "name": "Worktree Manager",
+  "dockerComposeFile": "compose.yaml",
+  "service": "rust-dev",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+  // Features to add to the dev container
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+
+  "containerEnv": {
+    "DOCKER_CONTAINER": "true",
+    "RUST_BACKTRACE": "1"
+  },
+
+  // Use 'forwardPorts' to make ports available locally
+  "forwardPorts": [50051],
+
+  // Use 'postCreateCommand' to run commands after container creation
+  "postCreateCommand": "cargo --version && rustc --version",
+
+  // Run args
+  "runArgs": [
+    "--ipc=host",
+    "--init"
+  ],
+
+  // VS Code customizations
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "vadimcn.vscode-lldb",
+        "KnisterPeter.vscode-github",
+        "GitHub.vscode-github-actions"
+      ],
+      "settings": {
+        "rust-analyzer.checkOnSave.command": "clippy",
+        "rust-analyzer.cargo.features": "all",
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+          "editor.formatOnSave": true
+        }
+      }
+    }
+  }
+}

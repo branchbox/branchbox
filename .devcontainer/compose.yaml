@@ -1,0 +1,27 @@
+name: "worktree-manager"
+
+services:
+  rust-dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+
+    volumes:
+      - ../..:/workspaces:cached
+
+    # Overrides default command so things don't shut down after the process ends
+    command: sleep infinity
+
+    # Use "forwardPorts" in **devcontainer.json** to forward an app port locally
+    # env_file:
+    #   - .env
+
+    # Enable Docker-outside-of-Docker
+    # Mount Docker socket for testing Docker operations
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    # Environment variables
+    environment:
+      DOCKER_CONTAINER: "true"
+      RUST_BACKTRACE: "1"
