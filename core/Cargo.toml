@@ -18,6 +18,7 @@ regex.workspace = true
 which.workspace = true
 walkdir.workspace = true
 tracing.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
