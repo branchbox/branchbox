@@ -1,0 +1,49 @@
+[workspace]
+members = [
+    "core",
+    # "agent",
+    # "cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/your-org/worktree-manager"
+authors = ["Your Name <you@example.com>"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = { version = "0.7" }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Git operations
+git2 = "0.18"
+
+# Command execution
+which = "6.0"
+
+# File system
+walkdir = "2.4"
+tempfile = "3.8"
+
+# Regex
+regex = "1.10"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing
+rstest = "0.18"

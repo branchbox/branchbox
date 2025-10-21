@@ -1,0 +1,24 @@
+[package]
+name = "worktree-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core library for git worktree and devcontainer orchestration"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+git2.workspace = true
+regex.workspace = true
+which.workspace = true
+walkdir.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
