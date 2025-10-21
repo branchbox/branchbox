@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "core",
+    "cli",
     # "agent",
-    # "cli",
 ]
 resolver = "2"
 
@@ -21,6 +21,9 @@ tokio-util = { version = "0.7" }
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
