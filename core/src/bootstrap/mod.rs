@@ -108,10 +108,64 @@ impl Bootstrap {
     /// Generate devcontainer configuration
     ///
     /// Creates all necessary files for a complete devcontainer setup.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use worktree_core::bootstrap::{Bootstrap, Stack};
+    /// use std::path::Path;
+    ///
+    /// let project = Path::new("/path/to/rust-project");
+    /// let bootstrap = Bootstrap::new(project);
+    /// bootstrap.generate(Stack::Rust).unwrap();
+    /// ```
     pub fn generate(&self, stack: Stack) -> Result<()> {
-        // TODO: Implement generation
-        let _ = stack;
-        Err(Error::other("Bootstrap generation not yet implemented"))
+        use std::fs;
+
+        tracing::info!("Generating devcontainer for {} stack", stack.as_str());
+
+        // Create .devcontainer directory
+        let devcontainer_dir = self.project_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir)?;
+        tracing::debug!("Created directory: {}", devcontainer_dir.display());
+
+        // Generate and write devcontainer.json
+        let devcontainer_json = self.generate_devcontainer_json(stack)?;
+        let devcontainer_json_path = devcontainer_dir.join("devcontainer.json");
+        fs::write(&devcontainer_json_path, devcontainer_json)?;
+        tracing::info!("Created: {}", devcontainer_json_path.display());
+
+        // Generate and write compose.yaml
+        let compose_yaml = self.generate_compose_yaml(stack)?;
+        let compose_yaml_path = devcontainer_dir.join("compose.yaml");
+        fs::write(&compose_yaml_path, compose_yaml)?;
+        tracing::info!("Created: {}", compose_yaml_path.display());
+
+        // Generate and write Dockerfile
+        let dockerfile = self.generate_dockerfile(stack)?;
+        let dockerfile_path = devcontainer_dir.join("Dockerfile");
+        fs::write(&dockerfile_path, dockerfile)?;
+        tracing::info!("Created: {}", dockerfile_path.display());
+
+        // Generate and write .env.sample (in project root, not .devcontainer)
+        let env_sample = self.generate_env_sample(stack)?;
+        let env_sample_path = self.project_path.join(".env.sample");
+
+        // Only create if it doesn't exist (don't overwrite)
+        if !env_sample_path.exists() {
+            fs::write(&env_sample_path, env_sample)?;
+            tracing::info!("Created: {}", env_sample_path.display());
+        } else {
+            tracing::info!("Skipped (already exists): {}", env_sample_path.display());
+        }
+
+        tracing::info!("✓ Bootstrap complete for {} stack", stack.as_str());
+        tracing::info!("  Next steps:");
+        tracing::info!("  1. Open project in VS Code/Cursor");
+        tracing::info!("  2. Reopen in Container");
+        tracing::info!("  3. Start developing!");
+
+        Ok(())
     }
 
     /// Generate devcontainer.json
@@ -178,5 +232,63 @@ mod tests {
 
         let bootstrap = Bootstrap::new(temp_dir.path());
         assert_eq!(bootstrap.detect_stack().unwrap(), Stack::Generic);
+    }
+
+    #[test]
+    fn test_generate_creates_files() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let bootstrap = Bootstrap::new(temp_dir.path());
+        bootstrap.generate(Stack::Rust).unwrap();
+
+        // Check that all files were created
+        assert!(temp_dir.path().join(".devcontainer/devcontainer.json").exists());
+        assert!(temp_dir.path().join(".devcontainer/compose.yaml").exists());
+        assert!(temp_dir.path().join(".devcontainer/Dockerfile").exists());
+        assert!(temp_dir.path().join(".env.sample").exists());
+
+        // Check that files have content
+        let devcontainer_json = fs::read_to_string(temp_dir.path().join(".devcontainer/devcontainer.json")).unwrap();
+        assert!(devcontainer_json.contains("Rust"));
+
+        let compose_yaml = fs::read_to_string(temp_dir.path().join(".devcontainer/compose.yaml")).unwrap();
+        assert!(compose_yaml.contains("rust-dev"));
+
+        let dockerfile = fs::read_to_string(temp_dir.path().join(".devcontainer/Dockerfile")).unwrap();
+        assert!(dockerfile.contains("rust"));
+    }
+
+    #[test]
+    fn test_generate_doesnt_overwrite_env_sample() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create existing .env.sample
+        let existing_content = "EXISTING=value\n";
+        fs::write(temp_dir.path().join(".env.sample"), existing_content).unwrap();
+
+        let bootstrap = Bootstrap::new(temp_dir.path());
+        bootstrap.generate(Stack::Rust).unwrap();
+
+        // Check that .env.sample wasn't overwritten
+        let content = fs::read_to_string(temp_dir.path().join(".env.sample")).unwrap();
+        assert_eq!(content, existing_content);
+    }
+
+    #[test]
+    fn test_generate_all_stacks() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let temp_dir = TempDir::new().unwrap();
+            let bootstrap = Bootstrap::new(temp_dir.path());
+
+            bootstrap.generate(stack).unwrap();
+
+            // Verify all files created
+            assert!(temp_dir.path().join(".devcontainer/devcontainer.json").exists(),
+                "{} stack should create devcontainer.json", stack.as_str());
+            assert!(temp_dir.path().join(".devcontainer/compose.yaml").exists(),
+                "{} stack should create compose.yaml", stack.as_str());
+            assert!(temp_dir.path().join(".devcontainer/Dockerfile").exists(),
+                "{} stack should create Dockerfile", stack.as_str());
+        }
     }
 }

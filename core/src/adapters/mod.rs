@@ -5,9 +5,9 @@
 use crate::{Error, Result};
 use std::path::Path;
 
+pub mod generic;
+pub mod nodejs;
 pub mod rails;
-// pub mod nodejs;
-// pub mod generic;
 
 /// Stack adapter trait
 pub trait Adapter {
@@ -47,11 +47,25 @@ pub trait Adapter {
 }
 
 /// Detect and load the best adapter for a project
+///
+/// Tries all adapters and returns the one with highest confidence.
+/// Generic adapter always matches with confidence 10, so this never fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use worktree_core::adapters::detect_adapter;
+/// use std::path::Path;
+///
+/// let project = Path::new("/path/to/project");
+/// let adapter = detect_adapter(project).unwrap();
+/// println!("Detected stack: {}", adapter.name());
+/// ```
 pub fn detect_adapter(project_dir: &Path) -> Result<Box<dyn Adapter>> {
     let adapters: Vec<Box<dyn Adapter>> = vec![
         Box::new(rails::RailsAdapter),
-        // Box::new(nodejs::NodejsAdapter),
-        // Box::new(generic::GenericAdapter),
+        Box::new(nodejs::NodeJsAdapter),
+        Box::new(generic::GenericAdapter),
     ];
 
     let mut best_adapter: Option<Box<dyn Adapter>> = None;
@@ -66,16 +80,53 @@ pub fn detect_adapter(project_dir: &Path) -> Result<Box<dyn Adapter>> {
         }
     }
 
+    // Generic adapter always has confidence 10, so we should always have a match
     best_adapter.ok_or(Error::AdapterNotFound)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::TempDir;
 
     #[test]
-    #[ignore]
-    fn test_detect_adapter() {
-        // TODO: Add tests with temp directories
+    fn test_detect_rails_adapter() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut gemfile = fs::File::create(temp_dir.path().join("Gemfile")).unwrap();
+        writeln!(gemfile, "gem \"rails\"").unwrap();
+
+        let adapter = detect_adapter(temp_dir.path()).unwrap();
+        assert_eq!(adapter.name(), "Rails");
+    }
+
+    #[test]
+    fn test_detect_nodejs_adapter() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::File::create(temp_dir.path().join("package.json")).unwrap();
+
+        let adapter = detect_adapter(temp_dir.path()).unwrap();
+        assert_eq!(adapter.name(), "Node.js");
+    }
+
+    #[test]
+    fn test_detect_generic_adapter() {
+        let temp_dir = TempDir::new().unwrap();
+        // No stack-specific files
+
+        let adapter = detect_adapter(temp_dir.path()).unwrap();
+        assert_eq!(adapter.name(), "Generic");
+    }
+
+    #[test]
+    fn test_rails_beats_generic() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut gemfile = fs::File::create(temp_dir.path().join("Gemfile")).unwrap();
+        writeln!(gemfile, "gem \"rails\"").unwrap();
+
+        let adapter = detect_adapter(temp_dir.path()).unwrap();
+        // Rails confidence (95) should beat Generic confidence (10)
+        assert_eq!(adapter.name(), "Rails");
     }
 }
