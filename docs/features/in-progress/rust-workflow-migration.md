@@ -122,6 +122,7 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 ## Progress Log
 
 - **2025-10-31**: Created `feat/rust-workflow-m0`, added `branchbox feature start/teardown` commands backed by new Rust workflow coordinator. Metadata now persisted in `.branchbox/feature.json` with `FeatureStatus` tracking. Added CI-friendly host validation override and refreshed naming heuristics to support metadata serialization.
+- **2025-10-31**: Introduced `branchbox feature list` for registry introspection, including status filtering and local-time formatting. Added workflow API to enumerate feature metadata and expanded test coverage for listing semantics.
 
 ## Next Actions
 

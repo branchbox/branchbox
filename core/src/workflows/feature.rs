@@ -6,9 +6,11 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 /// Manages feature lifecycle workflows (start/teardown) using git worktrees.
 #[derive(Debug)]
@@ -239,6 +241,13 @@ impl FeatureWorkflow {
             module_reports,
             warnings,
         })
+    }
+
+    /// List feature metadata from the registry, sorted by most recently updated.
+    pub fn list_features(&self) -> Result<Vec<FeatureMetadata>> {
+        let mut entries = self.state.list_features()?;
+        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(entries)
     }
 
     fn resolve_work_feature(&self, request: &StartRequest) -> Result<String> {
@@ -572,6 +581,42 @@ pub enum FeatureStatus {
     Removed,
 }
 
+impl fmt::Display for FeatureStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FeatureStatus::Active => write!(f, "active"),
+            FeatureStatus::Removed => write!(f, "removed"),
+        }
+    }
+}
+
+impl FromStr for FeatureStatus {
+    type Err = ParseFeatureStatusError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(FeatureStatus::Active),
+            "removed" => Ok(FeatureStatus::Removed),
+            _ => Err(ParseFeatureStatusError(s.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseFeatureStatusError(String);
+
+impl fmt::Display for ParseFeatureStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid feature status '{}'; expected 'active' or 'removed'",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseFeatureStatusError {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureMetadata {
     pub work_feature: String,
@@ -658,6 +703,11 @@ impl FeatureStateStore {
         self.save_registry(&registry)
     }
 
+    fn list_features(&self) -> Result<Vec<FeatureMetadata>> {
+        let registry = self.load_registry()?;
+        Ok(registry.features)
+    }
+
     fn load_registry(&self) -> Result<FeatureRegistry> {
         if !self.path.exists() {
             return Ok(FeatureRegistry::default());
@@ -694,6 +744,8 @@ mod tests {
     use serde_json::Value;
     use std::fs;
     use std::process::Command;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn setup_test_repo() -> TempDir {
@@ -838,5 +890,61 @@ mod tests {
             .find(|item| item.get("work_feature").unwrap() == "cleanup")
             .unwrap();
         assert_eq!(entry.get("status").unwrap(), "removed");
+    }
+
+    #[test]
+    fn list_features_returns_sorted_entries() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow
+            .start(StartRequest {
+                name: Some("feature-one".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(10));
+
+        workflow
+            .start(StartRequest {
+                name: Some("feature-two".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let features = workflow.list_features().unwrap();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].work_feature, "feature-two");
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: "feature-one".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+            })
+            .unwrap();
+
+        let features = workflow.list_features().unwrap();
+        let removed = features
+            .iter()
+            .find(|item| item.work_feature == "feature-one")
+            .unwrap();
+        assert_eq!(removed.status, FeatureStatus::Removed);
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: "feature-two".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+            })
+            .unwrap();
     }
 }

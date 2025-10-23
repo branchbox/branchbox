@@ -15,6 +15,7 @@ path = "src/main.rs"
 worktree-core = { path = "../core" }
 clap = { version = "4.4", features = ["derive", "env"] }
 anyhow.workspace = true
+chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

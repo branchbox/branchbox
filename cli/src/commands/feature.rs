@@ -1,8 +1,9 @@
 use anyhow::Result;
+use chrono::Local;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 use worktree_core::workflows::feature::{
-    FeatureWorkflow, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+    FeatureStatus, FeatureWorkflow, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
 };
 
 #[derive(Subcommand)]
@@ -12,6 +13,9 @@ pub enum FeatureCommands {
 
     /// Tear down an existing feature worktree
     Teardown(FeatureTeardownArgs),
+
+    /// List known feature worktrees from the registry
+    List(FeatureListArgs),
 }
 
 #[derive(Args)]
@@ -64,10 +68,22 @@ pub struct FeatureTeardownArgs {
     pub force: bool,
 }
 
+#[derive(Args)]
+pub struct FeatureListArgs {
+    /// Repository path (defaults to current directory)
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Filter by status (active, removed)
+    #[arg(long)]
+    pub status: Option<String>,
+}
+
 pub fn execute(command: FeatureCommands) -> Result<()> {
     match command {
         FeatureCommands::Start(args) => run_start(args),
         FeatureCommands::Teardown(args) => run_teardown(args),
+        FeatureCommands::List(args) => run_list(args),
     }
 }
 
@@ -93,6 +109,47 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
 
     let summary = workflow.start(request)?;
     print_start_summary(&summary);
+
+    Ok(())
+}
+
+fn run_list(args: FeatureListArgs) -> Result<()> {
+    let FeatureListArgs { repo, status } = args;
+    let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
+    let workflow = FeatureWorkflow::new(&repo_path)?;
+
+    let mut features = workflow.list_features()?;
+
+    if let Some(status_filter) = status {
+        let parsed: FeatureStatus = status_filter.parse()?;
+        features.retain(|feature| feature.status == parsed);
+    }
+
+    if features.is_empty() {
+        println!("ℹ️  No features tracked yet. Run `branchbox feature start` to create one.");
+        return Ok(());
+    }
+
+    println!("📚 Tracked features ({}):", features.len());
+    for feature in features {
+        println!(
+            "- {name} [{status:?}]",
+            name = feature.work_feature,
+            status = feature.status
+        );
+        println!("    Branch: {}", feature.branch_name);
+        println!("    Worktree: {}", feature.worktree_path.display());
+        if let Some(url) = feature.feature_url.as_ref() {
+            println!("    URL: https://{}", url);
+        }
+        println!(
+            "    Updated: {}",
+            feature
+                .updated_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+        );
+    }
 
     Ok(())
 }
