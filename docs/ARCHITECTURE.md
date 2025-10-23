@@ -400,7 +400,7 @@ brew tap your-org/worktree
 brew install worktree-agent
 
 # Manual
-curl -L https://github.com/your-org/worktree-manager/releases/download/v1.0.0/worktree-agent-darwin-arm64.tar.gz | tar xz
+curl -L https://github.com/branchbox-branchbox/releases/download/v1.0.0/worktree-agent-darwin-arm64.tar.gz | tar xz
 sudo mv worktree-agent /usr/local/bin/
 
 # Initialize
@@ -529,8 +529,8 @@ Build SwiftUI app:
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/worktree-manager
-cd worktree-manager
+git clone https://github.com/branchbox-branchbox
+cd branchbox
 
 # Build core library
 cd core

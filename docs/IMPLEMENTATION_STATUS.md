@@ -5,12 +5,12 @@
 This document tracks the implementation progress of the Worktree Manager distributed system.
 
 **Created**: 2025-10-21
-**Status**: 🟢 Phase 2 Complete - Core Library Ready for Agent Development
+**Status**: 🟡 Phase 2 In Progress - Core Library scaffolding exists, shell workflows pending Rust migration
 
 ## Project Structure
 
 ```
-worktree-manager/
+branchbox/
 ├── Cargo.toml                 # Workspace configuration ✅
 ├── README.md                  # Project overview ✅
 ├── docs/
@@ -22,23 +22,23 @@ worktree-manager/
     └── src/
         ├── lib.rs             # Library root ✅
         ├── error.rs           # Error types ✅
-        ├── naming.rs          # Feature naming utilities ✅ (fully implemented)
-        ├── validation.rs      # Environment validation ✅ (fully implemented)
-        ├── git.rs             # Git worktree ops ✅ (fully implemented)
+        ├── naming.rs          # Feature naming utilities ✅
+        ├── validation.rs      # Environment validation ✅
+        ├── git.rs             # Git worktree ops ✅ (worktree orchestration still wrappers pending CLI integration)
         ├── bootstrap/
         │   ├── mod.rs         # Bootstrap implementation ✅ (fully implemented)
         │   └── templates/     # Embedded devcontainer templates ✅
         ├── adapters/
         │   ├── mod.rs         # Adapter interface ✅
-        │   ├── rails.rs       # Rails adapter ✅ (fully implemented)
-        │   ├── nodejs.rs      # Node.js adapter ✅ (fully implemented)
-        │   └── generic.rs     # Generic adapter ✅ (fully implemented)
+        │   ├── rails.rs       # Rails adapter ✅ (secret copying/cleanup parity)
+        │   ├── nodejs.rs      # Node.js adapter ✅ (secret copying/cleanup parity)
+        │   └── generic.rs     # Generic adapter ✅
         └── modules/
             ├── mod.rs         # Module interface ✅
-            ├── compose.rs     # Compose module ✅ (fully implemented)
-            ├── database.rs    # Database module ✅ (fully implemented)
-            ├── tunnel.rs      # Tunnel module ✅ (fully implemented)
-            └── specs.rs       # Specs module ✅ (fully implemented)
+            ├── compose.rs     # Compose module ✅ (validation scaffolding; runtime parity pending)
+            ├── database.rs    # Database module ✅ (env hints only; shell module still primary)
+            ├── tunnel.rs      # Tunnel module ✅ (API integration TODO)
+            └── specs.rs       # Specs module ✅ (spec discovery/move TODO)
 ```
 
 ## Implementation Progress
@@ -158,6 +158,8 @@ worktree-manager/
   - [x] Tunnel configuration structure
   - [x] Manual and automatic setup modes
   - [x] Token management
+
+> **Note:** Module/adaptor scaffolding exists in Rust, but parity with the Bash implementations in `lib/modules` and `lib/adapters` remains outstanding. See `docs/features/backlog/rust-workflow-migration.md` for the migration plan.
   - [x] Configuration file generation
   - [ ] Full Cloudflare API integration (future)
 - [x] Specs module (Feature specification tracking)
@@ -342,7 +344,7 @@ The project is migrating from a bash-based implementation:
 **Workaround**:
 ```bash
 # On a machine with internet access:
-cd worktree-manager/core
+cd branchbox/core
 cargo build
 cargo test
 ```
@@ -401,7 +403,7 @@ Once dependencies are available, test the implementation:
 
 ```bash
 # Run all tests
-cd worktree-manager
+cd branchbox
 cargo test --all
 
 # Test specific module

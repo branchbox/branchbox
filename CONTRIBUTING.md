@@ -17,8 +17,8 @@ Thank you for your interest in contributing to Worktree Manager! This document p
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-org/worktree-manager.git
-   cd worktree-manager
+   git clone https://github.com/branchbox-branchbox.git
+   cd branchbox
    ```
 
 2. Open in VS Code/Cursor and reopen in container when prompted
@@ -185,7 +185,7 @@ test(adapters): add comprehensive Rails adapter tests
 ## Project Structure
 
 ```
-worktree-manager/
+branchbox/
 ├── core/               # Core Rust library
 │   ├── src/
 │   │   ├── naming.rs      # Feature naming utilities
@@ -315,8 +315,8 @@ All pull requests must pass:
 ## Getting Help
 
 - **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/your-org/worktree-manager/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/worktree-manager/discussions)
+- **Issues**: [GitHub Issues](https://github.com/branchbox-branchbox/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/branchbox-branchbox/discussions)
 
 ## Code of Conduct
 
