@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Git worktree manager
+#[derive(Debug)]
 pub struct GitWorktree {
     repo_path: PathBuf,
 }
@@ -56,14 +57,9 @@ impl GitWorktree {
     ///     Some("main")
     /// ).unwrap();
     /// ```
-    pub fn create(
-        &self,
-        path: &Path,
-        branch: &str,
-        base_branch: Option<&str>,
-    ) -> Result<()> {
+    pub fn create(&self, path: &Path, branch: &str, base_branch: Option<&str>) -> Result<()> {
         if path.exists() {
-            return Err(Error::worktree_exists(path.to_path_buf()));
+            return Err(Error::WorktreeExists(path.to_path_buf()));
         }
 
         let mut cmd = Command::new("git");
@@ -83,16 +79,13 @@ impl GitWorktree {
 
         tracing::debug!("Running: {:?}", cmd);
 
-        let output = cmd.output().map_err(|e| {
-            Error::git(format!("Failed to execute git worktree add: {}", e))
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to execute git worktree add: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::git(format!(
-                "Git worktree add failed: {}",
-                stderr
-            )));
+            return Err(Error::git(format!("Git worktree add failed: {}", stderr)));
         }
 
         tracing::info!("Created worktree at {}", path.display());
@@ -118,9 +111,9 @@ impl GitWorktree {
 
         tracing::debug!("Running: {:?}", cmd);
 
-        let output = cmd.output().map_err(|e| {
-            Error::git(format!("Failed to execute git worktree remove: {}", e))
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to execute git worktree remove: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -144,16 +137,13 @@ impl GitWorktree {
 
         tracing::debug!("Running: {:?}", cmd);
 
-        let output = cmd.output().map_err(|e| {
-            Error::git(format!("Failed to execute git worktree list: {}", e))
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to execute git worktree list: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::git(format!(
-                "Git worktree list failed: {}",
-                stderr
-            )));
+            return Err(Error::git(format!("Git worktree list failed: {}", stderr)));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -190,16 +180,13 @@ impl GitWorktree {
 
         cmd.arg(branch);
 
-        let output = cmd.output().map_err(|e| {
-            Error::git(format!("Failed to delete branch: {}", e))
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to delete branch: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::git(format!(
-                "Git branch delete failed: {}",
-                stderr
-            )));
+            return Err(Error::git(format!("Git branch delete failed: {}", stderr)));
         }
 
         tracing::info!("Deleted branch {}", branch);

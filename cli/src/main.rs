@@ -1,5 +1,8 @@
+mod commands;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::feature::{self, FeatureCommands};
 use std::path::PathBuf;
 use worktree_core::bootstrap::{Bootstrap, Stack};
 
@@ -36,6 +39,10 @@ enum Commands {
     /// Feature name utilities
     #[command(subcommand)]
     Name(NameCommands),
+
+    /// Manage feature worktrees
+    #[command(subcommand)]
+    Feature(FeatureCommands),
 }
 
 #[derive(Subcommand)]
@@ -67,7 +74,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init { path, stack } => {
             let project_path = path.unwrap_or_else(|| PathBuf::from("."));
-            let bootstrap = Bootstrap::new(&project_path)?;
+            let bootstrap = Bootstrap::new(&project_path);
 
             let stack = if let Some(stack_str) = stack {
                 match stack_str.to_lowercase().as_str() {
@@ -99,7 +106,7 @@ fn main() -> Result<()> {
 
         Commands::Detect { path } => {
             let project_path = path.unwrap_or_else(|| PathBuf::from("."));
-            let bootstrap = Bootstrap::new(&project_path)?;
+            let bootstrap = Bootstrap::new(&project_path);
             let stack = bootstrap.detect_stack()?;
 
             println!("📦 BranchBox Configuration");
@@ -120,6 +127,10 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::Feature(feature_cmd) => {
+            feature::execute(feature_cmd)?;
+        }
+
         Commands::Name(name_cmd) => match name_cmd {
             NameCommands::Generate { title } => {
                 let name = worktree_core::naming::generate_work_feature(&title);
@@ -131,7 +142,9 @@ fn main() -> Result<()> {
                     println!("✓ Valid feature name: {}", name);
                 } else {
                     eprintln!("✗ Invalid feature name: {}", name);
-                    eprintln!("  Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)");
+                    eprintln!(
+                        "  Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)"
+                    );
                     std::process::exit(1);
                 }
             }

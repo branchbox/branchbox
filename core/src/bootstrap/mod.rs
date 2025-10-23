@@ -5,7 +5,7 @@
 //!
 //! # Concept
 //!
-//! The worktree-manager can bootstrap complete devcontainer setups for:
+//! The branchbox can bootstrap complete devcontainer setups for:
 //! - Rails projects
 //! - Node.js projects
 //! - Rust projects (including itself!)
@@ -35,8 +35,8 @@
 //! - `.env.sample` - Environment variable template
 //! - Stack-specific scripts and configurations
 
-use crate::{Error, Result};
-use std::path::{Path, PathBuf};
+use crate::Result;
+use std::path::PathBuf;
 
 pub mod templates;
 
@@ -242,19 +242,25 @@ mod tests {
         bootstrap.generate(Stack::Rust).unwrap();
 
         // Check that all files were created
-        assert!(temp_dir.path().join(".devcontainer/devcontainer.json").exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/devcontainer.json")
+            .exists());
         assert!(temp_dir.path().join(".devcontainer/compose.yaml").exists());
         assert!(temp_dir.path().join(".devcontainer/Dockerfile").exists());
         assert!(temp_dir.path().join(".env.sample").exists());
 
         // Check that files have content
-        let devcontainer_json = fs::read_to_string(temp_dir.path().join(".devcontainer/devcontainer.json")).unwrap();
+        let devcontainer_json =
+            fs::read_to_string(temp_dir.path().join(".devcontainer/devcontainer.json")).unwrap();
         assert!(devcontainer_json.contains("Rust"));
 
-        let compose_yaml = fs::read_to_string(temp_dir.path().join(".devcontainer/compose.yaml")).unwrap();
+        let compose_yaml =
+            fs::read_to_string(temp_dir.path().join(".devcontainer/compose.yaml")).unwrap();
         assert!(compose_yaml.contains("rust-dev"));
 
-        let dockerfile = fs::read_to_string(temp_dir.path().join(".devcontainer/Dockerfile")).unwrap();
+        let dockerfile =
+            fs::read_to_string(temp_dir.path().join(".devcontainer/Dockerfile")).unwrap();
         assert!(dockerfile.contains("rust"));
     }
 
@@ -283,12 +289,24 @@ mod tests {
             bootstrap.generate(stack).unwrap();
 
             // Verify all files created
-            assert!(temp_dir.path().join(".devcontainer/devcontainer.json").exists(),
-                "{} stack should create devcontainer.json", stack.as_str());
-            assert!(temp_dir.path().join(".devcontainer/compose.yaml").exists(),
-                "{} stack should create compose.yaml", stack.as_str());
-            assert!(temp_dir.path().join(".devcontainer/Dockerfile").exists(),
-                "{} stack should create Dockerfile", stack.as_str());
+            assert!(
+                temp_dir
+                    .path()
+                    .join(".devcontainer/devcontainer.json")
+                    .exists(),
+                "{} stack should create devcontainer.json",
+                stack.as_str()
+            );
+            assert!(
+                temp_dir.path().join(".devcontainer/compose.yaml").exists(),
+                "{} stack should create compose.yaml",
+                stack.as_str()
+            );
+            assert!(
+                temp_dir.path().join(".devcontainer/Dockerfile").exists(),
+                "{} stack should create Dockerfile",
+                stack.as_str()
+            );
         }
     }
 }

@@ -43,9 +43,8 @@ pub fn validate_git_worktree(worktree_dir: &Path) -> Result<()> {
     // Feature worktree: .git is a file containing gitdir reference
     if git_path.is_file() {
         // Read the gitdir reference
-        let content = fs::read_to_string(&git_path).map_err(|e| {
-            Error::validation(format!("Failed to read .git file: {}", e))
-        })?;
+        let content = fs::read_to_string(&git_path)
+            .map_err(|e| Error::validation(format!("Failed to read .git file: {}", e)))?;
 
         // Verify it has the gitdir reference
         if content.starts_with("gitdir:") {
@@ -81,14 +80,16 @@ pub fn validate_host_environment() -> Result<()> {
     // Check for Docker environment
     if Path::new("/.dockerenv").exists() {
         return Err(Error::validation(
-            "Running in Docker container. This command must be run on the host machine.".to_string()
+            "Running in Docker container. This command must be run on the host machine."
+                .to_string(),
         ));
     }
 
     // Check for Docker environment variable
     if std::env::var("DOCKER_CONTAINER").is_ok() {
         return Err(Error::validation(
-            "Running in Docker container. This command must be run on the host machine.".to_string()
+            "Running in Docker container. This command must be run on the host machine."
+                .to_string(),
         ));
     }
 
@@ -118,9 +119,8 @@ pub fn validate_env_file(env_file: &Path, required_vars: &[&str]) -> Result<()> 
         )));
     }
 
-    let content = fs::read_to_string(env_file).map_err(|e| {
-        Error::validation(format!("Failed to read .env file: {}", e))
-    })?;
+    let content = fs::read_to_string(env_file)
+        .map_err(|e| Error::validation(format!("Failed to read .env file: {}", e)))?;
 
     // Check for required variables
     for var in required_vars {
@@ -155,9 +155,8 @@ pub fn validate_env_file(env_file: &Path, required_vars: &[&str]) -> Result<()> 
 /// }
 /// ```
 pub fn parse_env_file(env_file: &Path) -> Result<HashMap<String, String>> {
-    let content = fs::read_to_string(env_file).map_err(|e| {
-        Error::validation(format!("Failed to read .env file: {}", e))
-    })?;
+    let content = fs::read_to_string(env_file)
+        .map_err(|e| Error::validation(format!("Failed to read .env file: {}", e)))?;
 
     let mut vars = HashMap::new();
 
@@ -254,9 +253,9 @@ impl AppUrl {
     pub fn from_env_file(env_file: &Path) -> Result<Self> {
         let vars = parse_env_file(env_file)?;
 
-        let url = vars.get("APP_URL").ok_or_else(|| {
-            Error::validation("APP_URL not found in .env file".to_string())
-        })?;
+        let url = vars
+            .get("APP_URL")
+            .ok_or_else(|| Error::validation("APP_URL not found in .env file".to_string()))?;
 
         Self::parse(url)
     }
@@ -353,8 +352,8 @@ mod tests {
         temp_file.flush().unwrap();
 
         let creds = CloudflareCredentials::from_env_file(temp_file.path()).unwrap();
-        assert_eq!(creds.api_key.unwrap(), "secret");
-        assert_eq!(creds.account_id.unwrap(), "account123");
+        assert_eq!(creds.api_key.as_deref(), Some("secret"));
+        assert_eq!(creds.account_id.as_deref(), Some("account123"));
         assert!(creds.is_complete());
     }
 

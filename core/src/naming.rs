@@ -8,32 +8,46 @@
 //! use worktree_core::naming::generate_work_feature;
 //!
 //! let name = generate_work_feature("OAuth Integration Feature");
-//! assert_eq!(name, "oauth-integration");
+//! assert_eq!(name, "oauth");
 //!
 //! let name = generate_work_feature("Fix Critical Bug in Authentication");
-//! assert_eq!(name, "critical-bug-authentication");
+//! assert_eq!(name, "fix-critical-bug");
 //! ```
 
 use regex::Regex;
 
 /// Filler words to remove from feature names
 const FILLER_WORDS: &[&str] = &[
-    "the", "a", "an", "and", "or", "for", "with", "using", "feature", "integration",
-    "implementation", "support", "system", "in", "of", "to",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "for",
+    "with",
+    "using",
+    "feature",
+    "integration",
+    "implementation",
+    "support",
+    "system",
+    "in",
+    "of",
+    "to",
 ];
 
 /// Maximum number of words to include in work_feature name
-const MAX_WORDS: usize = 4;
+const MAX_WORDS: usize = 3;
 
 /// Generate WORK_FEATURE name from title
 ///
-/// Smart truncation: removes filler words, takes max 4 meaningful words
+/// Smart truncation: removes filler words, takes max 3 meaningful words
 ///
 /// # Rules
 ///
 /// 1. Lowercase only: `OAuth` → `oauth`
 /// 2. Dasherized: `OAuth Integration` → `oauth-integration`
-/// 3. Max 4 words: Takes most meaningful words
+/// 3. Max 3 words: Takes most meaningful words
 /// 4. Removes filler words: "the", "a", "and", "for", "with", "feature", "integration", "support"
 /// 5. DNS-safe: Only `a-z0-9-` characters
 ///
@@ -44,7 +58,7 @@ const MAX_WORDS: usize = 4;
 ///
 /// assert_eq!(
 ///     generate_work_feature("OpenAI Responses API Integration"),
-///     "responses-api-integration"
+///     "openai-responses-api"
 /// );
 ///
 /// assert_eq!(
@@ -54,7 +68,7 @@ const MAX_WORDS: usize = 4;
 ///
 /// assert_eq!(
 ///     generate_work_feature("Fix Critical Bug in Authentication"),
-///     "critical-bug-authentication"
+///     "fix-critical-bug"
 /// );
 ///
 /// assert_eq!(
@@ -85,7 +99,7 @@ pub fn generate_work_feature(title: &str) -> String {
 
 /// Clean title: lowercase and remove special characters
 fn clean_title(title: &str) -> String {
-    let re = Regex::new(r"[^a-z0-9 -]").unwrap();
+    let re = Regex::new(r"[^a-z0-9 _-]").unwrap();
     let lowercase = title.to_lowercase();
     let cleaned = re.replace_all(&lowercase, "");
 
@@ -162,7 +176,7 @@ mod tests {
         // Test cases from bash implementation
         assert_eq!(
             generate_work_feature("OpenAI Responses API Integration"),
-            "openai-responses-api"  // Takes first 4 non-filler words
+            "openai-responses-api" // Keeps leading non-filler words
         );
 
         assert_eq!(
@@ -172,12 +186,12 @@ mod tests {
 
         assert_eq!(
             generate_work_feature("Fix Critical Bug in Authentication"),
-            "fix-critical-bug"  // "in" is removed as filler
+            "fix-critical-bug" // "in" is removed as filler
         );
 
         assert_eq!(
             generate_work_feature("Support for Multiple LLM Providers"),
-            "multiple-llm-providers"  // "Support for" removed
+            "multiple-llm-providers" // "Support for" removed
         );
     }
 
@@ -228,10 +242,11 @@ mod tests {
 
     #[test]
     fn test_max_words() {
-        let long_title = "This is a very long feature name with many words that should be truncated";
+        let long_title =
+            "This is a very long feature name with many words that should be truncated";
         let result = generate_work_feature(long_title);
 
-        // Should have max 4 words
+        // Should have at most MAX_WORDS parts
         assert_eq!(result.split('-').count(), MAX_WORDS);
     }
 

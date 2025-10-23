@@ -63,6 +63,11 @@ pub enum Error {
 }
 
 impl Error {
+    /// Create a git command error
+    pub fn git(msg: impl Into<String>) -> Self {
+        Self::CommandFailed(msg.into())
+    }
+
     /// Create a validation error
     pub fn validation(msg: impl Into<String>) -> Self {
         Self::Validation(msg.into())
