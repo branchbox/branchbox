@@ -1,9 +1,9 @@
 ---
 worktree: /Users/rbarazi/projects/branchbox
-branch: main
+branch: feat/rust-workflow-m0
 work_feature: rust-workflow-migration
 status: in-progress
-updated: 2025-10-30
+updated: 2025-10-31
 created: 2025-10-29
 ---
 
@@ -62,10 +62,10 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 
 ## Milestones & Timeline
 
-1. **Milestone 0 — Foundations (Week 1)**
-   - Scaffold CLI command module and feature workflow coordinator with no-op handlers.
-   - Port existing git helpers; implement feature metadata persistence and validation.
-   - Create doc-driven test fixtures for simple start/teardown happy paths.
+1. **Milestone 0 — Foundations (Week 1)** ✅ *Completed 2025-10-31*
+   - ✅ Scaffold CLI command module (`branchbox feature`) and feature workflow coordinator with initial handlers.
+   - ✅ Port existing git helpers; implement feature metadata persistence (`.branchbox/feature.json`) and validation.
+   - ✅ Create doc-driven test fixtures for simple start/teardown happy paths (`workflows::feature` unit tests).
 2. **Milestone 1 — Core Workflow Parity (Weeks 2-3)**
    - Implement branching/worktree creation, stash capture/restore, spec lifecycle, `.env` split generation.
    - Wire module registry with placeholders; execute adapters in order; ensure teardown can unwind start artifacts.
@@ -119,11 +119,14 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 - **Permission issues**: emulate shell’s cautious prompts before destructive operations; add dry-run mode.
 - **Environment drift**: use snapshot tests for generated config files and spec updates.
 
+## Progress Log
+
+- **2025-10-31**: Created `feat/rust-workflow-m0`, added `branchbox feature start/teardown` commands backed by new Rust workflow coordinator. Metadata now persisted in `.branchbox/feature.json` with `FeatureStatus` tracking. Added CI-friendly host validation override and refreshed naming heuristics to support metadata serialization.
+
 ## Next Actions
 
-1. Design command surface (`branchbox feature start/teardown/list`).
-2. Port git worktree orchestration logic from `lib/core/git-operations.sh` into a Rust service using existing `GitWorktree` helpers.
-3. Reimplement module loop with dynamic registry + configuration plumbing.
-4. Build Cloudflare client and integrate with `TunnelModule` setup/teardown.
-5. Mirror teardown flow, including adapter cleanup and DNS deletion.
-6. Provide migration docs and deprecate Bash scripts once parity is validated.
+1. Implement module registry execution parity and adapter orchestration (Milestone 1).
+2. Add stash handling, spec lifecycle moves, and `.env` split/link replication.
+3. Introduce Cloudflare API client scaffolding and dry-run UX for tunnel module.
+4. Expand integration test harness for start/teardown flows across modules.
+5. Document CLI usage (`branchbox feature`) and begin bridging legacy shell scripts with experimental flag.
