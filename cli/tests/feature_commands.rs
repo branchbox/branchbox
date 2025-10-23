@@ -122,6 +122,7 @@ fn feature_start_list_teardown_end_to_end() {
             work_feature,
             "--delete-branch",
             "--force",
+            "--complete-spec",
         ])
         .assert()
         .success()
@@ -141,4 +142,14 @@ fn feature_start_list_teardown_end_to_end() {
         .assert()
         .success()
         .stdout(predicate::str::contains(work_feature));
+
+    let completed_spec = repo_path
+        .join("docs")
+        .join("features")
+        .join("completed")
+        .join(format!("{work_feature}.md"));
+    assert!(
+        completed_spec.exists(),
+        "expected spec to move to completed"
+    );
 }

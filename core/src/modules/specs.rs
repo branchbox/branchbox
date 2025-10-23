@@ -331,10 +331,24 @@ impl Module for SpecsModule {
             return Ok(());
         }
 
-        // In the Rust version, we'll just log what would happen
-        // In a real implementation, this would prompt the user
-        tracing::info!("Feature spec found: {:?}", spec_file);
-        tracing::info!("Spec remains in in-progress (use --complete flag to move to completed)");
+        let complete = std::env::var("BRANCHBOX_COMPLETE_SPEC")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if complete {
+            let completed_dir = self.specs_dir.join(SpecStatus::Completed.as_str());
+            if !completed_dir.exists() {
+                fs::create_dir_all(&completed_dir)?;
+            }
+            let completed_path = completed_dir.join(format!("{}.md", work_feature));
+            fs::rename(&spec_file, &completed_path)?;
+            tracing::info!("Feature spec moved to completed: {:?}", completed_path);
+        } else {
+            tracing::info!("Feature spec found: {:?}", spec_file);
+            tracing::info!(
+                "Spec remains in in-progress (use --complete-spec to move to completed)"
+            );
+        }
 
         Ok(())
     }
@@ -477,5 +491,30 @@ mod tests {
         let content = std::fs::read_to_string(spec_path).unwrap();
         assert!(content.contains("title: Feature Bright"));
         assert!(content.contains("status: in-progress"));
+    }
+
+    #[test]
+    fn test_teardown_moves_spec_when_complete_flag_set() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-complete");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let specs_dir = main_dir.path().join("docs/features");
+        std::fs::create_dir_all(specs_dir.join("in-progress")).unwrap();
+        std::fs::create_dir_all(specs_dir.join("completed")).unwrap();
+
+        let in_progress_spec = specs_dir.join("in-progress/feature-complete.md");
+        std::fs::write(&in_progress_spec, "---\nstatus: in-progress\n---").unwrap();
+
+        let mut module = SpecsModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        std::env::set_var("BRANCHBOX_COMPLETE_SPEC", "1");
+        module.teardown(main_dir.path(), &feature_dir).unwrap();
+        std::env::remove_var("BRANCHBOX_COMPLETE_SPEC");
+
+        assert!(!in_progress_spec.exists());
+        let completed_spec = specs_dir.join("completed/feature-complete.md");
+        assert!(completed_spec.exists());
     }
 }

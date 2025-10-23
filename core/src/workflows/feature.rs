@@ -59,6 +59,7 @@ pub struct TeardownRequest {
     pub branch_prefix: Option<String>,
     pub delete_branch: bool,
     pub force_remove: bool,
+    pub complete_spec: bool,
 }
 
 /// Result of running feature teardown workflow.
@@ -183,7 +184,19 @@ impl FeatureWorkflow {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
         }
 
+        let previous_complete = std::env::var("BRANCHBOX_COMPLETE_SPEC").ok();
+        if request.complete_spec {
+            std::env::set_var("BRANCHBOX_COMPLETE_SPEC", "1");
+        } else {
+            std::env::remove_var("BRANCHBOX_COMPLETE_SPEC");
+        }
+
         let module_reports = self.run_module_teardown(&worktree_path);
+
+        match previous_complete {
+            Some(value) => std::env::set_var("BRANCHBOX_COMPLETE_SPEC", value),
+            None => std::env::remove_var("BRANCHBOX_COMPLETE_SPEC"),
+        }
         let mut warnings = Vec::new();
 
         let mut worktree_removed = false;
@@ -837,6 +850,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                complete_spec: false,
             })
             .unwrap();
     }
@@ -866,6 +880,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                complete_spec: false,
             })
             .unwrap();
 
@@ -928,6 +943,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                complete_spec: false,
             })
             .unwrap();
 
@@ -944,6 +960,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                complete_spec: false,
             })
             .unwrap();
     }

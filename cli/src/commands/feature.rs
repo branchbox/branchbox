@@ -66,6 +66,10 @@ pub struct FeatureTeardownArgs {
     /// Force removal even with local changes
     #[arg(long)]
     pub force: bool,
+
+    /// Move spec to completed during teardown
+    #[arg(long)]
+    pub complete_spec: bool,
 }
 
 #[derive(Args)]
@@ -161,6 +165,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         repo,
         delete_branch,
         force,
+        complete_spec,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
@@ -171,6 +176,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         branch_prefix,
         delete_branch,
         force_remove: force,
+        complete_spec,
     };
 
     let summary = workflow.teardown(request)?;
