@@ -8,6 +8,7 @@
 
 use super::Module;
 use crate::{Error, Result};
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,7 +34,8 @@ impl SpecStatus {
 pub struct SpecsModule {
     enabled: bool,
     specs_dir: PathBuf,
-    spec_file: Option<PathBuf>,
+    spec_file: RefCell<Option<PathBuf>>,
+    spec_status: RefCell<Option<SpecStatus>>,
     feature_title: String,
     work_feature: String,
 }
@@ -44,7 +46,8 @@ impl SpecsModule {
         Self {
             enabled: false,
             specs_dir: PathBuf::new(),
-            spec_file: None,
+            spec_file: RefCell::new(None),
+            spec_status: RefCell::new(None),
             feature_title: String::new(),
             work_feature: String::new(),
         }
@@ -66,9 +69,43 @@ impl SpecsModule {
         Ok(())
     }
 
+    fn discover_spec_for(&self, work_feature: &str) -> Option<(PathBuf, SpecStatus)> {
+        let candidate_name = format!("{work_feature}.md");
+        let search_order = [
+            SpecStatus::InProgress,
+            SpecStatus::Backlog,
+            SpecStatus::Completed,
+        ];
+
+        for status in &search_order {
+            let candidate = self
+                .specs_dir
+                .join(status.as_str())
+                .join(&candidate_name);
+            if candidate.exists() {
+                return Some((candidate, status.clone()));
+            }
+        }
+
+        None
+    }
+
+    fn set_spec_reference(&self, path: PathBuf, status: SpecStatus) {
+        self.spec_file.replace(Some(path));
+        self.spec_status.replace(Some(status));
+    }
+
+    fn current_spec(&self) -> Option<PathBuf> {
+        self.spec_file.borrow().clone()
+    }
+
+    fn current_status(&self) -> Option<SpecStatus> {
+        self.spec_status.borrow().clone()
+    }
+
     /// Move spec file to a different status directory
-    fn move_spec(&mut self, from_status: SpecStatus, to_status: SpecStatus) -> Result<()> {
-        if let Some(spec_file) = &self.spec_file {
+    fn move_spec(&self, from_status: SpecStatus, to_status: SpecStatus) -> Result<()> {
+        if let Some(spec_file) = self.current_spec() {
             let spec_basename = spec_file
                 .file_name()
                 .ok_or_else(|| Error::validation("Invalid spec filename".to_string()))?;
@@ -78,7 +115,7 @@ impl SpecsModule {
 
             if from_path.exists() {
                 fs::rename(&from_path, &to_path)?;
-                self.spec_file = Some(to_path.clone());
+                self.set_spec_reference(to_path.clone(), to_status.clone());
                 tracing::info!(
                     "Moved spec from {} to {}",
                     from_status.as_str(),
@@ -186,19 +223,33 @@ impl Module for SpecsModule {
 
         tracing::info!("Initialized specs directory: {:?}", self.specs_dir);
         self.enabled = true;
+
+        if let Some((path, status)) = self.discover_spec_for(&self.work_feature) {
+            tracing::info!(
+                "Discovered existing feature spec {:?} in {}",
+                path,
+                status.as_str()
+            );
+            self.set_spec_reference(path, status);
+        }
+
         Ok(())
     }
 
     fn setup(&self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
         tracing::info!("Setting up feature specification...");
 
-        if self.spec_file.is_none() {
-            tracing::warn!("No spec file set, skipping setup");
-            return Ok(());
+        if self.current_spec().is_none() {
+            if let Some((path, status)) = self.discover_spec_for(&self.work_feature) {
+                self.set_spec_reference(path, status);
+            } else {
+                tracing::info!("No feature spec found for {}", self.work_feature);
+                return Ok(());
+            }
         }
 
         // Move spec to in-progress if not already there
-        if let Some(spec_file) = &self.spec_file {
+        if let Some(spec_file) = self.current_spec() {
             let spec_basename = spec_file
                 .file_name()
                 .ok_or_else(|| Error::validation("Invalid spec filename".to_string()))?;
@@ -214,9 +265,18 @@ impl Module for SpecsModule {
                 .join(SpecStatus::Backlog.as_str())
                 .join(spec_basename);
 
-            if backlog_path.exists() && !in_progress_path.exists() {
+            let status_before = self.current_status();
+
+            if matches!(status_before, Some(SpecStatus::Backlog))
+                && backlog_path.exists()
+                && !in_progress_path.exists()
+            {
                 fs::rename(&backlog_path, &in_progress_path)?;
-                tracing::info!("Moved spec to in-progress");
+                self.set_spec_reference(in_progress_path.clone(), SpecStatus::InProgress);
+                tracing::info!(
+                    "Moved spec '{}' to in-progress",
+                    in_progress_path.display()
+                );
             }
 
             // Update frontmatter
@@ -241,6 +301,10 @@ impl Module for SpecsModule {
             .specs_dir
             .join(SpecStatus::InProgress.as_str())
             .join(format!("{}.md", work_feature));
+
+        if spec_file.exists() {
+            self.set_spec_reference(spec_file.clone(), SpecStatus::InProgress);
+        }
 
         if !spec_file.exists() {
             tracing::info!("No feature spec found");
@@ -319,7 +383,8 @@ mod tests {
         let module = SpecsModule {
             enabled: true,
             specs_dir: specs_dir.clone(),
-            spec_file: None,
+            spec_file: RefCell::new(None),
+            spec_status: RefCell::new(None),
             feature_title: String::new(),
             work_feature: String::new(),
         };
@@ -346,5 +411,29 @@ mod tests {
         let content = std::fs::read_to_string(&spec_file).unwrap();
         assert!(content.contains("status: in-progress"));
         assert!(content.contains("worktree:"));
+    }
+
+    #[test]
+    fn test_setup_moves_backlog_spec() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-awesome");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let specs_dir = main_dir.path().join("docs/features");
+        std::fs::create_dir_all(specs_dir.join("backlog")).unwrap();
+        std::fs::create_dir_all(specs_dir.join("in-progress")).unwrap();
+        std::fs::create_dir_all(specs_dir.join("completed")).unwrap();
+
+        let backlog_spec = specs_dir.join("backlog/feature-awesome.md");
+        std::fs::write(&backlog_spec, "# Awesome Feature\n\nDetails TBD").unwrap();
+
+        let mut module = SpecsModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+        module.setup(main_dir.path(), &feature_dir).unwrap();
+
+        let in_progress_spec = specs_dir.join("in-progress/feature-awesome.md");
+        assert!(in_progress_spec.exists());
+        let content = std::fs::read_to_string(in_progress_spec).unwrap();
+        assert!(content.contains("status: in-progress"));
     }
 }
