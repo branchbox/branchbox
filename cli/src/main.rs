@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use worktree_core::bootstrap::{Bootstrap, Stack};
 
 #[derive(Parser)]
-#[command(name = "worktree")]
-#[command(about = "Git worktree and devcontainer orchestration", long_about = None)]
+#[command(name = "branchbox")]
+#[command(about = "Isolated development environments for every feature", long_about = None)]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -13,8 +14,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate devcontainer configuration for a project
-    Bootstrap {
+    /// Initialize project with devcontainer (alias: bootstrap)
+    #[command(alias = "bootstrap")]
+    Init {
         /// Project directory (defaults to current directory)
         #[arg(short, long)]
         path: Option<PathBuf>,
@@ -24,23 +26,30 @@ enum Commands {
         stack: Option<String>,
     },
 
-    /// Detect project stack and show configuration
+    /// Detect project configuration
     Detect {
         /// Project directory (defaults to current directory)
         #[arg(short, long)]
         path: Option<PathBuf>,
     },
 
-    /// Validate project naming
-    ValidateName {
-        /// Feature name to validate
-        name: String,
+    /// Feature name utilities
+    #[command(subcommand)]
+    Name(NameCommands),
+}
+
+#[derive(Subcommand)]
+enum NameCommands {
+    /// Generate feature name from title
+    Generate {
+        /// Feature title (e.g., "OAuth Integration")
+        title: String,
     },
 
-    /// Generate feature name from title
-    GenerateName {
-        /// Feature title
-        title: String,
+    /// Validate feature name
+    Validate {
+        /// Feature name to validate (e.g., "oauth-integration")
+        name: String,
     },
 }
 
@@ -56,7 +65,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Bootstrap { path, stack } => {
+        Commands::Init { path, stack } => {
             let project_path = path.unwrap_or_else(|| PathBuf::from("."));
             let bootstrap = Bootstrap::new(&project_path)?;
 
@@ -76,12 +85,12 @@ fn main() -> Result<()> {
                 bootstrap.detect_stack()?
             };
 
-            println!("Detected stack: {:?}", stack);
-            println!("Generating devcontainer files...");
+            println!("📦 BranchBox - Detected stack: {:?}", stack);
+            println!("🔧 Generating devcontainer files...");
 
             bootstrap.generate(stack)?;
 
-            println!("✓ Devcontainer configuration generated!");
+            println!("✓ Project initialized!");
             println!("  - .devcontainer/devcontainer.json");
             println!("  - .devcontainer/compose.yaml");
             println!("  - .devcontainer/Dockerfile");
@@ -93,6 +102,8 @@ fn main() -> Result<()> {
             let bootstrap = Bootstrap::new(&project_path)?;
             let stack = bootstrap.detect_stack()?;
 
+            println!("📦 BranchBox Configuration");
+            println!();
             println!("Project: {}", project_path.display());
             println!("Stack: {:?}", stack);
 
@@ -102,26 +113,29 @@ fn main() -> Result<()> {
 
             // Show what modules would be enabled
             let modules = worktree_core::modules::detect_modules(&project_path);
+            println!();
             println!("Enabled modules: {}", modules.len());
             for module in modules {
-                println!("  - {}", module.name());
+                println!("  ✓ {}", module.name());
             }
         }
 
-        Commands::ValidateName { name } => {
-            if worktree_core::naming::validate_work_feature(&name) {
-                println!("✓ Valid feature name: {}", name);
-            } else {
-                eprintln!("✗ Invalid feature name: {}", name);
-                eprintln!("  Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)");
-                std::process::exit(1);
+        Commands::Name(name_cmd) => match name_cmd {
+            NameCommands::Generate { title } => {
+                let name = worktree_core::naming::generate_work_feature(&title);
+                println!("{}", name);
             }
-        }
 
-        Commands::GenerateName { title } => {
-            let name = worktree_core::naming::generate_work_feature(&title);
-            println!("Feature name: {}", name);
-        }
+            NameCommands::Validate { name } => {
+                if worktree_core::naming::validate_work_feature(&name) {
+                    println!("✓ Valid feature name: {}", name);
+                } else {
+                    eprintln!("✗ Invalid feature name: {}", name);
+                    eprintln!("  Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)");
+                    std::process::exit(1);
+                }
+            }
+        },
     }
 
     Ok(())

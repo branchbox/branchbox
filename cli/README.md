@@ -1,6 +1,8 @@
-# Worktree CLI
+# BranchBox CLI
 
-Command-line tool for git worktree and devcontainer orchestration.
+**Isolated development environments for every feature.**
+
+BranchBox helps you manage git worktrees with devcontainer configurations, making it easy to work on multiple features in parallel without environment conflicts.
 
 ## Installation
 
@@ -10,22 +12,25 @@ cargo install --path .
 
 ## Usage
 
-### Bootstrap a Project
+### Initialize a Project
 
-Generate devcontainer configuration for your project:
+Set up devcontainer configuration for your project:
 
 ```bash
 # Auto-detect stack and generate files
-worktree bootstrap
+branchbox init
+
+# Or use the alias
+branchbox bootstrap
 
 # Force a specific stack
-worktree bootstrap --stack rails
-worktree bootstrap --stack nodejs
-worktree bootstrap --stack rust
-worktree bootstrap --stack generic
+branchbox init --stack rails
+branchbox init --stack nodejs
+branchbox init --stack rust
+branchbox init --stack generic
 
-# Bootstrap a different directory
-worktree bootstrap --path /path/to/project
+# Initialize a different directory
+branchbox init --path /path/to/project
 ```
 
 This creates:
@@ -39,81 +44,120 @@ This creates:
 See what stack, adapters, and modules would be used:
 
 ```bash
-worktree detect
+branchbox detect
 
 # Example output:
+# 📦 BranchBox Configuration
+#
 # Project: .
 # Stack: Rails
 # Adapter: rails
+#
 # Enabled modules: 4
-#   - compose
-#   - database
-#   - tunnel
-#   - specs
+#   ✓ compose
+#   ✓ database
+#   ✓ tunnel
+#   ✓ specs
 ```
 
-### Generate Feature Names
+### Feature Name Utilities
 
-Create DNS-safe feature names from titles:
+BranchBox provides tools for generating and validating feature names:
 
 ```bash
-worktree generate-name "OAuth Integration Feature"
+# Generate a feature name from a title
+branchbox name generate "OAuth Integration Feature"
 # Output: oauth-integration
 
-worktree generate-name "Add Support for Multiple Databases"
+branchbox name generate "Add Support for Multiple Databases"
 # Output: add-support-multiple-databases
-```
 
-### Validate Feature Names
-
-Check if a feature name is valid:
-
-```bash
-worktree validate-name oauth-integration
+# Validate a feature name
+branchbox name validate oauth-integration
 # Output: ✓ Valid feature name: oauth-integration
 
-worktree validate-name "OAuth Integration"
+branchbox name validate "OAuth Integration"
 # Output: ✗ Invalid feature name: OAuth Integration
 #   Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)
 ```
 
+## Command Structure
+
+```
+branchbox
+├── init (alias: bootstrap)    # Initialize project with devcontainer
+├── detect                     # Show project configuration
+└── name
+    ├── generate               # Generate feature name from title
+    └── validate               # Validate feature name
+```
+
 ## Environment Variables
 
-- `RUST_LOG` - Set logging level (e.g., `RUST_LOG=debug worktree detect`)
+- `RUST_LOG` - Set logging level (e.g., `RUST_LOG=debug branchbox detect`)
 
 ## Examples
 
 ### Complete Workflow
 
 ```bash
-# 1. Bootstrap a new Rails project
+# 1. Initialize a new Rails project
 cd my-rails-app
-worktree bootstrap
+branchbox init
 
 # 2. Verify configuration
-worktree detect
+branchbox detect
 
 # 3. Generate a feature name
-worktree generate-name "Add Payment Integration"
+branchbox name generate "Add Payment Integration"
 # Output: add-payment-integration
 
 # 4. Validate the name
-worktree validate-name add-payment-integration
+branchbox name validate add-payment-integration
 # Output: ✓ Valid feature name: add-payment-integration
 ```
+
+### Quick Commands
+
+```bash
+# Initialize with specific stack
+branchbox init --stack nodejs
+
+# Generate name (just the name, no prefix)
+branchbox name generate "My Feature"
+
+# Check what would be configured
+branchbox detect
+```
+
+## Why "BranchBox"?
+
+- **Branch**: Every feature gets its own git worktree branch
+- **Box**: Isolated devcontainer environment for each branch
+- **Result**: Work on multiple features in parallel without conflicts!
 
 ## Development
 
 Run without installing:
 
 ```bash
-cargo run -- bootstrap
+cargo run -- init
 cargo run -- detect
-cargo run -- generate-name "My Feature"
+cargo run -- name generate "My Feature"
 ```
 
 Run tests:
 
 ```bash
 cargo test
+```
+
+## Future Commands
+
+Coming soon:
+
+```bash
+branchbox feature create <name>    # Create new feature worktree
+branchbox feature list             # List all feature worktrees
+branchbox feature remove <name>    # Remove feature worktree
 ```
