@@ -6,10 +6,17 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
 
+    privileged: true
+
     volumes:
       - ../..:/workspaces:cached
+      - dind-var-lib-docker:/var/lib/docker
+      - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
 
     environment:
       NODE_ENV: development
+
+volumes:
+  dind-var-lib-docker:

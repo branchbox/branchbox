@@ -8,7 +8,13 @@
   // Features to add to the dev container
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": "false"
+    }
   },
 
   "containerEnv": {
@@ -40,7 +46,10 @@
         "GitHub.vscode-github-actions"
       ],
       "settings": {
-        "rust-analyzer.checkOnSave.command": "clippy",
+        "rust-analyzer.check": {
+          "command": "clippy"
+        },
+        "rust-analyzer.checkOnSave": true,
         "rust-analyzer.cargo.features": "all",
         "[rust]": {
           "editor.defaultFormatter": "rust-lang.rust-analyzer",

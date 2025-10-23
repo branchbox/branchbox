@@ -6,8 +6,12 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
 
+    privileged: true
+
     volumes:
       - ../..:/workspaces:cached
+      - dind-var-lib-docker:/var/lib/docker
+      - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
 
@@ -24,4 +28,5 @@ services:
       POSTGRES_PASSWORD: postgres
 
 volumes:
+  dind-var-lib-docker:
   postgres-data:

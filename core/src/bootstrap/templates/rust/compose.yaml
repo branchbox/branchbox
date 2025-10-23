@@ -6,12 +6,18 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
 
+    privileged: true
+
     volumes:
       - ../..:/workspaces:cached
-      - /var/run/docker.sock:/var/run/docker.sock
+      - dind-var-lib-docker:/var/lib/docker
+      - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
 
     environment:
       DOCKER_CONTAINER: "true"
       RUST_BACKTRACE: "1"
+
+volumes:
+  dind-var-lib-docker:

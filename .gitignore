@@ -30,3 +30,4 @@ Thumbs.db
 
 # Logs
 *.log
+.codex/

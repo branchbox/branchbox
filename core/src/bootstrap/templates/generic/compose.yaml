@@ -6,7 +6,14 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
 
+    privileged: true
+
     volumes:
       - ../..:/workspaces:cached
+      - dind-var-lib-docker:/var/lib/docker
+      - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
+
+volumes:
+  dind-var-lib-docker:

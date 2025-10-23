@@ -1,4 +1,4 @@
-name: "worktree-manager"
+name: "branchbox"
 
 services:
   rust-dev:
@@ -6,8 +6,12 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
 
+    privileged: true
+
     volumes:
       - ../..:/workspaces:cached
+      - dind-var-lib-docker:/var/lib/docker
+      - ../.codex:/home/vscode/.codex
 
     # Overrides default command so things don't shut down after the process ends
     command: sleep infinity
@@ -16,12 +20,13 @@ services:
     # env_file:
     #   - .env
 
-    # Enable Docker-outside-of-Docker
-    # Mount Docker socket for testing Docker operations
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    # Docker-in-Docker daemon runs inside the container (no host socket mount)
+    # Persist Codex configuration/history outside the container lifecycle
 
     # Environment variables
     environment:
       DOCKER_CONTAINER: "true"
       RUST_BACKTRACE: "1"
+
+volumes:
+  dind-var-lib-docker:
