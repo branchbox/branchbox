@@ -199,11 +199,16 @@ impl Module for SpecsModule {
 
     fn detect(&self, project_dir: &Path) -> bool {
         // Check if specs directory exists or FEATURES_DIR is set
-        let features_dir = std::env::var("FEATURES_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| project_dir.join("docs/features"));
-
-        features_dir.exists() || std::env::var("FEATURES_DIR").is_ok()
+        if std::env::var("FEATURES_DIR").is_ok() {
+            return true;
+        }
+        // Enable by default; init will create the directory structure
+        let features_dir = project_dir.join("docs/features");
+        if features_dir.exists() {
+            return true;
+        }
+        // Fallback: enable even if directory is missing
+        true
     }
 
     fn init(&mut self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
