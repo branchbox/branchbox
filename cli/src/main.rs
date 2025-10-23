@@ -119,11 +119,18 @@ fn main() -> Result<()> {
             println!("Adapter: {}", adapters.name());
 
             // Show what modules would be enabled
-            let modules = worktree_core::modules::detect_modules(&project_path);
+            let module_plan = worktree_core::modules::detect_modules(&project_path);
             println!();
-            println!("Enabled modules: {}", modules.len());
-            for module in modules {
-                println!("  ✓ {}", module.name());
+            println!("Enabled modules: {}", module_plan.handles.len());
+            for handle in &module_plan.handles {
+                println!("  ✓ {}", handle.name);
+            }
+            if !module_plan.warnings.is_empty() {
+                println!();
+                println!("Warnings:");
+                for warning in module_plan.warnings {
+                    println!("  - {}", warning);
+                }
             }
         }
 

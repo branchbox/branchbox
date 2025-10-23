@@ -96,7 +96,7 @@ fn feature_start_list_teardown_end_to_end() {
         "spec stub should include status field"
     );
     assert!(
-        spec_content.contains("## Summary"),
+        spec_content.contains("## Overview"),
         "spec stub should include scaffolded sections"
     );
 

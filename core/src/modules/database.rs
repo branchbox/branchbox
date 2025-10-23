@@ -75,9 +75,7 @@ impl DatabaseModule {
     /// Get default setup command for engine
     fn default_setup_command(&self) -> String {
         match self.database_engine {
-            DatabaseEngine::Postgres | DatabaseEngine::MySQL => {
-                "bin/rails db:setup".to_string()
-            }
+            DatabaseEngine::Postgres | DatabaseEngine::MySQL => "bin/rails db:setup".to_string(),
             _ => "echo 'No default setup command'".to_string(),
         }
     }
@@ -91,18 +89,14 @@ impl DatabaseModule {
         }
 
         // Check if database exists
-        let output = Command::new("psql")
-            .args(["-lqt"])
-            .output();
+        let output = Command::new("psql").args(["-lqt"]).output();
 
         if let Ok(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains(&self.database_name) {
                 tracing::info!("Dropping PostgreSQL database: {}", self.database_name);
 
-                let result = Command::new("dropdb")
-                    .arg(&self.database_name)
-                    .output();
+                let result = Command::new("dropdb").arg(&self.database_name).output();
 
                 if result.is_ok() {
                     tracing::info!("Database dropped successfully");
@@ -128,9 +122,7 @@ impl DatabaseModule {
         tracing::info!("Dropping MySQL database: {}", self.database_name);
 
         let sql = format!("DROP DATABASE IF EXISTS `{}`;", self.database_name);
-        let result = Command::new("mysql")
-            .args(["-e", &sql])
-            .output();
+        let result = Command::new("mysql").args(["-e", &sql]).output();
 
         if result.is_ok() {
             tracing::info!("Database dropped successfully");
@@ -156,9 +148,7 @@ impl DatabaseModule {
         tracing::info!("Dropping MongoDB database: {}", self.database_name);
 
         let eval = format!("db.getSiblingDB('{}').dropDatabase()", self.database_name);
-        let result = Command::new(mongo_cmd)
-            .args(["--eval", &eval])
-            .output();
+        let result = Command::new(mongo_cmd).args(["--eval", &eval]).output();
 
         if result.is_ok() {
             tracing::info!("Database dropped successfully");
@@ -183,11 +173,7 @@ impl Module for DatabaseModule {
 
     fn detect(&self, project_dir: &Path) -> bool {
         // Check for common database config files
-        let config_files = [
-            "config/database.yml",
-            "prisma/schema.prisma",
-            "knexfile.js",
-        ];
+        let config_files = ["config/database.yml", "prisma/schema.prisma", "knexfile.js"];
 
         for file in &config_files {
             if project_dir.join(file).exists() {
@@ -218,8 +204,8 @@ impl Module for DatabaseModule {
             .ok_or_else(|| Error::validation("Invalid feature directory name".to_string()))?;
 
         // Generate database name (sanitize for database naming)
-        let project_name = std::env::var("COMPOSE_PROJECT_NAME")
-            .unwrap_or_else(|_| "app".to_string());
+        let project_name =
+            std::env::var("COMPOSE_PROJECT_NAME").unwrap_or_else(|_| "app".to_string());
         self.database_name = format!("{}_{}", project_name, work_feature.replace('-', "_"));
 
         // Detect database engine
@@ -247,13 +233,14 @@ impl Module for DatabaseModule {
         if env_file.exists() {
             let content = fs::read_to_string(&env_file)?;
             if !content.contains("DATABASE_NAME=") {
-                let mut file = fs::OpenOptions::new()
-                    .append(true)
-                    .open(&env_file)?;
+                let mut file = fs::OpenOptions::new().append(true).open(&env_file)?;
 
                 use std::io::Write;
                 writeln!(file)?;
-                writeln!(file, "# Database configuration (managed by database module)")?;
+                writeln!(
+                    file,
+                    "# Database configuration (managed by database module)"
+                )?;
                 writeln!(file, "DATABASE_NAME={}", self.database_name)?;
 
                 tracing::info!("Added DATABASE_NAME to .env");
@@ -396,6 +383,9 @@ mod tests {
         assert_eq!(module.default_setup_command(), "bin/rails db:setup");
 
         module.database_engine = DatabaseEngine::Unknown;
-        assert_eq!(module.default_setup_command(), "echo 'No default setup command'");
+        assert_eq!(
+            module.default_setup_command(),
+            "echo 'No default setup command'"
+        );
     }
 }

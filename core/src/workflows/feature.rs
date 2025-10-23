@@ -1,15 +1,19 @@
 use crate::{
+    adapters,
     git::GitWorktree,
-    modules, naming,
+    modules::{self, ModuleHandle},
+    naming,
     validation::{self, AppUrl},
     Error, Result,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 
 /// Manages feature lifecycle workflows (start/teardown) using git worktrees.
@@ -39,6 +43,7 @@ pub struct StartSummary {
     pub feature_url: Option<String>,
     pub compose_project_name: Option<String>,
     pub env_path: Option<PathBuf>,
+    pub adapter: Option<AdapterSummary>,
     pub module_reports: Vec<ModuleSetupReport>,
     pub warnings: Vec<String>,
 }
@@ -50,6 +55,18 @@ pub struct ModuleSetupReport {
     pub init_ok: bool,
     pub setup_ok: bool,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct ModuleSetupOutcome {
+    reports: Vec<ModuleSetupReport>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct StashState {
+    created: bool,
+    reference: Option<String>,
 }
 
 /// Parameters for tearing down a feature worktree.
@@ -69,6 +86,7 @@ pub struct TeardownSummary {
     pub branch_name: String,
     pub worktree_removed: bool,
     pub branch_deleted: bool,
+    pub adapter_cleanup_warnings: Vec<String>,
     pub module_reports: Vec<ModuleTeardownReport>,
     pub warnings: Vec<String>,
 }
@@ -79,6 +97,14 @@ pub struct ModuleTeardownReport {
     pub name: String,
     pub teardown_ok: bool,
     pub errors: Vec<String>,
+}
+
+/// Adapter orchestration summary.
+#[derive(Debug, Default)]
+pub struct AdapterSummary {
+    pub name: String,
+    pub service_url: String,
+    pub warnings: Vec<String>,
 }
 
 impl FeatureWorkflow {
@@ -129,12 +155,67 @@ impl FeatureWorkflow {
 
         self.write_git_fix_script(&worktree_path)?;
 
-        let env_outcome = self.prepare_env(&worktree_path, &work_feature, &branch_name)?;
+        let stash_state = if !request.reuse_existing {
+            match self.capture_stash(&work_feature) {
+                Ok(state) => state,
+                Err(err) => {
+                    warnings.push(format!("Failed to stash local changes: {}", err));
+                    StashState::default()
+                }
+            }
+        } else {
+            StashState::default()
+        };
+
+        self.ensure_spec_for_start(&work_feature, &worktree_path, &branch_name, &mut warnings);
+
+        let adapter_copy_allowed = !request.reuse_existing;
+        let adapter_summary = match self.prepare_adapter(&worktree_path, adapter_copy_allowed) {
+            Ok(summary) => Some(summary),
+            Err(err) => {
+                warnings.push(err);
+                None
+            }
+        };
+
+        let modules::ModulePlan {
+            handles,
+            warnings: dependency_warnings,
+        } = modules::detect_modules(&self.repo_root);
+        if !dependency_warnings.is_empty() {
+            warnings.extend(dependency_warnings.clone());
+        }
+
+        let env_outcome = self.prepare_env(
+            &worktree_path,
+            &work_feature,
+            &branch_name,
+            request.reuse_existing,
+            &mut warnings,
+        )?;
         if env_outcome.skipped {
             warnings.push("Skipped .env provisioning (source file not found)".to_string());
         }
 
-        let module_reports = self.run_module_setup(&worktree_path);
+        let previous_service_url = std::env::var("SERVICE_URL").ok();
+        if let Some(summary) = adapter_summary.as_ref() {
+            std::env::set_var("SERVICE_URL", &summary.service_url);
+        }
+        let setup_outcome = self.run_module_setup(handles, &worktree_path);
+        if !setup_outcome.warnings.is_empty() {
+            warnings.extend(setup_outcome.warnings.clone());
+        }
+        match previous_service_url {
+            Some(value) => std::env::set_var("SERVICE_URL", value),
+            None => std::env::remove_var("SERVICE_URL"),
+        }
+        let module_reports = setup_outcome.reports;
+        if !request.reuse_existing {
+            let stash_warnings = self.apply_stash_to_worktree(&stash_state, &worktree_path);
+            if !stash_warnings.is_empty() {
+                warnings.extend(stash_warnings);
+            }
+        }
 
         let env_path = env_outcome.env_path.clone();
         let feature_url = env_outcome.feature_url.clone();
@@ -164,6 +245,7 @@ impl FeatureWorkflow {
             feature_url,
             compose_project_name,
             env_path,
+            adapter: adapter_summary,
             module_reports,
             warnings,
         })
@@ -191,13 +273,36 @@ impl FeatureWorkflow {
             std::env::remove_var("BRANCHBOX_COMPLETE_SPEC");
         }
 
-        let module_reports = self.run_module_teardown(&worktree_path);
+        let mut warnings = Vec::new();
+        let modules::ModulePlan {
+            handles,
+            warnings: dependency_warnings,
+        } = modules::detect_modules(&self.repo_root);
+        let (module_reports, module_warnings) = self.run_module_teardown(handles, &worktree_path);
+        if !dependency_warnings.is_empty() {
+            warnings.extend(dependency_warnings);
+        }
+        if !module_warnings.is_empty() {
+            warnings.extend(module_warnings.clone());
+        }
+        self.handle_spec_on_teardown(
+            &work_feature,
+            &branch_name,
+            &worktree_path,
+            request.complete_spec,
+            &mut warnings,
+        );
+
+        let (adapter_cleanup_warnings, adapter_detection_warning) =
+            self.cleanup_adapter(&worktree_path);
 
         match previous_complete {
             Some(value) => std::env::set_var("BRANCHBOX_COMPLETE_SPEC", value),
             None => std::env::remove_var("BRANCHBOX_COMPLETE_SPEC"),
         }
-        let mut warnings = Vec::new();
+        if let Some(message) = adapter_detection_warning {
+            warnings.push(message);
+        }
 
         let mut worktree_removed = false;
         match self.git.remove(&worktree_path, request.force_remove) {
@@ -251,6 +356,7 @@ impl FeatureWorkflow {
             branch_name,
             worktree_removed,
             branch_deleted,
+            adapter_cleanup_warnings,
             module_reports,
             warnings,
         })
@@ -299,6 +405,8 @@ impl FeatureWorkflow {
         worktree_path: &Path,
         work_feature: &str,
         branch_name: &str,
+        reuse_existing: bool,
+        warnings: &mut Vec<String>,
     ) -> Result<EnvOutcome> {
         let source_env = self.repo_root.join(".env");
         if !source_env.exists() {
@@ -306,10 +414,29 @@ impl FeatureWorkflow {
             return Ok(EnvOutcome::skipped());
         }
 
-        let content = fs::read_to_string(&source_env)?;
-        let stripped = strip_feature_section(&content);
         let dest_env = worktree_path.join(".env");
-        fs::write(&dest_env, stripped)?;
+        let (base_env, _previous_section) = split_feature_section(&source_env)?;
+
+        if reuse_existing && dest_env.exists() {
+            if let Ok((_, existing_section)) = split_feature_section(&dest_env) {
+                if let Some(section) = existing_section {
+                    let trimmed = section.trim();
+                    if !trimmed.is_empty() {
+                        warnings.push(format!(
+                            "Existing feature-specific configuration replaced in {}",
+                            dest_env.display()
+                        ));
+                    }
+                } else {
+                    warnings.push(format!(
+                        "Existing {} will be refreshed from main .env (no branchbox block found)",
+                        dest_env.display()
+                    ));
+                }
+            }
+        }
+
+        fs::write(&dest_env, base_env)?;
 
         let mut feature_url = None;
         let mut compose_project_name = None;
@@ -350,6 +477,152 @@ impl FeatureWorkflow {
             compose_project_name,
             skipped: false,
         })
+    }
+
+    fn prepare_adapter(
+        &self,
+        worktree_path: &Path,
+        copy_secrets: bool,
+    ) -> std::result::Result<AdapterSummary, String> {
+        match adapters::detect_adapter(&self.repo_root) {
+            Ok(adapter) => {
+                let name = adapter.name().to_string();
+                tracing::info!("Detected adapter: {}", name);
+                let service_url = adapter.service_url();
+                let mut summary = AdapterSummary {
+                    name,
+                    service_url,
+                    warnings: Vec::new(),
+                };
+
+                if copy_secrets {
+                    if let Err(err) = adapter.copy_secrets(&self.repo_root, worktree_path) {
+                        summary
+                            .warnings
+                            .push(format!("Failed to copy secrets: {}", err));
+                    }
+                }
+
+                Ok(summary)
+            }
+            Err(err) => Err(format!("Failed to detect adapter: {}", err)),
+        }
+    }
+
+    fn cleanup_adapter(&self, worktree_path: &Path) -> (Vec<String>, Option<String>) {
+        if !worktree_path.exists() {
+            return (Vec::new(), None);
+        }
+
+        match adapters::detect_adapter(worktree_path) {
+            Ok(adapter) => match adapter.cleanup(worktree_path) {
+                Ok(_) => (Vec::new(), None),
+                Err(err) => (vec![format!("Adapter cleanup failed: {}", err)], None),
+            },
+            Err(err) => (
+                Vec::new(),
+                Some(format!("Failed to detect adapter for cleanup: {}", err)),
+            ),
+        }
+    }
+
+    fn capture_stash(&self, work_feature: &str) -> Result<StashState> {
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to check git status: {}", err)))?;
+
+        if !status.status.success() {
+            let stderr = String::from_utf8_lossy(&status.stderr);
+            return Err(Error::git(format!(
+                "git status exited with error: {}",
+                stderr.trim()
+            )));
+        }
+
+        let changes = String::from_utf8_lossy(&status.stdout);
+        if changes.trim().is_empty() {
+            return Ok(StashState::default());
+        }
+
+        let message = format!("feature-start: changes for {}", work_feature);
+        let push = Command::new("git")
+            .args(["stash", "push", "-m", &message])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to invoke git stash: {}", err)))?;
+
+        if !push.status.success() {
+            let stderr = String::from_utf8_lossy(&push.stderr);
+            return Err(Error::git(format!(
+                "git stash push failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        let list = Command::new("git")
+            .args(["stash", "list", "-n", "1", "--format=%gd"])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to list stashes: {}", err)))?;
+
+        if !list.status.success() {
+            let stderr = String::from_utf8_lossy(&list.stderr);
+            return Err(Error::git(format!(
+                "git stash list failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        let reference = String::from_utf8_lossy(&list.stdout)
+            .lines()
+            .next()
+            .map(|line| line.trim().to_string());
+
+        Ok(StashState {
+            created: true,
+            reference,
+        })
+    }
+
+    fn apply_stash_to_worktree(&self, stash: &StashState, worktree_path: &Path) -> Vec<String> {
+        if !stash.created {
+            return Vec::new();
+        }
+
+        match Command::new("git")
+            .args(["stash", "pop"])
+            .current_dir(worktree_path)
+            .output()
+        {
+            Ok(output) if output.status.success() => Vec::new(),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let mut warning = format!(
+                    "Failed to apply stashed changes to feature worktree: {}",
+                    stderr.trim()
+                );
+                if let Some(reference) = stash.reference.as_deref() {
+                    warning.push_str(&format!(" Stash {} remains available.", reference));
+                } else {
+                    warning.push_str(" Stash remains available.");
+                }
+                vec![warning]
+            }
+            Err(err) => {
+                let mut warning = format!(
+                    "Failed to apply stashed changes to feature worktree: {}",
+                    err
+                );
+                if let Some(reference) = stash.reference.as_deref() {
+                    warning.push_str(&format!(" Stash {} remains available.", reference));
+                } else {
+                    warning.push_str(" Stash remains available.");
+                }
+                vec![warning]
+            }
+        }
     }
 
     fn link_env_into_devcontainer(&self, worktree_path: &Path) -> Result<()> {
@@ -400,68 +673,286 @@ impl FeatureWorkflow {
         Ok(())
     }
 
-    fn run_module_setup(&self, feature_dir: &Path) -> Vec<ModuleSetupReport> {
-        modules::detect_modules(&self.repo_root)
-            .into_iter()
-            .map(|mut module| {
-                let name = module.name().to_string();
-                let mut report = ModuleSetupReport {
-                    name,
-                    init_ok: false,
-                    setup_ok: false,
-                    errors: Vec::new(),
-                };
+    fn run_module_setup(
+        &self,
+        handles: Vec<ModuleHandle>,
+        feature_dir: &Path,
+    ) -> ModuleSetupOutcome {
+        let mut reports = Vec::with_capacity(handles.len());
+        let mut warnings = Vec::new();
+        let mut successful: Vec<ModuleHandle> = Vec::new();
+        let mut aborted = false;
 
-                match module.init(&self.repo_root, feature_dir) {
-                    Ok(_) => {
-                        report.init_ok = true;
-                        match module.setup(&self.repo_root, feature_dir) {
-                            Ok(_) => {
-                                report.setup_ok = true;
-                            }
-                            Err(err) => {
-                                report.errors.push(err.to_string());
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        report.errors.push(err.to_string());
-                    }
-                }
+        for mut handle in handles.into_iter() {
+            let mut report = ModuleSetupReport {
+                name: handle.name.clone(),
+                init_ok: false,
+                setup_ok: false,
+                errors: Vec::new(),
+            };
 
-                report
-            })
-            .collect()
-    }
-
-    fn run_module_teardown(&self, feature_dir: &Path) -> Vec<ModuleTeardownReport> {
-        modules::detect_modules(&self.repo_root)
-            .into_iter()
-            .map(|mut module| {
-                let name = module.name().to_string();
-                let mut report = ModuleTeardownReport {
-                    name,
-                    teardown_ok: false,
-                    errors: Vec::new(),
-                };
-
-                match module.init(&self.repo_root, feature_dir) {
-                    Ok(_) => match module.teardown(&self.repo_root, feature_dir) {
+            match handle.module.init(&self.repo_root, feature_dir) {
+                Ok(_) => {
+                    report.init_ok = true;
+                    match handle.module.setup(&self.repo_root, feature_dir) {
                         Ok(_) => {
-                            report.teardown_ok = true;
+                            report.setup_ok = true;
+                            successful.push(handle);
                         }
                         Err(err) => {
                             report.errors.push(err.to_string());
+                            // Attempt best-effort cleanup for the module that failed during setup.
+                            if let Err(teardown_err) =
+                                handle.module.teardown(&self.repo_root, feature_dir)
+                            {
+                                warnings.push(format!(
+                                    "Rollback for module '{}' failed: {}",
+                                    report.name, teardown_err
+                                ));
+                            }
+                            aborted = true;
+                            reports.push(report);
+                            break;
                         }
-                    },
-                    Err(err) => {
-                        report.errors.push(err.to_string());
                     }
                 }
+                Err(err) => {
+                    report.errors.push(err.to_string());
+                    aborted = true;
+                    reports.push(report);
+                    break;
+                }
+            }
 
-                report
-            })
-            .collect()
+            reports.push(report);
+        }
+
+        if aborted {
+            while let Some(handle) = successful.pop() {
+                if let Err(err) = handle.module.teardown(&self.repo_root, feature_dir) {
+                    warnings.push(format!(
+                        "Rollback for module '{}' failed: {}",
+                        handle.name, err
+                    ));
+                }
+            }
+            if !warnings.iter().any(|w| w.contains("Module setup aborted")) {
+                warnings.push("Module setup aborted due to earlier failures".to_string());
+            }
+        }
+
+        ModuleSetupOutcome { reports, warnings }
+    }
+
+    fn run_module_teardown(
+        &self,
+        handles: Vec<ModuleHandle>,
+        feature_dir: &Path,
+    ) -> (Vec<ModuleTeardownReport>, Vec<String>) {
+        let mut reports = Vec::with_capacity(handles.len());
+        let mut warnings = Vec::new();
+
+        for mut handle in handles.into_iter().rev() {
+            let mut report = ModuleTeardownReport {
+                name: handle.name.clone(),
+                teardown_ok: false,
+                errors: Vec::new(),
+            };
+
+            match handle.module.init(&self.repo_root, feature_dir) {
+                Ok(_) => match handle.module.teardown(&self.repo_root, feature_dir) {
+                    Ok(_) => {
+                        report.teardown_ok = true;
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        report.errors.push(message.clone());
+                        warnings.push(format!(
+                            "Module '{}' teardown reported an error: {}",
+                            report.name, message
+                        ));
+                    }
+                },
+                Err(err) => {
+                    let message = err.to_string();
+                    report.errors.push(message.clone());
+                    warnings.push(format!(
+                        "Module '{}' initialization failed during teardown: {}",
+                        report.name, message
+                    ));
+                }
+            }
+
+            reports.push(report);
+        }
+
+        reports.reverse();
+        (reports, warnings)
+    }
+
+    fn determine_feature_spec(&self, work_feature: &str) -> Result<Option<PathBuf>> {
+        let features_dir = self.repo_root.join("docs/features");
+        if !features_dir.exists() {
+            return Ok(None);
+        }
+
+        let spec_name = format!("{}.md", work_feature);
+        for group in ["in-progress", "backlog", "completed"] {
+            let candidate = features_dir.join(group).join(&spec_name);
+            if candidate.exists() {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn ensure_spec_for_start(
+        &self,
+        work_feature: &str,
+        worktree_path: &Path,
+        branch_name: &str,
+        warnings: &mut Vec<String>,
+    ) -> Option<PathBuf> {
+        let features_dir = self.repo_root.join("docs/features");
+        if let Err(err) = fs::create_dir_all(features_dir.join("in-progress")) {
+            warnings.push(format!("Failed to ensure specs directory exists: {}", err));
+            return None;
+        }
+
+        let spec_name = format!("{}.md", work_feature);
+        let in_progress = features_dir.join("in-progress").join(&spec_name);
+
+        match self.determine_feature_spec(work_feature) {
+            Ok(Some(existing)) if existing != in_progress => {
+                if let Err(err) = fs::rename(&existing, &in_progress) {
+                    warnings.push(format!(
+                        "Failed to move spec '{}' to in-progress: {}",
+                        existing.display(),
+                        err
+                    ));
+                    return Some(existing);
+                }
+            }
+            Ok(None) => {
+                let content = format!(
+                    "---\nworktree: {}\nbranch: {}\nwork_feature: {}\nstatus: in-progress\ncreated: {}\n---\n\n# {}\n\n## Overview\n\nTODO: Describe the feature scope.\n",
+                    worktree_path.display(),
+                    branch_name,
+                    work_feature,
+                    Utc::now().date_naive(),
+                    feature_title_from_work_feature(work_feature)
+                );
+
+                if let Err(err) = fs::write(&in_progress, content) {
+                    warnings.push(format!(
+                        "Failed to create feature spec '{}': {}",
+                        in_progress.display(),
+                        err
+                    ));
+                    return None;
+                }
+            }
+            Ok(_) => {}
+            Err(err) => warnings.push(format!(
+                "Failed to inspect existing feature spec for '{}': {}",
+                work_feature, err
+            )),
+        }
+
+        let updates = vec![
+            ("worktree".to_string(), worktree_path.display().to_string()),
+            ("branch".to_string(), branch_name.to_string()),
+            ("work_feature".to_string(), work_feature.to_string()),
+            ("status".to_string(), "in-progress".to_string()),
+        ];
+
+        if let Err(err) = update_spec_frontmatter(&in_progress, &updates) {
+            warnings.push(format!(
+                "Failed to update feature spec frontmatter '{}': {}",
+                in_progress.display(),
+                err
+            ));
+        }
+
+        Some(in_progress)
+    }
+
+    fn handle_spec_on_teardown(
+        &self,
+        work_feature: &str,
+        branch_name: &str,
+        worktree_path: &Path,
+        mark_complete: bool,
+        warnings: &mut Vec<String>,
+    ) {
+        let Ok(existing) = self.determine_feature_spec(work_feature) else {
+            if mark_complete {
+                warnings.push(format!(
+                    "Unable to locate feature spec '{}' during teardown",
+                    work_feature
+                ));
+            }
+            return;
+        };
+
+        let Some(mut spec_path) = existing else {
+            if mark_complete {
+                warnings.push(format!(
+                    "Feature spec '{}' not found in docs/features",
+                    work_feature
+                ));
+            }
+            return;
+        };
+
+        if mark_complete {
+            let features_dir = self.repo_root.join("docs/features");
+            let completed_dir = features_dir.join("completed");
+            if let Err(err) = fs::create_dir_all(&completed_dir) {
+                warnings.push(format!(
+                    "Failed to prepare completed specs directory: {}",
+                    err
+                ));
+                return;
+            }
+
+            let target = completed_dir.join(format!("{}.md", work_feature));
+            if spec_path != target {
+                if let Err(err) = fs::rename(&spec_path, &target) {
+                    warnings.push(format!("Failed to move feature spec to completed: {}", err));
+                    return;
+                }
+                spec_path = target;
+            }
+
+            let mut updates = vec![
+                ("status".to_string(), "completed".to_string()),
+                ("branch".to_string(), branch_name.to_string()),
+            ];
+            updates.push(("completed".to_string(), Utc::now().date_naive().to_string()));
+
+            if let Err(err) = update_spec_frontmatter(&spec_path, &updates) {
+                warnings.push(format!(
+                    "Failed to update completed spec frontmatter '{}': {}",
+                    spec_path.display(),
+                    err
+                ));
+            }
+        } else if let Err(err) = update_spec_frontmatter(
+            &spec_path,
+            &[
+                ("worktree".to_string(), worktree_path.display().to_string()),
+                ("branch".to_string(), branch_name.to_string()),
+                ("status".to_string(), "in-progress".to_string()),
+            ],
+        ) {
+            warnings.push(format!(
+                "Failed to refresh spec frontmatter '{}': {}",
+                spec_path.display(),
+                err
+            ));
+        }
     }
 
     fn ensure_host_environment(&self) -> Result<()> {
@@ -481,12 +972,96 @@ fn ensure_trailing_newline(file: &mut File) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
-fn strip_feature_section(content: &str) -> String {
+fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
+    let content = fs::read_to_string(path)?;
     if let Some(pos) = content.find("# Feature-specific configuration") {
-        content[..pos].trim_end().to_string()
+        let base = content[..pos].trim_end().to_string();
+        let mut base_with_newline = base;
+        if !base_with_newline.ends_with('\n') {
+            base_with_newline.push('\n');
+        }
+        Ok((base_with_newline, Some(content[pos..].to_string())))
     } else {
-        content.trim_end().to_string()
+        let mut base = content.trim_end().to_string();
+        if !base.is_empty() && !base.ends_with('\n') {
+            base.push('\n');
+        }
+        Ok((base, None))
     }
+}
+
+fn feature_title_from_work_feature(work_feature: &str) -> String {
+    let title = work_feature
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if title.is_empty() {
+        work_feature.to_string()
+    } else {
+        title
+    }
+}
+
+fn update_spec_frontmatter(path: &Path, updates: &[(String, String)]) -> Result<()> {
+    let raw = fs::read_to_string(path)?;
+    let trimmed = raw.trim_start();
+
+    let (frontmatter, body_start) = if trimmed.starts_with("---") {
+        let rest = &trimmed[3..];
+        if let Some(idx) = rest.find("\n---") {
+            let front = &rest[..idx];
+            let body = &rest[idx + 4..];
+            (Some(front), Some(body))
+        } else {
+            (Some(rest), None)
+        }
+    } else {
+        (None, Some(trimmed))
+    };
+
+    let mut entries = BTreeMap::new();
+    if let Some(front) = frontmatter {
+        for line in front.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                entries.insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+    }
+
+    for (key, value) in updates {
+        entries.insert(key.clone(), value.clone());
+    }
+
+    let mut frontmatter_text = String::from("---\n");
+    for (key, value) in &entries {
+        frontmatter_text.push_str(key);
+        frontmatter_text.push(':');
+        frontmatter_text.push(' ');
+        frontmatter_text.push_str(value);
+        frontmatter_text.push('\n');
+    }
+    frontmatter_text.push_str("---\n");
+
+    let mut body_text = String::new();
+    if let Some(body) = body_start {
+        body_text.push_str(body.trim_start_matches('\n'));
+    }
+
+    fs::write(path, format!("{}{}", frontmatter_text, body_text))?;
+    Ok(())
 }
 
 fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
@@ -811,6 +1386,9 @@ mod tests {
             fs::remove_dir_all(&worktree_path).unwrap();
         }
 
+        // Create uncommitted change to verify stash handling
+        fs::write(repo_path.join("README.md"), "# Test Repo\nlocal change\n").unwrap();
+
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
         let summary = workflow
             .start(StartRequest {
@@ -829,7 +1407,33 @@ mod tests {
             summary.feature_url.as_deref(),
             Some("dev-test-feature.example.com")
         );
+        let adapter = summary.adapter.as_ref().expect("adapter summary");
+        assert_eq!(adapter.name, "Generic");
+        assert_eq!(adapter.service_url, "http://dev:3000");
+        assert!(adapter.warnings.is_empty());
         assert!(summary.warnings.is_empty());
+
+        // Stashed README changes should be applied to the new worktree only
+        let worktree_readme = fs::read_to_string(summary.worktree_path.join("README.md")).unwrap();
+        assert!(worktree_readme.contains("local change"));
+        let main_readme = fs::read_to_string(repo_path.join("README.md")).unwrap();
+        assert_eq!(main_readme, "# Test Repo\n");
+
+        let spec_path = repo_path.join("docs/features/in-progress/test-feature.md");
+        assert!(spec_path.exists());
+        let spec_content = fs::read_to_string(&spec_path).unwrap();
+        assert!(spec_content.contains("status: in-progress"));
+        assert!(spec_content.contains("branch: feature/test-feature"));
+        assert!(spec_content.contains("worktree:"));
+
+        let stash_list = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&stash_list.stdout)
+            .trim()
+            .is_empty());
 
         let registry_path = repo_path.join(".branchbox/feature.json");
         assert!(registry_path.exists());
@@ -844,7 +1448,7 @@ mod tests {
         assert_eq!(entry.get("work_feature").unwrap(), "test-feature");
         assert_eq!(entry.get("status").unwrap(), "active");
 
-        workflow
+        let teardown_summary = workflow
             .teardown(TeardownRequest {
                 work_feature: summary.work_feature.clone(),
                 branch_prefix: None,
@@ -853,6 +1457,7 @@ mod tests {
                 complete_spec: false,
             })
             .unwrap();
+        assert!(teardown_summary.adapter_cleanup_warnings.is_empty());
     }
 
     #[test]
@@ -887,6 +1492,7 @@ mod tests {
         assert!(summary.worktree_removed);
         assert!(summary.branch_deleted);
         assert!(!worktree_path.exists());
+        assert!(summary.adapter_cleanup_warnings.is_empty());
 
         let output = Command::new("git")
             .args(["branch", "--list", "feature/cleanup"])
@@ -963,5 +1569,77 @@ mod tests {
                 complete_spec: false,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn feature_teardown_moves_spec_to_completed_when_requested() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("complete-me".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let in_progress_spec = repo_path.join("docs/features/in-progress/complete-me.md");
+        assert!(in_progress_spec.exists());
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: summary.work_feature.clone(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+                complete_spec: true,
+            })
+            .unwrap();
+
+        let completed_spec = repo_path.join("docs/features/completed/complete-me.md");
+        assert!(completed_spec.exists());
+        assert!(!in_progress_spec.exists());
+        let spec_body = fs::read_to_string(completed_spec).unwrap();
+        assert!(spec_body.contains("status: completed"));
+        assert!(spec_body.contains("completed:"));
+    }
+
+    #[test]
+    fn feature_start_reuses_existing_env_with_warning() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let worktree_path = repo_path.parent().unwrap().join("reuse-env");
+        fs::create_dir_all(worktree_path.join(".devcontainer")).unwrap();
+        fs::write(
+            worktree_path.join(".env"),
+            "FOO=bar\n# Feature-specific configuration (managed by branchbox)\nOLD_VALUE=1\n",
+        )
+        .unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("reuse-env".to_string()),
+                reuse_existing: true,
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Existing feature-specific configuration replaced")));
+
+        let env_content = fs::read_to_string(summary.worktree_path.join(".env")).unwrap();
+        assert!(env_content.contains("WORK_FEATURE=reuse-env"));
+        assert!(!env_content.contains("OLD_VALUE"));
     }
 }

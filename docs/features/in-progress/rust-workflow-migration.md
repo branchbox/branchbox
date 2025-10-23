@@ -125,11 +125,15 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 - **2025-10-31**: Introduced `branchbox feature list` for registry introspection, including status filtering and local-time formatting. Added workflow API to enumerate feature metadata and expanded test coverage for listing semantics.
 - **2025-10-31**: Added CLI integration test harness using `assert_cmd` to exercise `feature start/list/teardown` end-to-end. Manually verified workflow in a temporary git repository to confirm CLI ergonomics.
 - **2025-10-31**: Ported spec lifecycle bootstrap: backlog specs are auto-discovered, moved to `in-progress`, frontmatter is refreshed during `feature start`, fresh specs are auto-generated when none exist, and `branchbox feature teardown --complete-spec` now moves specs to `completed`. Added unit and integration coverage for the new path.
+- **2025-11-01**: Replaced shell-based Cloudflare tunnel provisioning with a Rust `CloudflareClient` and integrated it into `TunnelModule`. CLI now provisions tunnels, configures ingress/DNS, reuses existing tokens, and performs API-based teardown with graceful manual fallbacks. Added unit coverage for API parsing and token discovery.
+- **2025-11-02**: Wired stack adapter orchestration into the Rust workflow: `feature start` now auto-detects adapters, copies stack secrets for new worktrees, injects service URLs for module setup, and `feature teardown` runs adapter cleanup hooks. CLI output reflects adapter details and associated warnings.
+- **2025-11-02**: Hardened the module registry: detection now returns dependency-ordered plans with warnings, `feature start` rolls back prior modules on failure, and teardown executes in reverse order while surfacing cleanup issues.
+- **2025-11-02**: Added automatic stash capture/restore to the Rust workflow so uncommitted changes are moved into the new worktree (with warnings when stash pop fails), ported spec lifecycle bootstrapping/completion into `FeatureWorkflow`, and ensured `.env` base configuration is copied without legacy feature sections. `.env` reuse now replaces existing branchbox blocks with warnings so manual edits are surfaced. Archived shell modules/adapters under `lib/migrated/` after confirming parity. Remaining shell assets (feature scripts, adapter glue, utilities) stay in place until their Rust counterparts ship.
 
 ## Next Actions
 
-1. Implement module registry execution parity and adapter orchestration (Milestone 1).
-2. Add stash handling, spec lifecycle moves, and `.env` split/link replication.
-3. Introduce Cloudflare API client scaffolding and dry-run UX for tunnel module.
-4. Expand integration test harness for start/teardown flows across modules.
-5. Document CLI usage (`branchbox feature`) and begin bridging legacy shell scripts with experimental flag.
+1. Polish `.env` handling for reused worktrees/custom sections and surface richer diff guidance.
+2. Finalize Cloudflare telemetry and interactive UX polish for tunnel module.
+3. Expand integration test harness for start/teardown flows across modules (include failure rollback cases).
+4. Document CLI usage (`branchbox feature`) and begin bridging legacy shell scripts with experimental flag.
+5. Plan shell deprecation timeline and removal sequence once parity validation completes.

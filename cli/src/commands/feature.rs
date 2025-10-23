@@ -198,6 +198,15 @@ fn print_start_summary(summary: &StartSummary) {
     if let Some(env_path) = summary.env_path.as_ref() {
         println!("  .env copied to: {}", env_path.display());
     }
+    if let Some(adapter) = summary.adapter.as_ref() {
+        println!("  Adapter: {}", adapter.name);
+        println!("  Service URL: {}", adapter.service_url);
+        if !adapter.warnings.is_empty() {
+            for warning in &adapter.warnings {
+                println!("      ⚠ {}", warning);
+            }
+        }
+    }
 
     if !summary.module_reports.is_empty() {
         println!();
@@ -238,6 +247,13 @@ fn print_teardown_summary(summary: &TeardownSummary) {
         "  Branch deleted: {}",
         if summary.branch_deleted { "yes" } else { "no" }
     );
+    if !summary.adapter_cleanup_warnings.is_empty() {
+        println!();
+        println!("Adapter:");
+        for warning in &summary.adapter_cleanup_warnings {
+            println!("  ⚠ {}", warning);
+        }
+    }
 
     if !summary.module_reports.is_empty() {
         println!();

@@ -9,6 +9,7 @@
 //! - **Specs**: Feature specification lifecycle tracking
 
 use crate::Result;
+use std::collections::HashSet;
 use std::path::Path;
 
 pub mod compose;
@@ -20,6 +21,42 @@ pub use compose::ComposeModule;
 pub use database::{DatabaseEngine, DatabaseModule};
 pub use specs::{SpecStatus, SpecsModule};
 pub use tunnel::TunnelModule;
+
+/// Detected module with dependency metadata.
+pub struct ModuleHandle {
+    pub name: String,
+    pub dependencies: Vec<String>,
+    pub module: Box<dyn Module>,
+}
+
+impl ModuleHandle {
+    fn new(module: Box<dyn Module>) -> Self {
+        let name = module.name().to_string();
+        let dependencies = module
+            .dependencies()
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+
+        Self {
+            name,
+            dependencies,
+            module,
+        }
+    }
+}
+
+/// Ordered plan of modules plus dependency warnings.
+pub struct ModulePlan {
+    pub handles: Vec<ModuleHandle>,
+    pub warnings: Vec<String>,
+}
+
+impl ModulePlan {
+    pub fn new(handles: Vec<ModuleHandle>, warnings: Vec<String>) -> Self {
+        Self { handles, warnings }
+    }
+}
 
 /// Module trait
 ///
@@ -47,6 +84,11 @@ pub trait Module {
 
     /// Validate module configuration
     fn validate(&self, main_dir: &Path, feature_dir: &Path) -> Result<()>;
+
+    /// Declares module dependencies (other module names that must execute before this module).
+    fn dependencies(&self) -> &[&str] {
+        &[]
+    }
 }
 
 /// Get all available modules
@@ -64,12 +106,75 @@ pub fn all_modules() -> Vec<Box<dyn Module>> {
 
 /// Detect and initialize enabled modules
 ///
-/// Returns a vector of modules that are enabled for the project.
-pub fn detect_modules(project_dir: &Path) -> Vec<Box<dyn Module>> {
-    all_modules()
+/// Returns a plan containing ordered modules and dependency warnings.
+pub fn detect_modules(project_dir: &Path) -> ModulePlan {
+    let mut detected: Vec<ModuleHandle> = all_modules()
         .into_iter()
-        .filter(|m| m.detect(project_dir))
-        .collect()
+        .filter(|module| module.detect(project_dir))
+        .map(ModuleHandle::new)
+        .collect();
+
+    let mut ordered = Vec::with_capacity(detected.len());
+    let mut satisfied = HashSet::new();
+    let mut warnings = Vec::new();
+
+    while !detected.is_empty() {
+        let mut progress = false;
+        let mut idx = 0;
+
+        while idx < detected.len() {
+            let unresolved: Vec<&String> = detected[idx]
+                .dependencies
+                .iter()
+                .filter(|dep| !satisfied.contains(dep.as_str()))
+                .collect();
+
+            if unresolved.is_empty() {
+                let handle = detected.remove(idx);
+                satisfied.insert(handle.name.clone());
+                ordered.push(handle);
+                progress = true;
+            } else {
+                let missing: Vec<&String> = unresolved
+                    .into_iter()
+                    .filter(|dep| !detected.iter().any(|handle| &handle.name == *dep))
+                    .collect();
+
+                if !missing.is_empty() {
+                    let missing_list = missing
+                        .iter()
+                        .map(|dep| dep.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    warnings.push(format!(
+                        "Module '{}' depends on missing module(s): {}",
+                        detected[idx].name, missing_list
+                    ));
+                    let handle = detected.remove(idx);
+                    satisfied.insert(handle.name.clone());
+                    ordered.push(handle);
+                    progress = true;
+                } else {
+                    idx += 1;
+                }
+            }
+        }
+
+        if !progress {
+            // Circular dependency detected. Log warning and append remaining modules in original order.
+            let names: Vec<String> = detected.iter().map(|handle| handle.name.clone()).collect();
+            if !names.is_empty() {
+                warnings.push(format!(
+                    "Detected circular module dependency involving: {}",
+                    names.join(", ")
+                ));
+            }
+            ordered.extend(detected.drain(..));
+            break;
+        }
+    }
+
+    ModulePlan::new(ordered, warnings)
 }
 
 #[cfg(test)]
@@ -92,10 +197,12 @@ mod tests {
     #[test]
     fn test_detect_modules_empty_project() {
         let temp_dir = TempDir::new().unwrap();
-        let modules = detect_modules(temp_dir.path());
+        let plan = detect_modules(temp_dir.path());
 
         // Tunnel module is always enabled for manual setup
-        assert!(!modules.is_empty());
+        assert!(!plan.handles.is_empty());
+        assert!(plan.warnings.is_empty());
+        assert!(plan.handles.iter().any(|h| h.name == "tunnel"));
     }
 
     #[test]
@@ -108,8 +215,8 @@ mod tests {
         )
         .unwrap();
 
-        let modules = detect_modules(temp_dir.path());
-        let names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
+        let plan = detect_modules(temp_dir.path());
+        let names: Vec<&str> = plan.handles.iter().map(|m| m.name.as_str()).collect();
 
         assert!(names.contains(&"compose"));
     }
@@ -120,8 +227,8 @@ mod tests {
         std::fs::create_dir_all(temp_dir.path().join("config")).unwrap();
         std::fs::write(temp_dir.path().join("config/database.yml"), "test").unwrap();
 
-        let modules = detect_modules(temp_dir.path());
-        let names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
+        let plan = detect_modules(temp_dir.path());
+        let names: Vec<&str> = plan.handles.iter().map(|m| m.name.as_str()).collect();
 
         assert!(names.contains(&"database"));
     }

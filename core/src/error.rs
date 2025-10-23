@@ -17,6 +17,10 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// HTTP errors
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
     /// Validation errors
     #[error("Validation error: {0}")]
     Validation(String),
