@@ -152,16 +152,19 @@ impl FeatureWorkflow {
             return Err(Error::WorktreeExists(worktree_path));
         }
 
-        if request.reuse_existing
-            && !branch_exists
-            && self.git.remote_branch_exists("origin", &branch_name)?
-        {
-            self.git.create_branch_from_remote(&branch_name, "origin")?;
-            branch_exists = true;
-            tracing::info!(
-                "Created local branch '{}' from origin to honor reuse request",
-                branch_name
-            );
+        if request.reuse_existing && !branch_exists {
+            for remote in self.git.list_remotes()? {
+                if self.git.remote_branch_exists(&remote, &branch_name)? {
+                    self.git.create_branch_from_remote(&branch_name, &remote)?;
+                    branch_exists = true;
+                    tracing::info!(
+                        "Created local branch '{}' from remote '{}' to honor reuse request",
+                        branch_name,
+                        remote
+                    );
+                    break;
+                }
+            }
         }
 
         if !request.reuse_existing && branch_exists {
@@ -1768,14 +1771,21 @@ mod tests {
             .status()
             .unwrap();
 
+        let remote_name = "upstream";
+
         Command::new("git")
             .current_dir(repo_path)
-            .args(["remote", "add", "origin", remote.path().to_str().unwrap()])
+            .args([
+                "remote",
+                "add",
+                remote_name,
+                remote.path().to_str().unwrap(),
+            ])
             .status()
             .unwrap();
         Command::new("git")
             .current_dir(repo_path)
-            .args(["push", "origin", "main"])
+            .args(["push", remote_name, "main"])
             .status()
             .unwrap();
 
@@ -1797,7 +1807,7 @@ mod tests {
             .unwrap();
         Command::new("git")
             .current_dir(repo_path)
-            .args(["push", "origin", "feature/remote"])
+            .args(["push", remote_name, "feature/remote"])
             .status()
             .unwrap();
         Command::new("git")

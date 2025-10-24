@@ -244,6 +244,27 @@ impl GitWorktree {
         Ok(!output.stdout.is_empty())
     }
 
+    /// List configured git remotes.
+    pub fn list_remotes(&self) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .arg("remote")
+            .output()
+            .map_err(|e| Error::git(format!("Failed to list remotes: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::git(format!("Git remote failed: {}", stderr)));
+        }
+
+        let remotes = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        Ok(remotes)
+    }
+
     /// Create a local branch pointing at a remote branch tip.
     pub fn create_branch_from_remote(&self, branch: &str, remote: &str) -> Result<()> {
         let remote_ref = format!("{}/{}", remote, branch);
