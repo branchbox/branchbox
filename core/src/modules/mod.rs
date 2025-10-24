@@ -169,7 +169,7 @@ pub fn detect_modules(project_dir: &Path) -> ModulePlan {
                     names.join(", ")
                 ));
             }
-            ordered.extend(detected.drain(..));
+            ordered.append(&mut detected);
             break;
         }
     }

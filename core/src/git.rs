@@ -92,6 +92,42 @@ impl GitWorktree {
         Ok(())
     }
 
+    /// Attach an existing branch to a worktree path without resetting it.
+    pub fn attach_existing_branch(&self, path: &Path, branch: &str) -> Result<()> {
+        if path.exists() {
+            return Err(Error::WorktreeExists(path.to_path_buf()));
+        }
+
+        // Ensure any stale worktree registrations are removed before attempting to attach.
+        if let Err(err) = self.prune() {
+            tracing::debug!("Skipping worktree prune before attach: {}", err);
+        }
+
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&self.repo_path);
+        cmd.arg("worktree").arg("add");
+        cmd.arg(path);
+        cmd.arg(branch);
+
+        tracing::debug!("Running: {:?}", cmd);
+
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to execute git worktree add: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::git(format!("Git worktree add failed: {}", stderr)));
+        }
+
+        tracing::info!(
+            "Attached existing branch '{}' at {}",
+            branch,
+            path.display()
+        );
+        Ok(())
+    }
+
     /// Remove a worktree
     ///
     /// # Arguments
@@ -124,6 +160,26 @@ impl GitWorktree {
         }
 
         tracing::info!("Removed worktree at {}", path.display());
+        Ok(())
+    }
+
+    /// Prune stale worktree registrations.
+    pub fn prune(&self) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&self.repo_path);
+        cmd.arg("worktree").arg("prune");
+
+        tracing::debug!("Running: {:?}", cmd);
+
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to execute git worktree prune: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::git(format!("Git worktree prune failed: {}", stderr)));
+        }
+
         Ok(())
     }
 
@@ -164,6 +220,52 @@ impl GitWorktree {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(!stdout.trim().is_empty())
+    }
+
+    /// Check if a remote branch exists.
+    pub fn remote_branch_exists(&self, remote: &str, branch: &str) -> Result<bool> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(["ls-remote", "--heads", remote, branch])
+            .output()
+            .map_err(|e| Error::git(format!("Failed to query remote branches: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::debug!(
+                "git ls-remote for {}/{} failed, assuming branch absent: {}",
+                remote,
+                branch,
+                stderr
+            );
+            return Ok(false);
+        }
+
+        Ok(!output.stdout.is_empty())
+    }
+
+    /// Create a local branch pointing at a remote branch tip.
+    pub fn create_branch_from_remote(&self, branch: &str, remote: &str) -> Result<()> {
+        let remote_ref = format!("{}/{}", remote, branch);
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&self.repo_path);
+        cmd.args(["branch", branch, &remote_ref]);
+
+        tracing::debug!("Running: {:?}", cmd);
+
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to create branch from remote: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::git(format!(
+                "Git branch creation from remote failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(())
     }
 
     /// Delete a branch
@@ -356,7 +458,8 @@ mod tests {
         // Should have at least one worktree (the main repo)
         let worktrees = git.list().unwrap();
         assert!(!worktrees.is_empty());
-        assert_eq!(worktrees[0].path, temp_dir.path());
+        let expected_path = temp_dir.path().canonicalize().unwrap();
+        assert_eq!(worktrees[0].path, expected_path);
 
         // Create a new worktree
         let worktree_path = temp_dir.path().join("feature-worktree");
@@ -382,6 +485,56 @@ mod tests {
         git.remove(&worktree_path, false).unwrap();
 
         assert!(!worktree_path.exists());
+    }
+
+    #[test]
+    fn test_attach_existing_branch_preserves_tip() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let git = GitWorktree::new(repo_path).unwrap();
+
+        let worktree_path = repo_path.join("feature-worktree");
+        git.create(&worktree_path, "feature/test", Some("main"))
+            .unwrap();
+
+        // Advance the branch HEAD with a new commit in the worktree.
+        let feature_file = worktree_path.join("feature.txt");
+        fs::write(&feature_file, "feature work").unwrap();
+        Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["add", feature_file.file_name().unwrap().to_str().unwrap()])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["commit", "-m", "Advance feature branch"])
+            .status()
+            .unwrap();
+
+        let head_before = Command::new("git")
+            .current_dir(repo_path)
+            .args(["rev-parse", "feature/test"])
+            .output()
+            .unwrap();
+        let head_before = String::from_utf8(head_before.stdout).unwrap();
+
+        // Remove the worktree directory to simulate manual cleanup.
+        fs::remove_dir_all(&worktree_path).unwrap();
+
+        // Reattach without resetting the branch.
+        let restored_path = repo_path.join("feature-worktree-restored");
+        git.attach_existing_branch(&restored_path, "feature/test")
+            .unwrap();
+        assert!(restored_path.exists());
+
+        let head_after = Command::new("git")
+            .current_dir(repo_path)
+            .args(["rev-parse", "feature/test"])
+            .output()
+            .unwrap();
+        let head_after = String::from_utf8(head_after.stdout).unwrap();
+
+        assert_eq!(head_before, head_after);
     }
 
     #[test]

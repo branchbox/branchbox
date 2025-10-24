@@ -129,11 +129,11 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 - **2025-11-02**: Wired stack adapter orchestration into the Rust workflow: `feature start` now auto-detects adapters, copies stack secrets for new worktrees, injects service URLs for module setup, and `feature teardown` runs adapter cleanup hooks. CLI output reflects adapter details and associated warnings.
 - **2025-11-02**: Hardened the module registry: detection now returns dependency-ordered plans with warnings, `feature start` rolls back prior modules on failure, and teardown executes in reverse order while surfacing cleanup issues.
 - **2025-11-02**: Added automatic stash capture/restore to the Rust workflow so uncommitted changes are moved into the new worktree (with warnings when stash pop fails), ported spec lifecycle bootstrapping/completion into `FeatureWorkflow`, and ensured `.env` base configuration is copied without legacy feature sections. `.env` reuse now replaces existing branchbox blocks with warnings so manual edits are surfaced. Archived shell modules/adapters under `lib/migrated/` after confirming parity. Remaining shell assets (feature scripts, adapter glue, utilities) stay in place until their Rust counterparts ship.
+- **2025-11-03**: Fixed repo-root discovery so CLI commands work from nested directories, reuse existing branches without resetting history, and derive Cloudflare tunnel hostnames from `APP_URL` to provision usable tunnels/DNS records. Added regression coverage for `.env` reuse and spec completion. Introduced optional telemetry logging (via `--telemetry`) that surfaces Cloudflare provisioning events.
 
 ## Next Actions
 
-1. Polish `.env` handling for reused worktrees/custom sections and surface richer diff guidance.
-2. Finalize Cloudflare telemetry and interactive UX polish for tunnel module.
-3. Expand integration test harness for start/teardown flows across modules (include failure rollback cases).
-4. Document CLI usage (`branchbox feature`) and begin bridging legacy shell scripts with experimental flag.
-5. Plan shell deprecation timeline and removal sequence once parity validation completes.
+1. Polish telemetry UX (structured summaries, opt-in JSON stream) and add retries/dry-run semantics for Cloudflare module.
+2. Expand integration test harness for start/teardown flows across modules (include rollback/error scenarios and Cloudflare mocks).
+3. Document CLI usage (`branchbox feature`) and bridge legacy shell scripts with experimental flag guidance.
+4. Plan shell deprecation timeline and removal sequence once parity validation completes.

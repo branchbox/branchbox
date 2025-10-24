@@ -32,6 +32,7 @@ pub struct StartRequest {
     pub base_branch: Option<String>,
     pub branch_prefix: Option<String>,
     pub reuse_existing: bool,
+    pub telemetry: bool,
 }
 
 /// Result of running feature start workflow.
@@ -77,6 +78,7 @@ pub struct TeardownRequest {
     pub delete_branch: bool,
     pub force_remove: bool,
     pub complete_spec: bool,
+    pub telemetry: bool,
 }
 
 /// Result of running feature teardown workflow.
@@ -135,22 +137,60 @@ impl FeatureWorkflow {
         let work_feature = self.resolve_work_feature(&request)?;
         let branch_name = build_branch_name(request.branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
+        let mut branch_exists = self.git.branch_exists(&branch_name)?;
+        let worktree_exists = worktree_path.exists();
         let base_branch = request.base_branch.clone();
         let mut warnings = Vec::new();
 
-        if worktree_path.exists() && !request.reuse_existing {
+        if request.telemetry {
+            std::env::set_var("BRANCHBOX_EMIT_TELEMETRY", "1");
+        } else {
+            std::env::remove_var("BRANCHBOX_EMIT_TELEMETRY");
+        }
+
+        if worktree_exists && !request.reuse_existing {
             return Err(Error::WorktreeExists(worktree_path));
         }
 
-        if !request.reuse_existing && self.git.branch_exists(&branch_name)? {
-            return Err(Error::BranchExists(branch_name));
+        if request.reuse_existing
+            && !branch_exists
+            && self.git.remote_branch_exists("origin", &branch_name)?
+        {
+            self.git.create_branch_from_remote(&branch_name, "origin")?;
+            branch_exists = true;
+            tracing::info!(
+                "Created local branch '{}' from origin to honor reuse request",
+                branch_name
+            );
         }
 
-        if worktree_path.exists() && request.reuse_existing {
-            tracing::info!("Using existing worktree at {}", worktree_path.display());
+        if !request.reuse_existing && branch_exists {
+            return Err(Error::BranchExists(branch_name.clone()));
+        }
+
+        if request.reuse_existing && !branch_exists {
+            return Err(Error::validation(format!(
+                "Cannot reuse feature branch '{}' because it does not exist locally. Fetch or create it before retrying.",
+                branch_name
+            )));
+        }
+
+        if worktree_exists {
+            if request.reuse_existing {
+                tracing::info!("Using existing worktree at {}", worktree_path.display());
+            } else {
+                return Err(Error::WorktreeExists(worktree_path));
+            }
+        } else if request.reuse_existing {
+            tracing::info!(
+                "Recreating missing worktree for existing branch {}",
+                branch_name
+            );
+            self.git
+                .attach_existing_branch(&worktree_path, &branch_name)?;
         } else {
             self.git
-                .create(&worktree_path, &branch_name, request.base_branch.as_deref())?;
+                .create(&worktree_path, &branch_name, base_branch.as_deref())?;
         }
 
         self.write_git_fix_script(&worktree_path)?;
@@ -264,6 +304,12 @@ impl FeatureWorkflow {
         let worktree_path = self.worktree_path(&work_feature)?;
         if !worktree_path.exists() {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
+        }
+
+        if request.telemetry {
+            std::env::set_var("BRANCHBOX_EMIT_TELEMETRY", "1");
+        } else {
+            std::env::remove_var("BRANCHBOX_EMIT_TELEMETRY");
         }
 
         let previous_complete = std::env::var("BRANCHBOX_COMPLETE_SPEC").ok();
@@ -1015,11 +1061,10 @@ fn update_spec_frontmatter(path: &Path, updates: &[(String, String)]) -> Result<
     let raw = fs::read_to_string(path)?;
     let trimmed = raw.trim_start();
 
-    let (frontmatter, body_start) = if trimmed.starts_with("---") {
-        let rest = &trimmed[3..];
-        if let Some(idx) = rest.find("\n---") {
-            let front = &rest[..idx];
-            let body = &rest[idx + 4..];
+    let (frontmatter, body_start) = if let Some(rest) = trimmed.strip_prefix("---") {
+        let rest = rest.strip_prefix('\n').unwrap_or(rest);
+        if let Some((front, remainder)) = rest.split_once("\n---") {
+            let body = remainder.strip_prefix('\n').unwrap_or(remainder);
             (Some(front), Some(body))
         } else {
             (Some(rest), None)
@@ -1074,43 +1119,77 @@ fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
 }
 
 fn resolve_repo_root(path: &Path) -> Result<PathBuf> {
-    let abs = if path.exists() {
+    // First attempt to ask git where the repository lives to cover nested directories.
+    let cwd = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+
+    if let Ok(output) = Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(cwd)
+        .output()
+    {
+        if output.status.success() {
+            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !root.is_empty() {
+                return Ok(PathBuf::from(root));
+            }
+        }
+    }
+
+    // Fallback: walk up the directory tree and look for a .git entry.
+    let mut current = if path.exists() {
         path.canonicalize()?
     } else {
         path.to_path_buf()
     };
 
-    let git_path = abs.join(".git");
-    if git_path.is_dir() {
-        return Ok(abs);
+    if current.is_file() {
+        current = current
+            .parent()
+            .ok_or_else(|| Error::validation("Not a git repository".to_string()))?
+            .to_path_buf();
     }
 
-    if git_path.is_file() {
-        let git_file = fs::read_to_string(&git_path)?;
-        let gitdir = git_file
-            .strip_prefix("gitdir:")
-            .map(|s| s.trim())
-            .ok_or_else(|| Error::validation("Invalid .git file format".to_string()))?;
+    let mut cursor = Some(current);
+    while let Some(dir) = cursor {
+        let git_path = dir.join(".git");
+        if git_path.is_dir() {
+            return Ok(dir);
+        }
 
-        let gitdir_path = if Path::new(gitdir).is_absolute() {
-            PathBuf::from(gitdir)
-        } else {
-            abs.join(gitdir)
-        };
-        let canonical_gitdir = gitdir_path.canonicalize()?;
-        let main_git_dir = canonical_gitdir
-            .parent()
-            .and_then(|p| p.parent())
-            .ok_or_else(|| Error::validation("Unable to resolve main git directory".to_string()))?;
-        return main_git_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .ok_or_else(|| Error::validation("Unable to resolve repository root".to_string()));
+        if git_path.is_file() {
+            let git_file = fs::read_to_string(&git_path)?;
+            let gitdir = git_file
+                .strip_prefix("gitdir:")
+                .map(|s| s.trim())
+                .ok_or_else(|| Error::validation("Invalid .git file format".to_string()))?;
+
+            let gitdir_path = if Path::new(gitdir).is_absolute() {
+                PathBuf::from(gitdir)
+            } else {
+                dir.join(gitdir)
+            };
+            let canonical_gitdir = gitdir_path.canonicalize()?;
+            let repo_root = canonical_gitdir
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .ok_or_else(|| {
+                    Error::validation("Unable to resolve repository root".to_string())
+                })?;
+            return Ok(repo_root.to_path_buf());
+        }
+
+        cursor = dir.parent().map(|p| p.to_path_buf());
     }
 
     Err(Error::validation(format!(
         "Not a git repository: {}",
-        abs.display()
+        path.display()
     )))
 }
 
@@ -1455,6 +1534,7 @@ mod tests {
                 delete_branch: true,
                 force_remove: true,
                 complete_spec: false,
+                telemetry: false,
             })
             .unwrap();
         assert!(teardown_summary.adapter_cleanup_warnings.is_empty());
@@ -1486,6 +1566,7 @@ mod tests {
                 delete_branch: true,
                 force_remove: true,
                 complete_spec: false,
+                telemetry: false,
             })
             .unwrap();
 
@@ -1550,6 +1631,7 @@ mod tests {
                 delete_branch: true,
                 force_remove: true,
                 complete_spec: false,
+                telemetry: false,
             })
             .unwrap();
 
@@ -1567,6 +1649,7 @@ mod tests {
                 delete_branch: true,
                 force_remove: true,
                 complete_spec: false,
+                telemetry: false,
             })
             .unwrap();
     }
@@ -1597,6 +1680,7 @@ mod tests {
                 delete_branch: true,
                 force_remove: true,
                 complete_spec: true,
+                telemetry: false,
             })
             .unwrap();
 
@@ -1624,6 +1708,12 @@ mod tests {
         )
         .unwrap();
 
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "feature/reuse-env"])
+            .status()
+            .unwrap();
+
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
         let summary = workflow
             .start(StartRequest {
@@ -1641,5 +1731,101 @@ mod tests {
         let env_content = fs::read_to_string(summary.worktree_path.join(".env")).unwrap();
         assert!(env_content.contains("WORK_FEATURE=reuse-env"));
         assert!(!env_content.contains("OLD_VALUE"));
+    }
+
+    #[test]
+    fn feature_start_reuse_requires_existing_branch() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let err = workflow
+            .start(StartRequest {
+                name: Some("missing-branch".to_string()),
+                reuse_existing: true,
+                ..StartRequest::default()
+            })
+            .unwrap_err();
+
+        assert!(format!("{}", err).contains("feature/missing-branch"));
+    }
+
+    #[test]
+    fn feature_start_reuse_bootstraps_branch_from_remote() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let remote = TempDir::new().unwrap();
+        Command::new("git")
+            .current_dir(remote.path())
+            .args(["init", "--bare"])
+            .status()
+            .unwrap();
+
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["remote", "add", "origin", remote.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["push", "origin", "main"])
+            .status()
+            .unwrap();
+
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["checkout", "-b", "feature/remote"])
+            .status()
+            .unwrap();
+        fs::write(repo_path.join("REMOTE.md"), "remote branch").unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["add", "REMOTE.md"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["commit", "-m", "Remote branch state"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["push", "origin", "feature/remote"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["checkout", "main"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "-D", "feature/remote"])
+            .status()
+            .unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("remote".to_string()),
+                reuse_existing: true,
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let branches = Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "--list", "feature/remote"])
+            .output()
+            .unwrap();
+        assert!(!branches.stdout.is_empty());
+        assert_eq!(summary.branch_name, "feature/remote");
     }
 }

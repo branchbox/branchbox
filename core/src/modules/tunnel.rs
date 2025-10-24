@@ -9,6 +9,8 @@
 use super::Module;
 use crate::{
     cloudflare::{CloudflareClient, TunnelProvision, TunnelSummary},
+    naming,
+    validation::AppUrl,
     Error, Result,
 };
 use std::fs;
@@ -27,6 +29,18 @@ pub struct TunnelModule {
 }
 
 impl TunnelModule {
+    fn emit(&self, stage: &str, message: &str) {
+        if Self::telemetry_enabled() {
+            tracing::info!(
+                target: "branchbox::telemetry::cloudflare",
+                stage = stage,
+                tunnel = %self.tunnel_name,
+                feature_url = %self.feature_url,
+                message = message
+            );
+        }
+    }
+
     /// Create a new Tunnel module
     pub fn new() -> Self {
         Self {
@@ -99,7 +113,7 @@ impl TunnelModule {
                 .lines()
                 .find(|line| line.starts_with("TUNNEL_TOKEN="))
                 .and_then(|line| line.split('=').nth(1))
-                .map(|value| value.trim().trim_matches(&['"', '\'']).to_string())
+                .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
         })
     }
 
@@ -113,6 +127,7 @@ impl TunnelModule {
         tracing::info!("   - Service: {}", self.service_url);
         tracing::info!("5. Copy the tunnel token and add to .cloudflared.env");
         tracing::info!("   (or export CLOUDFLARE_TUNNEL_TOKEN for non-interactive usage)");
+        self.emit("manual", "Displayed manual setup instructions");
     }
 
     fn build_client(&self) -> Result<CloudflareClient> {
@@ -142,9 +157,8 @@ impl TunnelModule {
 
     fn infer_base_domain(&self, hostname: &str) -> String {
         hostname
-            .splitn(2, '.')
-            .nth(1)
-            .map(|rest| rest.to_string())
+            .split_once('.')
+            .map(|(_, rest)| rest.to_string())
             .unwrap_or_else(|| self.base_domain.clone())
     }
 
@@ -168,8 +182,12 @@ impl TunnelModule {
                 .lines()
                 .find(|line| line.starts_with(key))
                 .and_then(|line| line.split('=').nth(1))
-                .map(|value| value.trim().trim_matches(&['"', '\'']).to_string())
+                .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
         })
+    }
+
+    fn telemetry_enabled() -> bool {
+        std::env::var("BRANCHBOX_EMIT_TELEMETRY").is_ok()
     }
 }
 
@@ -189,11 +207,17 @@ impl Module for TunnelModule {
         let has_credentials = std::env::var("CLOUDFLARE_API_KEY").is_ok()
             && std::env::var("CLOUDFLARE_ACCOUNT_ID").is_ok();
 
+        if !has_credentials {
+            tracing::debug!(
+                "Cloudflare credentials not detected; tunnel module ready for manual setup"
+            );
+        }
+
         // Module can be enabled even without credentials for manual setup
-        has_credentials || true
+        true
     }
 
-    fn init(&mut self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
+    fn init(&mut self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
         // Read Cloudflare credentials from environment
         self.cloudflare_api_key = std::env::var("CLOUDFLARE_API_KEY").ok();
         self.cloudflare_account_id = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
@@ -204,11 +228,28 @@ impl Module for TunnelModule {
             .ok_or_else(|| Error::validation("Invalid feature directory name".to_string()))?;
 
         // Generate tunnel name and feature URL
-        let base_prefix = std::env::var("BASE_PREFIX").unwrap_or_else(|_| "app".to_string());
-        self.base_domain = std::env::var("BASE_DOMAIN").unwrap_or_else(|_| "localhost".to_string());
-
-        self.tunnel_name = format!("{}-{}", base_prefix, work_feature);
-        self.feature_url = format!("{}-{}.{}", base_prefix, work_feature, self.base_domain);
+        match AppUrl::from_env_file(&main_dir.join(".env")) {
+            Ok(app_url) => {
+                self.base_domain = app_url.base_domain.clone();
+                self.tunnel_name = naming::generate_tunnel_name(&app_url.base_prefix, work_feature);
+                self.feature_url = naming::generate_feature_url(&app_url.url, work_feature);
+                self.emit("init", "Derived hostname from APP_URL");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Falling back to localhost tunnel hostname (APP_URL parse failed: {})",
+                    err
+                );
+                self.emit("init", "Falling back to default tunnel hostname");
+                let fallback_prefix =
+                    std::env::var("BASE_PREFIX").unwrap_or_else(|_| "app".to_string());
+                self.base_domain =
+                    std::env::var("BASE_DOMAIN").unwrap_or_else(|_| "localhost".to_string());
+                self.tunnel_name = naming::generate_tunnel_name(&fallback_prefix, work_feature);
+                self.feature_url =
+                    format!("{}-{}.{}", fallback_prefix, work_feature, self.base_domain);
+            }
+        }
 
         // Get service URL from environment or use default
         self.service_url =
@@ -236,28 +277,33 @@ impl Module for TunnelModule {
                                 "Tunnel '{}' already exists in Cloudflare; token cannot be retrieved via API",
                                 existing.name
                             );
+                        self.emit("detect", "Existing tunnel detected");
                         if let Err(err) = self.ensure_dns(&client, &existing) {
                             tracing::warn!(
                                 "Failed to ensure DNS for existing tunnel '{}': {}",
                                 existing.name,
                                 err
                             );
+                            self.emit("dns", "DNS ensure failed for existing tunnel");
                         }
                         if tunnel_token.is_none() {
                             tracing::info!(
                                     "Provide the existing tunnel token via CLOUDFLARE_TUNNEL_TOKEN or update .cloudflared.env manually."
                                 );
+                            self.emit("token", "Existing tunnel lacks token");
                         }
                     }
                     Ok(None) => match client.create_tunnel(&self.tunnel_name) {
                         Ok(provision) => {
                             tracing::info!("Provisioned Cloudflare tunnel '{}'", provision.name);
+                            self.emit("provision", "Tunnel provisioned via API");
                             if let Err(err) = client.configure_tunnel(
                                 &provision.id,
                                 &self.feature_url,
                                 &self.service_url,
                             ) {
                                 tracing::warn!("Failed to configure tunnel ingress: {}", err);
+                                self.emit("configure", "Ingress configuration failed");
                             }
 
                             if let Err(err) = self.ensure_dns_with_provision(&client, &provision) {
@@ -266,6 +312,7 @@ impl Module for TunnelModule {
                                     self.feature_url,
                                     err
                                 );
+                                self.emit("dns", "DNS configuration failed");
                             }
 
                             tunnel_token = Some(provision.token);
@@ -275,33 +322,39 @@ impl Module for TunnelModule {
                                 "Failed to provision tunnel via Cloudflare API: {}",
                                 err
                             );
+                            self.emit("provision", "Provisioning failed");
                             self.manual_setup_instructions();
                         }
                     },
                     Err(err) => {
                         tracing::warn!("Failed to query Cloudflare tunnels: {}", err);
+                        self.emit("detect", "Failed to query Cloudflare API");
                         self.manual_setup_instructions();
                     }
                 },
                 Err(err) => {
                     tracing::warn!("Failed to initialize Cloudflare client: {}", err);
+                    self.emit("client", "Client initialization failed");
                     self.manual_setup_instructions();
                 }
             }
         } else {
             tracing::info!("No Cloudflare API credentials detected.");
             self.manual_setup_instructions();
+            self.emit("init", "API credentials missing");
         }
 
         if let Some(token) = tunnel_token {
             self.write_tunnel_config(feature_dir, &token, &self.feature_url)?;
             tracing::info!("Tunnel configuration saved");
+            self.emit("config", "Configuration saved");
         } else {
             tracing::warn!("No tunnel token - you can add it later");
             tracing::info!(
                 "Edit: {}/.devcontainer/.cloudflared.env",
                 feature_dir.display()
             );
+            self.emit("config", "Token missing");
         }
 
         Ok(())

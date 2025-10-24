@@ -43,6 +43,10 @@ pub struct FeatureStartArgs {
     /// Allow reusing an existing worktree directory
     #[arg(long)]
     pub reuse: bool,
+
+    /// Emit verbose telemetry (e.g. Cloudflare operations)
+    #[arg(long)]
+    pub telemetry: bool,
 }
 
 #[derive(Args)]
@@ -70,6 +74,10 @@ pub struct FeatureTeardownArgs {
     /// Move spec to completed during teardown
     #[arg(long)]
     pub complete_spec: bool,
+
+    /// Emit verbose telemetry (e.g. Cloudflare operations)
+    #[arg(long)]
+    pub telemetry: bool,
 }
 
 #[derive(Args)]
@@ -99,17 +107,20 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         branch_prefix,
         repo,
         reuse,
+        telemetry,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
-    let mut request = StartRequest::default();
-    request.name = name;
-    request.title = title;
-    request.base_branch = base;
-    request.branch_prefix = branch_prefix;
-    request.reuse_existing = reuse;
+    let request = StartRequest {
+        name,
+        title,
+        base_branch: base,
+        branch_prefix,
+        reuse_existing: reuse,
+        telemetry,
+    };
 
     let summary = workflow.start(request)?;
     print_start_summary(&summary);
@@ -166,6 +177,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         delete_branch,
         force,
         complete_spec,
+        telemetry,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
@@ -177,6 +189,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         delete_branch,
         force_remove: force,
         complete_spec,
+        telemetry,
     };
 
     let summary = workflow.teardown(request)?;

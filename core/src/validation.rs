@@ -317,7 +317,7 @@ mod tests {
         writeln!(temp_file, "APP_URL=rida-mbp-agentify.rida.me").unwrap();
         writeln!(temp_file, "DATABASE_URL=\"postgres://localhost/db\"").unwrap();
         writeln!(temp_file, "# Comment line").unwrap();
-        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file).unwrap();
         writeln!(temp_file, "REDIS_URL='redis://localhost'").unwrap();
         temp_file.flush().unwrap();
 
