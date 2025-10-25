@@ -379,6 +379,18 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_host_environment_in_docker() {
+        std::env::set_var("DOCKER_CONTAINER", "1");
+        let result = validate_host_environment();
+        std::env::remove_var("DOCKER_CONTAINER");
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Docker container"));
+        assert!(err_msg.contains("host machine"));
+    }
+
+    #[test]
     fn test_validate_git_worktree_no_git() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();

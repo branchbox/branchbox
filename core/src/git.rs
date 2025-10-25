@@ -615,4 +615,269 @@ detached
         assert_eq!(worktrees[2].path, PathBuf::from("/path/to/detached"));
         assert!(worktrees[2].is_detached);
     }
+
+    #[test]
+    fn test_parse_worktree_list_bare() {
+        let output = r#"worktree /path/to/bare-repo
+bare
+"#;
+
+        let worktrees = parse_worktree_list(output).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert!(worktrees[0].is_bare);
+    }
+
+    #[test]
+    fn test_parse_worktree_list_empty() {
+        let worktrees = parse_worktree_list("").unwrap();
+        assert_eq!(worktrees.len(), 0);
+    }
+
+    #[test]
+    fn test_prune_worktrees() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        // Prune should succeed even if there are no stale worktrees
+        let result = git.prune();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_worktree_without_base_branch() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        let worktree_path = temp_dir.path().join("feature-worktree");
+        git.create(&worktree_path, "feature/test", None).unwrap();
+
+        // Verify worktree was created
+        assert!(worktree_path.exists());
+        assert!(worktree_path.join(".git").exists());
+    }
+
+    #[test]
+    fn test_remove_worktree_with_force() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        let worktree_path = temp_dir.path().join("feature-worktree");
+        git.create(&worktree_path, "feature/test", Some("main"))
+            .unwrap();
+
+        // Make uncommitted changes
+        fs::write(worktree_path.join("uncommitted.txt"), "changes").unwrap();
+
+        // Force remove should succeed even with uncommitted changes
+        git.remove(&worktree_path, true).unwrap();
+
+        assert!(!worktree_path.exists());
+    }
+
+    #[test]
+    fn test_delete_branch_with_force() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        // Create and commit to a new branch
+        let worktree_path = temp_dir.path().join("feature-worktree");
+        git.create(&worktree_path, "feature/test", Some("main"))
+            .unwrap();
+
+        fs::write(worktree_path.join("test.txt"), "test").unwrap();
+        Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["add", "test.txt"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["commit", "-m", "test commit"])
+            .output()
+            .unwrap();
+
+        // Remove worktree first
+        git.remove(&worktree_path, true).unwrap();
+
+        // Force delete the unmerged branch
+        git.delete_branch("feature/test", true).unwrap();
+
+        assert!(!git.branch_exists("feature/test").unwrap());
+    }
+
+    #[test]
+    fn test_attach_existing_branch_path_exists() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        // Create a branch
+        Command::new("git")
+            .current_dir(temp_dir.path())
+            .args(["branch", "test-branch"])
+            .output()
+            .unwrap();
+
+        // Create the worktree path first
+        let worktree_path = temp_dir.path().join("existing-path");
+        fs::create_dir(&worktree_path).unwrap();
+
+        // Attach should fail because path exists
+        let result = git.attach_existing_branch(&worktree_path, "test-branch");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_remotes_no_remotes() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        // Fresh repo has no remotes
+        let remotes = git.list_remotes().unwrap();
+        assert_eq!(remotes.len(), 0);
+    }
+
+    #[test]
+    fn test_list_remotes_with_remotes() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        // Add a remote
+        Command::new("git")
+            .current_dir(temp_dir.path())
+            .args(["remote", "add", "origin", "https://github.com/test/repo.git"])
+            .output()
+            .unwrap();
+
+        let remotes = git.list_remotes().unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0], "origin");
+    }
+
+    #[test]
+    fn test_remote_branch_exists_no_remote() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+
+        // Query non-existent remote should return false
+        let exists = git.remote_branch_exists("origin", "main").unwrap();
+        assert!(!exists);
+    }
+
+    #[test]
+    fn test_remote_branch_exists_with_remote() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create a second repo to act as remote
+        let remote_temp = TempDir::new().unwrap();
+        let remote_path = remote_temp.path();
+
+        Command::new("git")
+            .args(["init", "-b", "main", "--bare"])
+            .current_dir(remote_path)
+            .output()
+            .unwrap();
+
+        // Add remote and push
+        Command::new("git")
+            .current_dir(repo_path)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                remote_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["push", "origin", "main"])
+            .output()
+            .unwrap();
+
+        let git = GitWorktree::new(repo_path).unwrap();
+
+        // main should exist on origin
+        let exists = git.remote_branch_exists("origin", "main").unwrap();
+        assert!(exists);
+
+        // non-existent branch should not exist
+        let exists = git
+            .remote_branch_exists("origin", "nonexistent")
+            .unwrap();
+        assert!(!exists);
+    }
+
+    #[test]
+    fn test_create_branch_from_remote() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create a second repo to act as remote
+        let remote_temp = TempDir::new().unwrap();
+        let remote_path = remote_temp.path();
+
+        Command::new("git")
+            .args(["init", "-b", "main", "--bare"])
+            .current_dir(remote_path)
+            .output()
+            .unwrap();
+
+        // Add remote and push main
+        Command::new("git")
+            .current_dir(repo_path)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                remote_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["push", "origin", "main"])
+            .output()
+            .unwrap();
+
+        // Create a feature branch locally, push it, then delete it locally
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "feature-branch"])
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["push", "origin", "feature-branch"])
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "-d", "feature-branch"])
+            .output()
+            .unwrap();
+
+        // Fetch to get remote tracking branch
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["fetch", "origin"])
+            .output()
+            .unwrap();
+
+        let git = GitWorktree::new(repo_path).unwrap();
+
+        // Verify branch doesn't exist locally
+        assert!(!git.branch_exists("feature-branch").unwrap());
+
+        // Create local branch from remote
+        git.create_branch_from_remote("feature-branch", "origin")
+            .unwrap();
+
+        // Branch should now exist locally
+        assert!(git.branch_exists("feature-branch").unwrap());
+    }
 }
