@@ -449,6 +449,41 @@ impl FeatureWorkflow {
         Ok(parent.join(work_feature))
     }
 
+    fn resolve_app_slug(&self, env_path: &Path) -> Result<String> {
+        if let Ok(vars) = validation::parse_env_file(env_path) {
+            if let Some(raw) = vars
+                .get("APP_NAME")
+                .or_else(|| vars.get("APP_SLUG"))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let slug = naming::generate_work_feature(raw);
+                if !slug.is_empty() {
+                    return Ok(slug);
+                }
+            }
+        }
+
+        let parent = self.repo_root.parent().ok_or_else(|| {
+            Error::validation("Repository root has no parent directory".to_string())
+        })?;
+
+        let app_name = parent
+            .file_name()
+            .ok_or_else(|| Error::validation("Repository parent has no name".to_string()))?
+            .to_string_lossy()
+            .to_string();
+
+        let slug = naming::generate_work_feature(&app_name);
+        if slug.is_empty() {
+            return Err(Error::validation(
+                "Unable to derive application name for compose project".to_string(),
+            ));
+        }
+
+        Ok(slug)
+    }
+
     fn prepare_env(
         &self,
         worktree_path: &Path,
@@ -490,10 +525,12 @@ impl FeatureWorkflow {
         let mut feature_url = None;
         let mut compose_project_name = None;
 
+        let app_slug = self.resolve_app_slug(&source_env)?;
+
         match AppUrl::from_env_file(&source_env) {
             Ok(app_url) => {
                 let url = naming::generate_feature_url(&app_url.url, work_feature);
-                let compose_name = format!("{}-{}", app_url.base_prefix, work_feature);
+                let compose_name = format!("{}-{}", app_slug, work_feature);
                 let mut file = OpenOptions::new().append(true).open(&dest_env)?;
                 ensure_trailing_newline(&mut file)?;
                 writeln!(
