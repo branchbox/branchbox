@@ -1076,7 +1076,14 @@ impl FeatureWorkflow {
         let settings_path = vscode_dir.join("settings.json");
         let mut settings = if settings_path.exists() {
             let content = fs::read_to_string(&settings_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+            serde_json::from_str(&content).unwrap_or_else(|e| {
+                tracing::debug!(
+                    "Failed to parse existing settings.json at {}: {}. Using empty object.",
+                    settings_path.display(),
+                    e
+                );
+                serde_json::json!({})
+            })
         } else {
             serde_json::json!({})
         };
@@ -1184,19 +1191,27 @@ impl FeatureWorkflow {
             "main".to_string()
         };
 
-        // Construct relative path: ../MAIN_NAME/.git/worktrees/WORKTREE_NAME
-        let relative_path = format!("..{}/.git/worktrees/{}",
-            if main_name.is_empty() { String::new() } else { format!("/{}", main_name) },
-            worktree_name
-        );
+        // Construct relative path using PathBuf for safer path manipulation
+        // Path: ../MAIN_NAME/.git/worktrees/WORKTREE_NAME
+        let mut relative_path = PathBuf::from("..");
+        relative_path.push(&main_name);
+        relative_path.push(".git");
+        relative_path.push("worktrees");
+        relative_path.push(worktree_name);
+
+        // Convert to string for gitdir format (git expects forward slashes)
+        let relative_path_str = relative_path
+            .to_str()
+            .ok_or_else(|| Error::validation("Invalid UTF-8 in worktree path".to_string()))?
+            .replace('\\', "/"); // Ensure forward slashes on Windows
 
         // Write the fixed path
-        let new_content = format!("gitdir: {}\n", relative_path);
+        let new_content = format!("gitdir: {}\n", relative_path_str);
         fs::write(&git_file, new_content)?;
 
         tracing::info!(
             "Fixed git worktree path from absolute to relative: {}",
-            relative_path
+            relative_path_str
         );
 
         Ok(())
@@ -1458,13 +1473,23 @@ pub struct FeatureMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub removed_at: Option<DateTime<Utc>>,
-    /// Workspace color for visual differentiation (hex color code)
+    /// Workspace color for visual differentiation.
+    ///
+    /// Hex color code (e.g., "#3498db") generated deterministically from the feature name.
+    /// Used by Peacock extension and VS Code to visually distinguish workspaces.
+    /// Limited to 12 colors from a predefined palette, so features may share colors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// GitHub pull request number if one exists
+    /// GitHub pull request number if one exists for this feature.
+    ///
+    /// Can be populated via `gh` CLI integration when a PR is created for this branch.
+    /// Useful for tracking feature status and linking worktrees to PRs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_number: Option<u32>,
-    /// Last commit SHA on this branch
+    /// Last commit SHA on this branch.
+    ///
+    /// Captured at worktree creation time using `git rev-parse <branch>`.
+    /// Useful for tracking branch state and detecting stale worktrees.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
 }
@@ -1576,9 +1601,36 @@ impl FeatureStateStore {
 const STATE_VERSION: u32 = 1;
 
 /// Generate a deterministic color from a feature name for visual differentiation.
-/// Returns a hex color code (e.g., "#3498db").
+///
+/// Uses a hash of the feature name to select from a predefined palette of 12 distinguishable
+/// colors. The same feature name will always generate the same color, making it easy to
+/// identify workspaces visually in VS Code with the Peacock extension.
+///
+/// # Color Collisions
+///
+/// With only 12 colors available, projects with more than 12 concurrent features will
+/// experience color collisions (multiple features sharing the same color). This is acceptable
+/// for most workflows as it's unlikely to have >12 feature branches active simultaneously.
+///
+/// # Returns
+///
+/// A hex color code string in the format `#RRGGBB` (e.g., "#3498db").
+///
+/// # Examples
+///
+/// ```ignore
+/// // Internal function - not exposed in public API
+/// let color = generate_feature_color("oauth-integration");
+/// assert_eq!(color.len(), 7); // #RRGGBB format
+/// assert!(color.starts_with('#'));
+///
+/// // Same name always produces same color
+/// let color2 = generate_feature_color("oauth-integration");
+/// assert_eq!(color, color2);
+/// ```
 fn generate_feature_color(work_feature: &str) -> String {
-    // Predefined palette of distinguishable colors
+    // Predefined palette of 12 distinguishable colors
+    // Selected for good visual contrast and accessibility
     let palette = [
         "#3498db", // blue
         "#e74c3c", // red
@@ -2053,5 +2105,135 @@ mod tests {
             .unwrap();
         assert!(!branches.stdout.is_empty());
         assert_eq!(summary.branch_name, "feature/remote");
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_converts_absolute() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create a mock worktree directory
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        // Write a .git file with absolute path
+        let git_file = worktree_path.join(".git");
+        fs::write(
+            &git_file,
+            format!("gitdir: {}/main/.git/worktrees/feature-test\n", repo_path.display())
+        ).unwrap();
+
+        // Create the workflow and fix the path
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow.fix_git_worktree_path(&worktree_path).unwrap();
+
+        // Verify the path was converted to relative
+        let content = fs::read_to_string(&git_file).unwrap();
+        assert!(content.starts_with("gitdir: ../main/.git/worktrees/feature-test"));
+        assert!(!content.contains(repo_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_skips_relative() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        // Write a .git file with already-relative path
+        let git_file = worktree_path.join(".git");
+        let original_content = "gitdir: ../main/.git/worktrees/feature-test\n";
+        fs::write(&git_file, original_content).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow.fix_git_worktree_path(&worktree_path).unwrap();
+
+        // Verify the path was not changed
+        let content = fs::read_to_string(&git_file).unwrap();
+        assert_eq!(content, original_content);
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_handles_missing_git_file() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+        // Don't create .git file
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        let result = workflow.fix_git_worktree_path(&worktree_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No .git file found"));
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_handles_invalid_gitdir() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        // Write an invalid .git file (no gitdir: line)
+        let git_file = worktree_path.join(".git");
+        fs::write(&git_file, "invalid content\n").unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        let result = workflow.fix_git_worktree_path(&worktree_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No gitdir: line found"));
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_non_standard_main_name() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create a worktree with a non-standard main repo name
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        // Simulate a main repo named "trunk" instead of "main"
+        let git_file = worktree_path.join(".git");
+        fs::write(
+            &git_file,
+            format!("gitdir: {}/trunk/.git/worktrees/feature-test\n", repo_path.display())
+        ).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow.fix_git_worktree_path(&worktree_path).unwrap();
+
+        // Verify it extracted "trunk" from the path
+        let content = fs::read_to_string(&git_file).unwrap();
+        assert!(content.starts_with("gitdir: ../trunk/.git/worktrees/feature-test"));
+    }
+
+    #[test]
+    fn test_generate_feature_color_deterministic() {
+        // Same feature name should always generate same color
+        let color1 = generate_feature_color("oauth-integration");
+        let color2 = generate_feature_color("oauth-integration");
+        assert_eq!(color1, color2);
+    }
+
+    #[test]
+    fn test_generate_feature_color_different_names() {
+        // Different names should (likely) generate different colors
+        let color1 = generate_feature_color("oauth-integration");
+        let color2 = generate_feature_color("payment-system");
+        // Not guaranteed to be different with only 12 colors, but likely
+        // This test mainly ensures the function works
+        assert!(color1.starts_with('#'));
+        assert!(color2.starts_with('#'));
+        assert_eq!(color1.len(), 7); // #RRGGBB format
+        assert_eq!(color2.len(), 7);
     }
 }
