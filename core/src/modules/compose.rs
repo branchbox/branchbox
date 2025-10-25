@@ -336,4 +336,47 @@ mod tests {
         assert!(!module.compose_project_name.is_empty());
         assert_eq!(module.compose_file_name, "compose.yaml");
     }
+
+    #[test]
+    fn test_init_docker_compose_yml() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::create_dir_all(main_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            main_dir.path().join(".devcontainer/docker-compose.yml"),
+            "version: '3'",
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        assert!(module.enabled);
+        assert_eq!(module.compose_file_name, "docker-compose.yml");
+    }
+
+    #[test]
+    fn test_name() {
+        let module = ComposeModule::new();
+        assert_eq!(module.name(), "compose");
+    }
+
+    #[test]
+    fn test_default() {
+        let module = ComposeModule::default();
+        assert_eq!(module.name(), "compose");
+        assert!(!module.enabled);
+    }
+
+    #[test]
+    fn test_validate_no_compose_file() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let module = ComposeModule::new();
+        // Should not error when no compose file
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+    }
 }

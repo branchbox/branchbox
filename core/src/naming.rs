@@ -230,6 +230,12 @@ mod tests {
             generate_feature_url("dev.example.com", "test-feature"),
             "dev-test-feature.example.com"
         );
+
+        // Test fallback path (no domain)
+        assert_eq!(
+            generate_feature_url("localhost", "test-feature"),
+            "localhost-test-feature"
+        );
     }
 
     #[test]

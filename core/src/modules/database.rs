@@ -388,4 +388,153 @@ mod tests {
             "echo 'No default setup command'"
         );
     }
+
+    #[test]
+    fn test_name() {
+        let module = DatabaseModule::new();
+        assert_eq!(module.name(), "database");
+    }
+
+    #[test]
+    fn test_default() {
+        let module = DatabaseModule::default();
+        assert_eq!(module.name(), "database");
+        assert!(!module.enabled);
+    }
+
+    #[test]
+    fn test_detect_prisma() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("prisma")).unwrap();
+        std::fs::write(
+            temp_dir.path().join("prisma/schema.prisma"),
+            "datasource db {}",
+        )
+        .unwrap();
+
+        let module = DatabaseModule::new();
+        assert!(module.detect(temp_dir.path()));
+    }
+
+    #[test]
+    fn test_detect_knexfile() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join("knexfile.js"),
+            "module.exports = {}",
+        )
+        .unwrap();
+
+        let module = DatabaseModule::new();
+        assert!(module.detect(temp_dir.path()));
+    }
+
+    #[test]
+    fn test_detect_no_database() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let module = DatabaseModule::new();
+        assert!(!module.detect(temp_dir.path()));
+    }
+
+    #[test]
+    fn test_detect_engine_mysql() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/compose.yaml"),
+            "services:\n  mysql:\n    image: mysql:8",
+        )
+        .unwrap();
+
+        let module = DatabaseModule::new();
+        let engine = module.detect_engine(temp_dir.path());
+        assert_eq!(engine, DatabaseEngine::MySQL);
+    }
+
+    #[test]
+    fn test_detect_engine_mongodb() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/compose.yaml"),
+            "services:\n  mongodb:\n    image: mongo:5",
+        )
+        .unwrap();
+
+        let module = DatabaseModule::new();
+        let engine = module.detect_engine(temp_dir.path());
+        assert_eq!(engine, DatabaseEngine::MongoDB);
+    }
+
+    #[test]
+    fn test_detect_engine_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let module = DatabaseModule::new();
+        let engine = module.detect_engine(temp_dir.path());
+        assert_eq!(engine, DatabaseEngine::Unknown);
+    }
+
+    #[test]
+    fn test_database_engine_display() {
+        assert_eq!(DatabaseEngine::Postgres.to_string(), "postgres");
+        assert_eq!(DatabaseEngine::MySQL.to_string(), "mysql");
+        assert_eq!(DatabaseEngine::MongoDB.to_string(), "mongodb");
+        assert_eq!(DatabaseEngine::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn test_setup_creates_env() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(feature_dir.join(".env"), "EXISTING=value\n").unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+        module.setup(main_dir.path(), &feature_dir).unwrap();
+
+        let env_content = std::fs::read_to_string(feature_dir.join(".env")).unwrap();
+        assert!(env_content.contains("DATABASE_NAME="));
+    }
+
+    #[test]
+    fn test_setup_no_env_file() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Should not error if .env doesn't exist
+        module.setup(main_dir.path(), &feature_dir).unwrap();
+    }
+
+    #[test]
+    fn test_validate_no_env() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let module = DatabaseModule::new();
+        // Should not error when no .env file
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+    }
+
+    #[test]
+    fn test_validate_with_database_url() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            feature_dir.join(".env"),
+            "DATABASE_URL=postgres://localhost/test",
+        )
+        .unwrap();
+
+        let module = DatabaseModule::new();
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+    }
 }
