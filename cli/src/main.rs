@@ -3,8 +3,9 @@ mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use commands::feature::{self, FeatureCommands};
+use commands::init::{self, InitArgs};
 use std::path::PathBuf;
-use worktree_core::bootstrap::{Bootstrap, Stack};
+use worktree_core::bootstrap::Bootstrap;
 
 #[derive(Parser)]
 #[command(name = "branchbox")]
@@ -17,17 +18,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize project with devcontainer (alias: bootstrap)
+    /// Initialize project with devcontainer and BranchBox registry
     #[command(alias = "bootstrap")]
-    Init {
-        /// Project directory (defaults to current directory)
-        #[arg(short, long)]
-        path: Option<PathBuf>,
-
-        /// Force specific stack (rails, nodejs, rust, generic)
-        #[arg(short, long)]
-        stack: Option<String>,
-    },
+    Init(InitArgs),
 
     /// Detect project configuration
     Detect {
@@ -72,36 +65,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { path, stack } => {
-            let project_path = path.unwrap_or_else(|| PathBuf::from("."));
-            let bootstrap = Bootstrap::new(&project_path);
-
-            let stack = if let Some(stack_str) = stack {
-                match stack_str.to_lowercase().as_str() {
-                    "rails" => Stack::Rails,
-                    "nodejs" => Stack::NodeJs,
-                    "rust" => Stack::Rust,
-                    "generic" => Stack::Generic,
-                    _ => {
-                        eprintln!("Unknown stack: {}", stack_str);
-                        eprintln!("Valid stacks: rails, nodejs, rust, generic");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                bootstrap.detect_stack()?
-            };
-
-            println!("📦 BranchBox - Detected stack: {:?}", stack);
-            println!("🔧 Generating devcontainer files...");
-
-            bootstrap.generate(stack)?;
-
-            println!("✓ Project initialized!");
-            println!("  - .devcontainer/devcontainer.json");
-            println!("  - .devcontainer/compose.yaml");
-            println!("  - .devcontainer/Dockerfile");
-            println!("  - .env.sample (if not exists)");
+        Commands::Init(args) => {
+            init::execute(args)?;
         }
 
         Commands::Detect { path } => {
