@@ -9,8 +9,10 @@ use crate::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,6 +35,8 @@ pub struct StartRequest {
     pub branch_prefix: Option<String>,
     pub reuse_existing: bool,
     pub telemetry: bool,
+    /// List of module names to skip during setup (e.g., "tunnel", "database")
+    pub skip_modules: Vec<String>,
 }
 
 /// Result of running feature start workflow.
@@ -47,6 +51,7 @@ pub struct StartSummary {
     pub adapter: Option<AdapterSummary>,
     pub module_reports: Vec<ModuleSetupReport>,
     pub warnings: Vec<String>,
+    pub color: Option<String>,
 }
 
 /// Module setup execution report.
@@ -196,7 +201,11 @@ impl FeatureWorkflow {
                 .create(&worktree_path, &branch_name, base_branch.as_deref())?;
         }
 
-        self.write_git_fix_script(&worktree_path)?;
+        // Fix git worktree paths to use relative paths for devcontainer compatibility
+        if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
+            tracing::warn!("Failed to fix git worktree path: {}", err);
+            warnings.push(format!("Git worktree path fix failed: {}", err));
+        }
 
         let stash_state = if !request.reuse_existing {
             match self.capture_stash(&work_feature) {
@@ -224,7 +233,7 @@ impl FeatureWorkflow {
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root);
+        } = modules::detect_modules(&self.repo_root, &request.skip_modules);
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings.clone());
         }
@@ -264,6 +273,10 @@ impl FeatureWorkflow {
         let feature_url = env_outcome.feature_url.clone();
         let compose_project_name = env_outcome.compose_project_name.clone();
 
+        let color = Some(generate_feature_color(&work_feature));
+        let summary_color = color.clone();
+        let last_commit = get_last_commit_sha(&self.repo_root, &branch_name);
+
         if let Err(err) = self.state.record_start(FeatureMetadata {
             work_feature: work_feature.clone(),
             branch_name: branch_name.clone(),
@@ -276,9 +289,18 @@ impl FeatureWorkflow {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             removed_at: None,
+            color,
+            pr_number: None, // Can be populated later via gh CLI integration
+            last_commit,
         }) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
+        }
+
+        // Set up VS Code workspace customization for visual differentiation
+        if let Err(err) = self.setup_vscode_workspace(&worktree_path, &work_feature, &summary_color, feature_url.as_deref()) {
+            tracing::warn!("Failed to set up VS Code workspace customization: {}", err);
+            warnings.push(format!("Failed to set up VS Code workspace: {}", err));
         }
 
         Ok(StartSummary {
@@ -291,6 +313,7 @@ impl FeatureWorkflow {
             adapter: adapter_summary,
             module_reports,
             warnings,
+            color: summary_color,
         })
     }
 
@@ -326,7 +349,7 @@ impl FeatureWorkflow {
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root);
+        } = modules::detect_modules(&self.repo_root, &[]);  // No skip during teardown
         let (module_reports, module_warnings) = self.run_module_teardown(handles, &worktree_path);
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings);
@@ -745,23 +768,6 @@ impl FeatureWorkflow {
         Ok(())
     }
 
-    fn write_git_fix_script(&self, worktree_path: &Path) -> Result<()> {
-        let dev_dir = worktree_path.join(".devcontainer");
-        fs::create_dir_all(&dev_dir)?;
-        let script_path = dev_dir.join("fix-git-worktree.sh");
-        fs::write(&script_path, FIX_GIT_SCRIPT)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms)?;
-        }
-
-        Ok(())
-    }
-
     fn run_module_setup(
         &self,
         handles: Vec<ModuleHandle>,
@@ -1054,6 +1060,147 @@ impl FeatureWorkflow {
 
         validation::validate_host_environment()
     }
+
+    /// Set up VS Code workspace customization for visual differentiation.
+    fn setup_vscode_workspace(
+        &self,
+        worktree_path: &Path,
+        work_feature: &str,
+        color: &Option<String>,
+        feature_url: Option<&str>,
+    ) -> Result<()> {
+        let vscode_dir = worktree_path.join(".vscode");
+        fs::create_dir_all(&vscode_dir)?;
+
+        // Set up Peacock extension color and window title
+        let settings_path = vscode_dir.join("settings.json");
+        let mut settings = if settings_path.exists() {
+            let content = fs::read_to_string(&settings_path)?;
+            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        if let Some(color_value) = color {
+            settings["peacock.color"] = serde_json::json!(color_value);
+        }
+
+        // Customize window title to show feature name
+        settings["window.title"] = serde_json::json!(
+            format!("${{rootName}} [{}] - ${{activeEditorShort}}", work_feature)
+        );
+
+        let settings_json = serde_json::to_string_pretty(&settings)
+            .map_err(|e| Error::config(format!("Failed to serialize VS Code settings: {}", e)))?;
+        fs::write(&settings_path, settings_json)?;
+
+        // Set up quick access task for feature URL
+        if let Some(url) = feature_url {
+            let tasks_path = vscode_dir.join("tasks.json");
+            let tasks = serde_json::json!({
+                "version": "2.0.0",
+                "tasks": [
+                    {
+                        "label": "Open Feature URL",
+                        "type": "shell",
+                        "command": format!("echo 'Opening https://{}' && xdg-open 'https://{}' || open 'https://{}'", url, url, url),
+                        "problemMatcher": [],
+                        "presentation": {
+                            "reveal": "silent",
+                            "panel": "shared"
+                        }
+                    }
+                ]
+            });
+
+            let tasks_json = serde_json::to_string_pretty(&tasks)
+                .map_err(|e| Error::config(format!("Failed to serialize VS Code tasks: {}", e)))?;
+            fs::write(&tasks_path, tasks_json)?;
+        }
+
+        Ok(())
+    }
+
+    /// Fix git worktree path to use relative paths for devcontainer compatibility.
+    ///
+    /// When a worktree is created, git stores an absolute path to the main repo's
+    /// .git/worktrees/ directory. This breaks in devcontainers where paths are mounted
+    /// differently. We convert absolute paths to relative paths.
+    fn fix_git_worktree_path(&self, worktree_path: &Path) -> Result<()> {
+        let git_file = worktree_path.join(".git");
+
+        if !git_file.exists() {
+            return Err(Error::validation(format!(
+                "No .git file found in worktree at {}",
+                worktree_path.display()
+            )));
+        }
+
+        // Read the .git file
+        let content = fs::read_to_string(&git_file)?;
+
+        // Parse the gitdir line
+        let gitdir_line = content
+            .lines()
+            .find(|line| line.starts_with("gitdir:"))
+            .ok_or_else(|| Error::validation("No gitdir: line found in .git file".to_string()))?;
+
+        let current_path = gitdir_line
+            .strip_prefix("gitdir:")
+            .unwrap_or("")
+            .trim();
+
+        // If already relative, nothing to do
+        if !current_path.starts_with('/') {
+            tracing::debug!("Git worktree path is already relative: {}", current_path);
+            return Ok(());
+        }
+
+        // Extract the main repo name from the current path
+        // Path format: /path/to/main/.git/worktrees/feature-name
+        let worktree_name = worktree_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error::validation("Cannot determine worktree name".to_string()))?;
+
+        // Try to find the main repo directory
+        let parent_dir = worktree_path
+            .parent()
+            .ok_or_else(|| Error::validation("Worktree has no parent directory".to_string()))?;
+
+        // Determine the main repo name from the absolute path
+        // Path format: /path/to/REPO_NAME/.git/worktrees/WORKTREE_NAME
+        let main_name = if parent_dir.join("main").exists() {
+            "main".to_string()
+        } else if let Some(git_idx) = current_path.find("/.git/worktrees/") {
+            // Extract REPO_NAME from the path
+            let before_git = &current_path[..git_idx];
+            if let Some(last_slash) = before_git.rfind('/') {
+                before_git[last_slash + 1..].to_string()
+            } else {
+                "main".to_string()
+            }
+        } else {
+            "main".to_string()
+        };
+
+        // Construct relative path: ../MAIN_NAME/.git/worktrees/WORKTREE_NAME
+        let relative_path = format!("..{}/.git/worktrees/{}",
+            if main_name.is_empty() { String::new() } else { format!("/{}", main_name) },
+            worktree_name
+        );
+
+        // Write the fixed path
+        let new_content = format!("gitdir: {}\n", relative_path);
+        fs::write(&git_file, new_content)?;
+
+        tracing::info!(
+            "Fixed git worktree path from absolute to relative: {}",
+            relative_path
+        );
+
+        Ok(())
+    }
 }
 
 /// Helper to ensure the file ends with a newline before appending.
@@ -1255,35 +1402,6 @@ impl EnvOutcome {
     }
 }
 
-const FIX_GIT_SCRIPT: &str = r#"#!/bin/bash
-# Fix git worktree path for devcontainer
-# This script is automatically created by branchbox
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKTREE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-WORKTREE_NAME=$(basename "$WORKTREE_DIR")
-GIT_FILE="$WORKTREE_DIR/.git"
-
-if [ -f "$GIT_FILE" ]; then
-  CURRENT_PATH=$(sed 's/gitdir: //' "$GIT_FILE")
-  PARENT_DIR=$(dirname "$WORKTREE_DIR")
-  MAIN_NAME=""
-
-  if [ -d "$PARENT_DIR/main" ]; then
-    MAIN_NAME="main"
-  elif [[ "$CURRENT_PATH" =~ /([^/]+)/.git/worktrees/ ]]; then
-    MAIN_NAME="${BASH_REMATCH[1]}"
-  fi
-
-  MAIN_NAME="${MAIN_NAME:-main}"
-  CORRECT_PATH="../$MAIN_NAME/.git/worktrees/$WORKTREE_NAME"
-  echo "gitdir: $CORRECT_PATH" > "$GIT_FILE"
-  echo "✓ Fixed git worktree path (using relative path)"
-else
-  echo "⚠ No .git file found"
-fi
-"#;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureStatus {
@@ -1340,6 +1458,15 @@ pub struct FeatureMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub removed_at: Option<DateTime<Utc>>,
+    /// Workspace color for visual differentiation (hex color code)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// GitHub pull request number if one exists
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u32>,
+    /// Last commit SHA on this branch
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_commit: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1447,6 +1574,55 @@ impl FeatureStateStore {
 }
 
 const STATE_VERSION: u32 = 1;
+
+/// Generate a deterministic color from a feature name for visual differentiation.
+/// Returns a hex color code (e.g., "#3498db").
+fn generate_feature_color(work_feature: &str) -> String {
+    // Predefined palette of distinguishable colors
+    let palette = [
+        "#3498db", // blue
+        "#e74c3c", // red
+        "#2ecc71", // green
+        "#f39c12", // orange
+        "#9b59b6", // purple
+        "#1abc9c", // turquoise
+        "#e67e22", // dark orange
+        "#16a085", // dark turquoise
+        "#27ae60", // dark green
+        "#2980b9", // dark blue
+        "#8e44ad", // dark purple
+        "#c0392b", // dark red
+    ];
+
+    let mut hasher = DefaultHasher::new();
+    work_feature.hash(&mut hasher);
+    let hash = hasher.finish();
+    let index = (hash % palette.len() as u64) as usize;
+
+    palette[index].to_string()
+}
+
+/// Get the last commit SHA for a branch.
+fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["rev-parse", branch])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let sha = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_string();
+        if sha.is_empty() {
+            None
+        } else {
+            Some(sha)
+        }
+    } else {
+        None
+    }
+}
 
 #[cfg(test)]
 mod tests {

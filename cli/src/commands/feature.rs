@@ -47,6 +47,11 @@ pub struct FeatureStartArgs {
     /// Emit verbose telemetry (e.g. Cloudflare operations)
     #[arg(long)]
     pub telemetry: bool,
+
+    /// Skip specific modules during setup (can be specified multiple times)
+    /// Available modules: compose, database, tunnel, specs
+    #[arg(long = "skip-module", value_name = "MODULE")]
+    pub skip_modules: Vec<String>,
 }
 
 #[derive(Args)]
@@ -108,6 +113,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         repo,
         reuse,
         telemetry,
+        skip_modules,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
@@ -120,6 +126,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         branch_prefix,
         reuse_existing: reuse,
         telemetry,
+        skip_modules,
     };
 
     let summary = workflow.start(request)?;
@@ -202,6 +209,9 @@ fn print_start_summary(summary: &StartSummary) {
     println!("🚀 Feature workspace ready");
     println!("  Worktree: {}", summary.worktree_path.display());
     println!("  Branch: {}", summary.branch_name);
+    if let Some(color) = summary.color.as_ref() {
+        println!("  Workspace color: {}", color);
+    }
     if let Some(url) = summary.feature_url.as_ref() {
         println!("  Feature URL: https://{}", url);
     }
