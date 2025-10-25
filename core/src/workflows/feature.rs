@@ -526,11 +526,14 @@ impl FeatureWorkflow {
         let mut compose_project_name = None;
 
         let app_slug = self.resolve_app_slug(&source_env)?;
+        std::env::set_var("BASE_PREFIX", &app_slug);
 
         match AppUrl::from_env_file(&source_env) {
             Ok(app_url) => {
                 let url = naming::generate_feature_url(&app_url.url, work_feature);
                 let compose_name = format!("{}-{}", app_slug, work_feature);
+                std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
+                std::env::set_var("DEVCONTAINER_NAME", &compose_name);
                 let mut file = OpenOptions::new().append(true).open(&dest_env)?;
                 ensure_trailing_newline(&mut file)?;
                 writeln!(

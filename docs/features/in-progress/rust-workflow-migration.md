@@ -41,7 +41,7 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 4. **Environment & Config Handling**
    - Reproduce `.env` split/linking, `.devcontainer` sync, `.cloudflared.env` generation, and git path fix script creation within Rust commands.
    - Standardize devcontainer mounts so every worktree is available at `/workspaces/<feature>` (matching VS Code defaults) while the parent repository remains mounted for git metadata.
-   - Allow `.env` to declare `APP_NAME`/`APP_SLUG` to control compose/devcontainer naming; fall back to the parent repo folder when unset.
+   - Allow `.env` to declare `APP_NAME`/`APP_SLUG` to control compose/devcontainer naming; fall back to the parent repo folder when unset, and propagate the slug to compose/devcontainer container naming.
 
 5. **Parity-Level UX**
    - Provide colored logging, confirmation prompts with defaults, and non-interactive `--yes` support akin to `lib/utils/*.sh`.

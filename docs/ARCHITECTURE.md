@@ -86,7 +86,7 @@ A distributed development environment orchestrator that manages git worktrees an
 - Environment variable management
 - Template rendering for devcontainer configs
 - Opinionated devcontainer layout that mounts the parent worktree tree at `/workspaces` so per-feature folders resolve consistently inside containers
-- Reads optional `APP_NAME`/`APP_SLUG` settings from `.env` to align compose/devcontainer naming with the host project
+- Reads optional `APP_NAME`/`APP_SLUG` settings from `.env` to align compose/devcontainer naming with the host project and propagates them to Docker Compose container names
 
 **Distribution**:
 - Published to crates.io as `worktree-core`
