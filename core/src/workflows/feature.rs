@@ -2251,4 +2251,115 @@ mod tests {
         assert_eq!(color1.len(), 7); // #RRGGBB format
         assert_eq!(color2.len(), 7);
     }
+
+    #[test]
+    fn test_setup_vscode_workspace_creates_settings() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let color = Some("#3498db".to_string());
+
+        workflow
+            .setup_vscode_workspace(&worktree_path, "test-feature", &color, None)
+            .unwrap();
+
+        // Check that .vscode/settings.json was created
+        let settings_path = worktree_path.join(".vscode/settings.json");
+        assert!(settings_path.exists());
+
+        // Verify content
+        let content = fs::read_to_string(&settings_path).unwrap();
+        assert!(content.contains("peacock.color"));
+        assert!(content.contains("#3498db"));
+        assert!(content.contains("window.title"));
+        assert!(content.contains("[test-feature]"));
+    }
+
+    #[test]
+    fn test_setup_vscode_workspace_creates_tasks() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow
+            .setup_vscode_workspace(
+                &worktree_path,
+                "test-feature",
+                &None,
+                Some("https://test-feature.example.com"),
+            )
+            .unwrap();
+
+        // Check that .vscode/tasks.json was created
+        let tasks_path = worktree_path.join(".vscode/tasks.json");
+        assert!(tasks_path.exists());
+
+        // Verify content
+        let content = fs::read_to_string(&tasks_path).unwrap();
+        assert!(content.contains("Open Feature URL"));
+        assert!(content.contains("https://test-feature.example.com"));
+    }
+
+    #[test]
+    fn test_setup_vscode_workspace_no_url() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow
+            .setup_vscode_workspace(&worktree_path, "test-feature", &None, None)
+            .unwrap();
+
+        // Should still create settings
+        let settings_path = worktree_path.join(".vscode/settings.json");
+        assert!(settings_path.exists());
+
+        // But no tasks.json without URL
+        let tasks_path = worktree_path.join(".vscode/tasks.json");
+        assert!(!tasks_path.exists());
+    }
+
+    #[test]
+    fn test_setup_vscode_workspace_preserves_existing_settings() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        let vscode_dir = worktree_path.join(".vscode");
+        fs::create_dir_all(&vscode_dir).unwrap();
+
+        // Create existing settings with custom value
+        let existing_settings = serde_json::json!({
+            "custom.setting": "value",
+            "peacock.color": "#old-color"
+        });
+        fs::write(
+            vscode_dir.join("settings.json"),
+            serde_json::to_string_pretty(&existing_settings).unwrap(),
+        )
+        .unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let color = Some("#3498db".to_string());
+
+        workflow
+            .setup_vscode_workspace(&worktree_path, "test-feature", &color, None)
+            .unwrap();
+
+        // Check that custom setting is preserved
+        let content = fs::read_to_string(vscode_dir.join("settings.json")).unwrap();
+        assert!(content.contains("custom.setting"));
+        assert!(content.contains("value"));
+        // But peacock color should be updated
+        assert!(content.contains("#3498db"));
+        assert!(!content.contains("#old-color"));
+    }
 }
