@@ -8,8 +8,8 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -298,7 +298,12 @@ impl FeatureWorkflow {
         }
 
         // Set up VS Code workspace customization for visual differentiation
-        if let Err(err) = self.setup_vscode_workspace(&worktree_path, &work_feature, &summary_color, feature_url.as_deref()) {
+        if let Err(err) = self.setup_vscode_workspace(
+            &worktree_path,
+            &work_feature,
+            &summary_color,
+            feature_url.as_deref(),
+        ) {
             tracing::warn!("Failed to set up VS Code workspace customization: {}", err);
             warnings.push(format!("Failed to set up VS Code workspace: {}", err));
         }
@@ -349,7 +354,7 @@ impl FeatureWorkflow {
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root, &[]);  // No skip during teardown
+        } = modules::detect_modules(&self.repo_root, &[]); // No skip during teardown
         let (module_reports, module_warnings) = self.run_module_teardown(handles, &worktree_path);
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings);
@@ -1093,9 +1098,10 @@ impl FeatureWorkflow {
         }
 
         // Customize window title to show feature name
-        settings["window.title"] = serde_json::json!(
-            format!("${{rootName}} [{}] - ${{activeEditorShort}}", work_feature)
-        );
+        settings["window.title"] = serde_json::json!(format!(
+            "${{rootName}} [{}] - ${{activeEditorShort}}",
+            work_feature
+        ));
 
         let settings_json = serde_json::to_string_pretty(&settings)
             .map_err(|e| Error::config(format!("Failed to serialize VS Code settings: {}", e)))?;
@@ -1152,10 +1158,7 @@ impl FeatureWorkflow {
             .find(|line| line.starts_with("gitdir:"))
             .ok_or_else(|| Error::validation("No gitdir: line found in .git file".to_string()))?;
 
-        let current_path = gitdir_line
-            .strip_prefix("gitdir:")
-            .unwrap_or("")
-            .trim();
+        let current_path = gitdir_line.strip_prefix("gitdir:").unwrap_or("").trim();
 
         // If already relative, nothing to do
         if !current_path.starts_with('/') {
@@ -1663,9 +1666,7 @@ fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
         .ok()?;
 
     if output.status.success() {
-        let sha = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if sha.is_empty() {
             None
         } else {
@@ -2120,8 +2121,12 @@ mod tests {
         let git_file = worktree_path.join(".git");
         fs::write(
             &git_file,
-            format!("gitdir: {}/main/.git/worktrees/feature-test\n", repo_path.display())
-        ).unwrap();
+            format!(
+                "gitdir: {}/main/.git/worktrees/feature-test\n",
+                repo_path.display()
+            ),
+        )
+        .unwrap();
 
         // Create the workflow and fix the path
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
@@ -2169,7 +2174,10 @@ mod tests {
 
         let result = workflow.fix_git_worktree_path(&worktree_path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No .git file found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No .git file found"));
     }
 
     #[test]
@@ -2188,7 +2196,10 @@ mod tests {
 
         let result = workflow.fix_git_worktree_path(&worktree_path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No gitdir: line found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No gitdir: line found"));
     }
 
     #[test]
@@ -2204,8 +2215,12 @@ mod tests {
         let git_file = worktree_path.join(".git");
         fs::write(
             &git_file,
-            format!("gitdir: {}/trunk/.git/worktrees/feature-test\n", repo_path.display())
-        ).unwrap();
+            format!(
+                "gitdir: {}/trunk/.git/worktrees/feature-test\n",
+                repo_path.display()
+            ),
+        )
+        .unwrap();
 
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
