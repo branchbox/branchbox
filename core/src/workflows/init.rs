@@ -44,6 +44,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Initialization workflow orchestrator
+///
+/// Manages the complete initialization workflow for BranchBox repositories,
+/// including cloning, reorganization, devcontainer setup, and registry creation.
+///
+/// # Example
+///
+/// ```no_run
+/// use worktree_core::workflows::init::{InitWorkflow, InitOptions, InitSource};
+///
+/// let options = InitOptions {
+///     source: InitSource::CurrentDirectory,
+///     ..Default::default()
+/// };
+///
+/// let mut workflow = InitWorkflow::new(options);
+/// let summary = workflow.execute()?;
+/// # Ok::<(), worktree_core::Error>(())
+/// ```
 pub struct InitWorkflow {
     options: InitOptions,
 }
@@ -521,16 +539,70 @@ impl InitWorkflow {
         self.get_working_path()
     }
 
+    /// Get the default projects directory
+    ///
+    /// Uses BRANCHBOX_PROJECTS_DIR environment variable if set,
+    /// otherwise defaults to ~/projects/
+    fn get_projects_dir(&self) -> Result<PathBuf> {
+        // Check environment variable first
+        if let Ok(projects_dir) = std::env::var("BRANCHBOX_PROJECTS_DIR") {
+            return Ok(PathBuf::from(projects_dir));
+        }
+
+        // Fall back to ~/projects/
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::validation("Cannot determine home directory"))?;
+        Ok(home.join("projects"))
+    }
+
+    /// Validate clone URL for security
+    ///
+    /// Rejects file:// URLs and validates format
+    fn validate_clone_url(&self, url: &str) -> Result<()> {
+        // Reject file:// URLs (security risk - can access local files)
+        if url.starts_with("file://") {
+            return Err(Error::validation(
+                "file:// URLs are not supported for security reasons.\n\
+                 Use git clone directly if you need to clone from a local path."
+            ));
+        }
+
+        // Validate URL format
+        if url.starts_with("http://") || url.starts_with("https://") {
+            // HTTPS/HTTP URLs are fine
+            Ok(())
+        } else if url.starts_with("git@") || url.starts_with("ssh://") {
+            // SSH URLs are fine
+            Ok(())
+        } else if url.starts_with("git://") {
+            // Git protocol URLs are fine
+            Ok(())
+        } else {
+            Err(Error::validation(format!(
+                "Invalid repository URL format: {}\n\
+                 Supported formats:\n\
+                   - https://github.com/user/repo.git\n\
+                   - git@github.com:user/repo.git\n\
+                   - ssh://git@github.com/user/repo.git\n\
+                   - git://github.com/user/repo.git",
+                url
+            )))
+        }
+    }
+
     /// Clone repository from URL
     fn clone_repository(&self, url: &str) -> Result<PathBuf> {
+        // Validate URL before cloning
+        self.validate_clone_url(url)?;
+
         // Determine target path
         let target_path = if let Some(path) = &self.options.target_dir {
             path.clone()
         } else {
             // Extract repo name from URL
             let repo_name = self.extract_repo_name(url)?;
-            let home = dirs::home_dir().ok_or_else(|| Error::validation("Cannot determine home directory"))?;
-            home.join("projects").join(repo_name)
+            let projects_dir = self.get_projects_dir()?;
+            projects_dir.join(repo_name)
         };
 
         if target_path.exists() {
@@ -589,14 +661,14 @@ impl InitWorkflow {
         let target_path = if let Some(path) = &self.options.target_dir {
             path.clone()
         } else {
-            // Move to ~/projects/{repo-name}
+            // Move to projects directory (configurable via BRANCHBOX_PROJECTS_DIR)
             let repo_name = current_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| Error::validation("Invalid directory name"))?;
 
-            let home = dirs::home_dir().ok_or_else(|| Error::validation("Cannot determine home directory"))?;
-            home.join("projects").join(repo_name)
+            let projects_dir = self.get_projects_dir()?;
+            projects_dir.join(repo_name)
         };
 
         // Don't move if already in target location
@@ -623,7 +695,9 @@ impl InitWorkflow {
             std::io::stdin().read_line(&mut input)?;
 
             if !input.trim().eq_ignore_ascii_case("y") {
-                return Err(Error::validation("Reorganization cancelled by user"));
+                // User declined - use current path instead (not an error)
+                println!("Reorganization cancelled. Continuing with current location.");
+                return Ok(current_path);
             }
         }
 
@@ -685,11 +759,16 @@ impl InitWorkflow {
         Ok(DevcontainerStatus::Valid)
     }
 
-    /// Initialize BranchBox registry
+    /// Initialize BranchBox registry atomically
+    ///
+    /// Uses atomic file creation to prevent race conditions when multiple
+    /// init processes run concurrently.
     fn initialize_registry(&self, path: &Path) -> Result<bool> {
         let branchbox_dir = path.join(".branchbox");
+        let registry_path = branchbox_dir.join("registry.json");
 
-        if branchbox_dir.exists() {
+        // Quick check if already exists (optimization)
+        if registry_path.exists() {
             if self.options.verbose {
                 println!("✓ BranchBox registry already exists");
             }
@@ -701,29 +780,51 @@ impl InitWorkflow {
             return Ok(true);
         }
 
-        // Create directory
+        // Create directory if it doesn't exist
         fs::create_dir_all(&branchbox_dir)?;
 
-        // Create empty registry
-        let registry_path = branchbox_dir.join("registry.json");
+        // Try to create registry file atomically
+        use std::fs::OpenOptions;
         let empty_registry = serde_json::json!({
             "version": "1",
             "features": []
         });
+        let registry_content = serde_json::to_string_pretty(&empty_registry)?;
 
-        fs::write(&registry_path, serde_json::to_string_pretty(&empty_registry)?)?;
+        // Attempt atomic creation (fails if file already exists)
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true) // Atomic: fails if file exists
+            .open(&registry_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(registry_content.as_bytes())?;
+                file.sync_all()?; // Ensure written to disk
 
-        // Update .gitignore
-        self.update_gitignore(path)?;
+                // Update .gitignore
+                self.update_gitignore(path)?;
 
-        if self.options.verbose {
-            println!("✓ Created BranchBox registry");
+                if self.options.verbose {
+                    println!("✓ Created BranchBox registry");
+                }
+
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another process created it - that's fine
+                if self.options.verbose {
+                    println!("✓ BranchBox registry already exists");
+                }
+                Ok(false)
+            }
+            Err(e) => Err(e.into()),
         }
-
-        Ok(true)
     }
 
     /// Update .gitignore to exclude registry and env files
+    ///
+    /// Only adds entries that don't already exist to avoid duplication.
     fn update_gitignore(&self, path: &Path) -> Result<()> {
         let gitignore_path = path.join(".gitignore");
         let mut content = if gitignore_path.exists() {
@@ -732,15 +833,43 @@ impl InitWorkflow {
             String::new()
         };
 
-        // Add .branchbox entries if not present
-        if !content.contains(".branchbox/registry.json") {
-            content.push_str("\n# BranchBox\n");
-            content.push_str(".branchbox/registry.json\n");
-            content.push_str(".env\n");
-            content.push_str(".env.local\n");
+        // Check which entries need to be added
+        let entries = vec![
+            ".branchbox/registry.json",
+            ".env",
+            ".env.local",
+        ];
+
+        let mut new_entries = Vec::new();
+        for entry in entries {
+            // Check if this specific entry exists (not just any branchbox entry)
+            if !content.lines().any(|line| line.trim() == entry) {
+                new_entries.push(entry);
+            }
         }
 
-        fs::write(&gitignore_path, content)?;
+        // Only modify file if there are new entries to add
+        if !new_entries.is_empty() {
+            // Ensure content ends with newline
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+
+            // Add BranchBox section header if adding entries
+            if !content.contains("# BranchBox") {
+                content.push_str("\n# BranchBox\n");
+            } else {
+                content.push('\n');
+            }
+
+            // Add new entries
+            for entry in new_entries {
+                content.push_str(entry);
+                content.push('\n');
+            }
+
+            fs::write(&gitignore_path, content)?;
+        }
 
         Ok(())
     }
@@ -944,5 +1073,85 @@ mod tests {
         let state = workflow2.analyze_repository_state().unwrap();
 
         assert_eq!(state, RepositoryState::AlreadyInitialized);
+    }
+
+    #[test]
+    fn test_validate_clone_url_https() {
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        // Valid HTTPS URLs
+        assert!(workflow.validate_clone_url("https://github.com/user/repo.git").is_ok());
+        assert!(workflow.validate_clone_url("https://gitlab.com/user/repo").is_ok());
+        assert!(workflow.validate_clone_url("http://example.com/repo.git").is_ok());
+    }
+
+    #[test]
+    fn test_validate_clone_url_ssh() {
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        // Valid SSH URLs
+        assert!(workflow.validate_clone_url("git@github.com:user/repo.git").is_ok());
+        assert!(workflow.validate_clone_url("ssh://git@github.com/user/repo.git").is_ok());
+    }
+
+    #[test]
+    fn test_validate_clone_url_git_protocol() {
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        // Valid git protocol URL
+        assert!(workflow.validate_clone_url("git://github.com/user/repo.git").is_ok());
+    }
+
+    #[test]
+    fn test_validate_clone_url_rejects_file() {
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        // Should reject file:// URLs for security
+        let result = workflow.validate_clone_url("file:///path/to/repo");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("file://"));
+    }
+
+    #[test]
+    fn test_validate_clone_url_rejects_invalid() {
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        // Should reject invalid URL formats
+        let result = workflow.validate_clone_url("invalid-url");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid repository URL"));
+    }
+
+    #[test]
+    fn test_get_projects_dir_default() {
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        // Should return ~/projects by default
+        let projects_dir = workflow.get_projects_dir().unwrap();
+        assert!(projects_dir.to_string_lossy().ends_with("projects"));
+    }
+
+    #[test]
+    fn test_get_projects_dir_from_env() {
+        use std::env;
+
+        // Set custom projects directory
+        let custom_dir = "/tmp/my-projects";
+        env::set_var("BRANCHBOX_PROJECTS_DIR", custom_dir);
+
+        let options = InitOptions::default();
+        let workflow = InitWorkflow::new(options);
+
+        let projects_dir = workflow.get_projects_dir().unwrap();
+        assert_eq!(projects_dir, PathBuf::from(custom_dir));
+
+        // Clean up
+        env::remove_var("BRANCHBOX_PROJECTS_DIR");
     }
 }
