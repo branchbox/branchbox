@@ -40,6 +40,7 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 
 4. **Environment & Config Handling**
    - Reproduce `.env` split/linking, `.devcontainer` sync, `.cloudflared.env` generation, and git path fix script creation within Rust commands.
+   - Standardize devcontainer mounts so every worktree is available at `/workspaces/<feature>` (matching VS Code defaults) while the parent repository remains mounted for git metadata.
 
 5. **Parity-Level UX**
    - Provide colored logging, confirmation prompts with defaults, and non-interactive `--yes` support akin to `lib/utils/*.sh`.
@@ -136,4 +137,5 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 1. Polish telemetry UX (structured summaries, opt-in JSON stream) and add retries/dry-run semantics for Cloudflare module.
 2. Expand integration test harness for start/teardown flows across modules (include rollback/error scenarios and Cloudflare mocks).
 3. Document CLI usage (`branchbox feature`) and bridge legacy shell scripts with experimental flag guidance.
-4. Plan shell deprecation timeline and removal sequence once parity validation completes.
+4. Refresh devcontainer guidance to call out the `/workspaces/<feature>` mount requirement, Cargo cache location, and the shared `/workspaces` bind used by the workflow runtime.
+5. Plan shell deprecation timeline and removal sequence once parity validation completes.

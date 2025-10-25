@@ -1,4 +1,4 @@
-name: "nodejs-project"
+name: "${DEVCONTAINER_NAME:-nodejs-project}"
 
 services:
   nodejs-app:
@@ -10,13 +10,16 @@ services:
 
     volumes:
       - ../..:/workspaces:cached
-      - dind-var-lib-docker:/var/lib/docker
+      - dind-data:/var/lib/docker
       - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
+
+    env_file:
+      - ../.env
 
     environment:
       NODE_ENV: development
 
 volumes:
-  dind-var-lib-docker:
+  dind-data:

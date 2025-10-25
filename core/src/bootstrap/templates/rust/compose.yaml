@@ -1,4 +1,4 @@
-name: "rust-project"
+name: "${DEVCONTAINER_NAME:-rust-project}"
 
 services:
   rust-dev:
@@ -10,14 +10,17 @@ services:
 
     volumes:
       - ../..:/workspaces:cached
-      - dind-var-lib-docker:/var/lib/docker
+      - dind-data:/var/lib/docker
       - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
+
+    env_file:
+      - ../.env
 
     environment:
       DOCKER_CONTAINER: "true"
       RUST_BACKTRACE: "1"
 
 volumes:
-  dind-var-lib-docker:
+  dind-data:

@@ -1,4 +1,4 @@
-name: "rails-project"
+name: "${DEVCONTAINER_NAME:-rails-project}"
 
 services:
   rails-app:
@@ -10,10 +10,13 @@ services:
 
     volumes:
       - ../..:/workspaces:cached
-      - dind-var-lib-docker:/var/lib/docker
+      - dind-data:/var/lib/docker
       - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
+
+    env_file:
+      - ../.env
 
     depends_on:
       - postgres
@@ -28,5 +31,5 @@ services:
       POSTGRES_PASSWORD: postgres
 
 volumes:
-  dind-var-lib-docker:
+  dind-data:
   postgres-data:

@@ -1,4 +1,4 @@
-name: "branchbox"
+name: "${DEVCONTAINER_NAME:-branchbox}"
 
 services:
   rust-dev:
@@ -10,15 +10,15 @@ services:
 
     volumes:
       - ../..:/workspaces:cached
-      - dind-var-lib-docker:/var/lib/docker
+      - dind-data:/var/lib/docker
       - ../.codex:/home/vscode/.codex
 
     # Overrides default command so things don't shut down after the process ends
     command: sleep infinity
 
     # Use "forwardPorts" in **devcontainer.json** to forward an app port locally
-    # env_file:
-    #   - .env
+    env_file:
+      - ../.env
 
     # Docker-in-Docker daemon runs inside the container (no host socket mount)
     # Persist Codex configuration/history outside the container lifecycle
@@ -29,4 +29,4 @@ services:
       RUST_BACKTRACE: "1"
 
 volumes:
-  dind-var-lib-docker:
+  dind-data:

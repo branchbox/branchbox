@@ -85,6 +85,7 @@ A distributed development environment orchestrator that manages git worktrees an
 - Module plugin system
 - Environment variable management
 - Template rendering for devcontainer configs
+- Opinionated devcontainer layout that mounts the parent worktree tree at `/workspaces` so per-feature folders resolve consistently inside containers
 
 **Distribution**:
 - Published to crates.io as `worktree-core`
