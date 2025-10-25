@@ -377,4 +377,137 @@ mod tests {
         // Just ensure it doesn't panic
         let _ = result;
     }
+
+    #[test]
+    fn test_validate_git_worktree_no_git() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+
+        // No .git directory/file
+        let result = validate_git_worktree(temp_dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no .git found"));
+    }
+
+    #[test]
+    fn test_validate_git_worktree_main() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(git_dir.join("config"), "[core]\n").unwrap();
+
+        let result = validate_git_worktree(temp_dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_git_worktree_feature_relative_path() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let worktrees_dir = temp_dir.path().join(".git/worktrees/feature-test");
+        std::fs::create_dir_all(&worktrees_dir).unwrap();
+
+        let feature_dir = temp_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let git_file = feature_dir.join(".git");
+        std::fs::write(&git_file, "gitdir: ../.git/worktrees/feature-test\n").unwrap();
+
+        let result = validate_git_worktree(&feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_git_worktree_feature_absolute_path() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let worktrees_dir = temp_dir.path().join(".git/worktrees/feature-test");
+        std::fs::create_dir_all(&worktrees_dir).unwrap();
+
+        let feature_dir = temp_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let git_file = feature_dir.join(".git");
+        let git_ref = format!("gitdir: {}\n", worktrees_dir.display());
+        std::fs::write(&git_file, git_ref).unwrap();
+
+        let result = validate_git_worktree(&feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_git_worktree_invalid_gitdir_path() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let feature_dir = temp_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let git_file = feature_dir.join(".git");
+        std::fs::write(&git_file, "gitdir: /nonexistent/path\n").unwrap();
+
+        let result = validate_git_worktree(&feature_dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("referenced path does not exist"));
+    }
+
+    #[test]
+    fn test_validate_git_worktree_git_file_invalid_format() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let feature_dir = temp_dir.path().join("feature-test");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let git_file = feature_dir.join(".git");
+        std::fs::write(&git_file, "invalid content\n").unwrap();
+
+        let result = validate_git_worktree(&feature_dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid git worktree"));
+    }
+
+    #[test]
+    fn test_validate_git_worktree_git_dir_no_config() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let git_dir = temp_dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        // No config file
+
+        let result = validate_git_worktree(temp_dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid git worktree"));
+    }
+
+    #[test]
+    fn test_validate_env_file_not_found() {
+        use std::path::PathBuf;
+        let nonexistent = PathBuf::from("/nonexistent/.env");
+
+        let result = validate_env_file(&nonexistent, &["APP_URL"]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_parse_app_url_with_http() {
+        let url = AppUrl::parse("http://test.example.com").unwrap();
+        assert_eq!(url.url, "test.example.com");
+        assert_eq!(url.base_prefix, "test");
+        assert_eq!(url.base_domain, "example.com");
+    }
+
+    #[test]
+    fn test_app_url_from_env_file_missing() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "OTHER_VAR=value").unwrap();
+        temp_file.flush().unwrap();
+
+        let result = AppUrl::from_env_file(temp_file.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("APP_URL not found"));
+    }
 }
