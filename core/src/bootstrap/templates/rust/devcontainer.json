@@ -5,6 +5,7 @@
   "dockerComposeFile": "compose.yaml",
   "service": "rust-dev",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
 
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},
@@ -19,7 +20,8 @@
 
   "containerEnv": {
     "DOCKER_CONTAINER": "true",
-    "RUST_BACKTRACE": "1"
+    "RUST_BACKTRACE": "1",
+    "CARGO_HOME": "/workspaces/${localWorkspaceFolderBasename}/.cargo"
   },
 
   "forwardPorts": [50051],

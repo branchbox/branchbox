@@ -1,4 +1,4 @@
-name: "dev-project"
+name: "${DEVCONTAINER_NAME:-dev-project}"
 
 services:
   dev:
@@ -10,10 +10,13 @@ services:
 
     volumes:
       - ../..:/workspaces:cached
-      - dind-var-lib-docker:/var/lib/docker
+      - dind-data:/var/lib/docker
       - ../.codex:/home/vscode/.codex
 
     command: sleep infinity
 
+    env_file:
+      - ../.env
+
 volumes:
-  dind-var-lib-docker:
+  dind-data:

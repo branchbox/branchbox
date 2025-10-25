@@ -4,6 +4,7 @@
   "dockerComposeFile": "compose.yaml",
   "service": "rust-dev",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
 
   // Features to add to the dev container
   "features": {
