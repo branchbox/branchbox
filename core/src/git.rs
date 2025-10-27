@@ -744,7 +744,12 @@ bare
         // Add a remote
         Command::new("git")
             .current_dir(temp_dir.path())
-            .args(["remote", "add", "origin", "https://github.com/test/repo.git"])
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/test/repo.git",
+            ])
             .output()
             .unwrap();
 
@@ -781,12 +786,7 @@ bare
         // Add remote and push
         Command::new("git")
             .current_dir(repo_path)
-            .args([
-                "remote",
-                "add",
-                "origin",
-                remote_path.to_str().unwrap(),
-            ])
+            .args(["remote", "add", "origin", remote_path.to_str().unwrap()])
             .output()
             .unwrap();
 
@@ -803,9 +803,7 @@ bare
         assert!(exists);
 
         // non-existent branch should not exist
-        let exists = git
-            .remote_branch_exists("origin", "nonexistent")
-            .unwrap();
+        let exists = git.remote_branch_exists("origin", "nonexistent").unwrap();
         assert!(!exists);
     }
 
@@ -827,12 +825,7 @@ bare
         // Add remote and push main
         Command::new("git")
             .current_dir(repo_path)
-            .args([
-                "remote",
-                "add",
-                "origin",
-                remote_path.to_str().unwrap(),
-            ])
+            .args(["remote", "add", "origin", remote_path.to_str().unwrap()])
             .output()
             .unwrap();
 

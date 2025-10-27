@@ -185,7 +185,10 @@ impl CloudflareClient {
         let mut deleted = false;
 
         for record in records {
-            let url = format!("{}/zones/{}/dns_records/{}", self.api_base, zone_id, record.id);
+            let url = format!(
+                "{}/zones/{}/dns_records/{}",
+                self.api_base, zone_id, record.id
+            );
             let resp: ApiResponse<serde_json::Value> = self.http.delete(url).send()?.json()?;
             resp.into_result()?;
             deleted = true;
@@ -244,7 +247,10 @@ impl CloudflareClient {
         hostname: &str,
         target: &str,
     ) -> Result<()> {
-        let url = format!("{}/zones/{}/dns_records/{}", self.api_base, zone_id, record_id);
+        let url = format!(
+            "{}/zones/{}/dns_records/{}",
+            self.api_base, zone_id, record_id
+        );
         let payload = json!({
             "type": "CNAME",
             "name": hostname,
@@ -420,14 +426,20 @@ mod tests {
     fn test_client_new_empty_token() {
         let result = CloudflareClient::new("", "account123");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("API token is empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("API token is empty"));
     }
 
     #[test]
     fn test_client_new_empty_account() {
         let result = CloudflareClient::new("token123", "");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("account id is empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("account id is empty"));
     }
 
     #[test]
@@ -441,10 +453,14 @@ mod tests {
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/accounts/test-account/cfd_tunnel")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test-tunnel".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "test-tunnel".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{
@@ -452,10 +468,12 @@ mod tests {
                     "name": "test-tunnel",
                     "deleted_at": null
                 }]
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.find_tunnel_by_name("test-tunnel").unwrap();
 
         assert!(result.is_some());
@@ -470,17 +488,23 @@ mod tests {
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/accounts/test-account/cfd_tunnel")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "missing-tunnel".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "missing-tunnel".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": []
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.find_tunnel_by_name("missing-tunnel").unwrap();
 
         assert!(result.is_none());
@@ -492,10 +516,14 @@ mod tests {
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/accounts/test-account/cfd_tunnel")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test-tunnel".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "test-tunnel".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{
@@ -503,10 +531,12 @@ mod tests {
                     "name": "test-tunnel",
                     "deleted_at": "2024-01-01T00:00:00Z"
                 }]
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.find_tunnel_by_name("test-tunnel").unwrap();
 
         assert!(result.is_none());
@@ -520,7 +550,8 @@ mod tests {
             .mock("POST", "/accounts/test-account/cfd_tunnel")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {
@@ -528,10 +559,12 @@ mod tests {
                     "name": "my-tunnel",
                     "token": "tunnel-token-xyz"
                 }
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.create_tunnel("my-tunnel").unwrap();
 
         assert_eq!(result.id, "new-tunnel-123");
@@ -547,21 +580,27 @@ mod tests {
             .mock("POST", "/accounts/test-account/cfd_tunnel")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {
                     "id": "new-tunnel-123",
                     "name": "my-tunnel"
                 }
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.create_tunnel("my-tunnel");
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing tunnel token"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing tunnel token"));
         mock.assert();
     }
 
@@ -569,18 +608,25 @@ mod tests {
     fn test_configure_tunnel() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("PUT", "/accounts/test-account/cfd_tunnel/tunnel-123/configurations")
+            .mock(
+                "PUT",
+                "/accounts/test-account/cfd_tunnel/tunnel-123/configurations",
+            )
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {}
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
-        let result = client.configure_tunnel("tunnel-123", "test.example.com", "http://localhost:3000");
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let result =
+            client.configure_tunnel("tunnel-123", "test.example.com", "http://localhost:3000");
 
         assert!(result.is_ok());
         mock.assert();
@@ -593,14 +639,17 @@ mod tests {
             .mock("DELETE", "/accounts/test-account/cfd_tunnel/tunnel-123")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {}
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.delete_tunnel("tunnel-123");
 
         assert!(result.is_ok());
@@ -615,17 +664,20 @@ mod tests {
             .match_query(mockito::Matcher::UrlEncoded("name".into(), "test".into()))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": false,
                 "errors": [
                     {"code": 1003, "message": "Invalid request"},
                     {"message": "Another error"}
                 ],
                 "result": []
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.find_tunnel_by_name("test");
 
         assert!(result.is_err());
@@ -642,17 +694,23 @@ mod tests {
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/zones")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": []
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.ensure_cname_record("test.example.com", "example.com", "tunnel-123");
 
         assert!(result.is_err());
@@ -666,40 +724,53 @@ mod tests {
 
         let zone_mock = server
             .mock("GET", "/zones")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "zone-123"}]
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_get_mock = server
             .mock("GET", "/zones/zone-123/dns_records")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test.example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "test.example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": []
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_create_mock = server
             .mock("POST", "/zones/zone-123/dns_records")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {"id": "record-123", "content": "tunnel-123.cfargotunnel.com"}
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.ensure_cname_record("test.example.com", "example.com", "tunnel-123");
 
         assert!(result.is_ok());
@@ -714,40 +785,53 @@ mod tests {
 
         let zone_mock = server
             .mock("GET", "/zones")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "zone-123"}]
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_get_mock = server
             .mock("GET", "/zones/zone-123/dns_records")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test.example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "test.example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "record-123", "content": "old-tunnel.cfargotunnel.com"}]
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_update_mock = server
             .mock("PUT", "/zones/zone-123/dns_records/record-123")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {"id": "record-123", "content": "tunnel-123.cfargotunnel.com"}
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.ensure_cname_record("test.example.com", "example.com", "tunnel-123");
 
         assert!(result.is_ok());
@@ -762,29 +846,40 @@ mod tests {
 
         let zone_mock = server
             .mock("GET", "/zones")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "zone-123"}]
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_get_mock = server
             .mock("GET", "/zones/zone-123/dns_records")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test.example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "test.example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "record-123", "content": "tunnel-123.cfargotunnel.com"}]
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.ensure_cname_record("test.example.com", "example.com", "tunnel-123");
 
         assert!(result.is_ok());
@@ -798,40 +893,53 @@ mod tests {
 
         let zone_mock = server
             .mock("GET", "/zones")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "zone-123"}]
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_get_mock = server
             .mock("GET", "/zones/zone-123/dns_records")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test.example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "test.example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": [{"id": "record-123", "content": "tunnel-123.cfargotunnel.com"}]
-            }"#)
+            }"#,
+            )
             .create();
 
         let dns_delete_mock = server
             .mock("DELETE", "/zones/zone-123/dns_records/record-123")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": {}
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.delete_dns_record("test.example.com", "example.com");
 
         assert!(result.is_ok());
@@ -847,17 +955,23 @@ mod tests {
 
         let zone_mock = server
             .mock("GET", "/zones")
-            .match_query(mockito::Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "name".into(),
+                "example.com".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{
+            .with_body(
+                r#"{
                 "success": true,
                 "errors": [],
                 "result": []
-            }"#)
+            }"#,
+            )
             .create();
 
-        let client = CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
         let result = client.delete_dns_record("test.example.com", "example.com");
 
         assert!(result.is_ok());

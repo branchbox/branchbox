@@ -112,7 +112,10 @@ mod tests {
     fn test_git_error() {
         let err = Error::git("git command failed");
         assert!(matches!(err, Error::CommandFailed(_)));
-        assert_eq!(err.to_string(), "Command execution failed: git command failed");
+        assert_eq!(
+            err.to_string(),
+            "Command execution failed: git command failed"
+        );
     }
 
     #[test]

@@ -139,12 +139,17 @@ mod tests {
         fs::write(config_dir.join("master.key"), "test_master_key_content").unwrap();
 
         let adapter = RailsAdapter;
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
 
         // Verify master.key was copied
         let dest_master_key = dest_dir.path().join("config/master.key");
         assert!(dest_master_key.exists());
-        assert_eq!(fs::read_to_string(dest_master_key).unwrap(), "test_master_key_content");
+        assert_eq!(
+            fs::read_to_string(dest_master_key).unwrap(),
+            "test_master_key_content"
+        );
     }
 
     #[test]
@@ -160,7 +165,9 @@ mod tests {
         fs::write(credentials_dir.join("development.yml.enc"), "not_a_key").unwrap();
 
         let adapter = RailsAdapter;
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
 
         // Verify only .key files were copied
         let dest_credentials = dest_dir.path().join("config/credentials");
@@ -176,7 +183,9 @@ mod tests {
 
         let adapter = RailsAdapter;
         // Should not error even if no secrets exist
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
     }
 
     #[test]

@@ -126,7 +126,10 @@ fn parse_stack(stack_str: &str) -> Result<Stack> {
 
 fn print_summary(summary: &InitSummary) -> Result<()> {
     // Don't print anything if already initialized and not updating
-    if matches!(summary.repository_state, RepositoryState::AlreadyInitialized) {
+    if matches!(
+        summary.repository_state,
+        RepositoryState::AlreadyInitialized
+    ) {
         return Ok(());
     }
 
@@ -167,7 +170,10 @@ fn print_summary(summary: &InitSummary) -> Result<()> {
 
 fn print_verbose_summary(summary: &InitSummary) -> Result<()> {
     // Don't print anything if already initialized and not updating
-    if matches!(summary.repository_state, RepositoryState::AlreadyInitialized) {
+    if matches!(
+        summary.repository_state,
+        RepositoryState::AlreadyInitialized
+    ) {
         return Ok(());
     }
 

@@ -98,7 +98,9 @@ mod tests {
         fs::write(src_dir.path().join("other.txt"), "not a secret").unwrap();
 
         let adapter = GenericAdapter;
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
 
         // Verify secret files were copied
         assert!(dest_dir.path().join(".env").exists());
@@ -113,7 +115,9 @@ mod tests {
 
         let adapter = GenericAdapter;
         // Should not error if no secrets
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
     }
 
     #[test]

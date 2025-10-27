@@ -128,13 +128,9 @@ fn detect_command_defaults_to_current_directory() {
 #[test]
 fn name_generate_converts_title_to_name() {
     let mut cmd = Command::cargo_bin("branchbox").unwrap();
-    cmd.arg("name")
-        .arg("generate")
-        .arg("OAuth Integration");
+    cmd.arg("name").arg("generate").arg("OAuth Integration");
 
-    cmd.assert()
-        .success()
-        .stdout("oauth\n");
+    cmd.assert().success().stdout("oauth\n");
 }
 
 #[test]
@@ -142,21 +138,15 @@ fn name_generate_handles_special_characters() {
     let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("generate").arg("Fix Bug #123");
 
-    cmd.assert()
-        .success()
-        .stdout("fix-bug-123\n");
+    cmd.assert().success().stdout("fix-bug-123\n");
 }
 
 #[test]
 fn name_generate_handles_multiple_words() {
     let mut cmd = Command::cargo_bin("branchbox").unwrap();
-    cmd.arg("name")
-        .arg("generate")
-        .arg("Add New API Endpoint");
+    cmd.arg("name").arg("generate").arg("Add New API Endpoint");
 
-    cmd.assert()
-        .success()
-        .stdout("add-new-api\n");
+    cmd.assert().success().stdout("add-new-api\n");
 }
 
 #[test]
@@ -220,9 +210,7 @@ fn name_validate_accepts_single_word() {
     let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("oauth");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("✓"));
+    cmd.assert().success().stdout(predicate::str::contains("✓"));
 }
 
 #[test]
@@ -230,7 +218,5 @@ fn name_validate_accepts_numbers() {
     let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("fix-bug-123");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("✓"));
+    cmd.assert().success().stdout(predicate::str::contains("✓"));
 }

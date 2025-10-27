@@ -688,8 +688,8 @@ mod tests {
         assert!(result.is_ok());
 
         // Config should be preserved
-        let config = std::fs::read_to_string(feature_dir.join(".devcontainer/.cloudflared.env"))
-            .unwrap();
+        let config =
+            std::fs::read_to_string(feature_dir.join(".devcontainer/.cloudflared.env")).unwrap();
         assert!(config.contains("TUNNEL_TOKEN="));
     }
 

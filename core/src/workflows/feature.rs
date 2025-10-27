@@ -1702,10 +1702,7 @@ mod tests {
 
     #[test]
     fn test_build_branch_name_with_trailing_slash() {
-        assert_eq!(
-            build_branch_name(Some("feature/"), "test"),
-            "feature/test"
-        );
+        assert_eq!(build_branch_name(Some("feature/"), "test"), "feature/test");
     }
 
     #[test]
@@ -1848,7 +1845,10 @@ mod tests {
             .unwrap();
 
         let resolved = resolve_repo_root(repo_path).unwrap();
-        assert_eq!(resolved.canonicalize().unwrap(), repo_path.canonicalize().unwrap());
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            repo_path.canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -1856,7 +1856,10 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let result = resolve_repo_root(temp.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Not a git repository"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Not a git repository"));
     }
 
     #[test]

@@ -150,7 +150,9 @@ mod tests {
         fs::write(src_dir.path().join(".env.development"), "DEV=true").unwrap();
 
         let adapter = NodeJsAdapter;
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
 
         // Verify files were copied
         assert!(dest_dir.path().join(".env").exists());
@@ -167,10 +169,16 @@ mod tests {
         let src_dir = TempDir::new().unwrap();
         let dest_dir = TempDir::new().unwrap();
 
-        fs::write(src_dir.path().join(".npmrc"), "//registry.npmjs.org/:_authToken=token").unwrap();
+        fs::write(
+            src_dir.path().join(".npmrc"),
+            "//registry.npmjs.org/:_authToken=token",
+        )
+        .unwrap();
 
         let adapter = NodeJsAdapter;
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
 
         assert!(dest_dir.path().join(".npmrc").exists());
         assert_eq!(
@@ -186,7 +194,9 @@ mod tests {
 
         let adapter = NodeJsAdapter;
         // Should not error if no secrets exist
-        adapter.copy_secrets(src_dir.path(), dest_dir.path()).unwrap();
+        adapter
+            .copy_secrets(src_dir.path(), dest_dir.path())
+            .unwrap();
     }
 
     #[test]

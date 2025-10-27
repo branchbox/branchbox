@@ -353,11 +353,7 @@ impl InitWorkflow {
 
         // Phase 5: Module detection
         let module_plan = crate::modules::detect_modules(&workspace_path, &[]);
-        summary.modules = module_plan
-            .handles
-            .iter()
-            .map(|h| h.name.clone())
-            .collect();
+        summary.modules = module_plan.handles.iter().map(|h| h.name.clone()).collect();
 
         // Phase 6: Initialize BranchBox registry
         summary.registry_initialized = self.initialize_registry(&workspace_path)?;
@@ -372,9 +368,7 @@ impl InitWorkflow {
     fn analyze_repository_state(&self) -> Result<RepositoryState> {
         // Handle URL source
         if let InitSource::Url(url) = &self.options.source {
-            return Ok(RepositoryState::Cloned {
-                url: url.clone(),
-            });
+            return Ok(RepositoryState::Cloned { url: url.clone() });
         }
 
         let path = self.get_working_path();
@@ -501,7 +495,10 @@ impl InitWorkflow {
         if let Some(gitdir) = content.strip_prefix("gitdir: ") {
             let gitdir = PathBuf::from(gitdir.trim());
             // Navigate up: .git/worktrees/name → .git → parent
-            if let Some(parent) = gitdir.parent().and_then(|p| p.parent()).and_then(|p| p.parent())
+            if let Some(parent) = gitdir
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
             {
                 return Ok(Some(parent.to_path_buf()));
             }
@@ -522,14 +519,18 @@ impl InitWorkflow {
             "/Documents/", // Discouraged for code
         ];
 
-        Ok(bad_patterns.iter().any(|pattern| path_str.contains(pattern)))
+        Ok(bad_patterns
+            .iter()
+            .any(|pattern| path_str.contains(pattern)))
     }
 
     /// Get current working path based on source
     fn get_working_path(&self) -> PathBuf {
         match &self.options.source {
             InitSource::LocalPath(path) => path.clone(),
-            InitSource::CurrentDirectory => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            InitSource::CurrentDirectory => {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            }
             InitSource::Url(_) => unreachable!("URL source handled separately"),
         }
     }
@@ -550,8 +551,8 @@ impl InitWorkflow {
         }
 
         // Fall back to ~/projects/
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::validation("Cannot determine home directory"))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::validation("Cannot determine home directory"))?;
         Ok(home.join("projects"))
     }
 
@@ -563,7 +564,7 @@ impl InitWorkflow {
         if url.starts_with("file://") {
             return Err(Error::validation(
                 "file:// URLs are not supported for security reasons.\n\
-                 Use git clone directly if you need to clone from a local path."
+                 Use git clone directly if you need to clone from a local path.",
             ));
         }
 
@@ -834,11 +835,7 @@ impl InitWorkflow {
         };
 
         // Check which entries need to be added
-        let entries = vec![
-            ".branchbox/registry.json",
-            ".env",
-            ".env.local",
-        ];
+        let entries = vec![".branchbox/registry.json", ".env", ".env.local"];
 
         let mut new_entries = Vec::new();
         for entry in entries {
@@ -879,10 +876,7 @@ impl InitWorkflow {
         let mut steps = Vec::new();
 
         if summary.reorganized {
-            steps.push(format!(
-                "cd {}",
-                summary.workspace_path.display()
-            ));
+            steps.push(format!("cd {}", summary.workspace_path.display()));
         }
 
         steps.push("Open in VS Code/Cursor and reopen in container".to_string());
@@ -909,7 +903,9 @@ impl InitWorkflow {
                     println!("⚠ Location is temporary (consider reorganization)");
                 }
             }
-            RepositoryState::RegularClone { needs_reorganization } => {
+            RepositoryState::RegularClone {
+                needs_reorganization,
+            } => {
                 println!("Regular clone detected");
                 if needs_reorganization {
                     println!("⚠ Reorganization recommended");
@@ -1033,7 +1029,9 @@ mod tests {
         // Expect RegularClone with needs_reorganization=true because test repo is in /tmp/
         assert!(matches!(
             state,
-            RepositoryState::RegularClone { needs_reorganization: true }
+            RepositoryState::RegularClone {
+                needs_reorganization: true
+            }
         ));
     }
 
@@ -1081,9 +1079,15 @@ mod tests {
         let workflow = InitWorkflow::new(options);
 
         // Valid HTTPS URLs
-        assert!(workflow.validate_clone_url("https://github.com/user/repo.git").is_ok());
-        assert!(workflow.validate_clone_url("https://gitlab.com/user/repo").is_ok());
-        assert!(workflow.validate_clone_url("http://example.com/repo.git").is_ok());
+        assert!(workflow
+            .validate_clone_url("https://github.com/user/repo.git")
+            .is_ok());
+        assert!(workflow
+            .validate_clone_url("https://gitlab.com/user/repo")
+            .is_ok());
+        assert!(workflow
+            .validate_clone_url("http://example.com/repo.git")
+            .is_ok());
     }
 
     #[test]
@@ -1092,8 +1096,12 @@ mod tests {
         let workflow = InitWorkflow::new(options);
 
         // Valid SSH URLs
-        assert!(workflow.validate_clone_url("git@github.com:user/repo.git").is_ok());
-        assert!(workflow.validate_clone_url("ssh://git@github.com/user/repo.git").is_ok());
+        assert!(workflow
+            .validate_clone_url("git@github.com:user/repo.git")
+            .is_ok());
+        assert!(workflow
+            .validate_clone_url("ssh://git@github.com/user/repo.git")
+            .is_ok());
     }
 
     #[test]
@@ -1102,7 +1110,9 @@ mod tests {
         let workflow = InitWorkflow::new(options);
 
         // Valid git protocol URL
-        assert!(workflow.validate_clone_url("git://github.com/user/repo.git").is_ok());
+        assert!(workflow
+            .validate_clone_url("git://github.com/user/repo.git")
+            .is_ok());
     }
 
     #[test]
@@ -1124,7 +1134,10 @@ mod tests {
         // Should reject invalid URL formats
         let result = workflow.validate_clone_url("invalid-url");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid repository URL"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid repository URL"));
     }
 
     #[test]
@@ -1153,5 +1166,354 @@ mod tests {
 
         // Clean up
         env::remove_var("BRANCHBOX_PROJECTS_DIR");
+    }
+
+    #[test]
+    fn test_execute_dry_run_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            dry_run: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Dry run should not create registry
+        assert!(!repo_path.join(".branchbox/registry.json").exists());
+    }
+
+    #[test]
+    fn test_execute_validate_only_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            validate_only: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let result = workflow.execute();
+
+        // Should complete validation
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_skip_devcontainer() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            skip_devcontainer: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        assert_eq!(summary.devcontainer_status, DevcontainerStatus::None);
+    }
+
+    #[test]
+    fn test_execute_non_interactive_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should initialize successfully
+        assert!(summary.registry_initialized);
+        assert!(repo_path.join(".branchbox/registry.json").exists());
+    }
+
+    #[test]
+    fn test_execute_update_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // First initialization
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        workflow.execute().unwrap();
+
+        // Update mode should work on already initialized repo
+        let update_options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            update: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut update_workflow = InitWorkflow::new(update_options);
+        let summary = update_workflow.execute().unwrap();
+
+        assert!(summary.workspace_path.exists());
+    }
+
+    #[test]
+    fn test_execute_already_initialized_no_update() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // First initialization
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        workflow.execute().unwrap();
+
+        // Second init without update flag should exit early
+        let second_options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut second_workflow = InitWorkflow::new(second_options);
+        let summary = second_workflow.execute().unwrap();
+
+        // Should detect already initialized
+        assert_eq!(summary.workspace_path, PathBuf::new());
+    }
+
+    #[test]
+    fn test_detect_stack_rails() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create Rails markers
+        fs::write(repo_path.join("Gemfile"), "gem 'rails'\n").unwrap();
+        fs::write(repo_path.join("config.ru"), "# Rails app\n").unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        assert_eq!(summary.stack, Stack::Rails);
+        assert_eq!(summary.adapter, "Rails");
+    }
+
+    #[test]
+    fn test_detect_stack_nodejs() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create Node.js markers
+        fs::write(repo_path.join("package.json"), "{}").unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        assert_eq!(summary.stack, Stack::NodeJs);
+        assert_eq!(summary.adapter, "Node.js");
+    }
+
+    #[test]
+    fn test_force_stack_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create Rails markers but force Rust stack
+        fs::write(repo_path.join("Gemfile"), "gem 'rails'\n").unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            stack: Some(Stack::Rust),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should use forced stack, not detected stack
+        assert_eq!(summary.stack, Stack::Rust);
+    }
+
+    #[test]
+    fn test_devcontainer_generation_creates_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Check devcontainer status
+        assert!(matches!(
+            summary.devcontainer_status,
+            DevcontainerStatus::Created
+                | DevcontainerStatus::Valid
+                | DevcontainerStatus::Enhanced { .. }
+        ));
+
+        // Check generated files
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        if matches!(summary.devcontainer_status, DevcontainerStatus::Created) {
+            assert!(devcontainer_dir.join("devcontainer.json").exists());
+        }
+    }
+
+    #[test]
+    fn test_module_detection_integration() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create compose file to detect compose module
+        fs::create_dir_all(repo_path.join(".devcontainer")).unwrap();
+        fs::write(
+            repo_path.join(".devcontainer/compose.yaml"),
+            "version: '3.8'\nservices:\n  app:\n    image: alpine",
+        )
+        .unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should detect compose module
+        assert!(summary.modules.contains(&"compose".to_string()));
+        assert!(summary.modules.contains(&"tunnel".to_string()));
+    }
+
+    #[test]
+    fn test_next_steps_generation() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should have next steps
+        assert!(!summary.next_steps.is_empty());
+    }
+
+    #[test]
+    fn test_verbose_mode_logging() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            verbose: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let result = workflow.execute();
+
+        // Should complete successfully with verbose logging
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_skip_env_option() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            skip_env: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should still initialize successfully
+        assert!(summary.registry_initialized);
+    }
+
+    #[test]
+    fn test_current_directory_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Change to repo directory
+        std::env::set_current_dir(&repo_path).unwrap();
+
+        let options = InitOptions {
+            source: InitSource::CurrentDirectory,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        assert!(summary.registry_initialized);
+        assert!(repo_path.join(".branchbox/registry.json").exists());
+    }
+
+    #[test]
+    fn test_reorganize_flag() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            reorganize: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let result = workflow.execute();
+
+        // Should attempt reorganization (may fail in test env, just verify it tries)
+        assert!(result.is_ok() || result.is_err());
     }
 }

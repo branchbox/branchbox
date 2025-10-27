@@ -460,7 +460,10 @@ mod tests {
 
         let result = validate_git_worktree(&feature_dir);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("referenced path does not exist"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("referenced path does not exist"));
     }
 
     #[test]
@@ -475,7 +478,10 @@ mod tests {
 
         let result = validate_git_worktree(&feature_dir);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid git worktree"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid git worktree"));
     }
 
     #[test]
@@ -488,7 +494,10 @@ mod tests {
 
         let result = validate_git_worktree(temp_dir.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid git worktree"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid git worktree"));
     }
 
     #[test]
@@ -511,8 +520,8 @@ mod tests {
 
     #[test]
     fn test_app_url_from_env_file_missing() {
-        use tempfile::NamedTempFile;
         use std::io::Write;
+        use tempfile::NamedTempFile;
 
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "OTHER_VAR=value").unwrap();
@@ -520,6 +529,9 @@ mod tests {
 
         let result = AppUrl::from_env_file(temp_file.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("APP_URL not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("APP_URL not found"));
     }
 }

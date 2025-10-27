@@ -419,11 +419,7 @@ mod tests {
     #[test]
     fn test_detect_knexfile() {
         let temp_dir = TempDir::new().unwrap();
-        std::fs::write(
-            temp_dir.path().join("knexfile.js"),
-            "module.exports = {}",
-        )
-        .unwrap();
+        std::fs::write(temp_dir.path().join("knexfile.js"), "module.exports = {}").unwrap();
 
         let module = DatabaseModule::new();
         assert!(module.detect(temp_dir.path()));
