@@ -95,8 +95,14 @@ jobs:
           Get-FileHash branchbox-${{ steps.version.outputs.version }}-windows-x86_64.zip -Algorithm SHA256
           ```
 
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 HEAD^)...v${{ steps.version.outputs.version }}
           EOF
+
+          # Add full changelog link (finding previous tag)
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            echo "" >> RELEASE_CHANGELOG.md
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...v${{ steps.version.outputs.version }}" >> RELEASE_CHANGELOG.md
+          fi
 
       - name: Create GitHub Release
         id: create_release
@@ -192,7 +198,7 @@ jobs:
         shell: bash
 
       - name: Strip binary (Linux)
-        if: runner.os == 'Linux' && !matrix.use_cross
+        if: runner.os == 'Linux' && matrix.use_cross != true
         run: strip target/${{ matrix.target }}/release/branchbox
 
       - name: Strip binary (macOS)
