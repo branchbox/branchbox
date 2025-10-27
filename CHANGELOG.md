@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1] - 2025-10-27
+
 ### Features
 - Add automated release workflow with cross-platform builds
 - Add cargo-release configuration for version management
@@ -18,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implement binary packaging with tar.gz (Unix) and zip (Windows)
 - Generate SHA256 checksums for all release artifacts
 - Support pre-release tags (beta, alpha, rc)
+
+### Documentation
+- Add RELEASING.md with comprehensive maintainer release guide
+- Add installation instructions to README with badges
+- Create feature specs for Homebrew tap and install scripts
+
+### Fixed
+- Correct repository URL in Cargo.toml
+- Update author metadata from placeholder
 
 ## [0.1.0] - 2025-10-27
 
