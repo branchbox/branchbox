@@ -1,0 +1,54 @@
+name: Test Install Script
+
+on:
+  push:
+    branches: [main, feature/install-scripts]
+    paths:
+      - 'install.sh'
+      - 'test/**'
+      - '.github/workflows/test-install-script.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'test/**'
+      - '.github/workflows/test-install-script.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Install Script
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+          additional_files: 'install.sh'
+
+      - name: Setup bats
+        uses: mig4/setup-bats@v1
+        with:
+          bats-version: 1.10.0
+
+      - name: Run tests
+        run: bats test/install.bats
+
+      - name: Test on Ubuntu 22.04
+        run: |
+          docker run --rm \
+            -v $(pwd)/install.sh:/install.sh:ro \
+            ubuntu:22.04 \
+            bash -c "apt-get update -qq && apt-get install -y -qq curl && bash -n /install.sh"
+
+      - name: Test on Debian 12
+        run: |
+          docker run --rm \
+            -v $(pwd)/install.sh:/install.sh:ro \
+            debian:12 \
+            bash -c "apt-get update -qq && apt-get install -y -qq curl && bash -n /install.sh"

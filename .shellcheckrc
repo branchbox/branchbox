@@ -1,0 +1,16 @@
+# Shellcheck configuration for install.sh
+
+# Enable all optional checks
+enable=all
+
+# Disable specific checks
+# SC2034: Variable appears unused (we use variables for clarity even if not referenced)
+# SC2086: Double quote to prevent globbing (intentional in some cases)
+# SC1090: Can't follow non-constant source (expected for dynamic sourcing)
+disable=SC2034
+
+# Set shell dialect
+shell=bash
+
+# Source paths for shellcheck
+source-path=SCRIPTDIR
