@@ -100,26 +100,42 @@ teardown() {
   command -v sha256sum >/dev/null || skip "sha256sum not available"
 
   # Create mock binary
-  local mock_dir="$TEST_TEMP_DIR/mock"
-  mkdir -p "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu"
-  echo '#!/bin/bash' > "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
-  echo 'echo "branchbox v0.1.0"' >> "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
-  chmod +x "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
+  export MOCK_DIR="$TEST_TEMP_DIR/mock"
+  mkdir -p "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu"
+  echo '#!/bin/bash' > "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
+  echo 'echo "branchbox v0.1.0"' >> "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
+  chmod +x "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
 
-  cd "$mock_dir"
+  cd "$MOCK_DIR"
   tar czf branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz branchbox-0.1.0-x86_64-unknown-linux-gnu
   sha256sum branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz > checksums.txt
 
   # Mock curl
   curl() {
-    local url="$2"
-    local output="$4"
+    # Parse curl arguments properly
+    local url output
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        -o)
+          output="$2"
+          shift 2
+          ;;
+        -*)
+          shift
+          ;;
+        *)
+          url="$1"
+          shift
+          ;;
+      esac
+    done
+
     if [[ "$url" == *"releases/latest"* ]]; then
       echo '{"tag_name": "v0.1.0"}'
     elif [[ "$url" == *".tar.gz"* ]]; then
-      cp "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz" "$output"
+      cp "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz" "$output"
     elif [[ "$url" == *"checksums.txt"* ]]; then
-      cp "$mock_dir/checksums.txt" "$output"
+      cp "$MOCK_DIR/checksums.txt" "$output"
     fi
   }
   export -f curl
@@ -140,19 +156,28 @@ teardown() {
   export BRANCHBOX_VERSION="v0.2.0"
 
   # Similar mock setup...
-  local mock_dir="$TEST_TEMP_DIR/mock"
-  mkdir -p "$mock_dir/branchbox-0.2.0-x86_64-unknown-linux-gnu"
-  echo '#!/bin/bash' > "$mock_dir/branchbox-0.2.0-x86_64-unknown-linux-gnu/branchbox"
-  chmod +x "$mock_dir/branchbox-0.2.0-x86_64-unknown-linux-gnu/branchbox"
-  cd "$mock_dir"
+  export MOCK_DIR="$TEST_TEMP_DIR/mock"
+  mkdir -p "$MOCK_DIR/branchbox-0.2.0-x86_64-unknown-linux-gnu"
+  echo '#!/bin/bash' > "$MOCK_DIR/branchbox-0.2.0-x86_64-unknown-linux-gnu/branchbox"
+  chmod +x "$MOCK_DIR/branchbox-0.2.0-x86_64-unknown-linux-gnu/branchbox"
+  cd "$MOCK_DIR"
   tar czf branchbox-0.2.0-x86_64-unknown-linux-gnu.tar.gz branchbox-0.2.0-x86_64-unknown-linux-gnu
   sha256sum branchbox-0.2.0-x86_64-unknown-linux-gnu.tar.gz > checksums.txt
 
   curl() {
-    local url="$2"
-    local output="$4"
-    [[ "$url" == *".tar.gz"* ]] && cp "$mock_dir/branchbox-0.2.0-x86_64-unknown-linux-gnu.tar.gz" "$output"
-    [[ "$url" == *"checksums.txt"* ]] && cp "$mock_dir/checksums.txt" "$output"
+    local url output
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        -o) output="$2"; shift 2 ;;
+        -*) shift ;;
+        *) url="$1"; shift ;;
+      esac
+    done
+    if [[ "$url" == *".tar.gz"* ]]; then
+      cp "$MOCK_DIR/branchbox-0.2.0-x86_64-unknown-linux-gnu.tar.gz" "$output"
+    elif [[ "$url" == *"checksums.txt"* ]]; then
+      cp "$MOCK_DIR/checksums.txt" "$output"
+    fi
   }
   export -f curl
 
@@ -169,20 +194,26 @@ teardown() {
 @test "integration: checksum verification failure" {
   command -v tar >/dev/null || skip "tar not available"
 
-  local mock_dir="$TEST_TEMP_DIR/mock"
-  mkdir -p "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu"
-  echo '#!/bin/bash' > "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
-  chmod +x "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
-  cd "$mock_dir"
+  export MOCK_DIR="$TEST_TEMP_DIR/mock"
+  mkdir -p "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu"
+  echo '#!/bin/bash' > "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
+  chmod +x "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu/branchbox"
+  cd "$MOCK_DIR"
   tar czf branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz branchbox-0.1.0-x86_64-unknown-linux-gnu
 
   curl() {
-    local url="$2"
-    local output="$4"
+    local url output
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        -o) output="$2"; shift 2 ;;
+        -*) shift ;;
+        *) url="$1"; shift ;;
+      esac
+    done
     if [[ "$url" == *"releases/latest"* ]]; then
       echo '{"tag_name": "v0.1.0"}'
     elif [[ "$url" == *".tar.gz"* ]]; then
-      cp "$mock_dir/branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz" "$output"
+      cp "$MOCK_DIR/branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz" "$output"
     elif [[ "$url" == *"checksums.txt"* ]]; then
       echo "deadbeef0000  branchbox-0.1.0-x86_64-unknown-linux-gnu.tar.gz" > "$output"
     fi
