@@ -13,7 +13,9 @@ services:
     volumes:
       - ../..:/workspaces:cached
       - dind-data:/var/lib/docker
-      - ../.codex:/home/vscode/.codex
+      - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
+      - ${SHARED_CONFIG_DIR:-../..}/.claude-code:/home/vscode/.claude
+      - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
 
     # Overrides default command so things don't shut down after the process ends
     command: sleep infinity
@@ -23,7 +25,8 @@ services:
       - ../.env
 
     # Docker-in-Docker daemon runs inside the container (no host socket mount)
-    # Persist Codex configuration/history outside the container lifecycle
+    # Tool configs use SHARED_CONFIG_DIR (default: ../.., parent dir) to share across worktrees
+    # Override in .env for non-worktree setups: SHARED_CONFIG_DIR=..
 
     # Environment variables
     environment:
