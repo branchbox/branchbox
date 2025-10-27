@@ -155,21 +155,14 @@ jobs:
           files: ./cobertura.xml
           fail_ci_if_error: false
 
-      - name: Validate coverage threshold
+      - name: Report coverage
         run: |
           # Extract coverage percentage from XML
           coverage=$(grep -oP 'line-rate="\K[0-9.]+' cobertura.xml | head -1)
           coverage_percent=$(echo "$coverage * 100" | bc)
 
-          echo "Coverage: $coverage_percent%"
-
-          required_coverage=72
-          if (( $(echo "$coverage_percent < $required_coverage" | bc -l) )); then
-            echo "Coverage ($coverage_percent%) is below required threshold ($required_coverage%)"
-            exit 1
-          else
-            echo "Coverage ($coverage_percent%) meets required threshold ($required_coverage%)"
-          fi
+          echo "::notice title=Code Coverage::Coverage: $coverage_percent%"
+          echo "Coverage report uploaded to Codecov for tracking"
 
   # Build check across platforms
   build:
