@@ -1,4 +1,9 @@
-# Worktree Manager
+# BranchBox
+
+[![Release](https://img.shields.io/github/v/release/branchbox/branchbox)](https://github.com/branchbox/branchbox/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/branchbox/branchbox/total)](https://github.com/branchbox/branchbox/releases)
+[![CI](https://github.com/branchbox/branchbox/workflows/CI/badge.svg)](https://github.com/branchbox/branchbox/actions)
+[![License](https://img.shields.io/github/license/branchbox/branchbox)](LICENSE)
 
 A distributed development environment orchestrator that manages git worktrees and devcontainers across multiple devices.
 
@@ -28,6 +33,133 @@ Control Plane (Rails) ─────────────────┘
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
+
+## Installation
+
+### Quick Install
+
+#### macOS (Homebrew)
+
+*Coming soon - Homebrew tap will be available in a future release.*
+
+```bash
+brew install branchbox/tap/branchbox
+```
+
+#### Linux
+
+*Coming soon - Install script will be available in a future release.*
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | sh
+```
+
+#### Windows (Scoop)
+
+*Coming soon - Scoop package will be available in a future release.*
+
+```powershell
+scoop bucket add branchbox https://github.com/branchbox/scoop-bucket
+scoop install branchbox
+```
+
+### Download Binaries
+
+Download pre-built binaries from [GitHub Releases](https://github.com/branchbox/branchbox/releases/latest):
+
+#### Linux
+
+```bash
+# Download (replace VERSION and ARCH as needed)
+curl -fsSL https://github.com/branchbox/branchbox/releases/download/vVERSION/branchbox-VERSION-x86_64-unknown-linux-gnu.tar.gz -o branchbox.tar.gz
+
+# Verify checksum
+curl -fsSL https://github.com/branchbox/branchbox/releases/download/vVERSION/checksums.txt -o checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+
+# Extract
+tar xzf branchbox.tar.gz
+
+# Install (requires sudo)
+sudo mv branchbox-VERSION-x86_64-unknown-linux-gnu/branchbox /usr/local/bin/
+sudo chmod +x /usr/local/bin/branchbox
+
+# Verify installation
+branchbox --version
+```
+
+#### macOS
+
+```bash
+# Download (Intel)
+curl -fsSL https://github.com/branchbox/branchbox/releases/download/vVERSION/branchbox-VERSION-x86_64-apple-darwin.tar.gz -o branchbox.tar.gz
+
+# Download (Apple Silicon)
+curl -fsSL https://github.com/branchbox/branchbox/releases/download/vVERSION/branchbox-VERSION-aarch64-apple-darwin.tar.gz -o branchbox.tar.gz
+
+# Verify checksum
+curl -fsSL https://github.com/branchbox/branchbox/releases/download/vVERSION/checksums.txt -o checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+
+# Extract
+tar xzf branchbox.tar.gz
+
+# Install (requires sudo)
+sudo mv branchbox-VERSION-*/branchbox /usr/local/bin/
+sudo chmod +x /usr/local/bin/branchbox
+
+# Verify installation
+branchbox --version
+```
+
+#### Windows
+
+```powershell
+# Download
+Invoke-WebRequest -Uri "https://github.com/branchbox/branchbox/releases/download/vVERSION/branchbox-VERSION-x86_64-pc-windows-msvc.zip" -OutFile branchbox.zip
+
+# Verify checksum
+$hash = (Get-FileHash branchbox.zip -Algorithm SHA256).Hash.ToLower()
+# Compare with checksums.txt
+
+# Extract
+Expand-Archive branchbox.zip
+
+# Add to PATH or move to a directory in PATH
+Move-Item branchbox\branchbox-VERSION-x86_64-pc-windows-msvc\branchbox.exe C:\Users\$env:USERNAME\bin\
+
+# Verify installation
+branchbox --version
+```
+
+### Build from Source
+
+```bash
+# Clone repository
+git clone https://github.com/branchbox/branchbox.git
+cd branchbox
+
+# Build and install
+cargo install --path cli --locked
+
+# Verify installation
+branchbox --version
+```
+
+### Verify Installation
+
+After installation, verify that BranchBox is working:
+
+```bash
+# Check version
+branchbox --version
+
+# Display help
+branchbox --help
+
+# List available commands
+branchbox feature --help
+```
 
 ## Components
 
