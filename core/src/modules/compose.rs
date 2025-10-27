@@ -417,10 +417,18 @@ services:
     fn test_validate_with_invalid_compose_file() {
         let main_dir = TempDir::new().unwrap();
         let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir_all(main_dir.path().join(".devcontainer")).unwrap();
         std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
 
-        // Create an invalid compose file
+        // Create an invalid compose file in main_dir (where init() looks for it)
         let compose_content = "invalid: yaml: content: [[[";
+        std::fs::write(
+            main_dir.path().join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+
+        // Also create it in feature_dir (where validate() will check it)
         std::fs::write(
             feature_dir.join(".devcontainer/compose.yaml"),
             compose_content,
