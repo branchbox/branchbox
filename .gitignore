@@ -37,3 +37,9 @@ Thumbs.db
 # Logs
 *.log
 .codex/
+
+# BranchBox local state (per-worktree)
+.branchbox/
+
+# Coverage reports
+coverage/
