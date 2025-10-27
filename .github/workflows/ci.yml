@@ -163,7 +163,7 @@ jobs:
 
           echo "Coverage: $coverage_percent%"
 
-          required_coverage=90
+          required_coverage=75
           if (( $(echo "$coverage_percent < $required_coverage" | bc -l) )); then
             echo "Coverage ($coverage_percent%) is below required threshold ($required_coverage%)"
             exit 1

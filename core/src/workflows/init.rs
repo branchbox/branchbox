@@ -1026,13 +1026,8 @@ mod tests {
         let workflow = InitWorkflow::new(options);
         let state = workflow.analyze_repository_state().unwrap();
 
-        // Expect RegularClone with needs_reorganization=true because test repo is in /tmp/
-        assert!(matches!(
-            state,
-            RepositoryState::RegularClone {
-                needs_reorganization: true
-            }
-        ));
+        // Expect RegularClone (needs_reorganization depends on whether temp dir is in /tmp/ or not)
+        assert!(matches!(state, RepositoryState::RegularClone { .. }));
     }
 
     #[test]
