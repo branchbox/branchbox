@@ -37,6 +37,7 @@ load_bats_support() {
 # We'll override main() to prevent automatic execution
 source_install_script() {
   # Source the script but prevent main() from running
+  # shellcheck disable=SC2154  # BATS_TEST_DIRNAME is provided by bats
   source "$BATS_TEST_DIRNAME/../../install.sh" &>/dev/null || true
 }
 
@@ -62,7 +63,8 @@ mock_curl() {
 # Mock GitHub API response
 create_mock_release_response() {
   local version="$1"
-  local tmpfile=$(mktemp)
+  local tmpfile
+  tmpfile=$(mktemp)
 
   cat > "$tmpfile" <<EOF
 {
@@ -84,7 +86,8 @@ EOF
 create_mock_binary_archive() {
   local version="$1"
   local arch="$2"
-  local tmpdir=$(mktemp -d)
+  local tmpdir
+  tmpdir=$(mktemp -d)
 
   local version_number="${version#v}"
   local target="${arch}-unknown-linux-gnu"
@@ -102,11 +105,12 @@ create_mock_binary_archive() {
 # Setup function run before each test
 test_setup() {
   # Create temp directory for test
-  TEST_TEMP_DIR="$(mktemp -d)"
+  TEST_TEMP_DIR=$(mktemp -d)
   export TEST_TEMP_DIR
 
   # Save original functions
-  export ORIGINAL_CURL="$(command -v curl)"
+  ORIGINAL_CURL=$(command -v curl)
+  export ORIGINAL_CURL
   export ORIGINAL_INSTALL_DIR="$INSTALL_DIR"
 }
 

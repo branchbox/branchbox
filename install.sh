@@ -94,7 +94,7 @@ main() {
   # Create temp directory
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  trap "rm -rf '$tmp_dir'" EXIT
+  trap 'rm -rf "$tmp_dir"' EXIT
 
   # Download archive
   if ! curl -fsSL "$download_url" -o "$tmp_dir/$archive_name"; then
