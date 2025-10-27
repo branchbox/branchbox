@@ -58,3 +58,18 @@ reqwest = { version = "0.11", default-features = false, features = ["blocking", 
 # Testing
 rstest = "0.18"
 mockito = "1.2"
+
+[workspace.metadata.release]
+# Version management
+sign-commit = false
+sign-tag = false
+pre-release-commit-message = "chore(release): prepare {{version}}"
+tag-message = "Release {{version}}"
+tag-prefix = "v"
+consolidate-commits = true
+
+# Pre-release validation
+pre-release-hook = ["cargo", "test", "--all"]
+
+# Disable automatic publishing to crates.io (we'll add this later)
+publish = false

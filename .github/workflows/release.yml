@@ -1,0 +1,330 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog generation
+
+      - name: Parse version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+          if [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-alpha"* ]] || [[ "$VERSION" == *"-rc"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "Pre-release detected"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "Stable release"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install git-cliff
+        run: |
+          cargo install git-cliff --locked
+
+      - name: Generate changelog
+        run: |
+          if [[ "${{ steps.version.outputs.is_prerelease }}" == "true" ]]; then
+            # For pre-releases, generate changelog from last tag
+            git-cliff --tag v${{ steps.version.outputs.version }} --unreleased > RELEASE_CHANGELOG.md
+          else
+            # For stable releases, generate full changelog for this version
+            git-cliff --tag v${{ steps.version.outputs.version }} --unreleased > RELEASE_CHANGELOG.md
+          fi
+
+          # Add installation instructions to release notes
+          cat >> RELEASE_CHANGELOG.md <<'EOF'
+
+          ## Installation
+
+          See [installation instructions](https://github.com/${{ github.repository }}#installation).
+
+          ### Download Binaries
+
+          Download the appropriate binary for your platform from the assets below.
+
+          ### Verify Downloads
+
+          ```bash
+          # Download checksums
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/checksums.txt -o checksums.txt
+
+          # Verify archive (Linux/macOS)
+          sha256sum -c checksums.txt --ignore-missing
+
+          # Verify archive (Windows PowerShell)
+          # Compare the hash with the one in checksums.txt
+          Get-FileHash branchbox-${{ steps.version.outputs.version }}-windows-x86_64.zip -Algorithm SHA256
+          ```
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 HEAD^)...v${{ steps.version.outputs.version }}
+          EOF
+
+      - name: Create GitHub Release
+        id: create_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes-file RELEASE_CHANGELOG.md \
+            ${{ steps.version.outputs.is_prerelease == 'true' && '--prerelease' || '' }} \
+            --draft
+
+      - name: Upload changelog artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: RELEASE_CHANGELOG.md
+          retention-days: 1
+
+  build-release:
+    name: Build ${{ matrix.target }}
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_ext: tar.gz
+
+          # Linux ARM64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            archive_ext: tar.gz
+
+          # macOS Intel
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive_ext: tar.gz
+
+          # macOS Apple Silicon
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive_ext: tar.gz
+
+          # Windows x64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive_ext: zip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-build-release-
+
+      - name: Build
+        run: |
+          if [[ "${{ matrix.use_cross }}" == "true" ]]; then
+            cross build --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+        shell: bash
+
+      - name: Strip binary (Linux)
+        if: runner.os == 'Linux' && !matrix.use_cross
+        run: strip target/${{ matrix.target }}/release/branchbox
+
+      - name: Strip binary (macOS)
+        if: runner.os == 'macOS'
+        run: strip target/${{ matrix.target }}/release/branchbox
+
+      - name: Prepare archive directory (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ARCHIVE_NAME="branchbox-${{ needs.create-release.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "${ARCHIVE_NAME}"
+
+          # Copy binary
+          cp target/${{ matrix.target }}/release/branchbox "${ARCHIVE_NAME}/"
+
+          # Copy documentation
+          cp README.md LICENSE "${ARCHIVE_NAME}/"
+
+          # Create version-specific changelog
+          if [[ -f CHANGELOG.md ]]; then
+            cp CHANGELOG.md "${ARCHIVE_NAME}/"
+          fi
+
+          echo "${ARCHIVE_NAME}" > archive_name.txt
+        shell: bash
+
+      - name: Prepare archive directory (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $ARCHIVE_NAME = "branchbox-${{ needs.create-release.outputs.version }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $ARCHIVE_NAME
+
+          # Copy binary
+          Copy-Item target/${{ matrix.target }}/release/branchbox.exe "$ARCHIVE_NAME/"
+
+          # Copy documentation
+          Copy-Item README.md,LICENSE "$ARCHIVE_NAME/"
+
+          # Create version-specific changelog
+          if (Test-Path CHANGELOG.md) {
+            Copy-Item CHANGELOG.md "$ARCHIVE_NAME/"
+          }
+
+          echo $ARCHIVE_NAME > archive_name.txt
+
+      - name: Create archive (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ARCHIVE_NAME=$(cat archive_name.txt)
+          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          echo "ASSET_PATH=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $ARCHIVE_NAME = Get-Content archive_name.txt
+          Compress-Archive -Path "$ARCHIVE_NAME/*" -DestinationPath "$ARCHIVE_NAME.zip"
+          echo "ASSET_PATH=$ARCHIVE_NAME.zip" >> $env:GITHUB_ENV
+
+      - name: Generate checksum (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          sha256sum "${{ env.ASSET_PATH }}" > "${{ env.ASSET_PATH }}.sha256"
+          cat "${{ env.ASSET_PATH }}.sha256"
+        shell: bash
+
+      - name: Generate checksum (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $hash = (Get-FileHash "${{ env.ASSET_PATH }}" -Algorithm SHA256).Hash.ToLower()
+          $filename = Split-Path "${{ env.ASSET_PATH }}" -Leaf
+          "$hash  $filename" | Out-File -FilePath "${{ env.ASSET_PATH }}.sha256" -Encoding ASCII
+          Get-Content "${{ env.ASSET_PATH }}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            ${{ env.ASSET_PATH }}
+            ${{ env.ASSET_PATH }}.sha256
+          retention-days: 1
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Consolidate checksums
+        run: |
+          # Collect all individual checksums into a single file
+          find artifacts -name "*.sha256" -exec cat {} \; > checksums.txt
+          cat checksums.txt
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Upload all archives and the consolidated checksums file
+          cd artifacts
+          for dir in binary-*; do
+            if [[ -d "$dir" ]]; then
+              cd "$dir"
+              for file in *.tar.gz *.zip 2>/dev/null; do
+                if [[ -f "$file" ]]; then
+                  gh release upload "v${{ needs.create-release.outputs.version }}" \
+                    "$file" \
+                    --repo ${{ github.repository }}
+                fi
+              done
+              cd ..
+            fi
+          done
+          cd ..
+
+          # Upload consolidated checksums
+          gh release upload "v${{ needs.create-release.outputs.version }}" \
+            checksums.txt \
+            --repo ${{ github.repository }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Mark release as published (remove draft status)
+          gh release edit "v${{ needs.create-release.outputs.version }}" \
+            --draft=false \
+            --repo ${{ github.repository }}
