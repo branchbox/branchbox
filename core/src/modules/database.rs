@@ -537,4 +537,188 @@ mod tests {
         let module = DatabaseModule::new();
         module.validate(main_dir.path(), &feature_dir).unwrap();
     }
+
+    // Integration tests requiring Docker
+    // Run with: cargo test -- --ignored
+
+    #[test]
+    #[ignore]
+    fn test_cleanup_postgres_no_cli() {
+        let module = DatabaseModule {
+            enabled: true,
+            database_name: "test_db".to_string(),
+            database_engine: DatabaseEngine::Postgres,
+            database_volume_name: "test-volume".to_string(),
+            setup_command: String::new(),
+        };
+
+        // Should succeed even if psql isn't available
+        let result = module.cleanup_postgres();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_cleanup_mysql_no_cli() {
+        let module = DatabaseModule {
+            enabled: true,
+            database_name: "test_db".to_string(),
+            database_engine: DatabaseEngine::MySQL,
+            database_volume_name: "test-volume".to_string(),
+            setup_command: String::new(),
+        };
+
+        // Should succeed even if mysql isn't available
+        let result = module.cleanup_mysql();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_cleanup_mongodb_no_cli() {
+        let module = DatabaseModule {
+            enabled: true,
+            database_name: "test_db".to_string(),
+            database_engine: DatabaseEngine::MongoDB,
+            database_volume_name: "test-volume".to_string(),
+            setup_command: String::new(),
+        };
+
+        // Should succeed even if mongo/mongosh isn't available
+        let result = module.cleanup_mongodb();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_postgres() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown-pg");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            feature_dir.join(".env"),
+            "DATABASE_NAME=branchbox_test_pg\n",
+        )
+        .unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.database_engine = DatabaseEngine::Postgres;
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_mysql() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown-mysql");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            feature_dir.join(".env"),
+            "DATABASE_NAME=branchbox_test_mysql\n",
+        )
+        .unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.database_engine = DatabaseEngine::MySQL;
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_mongodb() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown-mongo");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            feature_dir.join(".env"),
+            "DATABASE_NAME=branchbox_test_mongo\n",
+        )
+        .unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.database_engine = DatabaseEngine::MongoDB;
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_unknown_engine() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown-unknown");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            feature_dir.join(".env"),
+            "DATABASE_NAME=branchbox_test_unknown\n",
+        )
+        .unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.database_engine = DatabaseEngine::Unknown;
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed for unknown engine
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_no_env_file() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown-no-env");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let mut module = DatabaseModule::new();
+        module.database_engine = DatabaseEngine::Postgres;
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed even without .env
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_full_lifecycle() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-db-lifecycle");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::create_dir_all(main_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            main_dir.path().join(".devcontainer/compose.yaml"),
+            "services:\n  postgres:\n    image: postgres:14\n",
+        )
+        .unwrap();
+        std::fs::write(feature_dir.join(".env"), "EXISTING=value\n").unwrap();
+
+        let mut module = DatabaseModule::new();
+
+        // Init
+        module.init(main_dir.path(), &feature_dir).unwrap();
+        assert!(module.enabled);
+        assert_eq!(module.database_engine, DatabaseEngine::Postgres);
+
+        // Setup
+        module.setup(main_dir.path(), &feature_dir).unwrap();
+        let env_content = std::fs::read_to_string(feature_dir.join(".env")).unwrap();
+        assert!(env_content.contains("DATABASE_NAME="));
+
+        // Validate
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown
+        module.teardown(main_dir.path(), &feature_dir).unwrap();
+    }
 }

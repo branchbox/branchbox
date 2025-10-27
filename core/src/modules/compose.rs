@@ -379,4 +379,190 @@ mod tests {
         // Should not error when no compose file
         module.validate(main_dir.path(), &feature_dir).unwrap();
     }
+
+    // Integration tests requiring Docker
+    // Run with: cargo test -- --ignored
+
+    #[test]
+    #[ignore]
+    fn test_validate_with_valid_compose_file() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+
+        // Create a valid compose file
+        let compose_content = r#"
+version: '3.8'
+services:
+  app:
+    image: alpine:latest
+    command: sleep 3600
+"#;
+        std::fs::write(
+            feature_dir.join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Should successfully validate
+        let result = module.validate(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_validate_with_invalid_compose_file() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+
+        // Create an invalid compose file
+        let compose_content = "invalid: yaml: content: [[[";
+        std::fs::write(
+            feature_dir.join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Should fail validation
+        let result = module.validate(main_dir.path(), &feature_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_check_container_conflicts() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-conflict-check");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Should succeed even if no containers exist
+        let result = module.check_container_conflicts();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_cleanup_orphaned_containers() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-cleanup");
+        std::fs::create_dir(&feature_dir).unwrap();
+
+        let mut module = ComposeModule::new();
+        module.compose_project_name = "branchbox-test-orphan-cleanup".to_string();
+
+        // Should succeed even if no orphaned containers exist
+        let result = module.cleanup_orphaned_containers();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_setup_with_docker() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-setup");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+
+        let compose_content = r#"
+version: '3.8'
+services:
+  test:
+    image: alpine:latest
+    command: sleep 3600
+"#;
+        std::fs::write(
+            feature_dir.join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Setup should validate and check conflicts
+        let result = module.setup(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_with_docker() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+
+        let compose_content = r#"
+version: '3.8'
+services:
+  test:
+    image: alpine:latest
+    command: sleep 1
+"#;
+        std::fs::write(
+            feature_dir.join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed even if no containers running
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_full_lifecycle_with_docker() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-lifecycle");
+        std::fs::create_dir_all(main_dir.path().join(".devcontainer")).unwrap();
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+
+        let compose_content = r#"
+version: '3.8'
+services:
+  test:
+    image: alpine:latest
+    command: sleep 3600
+    labels:
+      com.docker.compose.project: branchbox-test-lifecycle
+"#;
+
+        std::fs::write(
+            main_dir.path().join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+        std::fs::write(
+            feature_dir.join(".devcontainer/compose.yaml"),
+            compose_content,
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+
+        // Init
+        module.init(main_dir.path(), &feature_dir).unwrap();
+        assert!(module.enabled);
+
+        // Setup (validate + check conflicts)
+        module.setup(main_dir.path(), &feature_dir).unwrap();
+
+        // Validate
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown (cleanup containers)
+        module.teardown(main_dir.path(), &feature_dir).unwrap();
+    }
 }
