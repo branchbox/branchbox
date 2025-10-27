@@ -191,9 +191,9 @@ jobs:
       - name: Build
         run: |
           if [[ "${{ matrix.use_cross }}" == "true" ]]; then
-            cross build --release --target ${{ matrix.target }} --locked --package branchbox-cli
+            cross build --release --target ${{ matrix.target }} --package branchbox-cli
           else
-            cargo build --release --target ${{ matrix.target }} --locked --package branchbox-cli
+            cargo build --release --target ${{ matrix.target }} --package branchbox-cli
           fi
         shell: bash
 
