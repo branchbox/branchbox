@@ -17,6 +17,10 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// HTTP errors
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
     /// Validation errors
     #[error("Validation error: {0}")]
     Validation(String),
@@ -63,6 +67,11 @@ pub enum Error {
 }
 
 impl Error {
+    /// Create a git command error
+    pub fn git(msg: impl Into<String>) -> Self {
+        Self::CommandFailed(msg.into())
+    }
+
     /// Create a validation error
     pub fn validation(msg: impl Into<String>) -> Self {
         Self::Validation(msg.into())

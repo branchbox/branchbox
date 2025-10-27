@@ -86,8 +86,8 @@ This project includes a complete devcontainer setup that provides a consistent d
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-org/worktree-manager.git
-   cd worktree-manager
+   git clone https://github.com/branchbox-branchbox.git
+   cd branchbox
    ```
 
 2. Open in devcontainer:
@@ -107,6 +107,12 @@ This project includes a complete devcontainer setup that provides a consistent d
    cargo doc --open
    ```
 
+**Tooling baked into the devcontainer:**
+- Rust stable toolchain with `cargo-watch`, `cargo-edit`, and `cargo-expand`
+- Node.js 20 plus the `@openai/codex` and `@anthropic-ai/claude-code` CLIs via `ghcr.io/rbarazi/devcontainer-features/ai-npm-packages`
+- Docker-in-Docker runtime (official Docker packages) for container orchestration tests
+- Persistent Codex configuration/history stored on the host at `.codex/`
+
 ### Local Development (without devcontainer)
 
 **Prerequisites:**
@@ -118,8 +124,8 @@ This project includes a complete devcontainer setup that provides a consistent d
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/worktree-manager.git
-cd worktree-manager
+git clone https://github.com/branchbox-branchbox.git
+cd branchbox
 
 # Build core library
 cd core
@@ -191,7 +197,7 @@ cargo doc --no-deps
 
 ## Meta Feature: Bootstrap System 🎯
 
-The worktree-manager can bootstrap devcontainer configurations for **any project** - including itself! This meta capability is implemented in `core/src/bootstrap/`.
+The branchbox can bootstrap devcontainer configurations for **any project** - including itself! This meta capability is implemented in `core/src/bootstrap/`.
 
 **Concept**: A tool that sets up development environments can set up its own development environment.
 
@@ -207,7 +213,7 @@ worktree bootstrap --stack nodejs /path/to/node-project
 # Auto-detect stack and bootstrap
 worktree bootstrap /path/to/project
 
-# Bootstrap worktree-manager itself (meta!)
+# Bootstrap branchbox itself (meta!)
 worktree bootstrap --stack rust .
 ```
 
@@ -227,7 +233,7 @@ worktree bootstrap --stack rust .
 ## Project Structure
 
 ```
-worktree-manager/
+branchbox/
 ├── .devcontainer/          # Dev container configuration (meta!)
 │   ├── devcontainer.json   # VS Code devcontainer config
 │   ├── compose.yaml        # Docker Compose setup

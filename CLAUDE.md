@@ -4,15 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**BranchBox** (formerly worktree-manager) is a Rust workspace that manages git worktrees and devcontainer environments. The project consists of:
-- `core/` - Reusable Rust library (`worktree-core`)
-- `cli/` - Command-line interface (`branchbox-cli`)
+BranchBox is a distributed development environment orchestrator that manages git worktrees and devcontainers. The project is migrating from bash scripts to a Rust-based implementation with a distributed architecture (local agents + control plane).
 
-The core library is designed for reuse across future components (agent daemon, macOS app, control plane).
+**Current state**: Milestone 0 complete - Core workflow orchestration for feature worktrees is implemented in Rust. The CLI supports `branchbox feature start/teardown/list` commands with full lifecycle management.
 
 ## Essential Commands
 
-### Build & Development
+### Building & Testing
+
 ```bash
 # Build entire workspace
 cargo build
@@ -20,300 +19,400 @@ cargo build
 # Build with optimizations
 cargo build --release
 
-# Build specific package
-cargo build --package worktree-core
-cargo build --package branchbox-cli
+# Run CLI locally (without installing)
+cargo run -p branchbox-cli -- feature list
+cargo run -p branchbox-cli -- --help
 
-# Quick check without building
-cargo check
-```
-
-### Testing
-```bash
-# Run all tests (unit, integration, doc tests)
+# Run all tests
 cargo test
+
+# Run specific test
+cargo test feature_commands
 
 # Run tests with output visible
 cargo test -- --nocapture
 
-# Run specific test by name
-cargo test naming
-cargo test test_generate_work_feature
+# Run with all features enabled
+cargo test --all-features
 
-# Run doc tests only
+# Run doctests
 cargo test --doc
-
-# Watch mode (if cargo-watch installed)
-cargo watch -x test
 ```
 
 ### Code Quality
-```bash
-# Format code (required before commits)
-cargo fmt
 
-# Lint with Clippy (fix warnings before committing)
-cargo clippy
+```bash
+# Format (must pass in CI)
+cargo fmt --all -- --check
+
+# Lint (must pass with -D warnings in CI)
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Quick compile check (fast iteration)
+cargo check
 
 # Security audit
 cargo audit
+
+# Coverage report (CI enforces 90%)
+cargo tarpaulin --out Html --all-features --workspace
 ```
 
-### Documentation
-```bash
-# Generate and open documentation
-cargo doc --open
+### Development Workflow
 
-# Generate without opening
+```bash
+# Watch mode (requires cargo-watch)
+cargo watch -x test
+cargo watch -x clippy
+
+# Generate and view documentation
+cargo doc --open
 cargo doc --no-deps
 ```
 
-### CLI Tool Usage
-```bash
-# Run the CLI directly (from workspace root)
-cargo run --package branchbox-cli -- <command>
+## Architecture Deep Dive
 
-# Or build and use the binary
-cargo build --release
-./target/release/branchbox init
-./target/release/branchbox detect
-./target/release/branchbox name generate "OAuth Integration"
+### Repository Structure
+
+The workspace has two active members defined in root `Cargo.toml`:
+
+- **`core/`** - The `worktree-core` library containing all business logic
+- **`cli/`** - The `branchbox-cli` binary that exports the `branchbox` command
+
+Future planned members (currently commented out):
+- **`agent/`** - Long-running daemon for distributed operation
+- **`control-plane/`** (separate repo) - Rails app for multi-device coordination
+- **`macos/`** (separate repo) - Native SwiftUI app
+
+### Core Library (`core/src/`)
+
+The `worktree-core` library is organized into these key subsystems:
+
+#### 1. Workflows (`workflows/feature.rs`)
+
+The `FeatureWorkflow` orchestrator manages the complete feature lifecycle:
+
+- **Start workflow**: Creates git worktree → runs adapter setup → initializes modules → provisions env → registers state
+- **Teardown workflow**: Runs module teardown → runs adapter cleanup → removes worktree → optionally deletes branch → updates state
+- **List**: Queries the state store for tracked features
+
+Key types:
+- `StartRequest` / `TeardownRequest` - Input parameters
+- `StartSummary` / `TeardownSummary` - Results with warnings/errors
+- `FeatureStateStore` - JSON-based registry tracking worktree metadata
+
+The workflow uses a `GitWorktree` wrapper and orchestrates adapters + modules.
+
+#### 2. Adapters (`adapters/mod.rs`, `adapters/{rails,nodejs,generic}.rs`)
+
+Stack-specific adapters auto-detect project type and handle:
+
+- **Detection**: Return confidence 0-100 based on markers (Gemfile, package.json, etc.)
+- **Service URL**: Provide the local URL for Cloudflare tunnel ingress
+- **Secret copying**: Copy `.env`, `.env.local`, credentials to worktree
+- **Database setup**: Stack-specific DB initialization (Rails migrations, etc.)
+- **Cleanup**: Remove temp files, stop services
+
+The `detect_adapter()` function tries all adapters and returns the highest-confidence match (Generic always returns 10 as fallback).
+
+Adapters are trait objects (`Box<dyn Adapter>`), making the system pluggable.
+
+#### 3. Modules (`modules/mod.rs`, `modules/{compose,database,tunnel,specs}.rs`)
+
+Composable feature components that run during worktree lifecycle:
+
+- **Compose** - Docker Compose project name isolation
+- **Database** - Database-level isolation for Rails/Django projects
+- **Tunnel** - Cloudflare tunnel provisioning (planned)
+- **Specs** - Feature specification lifecycle (backlog → in-progress → completed)
+
+Each module implements the `Module` trait:
+- `detect()` - Should this module run for this project?
+- `init()` - Initialize module config (mutates module state)
+- `setup()` - Run during feature start (provision resources)
+- `teardown()` - Run during feature teardown (cleanup resources)
+- `validate()` - Validate configuration
+- `dependencies()` - Declare dependency on other modules
+
+The `detect_modules()` function returns a `ModulePlan` with:
+- Dependency-sorted module handles (topological sort)
+- Warnings for missing dependencies or circular deps
+
+**Important**: Modules execute in dependency order. The specs module currently has no dependencies, but tunnel depends on compose in the future architecture.
+
+#### 4. Naming (`naming.rs`)
+
+Generates DNS-safe, dasherized feature names:
+
+```rust
+naming::generate_work_feature("OAuth Integration") // → "oauth-integration"
 ```
 
-## Architecture Overview
+Used for branch names (`feature/oauth-integration`), subdomain prefixes, Docker Compose project names, etc. Must be lowercase alphanumeric with hyphens only.
 
-### Workspace Structure
-The project uses Cargo workspace with two members:
-- **Core Library** (`worktree-core`): Shared business logic
-- **CLI Tool** (`branchbox-cli`): User-facing command interface
+#### 5. Git Operations (`git.rs`)
 
-This separation enables future reuse of core library in agent daemon, macOS app, and control plane.
+`GitWorktree` provides safe wrappers around git worktree operations:
 
-### Core Library Modules (7 Primary Components)
+- `create()` - Create new worktree + branch
+- `remove()` - Remove worktree (with safety checks)
+- `list()` - List existing worktrees
+- `branch_exists()` - Check if branch exists
 
-**1. naming.rs** - Feature name generation
-- `generate_work_feature()`: Converts titles to DNS-safe names ("OAuth Integration" → "oauth-integration")
-- `validate_work_feature()`: Validates naming rules (max 4 words, no filler words)
-- Naming convention critical for consistent worktree/tunnel/container naming across system
+Uses `git2` crate for native git operations (no shell commands).
 
-**2. validation.rs** - Environment validation
-- `validate_git_worktree()`: Checks git repository state
-- `validate_host_environment()`: Detects host vs. container execution
-- `parse_env_file()`: Reads .env files
-- `AppUrl`: Parses service URLs with scheme/host/port
-- `CloudflareCredentials`: Reads Cloudflare API tokens
+#### 6. Validation (`validation.rs`)
 
-**3. git.rs** - Git worktree operations
-- Create/remove/list worktrees programmatically
-- Branch management (create, delete, exists checks)
-- Uses `git2` crate for programmatic access
-- Parses porcelain output for reliable parsing
+Pre-flight checks before running workflows:
 
-**4. adapters/** - Stack-specific detection and configuration
-- **Trait-based system**: `StackAdapter` trait defines interface
-- **Detection logic**: Confidence-based auto-detection (0.0-1.0)
-- **Rails adapter** (`adapters/rails.rs`): Detects Gemfile, handles master.key/credentials
-- **Node.js adapter** (`adapters/nodejs.rs`): Detects package.json, copies .env/.npmrc
-- **Generic adapter** (`adapters/generic.rs`): Fallback for unknown stacks
-- **Key insight**: Adapters handle per-stack secrets, env vars, and cleanup
+- `validate_git_worktree()` - Ensure we're in a git repo, not bare, etc.
+- `validate_feature_name()` - Check DNS safety
+- `AppUrl` type - Parse and validate `APP_URL` from .env files
 
-**5. modules/** - Composable feature components
-- **Trait-based plugins**: `Module` trait with lifecycle methods (setup/teardown/cleanup)
-- **compose.rs**: Docker Compose network isolation per feature
-- **database.rs**: Database volume isolation (PostgreSQL/MySQL/MongoDB)
-- **tunnel.rs**: Cloudflare tunnel configuration and token management
-- **specs.rs**: Feature specification tracking with lifecycle states
-- **Detection**: Each module can detect if it applies to current project
+#### 7. State Management (`workflows/feature.rs` - `FeatureStateStore`)
 
-**6. bootstrap/** - Self-bootstrapping devcontainer system
-- **Meta-capability**: Tool generates devcontainer configs for any project, including itself
-- Embedded templates for Rails, Node.js, Rust, Generic stacks (compiled into binary)
-- Generates: devcontainer.json, compose.yaml, Dockerfile, .env.sample
-- Stack detection uses same adapter system as runtime features
+JSON-based registry tracking active/removed features:
 
-**7. error.rs** - Structured error handling
-- Custom `Error` enum with `thiserror` for context
-- `Result<T>` type alias used throughout codebase
-- Errors preserve context through call chain
-
-### CLI Architecture
-
-Uses `clap` with derive macros and enum-based subcommands:
 ```rust
-Commands {
-    Init,           // Initialize devcontainer
-    Detect,         // Show detected configuration
-    Name(NameCommands),  // Grouped: generate, validate
+// Stored at {repo_root}/.branchbox/registry.json
+{
+  "features": [{
+    "work_feature": "oauth-integration",
+    "branch_name": "feature/oauth-integration",
+    "worktree_path": "/path/to/oauth-integration",
+    "feature_url": "oauth-integration.example.com",
+    "status": "Active",
+    "created_at": "...",
+    "updated_at": "..."
+  }]
 }
 ```
 
-Grouped subcommands allow logical organization (e.g., all naming operations under `name`).
+Status enum: `Active` | `Removed`
 
-### Key Design Patterns
+### CLI (`cli/src/`)
 
-**Trait-Based Plugins**: Both adapters and modules use traits for extensibility
-- Add new stack: Implement `StackAdapter` trait
-- Add new module: Implement `Module` trait
+The CLI exports the `branchbox` binary with these subcommands:
 
-**Detection-Based Configuration**: System auto-detects rather than requiring config files
-- Stack detection: Scans for Gemfile, package.json, Cargo.toml, etc.
-- Module detection: Looks for docker-compose.yml, database configs, etc.
-- Confidence scoring: Most confident adapter wins
+- `branchbox init` - Bootstrap devcontainer (meta capability)
+- `branchbox detect` - Show detected stack and modules
+- `branchbox name generate|validate` - Feature naming utilities
+- `branchbox feature start|teardown|list` - Feature worktree lifecycle
 
-**Lifecycle Management**: Modules follow setup → active → teardown → cleanup lifecycle
-- Setup: Initial configuration
-- Teardown: Graceful shutdown
-- Cleanup: Remove all traces
+The `feature` subcommand implementation lives in `cli/src/commands/feature.rs`:
 
-**Error-as-Values**: Uses `Result<T, Error>` everywhere, no panics in library code
+- Parses args (clap)
+- Builds request objects
+- Calls `FeatureWorkflow` methods
+- Pretty-prints summaries with warnings/errors
 
-### Feature Lifecycle Flow
+**Integration tests** live in `cli/tests/feature_commands.rs` and test the full E2E flow using a real git repo in a temp directory.
 
-Understanding how a feature progresses through the system:
+## Key Design Patterns
 
-1. **Name Generation**: User title → validated feature name
-2. **Stack Detection**: Analyze project files → select adapter (Rails/Node.js/Generic)
-3. **Module Selection**: Scan for compose.yaml, databases, etc. → enable relevant modules
-4. **Adapter Configuration**: Copy stack-specific secrets, set env vars
-5. **Git Worktree Creation**: Create isolated worktree for feature branch
-6. **Bootstrap (optional)**: Generate devcontainer for feature worktree
-7. **Specs Tracking**: Record feature metadata with lifecycle state
+### Error Handling
 
-This multi-stage flow coordinates across naming, validation, adapters, modules, git, and bootstrap components.
+Currently using `anyhow::Error` everywhere. The `core/src/error.rs` defines a custom `Error` enum but it's not consistently used yet.
 
-## Critical Implementation Details
+**TODO** (from code review): Migrate to `thiserror`-based domain errors for better error reporting.
 
-### Naming Rules
-Feature names must be:
-- DNS-safe (lowercase alphanumeric + hyphens)
-- Max 4 significant words (filler words removed)
-- Valid for: branch names, container names, tunnel hostnames, database names
-- Validated by `validate_work_feature()` before any operations
+### Module Initialization Pattern
 
-### Stack Adapter Selection
-Adapters return confidence scores (0.0-1.0):
-- Rails: 1.0 if Gemfile exists
-- Node.js: 1.0 if package.json exists
-- Generic: 0.5 always (fallback)
+Modules have two-phase initialization:
 
-Highest confidence wins. System never fails detection (Generic always available).
+1. **Detection** - Happens before worktree creation (read-only, no mutations)
+2. **Init + Setup** - Happens after worktree creation (mutates state, provisions resources)
 
-### Module Independence
-Modules are independent and composable:
-- Compose module works with or without database module
-- Tunnel module works with or without compose module
-- Each module's setup/teardown is isolated
-- Failures in one module don't affect others
+This allows modules to gather context during detection, then use that context during setup.
 
-### Bootstrap Templates
-Templates are embedded in binary via `include_str!()`:
-- Located in `core/src/bootstrap/templates/`
-- Compiled into library (no runtime file dependencies)
-- One template set per stack (rails/, nodejs/, rust/, generic/)
+### Adapter vs Module
 
-## Testing Approach
+- **Adapter** = Stack-specific behavior (Rails vs Node.js vs Generic)
+- **Module** = Optional cross-cutting features (tunnel, database, specs, compose)
 
-### Test Coverage Expectations
-- Modules have 85-100% test coverage
-- CI enforces 90% coverage threshold with cargo-tarpaulin
-- All public APIs must have unit tests
-- Complex logic requires parameterized tests using `rstest`
+Both use trait objects for polymorphism. Adapters are detected once per workflow. Modules are detected, then executed in dependency order.
+
+### Offline-First (Planned)
+
+The future agent architecture will queue state updates to a control plane but always execute operations locally first. The current implementation already tracks state locally in JSON, which will migrate to SQLite in the agent.
+
+## Testing Strategy
 
 ### Test Organization
-- Unit tests: In-module `#[cfg(test)]` blocks
-- Integration tests: Separate `tests/` directory
-- Doc tests: Examples in doc comments (verified on CI)
 
-### Testing Git Operations
-Use `tempfile` crate for temporary git repositories:
-```rust
-use tempfile::TempDir;
-let temp_dir = TempDir::new()?;
-// Create test git repo in temp_dir
+- **Unit tests**: Live in `#[cfg(test)]` modules alongside code
+- **Integration tests**: Live in `{crate}/tests/` directories
+- **Doc tests**: Embedded in doc comments with `/// # Examples` sections
+
+### Running Subset of Tests
+
+```bash
+# Single test by name
+cargo test test_generate_work_feature
+
+# All tests in a module
+cargo test naming::tests
+
+# Integration tests only
+cargo test --test feature_commands
+
+# Specific integration test
+cargo test --test feature_commands feature_start_list_teardown
 ```
 
-## CI/CD Pipeline
+### Test Fixtures
 
-GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every PR:
+Integration tests use `tempfile::TempDir` for isolated test repos. The `init_test_repo()` helper creates a minimal git repo with a commit:
 
-1. **Quality**: `cargo fmt --check`, `cargo clippy`, `cargo audit`
-2. **Tests**: Unit + integration tests on Ubuntu + macOS
-3. **Coverage**: cargo-tarpaulin with 90% threshold
-4. **Build**: Multi-platform (Linux, macOS, Windows) on stable + beta Rust
-5. **Docs**: Check for documentation warnings
+```rust
+fn init_test_repo() -> TestRepo {
+    // Creates temp_dir/repo with initialized git, .env file, etc.
+}
+```
 
-All checks must pass before merge.
+### CI Requirements
 
-## Development Environment
+GitHub Actions CI enforces:
+- `cargo fmt --check`
+- `cargo clippy -- -D warnings`
+- `cargo test --all`
+- 90% code coverage (Tarpaulin)
 
-### Devcontainer Setup (Recommended)
-Project includes complete devcontainer configuration:
-- Base image: Rust development container
-- Features: GitHub CLI, Docker-outside-of-Docker
-- Extensions: rust-analyzer, TOML support, crates, LLDB debugger
-- Port 50051: Reserved for future gRPC server
+The workflow runs tests with Docker-in-Docker for testing Docker operations.
 
-This setup was generated by the bootstrap system itself (meta-capability).
+## Common Development Patterns
 
-### Key Dependencies
-- `git2`: Programmatic git operations (not git CLI)
-- `clap`: CLI argument parsing with derive macros
-- `serde`/`serde_json`/`serde_yaml`: Serialization
-- `thiserror`/`anyhow`: Error handling
-- `rstest`: Parameterized testing
-- `tracing`/`tracing-subscriber`: Structured logging
+### Adding a New Adapter
 
-## Implementation Status
-
-**Phase 2 Complete** (Current):
-- Core library: 7 modules fully implemented
-- CLI tool: Complete with init, detect, name commands
-- Test coverage: 85-100% across modules
-- Documentation: Comprehensive doc comments
-
-**Future Phases** (Planned):
-- Phase 3: Local agent daemon (gRPC server, SQLite offline queue)
-- Phase 4: Enhanced CLI with agent communication
-- Phase 5: Control plane (Rails backend, PostgreSQL, web dashboard)
-- Phase 6: macOS app (SwiftUI native interface)
-
-See `docs/IMPLEMENTATION_STATUS.md` for detailed phase breakdown.
-
-## Common Development Workflows
-
-### Adding a New Stack Adapter
 1. Create `core/src/adapters/mystack.rs`
-2. Implement `StackAdapter` trait
-3. Add detection logic (return confidence 0.0-1.0)
-4. Implement `configure()` for secrets/env setup
-5. Add to `adapters/mod.rs` detection list
-6. Write tests in module
-7. Add template in `bootstrap/templates/mystack/`
+2. Implement the `Adapter` trait
+3. Add detection logic (check for marker files)
+4. Implement `copy_secrets()` for stack-specific config files
+5. Register in `adapters/mod.rs::detect_adapter()`
+6. Add tests in `#[cfg(test)]` module
 
 ### Adding a New Module
+
 1. Create `core/src/modules/mymodule.rs`
-2. Implement `Module` trait with lifecycle methods
-3. Add detection logic (`is_applicable()`)
-4. Implement setup/teardown/cleanup
-5. Add to `modules/mod.rs`
-6. Write unit tests with tempfile
-7. Update CLI to show module in `detect` command
+2. Implement the `Module` trait
+3. Define `dependencies()` if it depends on other modules
+4. Register in `modules/mod.rs::all_modules()`
+5. Add detection logic in `detect()`
+6. Implement lifecycle hooks: `init()`, `setup()`, `teardown()`
+7. Add tests verifying dependency ordering
 
-### Debugging Git Operations
-Enable git2 tracing:
-```bash
-GIT_TRACE=1 cargo test -- --nocapture
+### Extending the CLI
+
+1. Add new subcommand enum variant in `cli/src/main.rs::Commands`
+2. Create handler in `cli/src/commands/` if complex
+3. Call `FeatureWorkflow` or other core library functions
+4. Add integration test in `cli/tests/`
+5. Pretty-print results with clear sections and bullet points
+
+## Environment Variables & Configuration
+
+### Development Environment
+
+The devcontainer (`.devcontainer/`) provides:
+
+- Rust stable toolchain + `cargo-watch`, `cargo-edit`, `cargo-expand`
+- Node.js 20 + Codex/Claude Code CLIs
+- Docker-in-Docker (privileged mode required)
+- Persistent `.codex/` config and `.cargo/` cache
+
+**Important**: The container runs privileged for DinD. Be aware of security implications.
+
+### Test Environment
+
+Tests should set `BRANCHBOX_SKIP_HOST_VALIDATION=1` to bypass host environment checks (see `cli/tests/feature_commands.rs` for example).
+
+### Feature Environment
+
+During `feature start`, the workflow:
+
+1. Copies `.env` from repo root to worktree (if exists)
+2. Injects `APP_URL` and `COMPOSE_PROJECT_NAME` into worktree `.env`
+3. Adapters may copy additional secrets (`.env.local`, `master.key`, etc.)
+
+## Migration from Bash Scripts
+
+The repo contains legacy bash scripts in `lib/` and `bin/feature-*`. These are being replaced by Rust:
+
+- ✅ `lib/core/naming.sh` → `core/src/naming.rs`
+- ✅ `lib/adapters/` → `core/src/adapters/`
+- ✅ `lib/modules/` → `core/src/modules/`
+- ✅ `bin/feature-start` → `branchbox feature start`
+- ✅ `bin/feature-teardown` → `branchbox feature teardown`
+
+When migrating bash code to Rust, maintain the same behavior but leverage Rust's type safety and error handling.
+
+## Specs Module Behavior
+
+The specs module manages feature specifications:
+
+1. **Start workflow**: Promotes spec from `docs/features/backlog/{name}.md` → `docs/features/in-progress/{name}.md` (or creates stub if missing)
+2. **Teardown workflow**: If `--complete-spec` flag is set, moves spec from `in-progress/` → `completed/`
+
+Spec stubs are scaffolded with front matter:
+
+```markdown
+---
+title: Feature Title
+status: in-progress
+created_at: 2025-10-24T...
+---
+
+## Overview
+
+## Requirements
+
+## Implementation Notes
 ```
 
-Or use `tracing` instrumentation:
-```bash
-RUST_LOG=worktree_core=debug cargo test -- --nocapture
+## Commit Message Convention
+
+Follow Conventional Commits:
+
+```
+<type>(<scope>): <description>
+
+feat(modules): add tunnel dependency on compose
+fix(cli): validate feature name before creating worktree
+docs(architecture): document module dependency system
+test(adapters): cover Rails secret copying
 ```
 
-## Documentation Philosophy
+Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`
 
-- Doc comments explain **why**, code shows **what**
-- Public APIs must have `///` doc comments with examples
-- Use `# Examples` sections that double as doc tests
-- Reference related functions with \[`function_name`\]
-- Document panics, errors, and edge cases explicitly
+Scopes: `modules`, `adapters`, `workflows`, `cli`, `core`, `devcontainer`, `ci`
+
+See recent commit history for examples:
+- `feat(workflows): migrate tunnel and adapter orchestration to rust`
+- `feat(specs): support completing specs during teardown`
+- `feat(modules): auto-promote backlog specs`
+
+## Known Issues & TODOs
+
+From the recent code review (PR #2):
+
+1. **Repository URL is incorrect** - `Cargo.toml` has `branchbox-branchbox` instead of actual org/repo
+2. **Placeholder author metadata** - `Cargo.toml` has `Your Name <you@example.com>`
+3. **Generic error types** - Should migrate from `anyhow::Error` to `thiserror`-based domain errors
+4. **Missing input validation** - CLI should validate that either `--name` or `--title` is provided
+5. **Race conditions** - Registry check + worktree creation isn't atomic
+6. **Hardcoded config** - Docker network names, port ranges, spec templates should be configurable
+7. **Missing unit tests** - Registry operations, workflow components, module implementations need dedicated unit tests
+
+## Future Architecture Notes
+
+The long-term vision includes:
+
+- **Agent** - Rust daemon running on each device (gRPC server)
+- **Control Plane** - Rails app for multi-device orchestration (hosted)
+- **Mac App** - SwiftUI native app talking to local agent
+- **Tailscale** - Secure mesh VPN for agent ↔ control plane communication
+- **Offline-first** - SQLite queue for operations when disconnected
+
+See `docs/ARCHITECTURE.md` for the full distributed system design.
+
+For now, focus on the local-first workflow: CLI → FeatureWorkflow → Git + Adapters + Modules.

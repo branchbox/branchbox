@@ -36,7 +36,10 @@ impl ComposeModule {
             .args([
                 "ps",
                 "--filter",
-                &format!("label=com.docker.compose.project={}", self.compose_project_name),
+                &format!(
+                    "label=com.docker.compose.project={}",
+                    self.compose_project_name
+                ),
                 "--format",
                 "{{.Names}}",
             ])
@@ -65,7 +68,10 @@ impl ComposeModule {
                 "ps",
                 "-a",
                 "--filter",
-                &format!("label=com.docker.compose.project={}", self.compose_project_name),
+                &format!(
+                    "label=com.docker.compose.project={}",
+                    self.compose_project_name
+                ),
                 "--format",
                 "{{.ID}}",
             ])
@@ -90,7 +96,10 @@ impl ComposeModule {
                 "network",
                 "ls",
                 "--filter",
-                &format!("label=com.docker.compose.project={}", self.compose_project_name),
+                &format!(
+                    "label=com.docker.compose.project={}",
+                    self.compose_project_name
+                ),
                 "--format",
                 "{{.ID}}",
             ])
@@ -165,7 +174,9 @@ impl Module for ComposeModule {
 
         // Validate compose configuration
         if !self.compose_file_name.is_empty() {
-            let compose_file = feature_dir.join(".devcontainer").join(&self.compose_file_name);
+            let compose_file = feature_dir
+                .join(".devcontainer")
+                .join(&self.compose_file_name);
             if compose_file.exists() {
                 self.validate(_main_dir, feature_dir)?;
             } else {
@@ -183,7 +194,9 @@ impl Module for ComposeModule {
     fn teardown(&self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
         tracing::info!("Stopping and removing containers...");
 
-        let compose_file = feature_dir.join(".devcontainer").join(&self.compose_file_name);
+        let compose_file = feature_dir
+            .join(".devcontainer")
+            .join(&self.compose_file_name);
 
         if compose_file.exists() {
             // Check if containers are running
@@ -237,16 +250,13 @@ impl Module for ComposeModule {
             return Ok(());
         }
 
-        let compose_file = feature_dir.join(".devcontainer").join(&self.compose_file_name);
+        let compose_file = feature_dir
+            .join(".devcontainer")
+            .join(&self.compose_file_name);
 
         if compose_file.exists() {
             let output = Command::new("docker")
-                .args([
-                    "compose",
-                    "-f",
-                    compose_file.to_str().unwrap(),
-                    "config",
-                ])
+                .args(["compose", "-f", compose_file.to_str().unwrap(), "config"])
                 .current_dir(feature_dir)
                 .output()
                 .map_err(|e| Error::validation(format!("Failed to validate compose: {}", e)))?;

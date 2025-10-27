@@ -21,7 +21,8 @@ impl Adapter for NodeJsAdapter {
         }
 
         // Check for yarn.lock or package-lock.json
-        if project_dir.join("yarn.lock").exists() || project_dir.join("package-lock.json").exists() {
+        if project_dir.join("yarn.lock").exists() || project_dir.join("package-lock.json").exists()
+        {
             return 80;
         }
 

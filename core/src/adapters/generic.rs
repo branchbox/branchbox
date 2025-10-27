@@ -25,12 +25,7 @@ impl Adapter for GenericAdapter {
 
     fn copy_secrets(&self, src: &Path, dest: &Path) -> Result<()> {
         // Copy common secret files
-        let secret_files = vec![
-            ".env",
-            ".env.local",
-            ".env.development",
-            ".secrets",
-        ];
+        let secret_files = vec![".env", ".env.local", ".env.development", ".secrets"];
 
         let mut copied = false;
 
@@ -52,12 +47,7 @@ impl Adapter for GenericAdapter {
 
     fn cleanup(&self, worktree_dir: &Path) -> Result<()> {
         // Clean up common temporary files and directories
-        let paths_to_clean = vec![
-            ".cache",
-            "tmp",
-            "temp",
-            ".tmp",
-        ];
+        let paths_to_clean = vec![".cache", "tmp", "temp", ".tmp"];
 
         for path in paths_to_clean {
             let full_path = worktree_dir.join(path);

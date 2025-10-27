@@ -198,7 +198,14 @@ jobs:
     services:
       docker:
         image: docker:24-dind
+        env:
+          DOCKER_TLS_CERTDIR: ""
         options: --privileged
+        ports:
+          - 2375:2375
+
+    env:
+      DOCKER_HOST: tcp://localhost:2375
 
     steps:
       - name: Checkout code

@@ -1,5 +1,8 @@
+mod commands;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::feature::{self, FeatureCommands};
 use std::path::PathBuf;
 use worktree_core::bootstrap::{Bootstrap, Stack};
 
@@ -36,6 +39,10 @@ enum Commands {
     /// Feature name utilities
     #[command(subcommand)]
     Name(NameCommands),
+
+    /// Manage feature worktrees
+    #[command(subcommand)]
+    Feature(FeatureCommands),
 }
 
 #[derive(Subcommand)]
@@ -67,7 +74,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init { path, stack } => {
             let project_path = path.unwrap_or_else(|| PathBuf::from("."));
-            let bootstrap = Bootstrap::new(&project_path)?;
+            let bootstrap = Bootstrap::new(&project_path);
 
             let stack = if let Some(stack_str) = stack {
                 match stack_str.to_lowercase().as_str() {
@@ -99,7 +106,7 @@ fn main() -> Result<()> {
 
         Commands::Detect { path } => {
             let project_path = path.unwrap_or_else(|| PathBuf::from("."));
-            let bootstrap = Bootstrap::new(&project_path)?;
+            let bootstrap = Bootstrap::new(&project_path);
             let stack = bootstrap.detect_stack()?;
 
             println!("📦 BranchBox Configuration");
@@ -112,12 +119,23 @@ fn main() -> Result<()> {
             println!("Adapter: {}", adapters.name());
 
             // Show what modules would be enabled
-            let modules = worktree_core::modules::detect_modules(&project_path);
+            let module_plan = worktree_core::modules::detect_modules(&project_path, &[]);
             println!();
-            println!("Enabled modules: {}", modules.len());
-            for module in modules {
-                println!("  ✓ {}", module.name());
+            println!("Enabled modules: {}", module_plan.handles.len());
+            for handle in &module_plan.handles {
+                println!("  ✓ {}", handle.name);
             }
+            if !module_plan.warnings.is_empty() {
+                println!();
+                println!("Warnings:");
+                for warning in module_plan.warnings {
+                    println!("  - {}", warning);
+                }
+            }
+        }
+
+        Commands::Feature(feature_cmd) => {
+            feature::execute(feature_cmd)?;
         }
 
         Commands::Name(name_cmd) => match name_cmd {
@@ -131,7 +149,9 @@ fn main() -> Result<()> {
                     println!("✓ Valid feature name: {}", name);
                 } else {
                     eprintln!("✗ Invalid feature name: {}", name);
-                    eprintln!("  Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)");
+                    eprintln!(
+                        "  Feature names must be DNS-safe (lowercase a-z, 0-9, hyphens only)"
+                    );
                     std::process::exit(1);
                 }
             }

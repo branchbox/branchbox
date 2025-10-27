@@ -85,6 +85,8 @@ A distributed development environment orchestrator that manages git worktrees an
 - Module plugin system
 - Environment variable management
 - Template rendering for devcontainer configs
+- Opinionated devcontainer layout that mounts the parent worktree tree at `/workspaces` so per-feature folders resolve consistently inside containers
+- Reads optional `APP_NAME`/`APP_SLUG` settings from `.env` to align compose/devcontainer naming with the host project and propagates them to Docker Compose container names
 
 **Distribution**:
 - Published to crates.io as `worktree-core`
@@ -400,7 +402,7 @@ brew tap your-org/worktree
 brew install worktree-agent
 
 # Manual
-curl -L https://github.com/your-org/worktree-manager/releases/download/v1.0.0/worktree-agent-darwin-arm64.tar.gz | tar xz
+curl -L https://github.com/branchbox-branchbox/releases/download/v1.0.0/worktree-agent-darwin-arm64.tar.gz | tar xz
 sudo mv worktree-agent /usr/local/bin/
 
 # Initialize
@@ -529,8 +531,8 @@ Build SwiftUI app:
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/worktree-manager
-cd worktree-manager
+git clone https://github.com/branchbox-branchbox
+cd branchbox
 
 # Build core library
 cd core

@@ -1,5 +1,11 @@
 # Rust
 /target/
+.cargo/
+lib/migrated/
+lib/core/
+lib/utils/
+lib/feature-start
+lib/feature-teardown
 **/*.rs.bk
 *.pdb
 Cargo.lock
@@ -30,3 +36,4 @@ Thumbs.db
 
 # Logs
 *.log
+.codex/
