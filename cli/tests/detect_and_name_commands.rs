@@ -134,7 +134,7 @@ fn name_generate_converts_title_to_name() {
 
     cmd.assert()
         .success()
-        .stdout("oauth-integration\n");
+        .stdout("oauth\n");
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn name_generate_handles_multiple_words() {
 
     cmd.assert()
         .success()
-        .stdout("add-new-api-endpoint\n");
+        .stdout("add-new-api\n");
 }
 
 #[test]

@@ -1,5 +1,4 @@
 ---
-
 branch: feature/devcontainer-env-isolation
 created: 2025-10-17
 status: in-progress

@@ -1884,6 +1884,9 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
         };
 
         store.record_start(metadata.clone()).unwrap();
@@ -1911,6 +1914,9 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -1940,6 +1946,9 @@ mod tests {
             created_at: now,
             updated_at: now,
             removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
         };
 
         store.record_start(metadata1).unwrap();
@@ -1957,6 +1966,9 @@ mod tests {
             created_at: Utc::now(), // This should be ignored
             updated_at: Utc::now(),
             removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
         };
 
         store.record_start(metadata2).unwrap();

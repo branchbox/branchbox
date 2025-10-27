@@ -22,10 +22,10 @@
       "feature_url": "dev-devcontainer-env-isolation.localhost",
       "compose_project_name": "branchbox-devcontainer-env-isolation",
       "env_path": "/Users/rbarazi/projects/branchbox/devcontainer-env-isolation/.env",
-      "status": "active",
+      "status": "removed",
       "created_at": "2025-10-25T03:12:48.318519Z",
-      "updated_at": "2025-10-25T03:12:48.318545Z",
-      "removed_at": null
+      "updated_at": "2025-10-27T10:09:40.628146Z",
+      "removed_at": "2025-10-27T10:09:40.628146Z"
     }
   ]
 }

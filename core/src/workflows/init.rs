@@ -352,7 +352,7 @@ impl InitWorkflow {
         }
 
         // Phase 5: Module detection
-        let module_plan = crate::modules::detect_modules(&workspace_path);
+        let module_plan = crate::modules::detect_modules(&workspace_path, &[]);
         summary.modules = module_plan
             .handles
             .iter()
