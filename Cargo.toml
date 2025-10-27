@@ -40,6 +40,7 @@ which = "6.0"
 # File system
 walkdir = "2.4"
 tempfile = "3.8"
+dirs = "5.0"
 
 # Regex
 regex = "1.10"
