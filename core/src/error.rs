@@ -21,6 +21,10 @@ pub enum Error {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// JSON errors
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     /// Validation errors
     #[error("Validation error: {0}")]
     Validation(String),
