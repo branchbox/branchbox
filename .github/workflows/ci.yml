@@ -113,6 +113,18 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
 
+    services:
+      docker:
+        image: docker:24-dind
+        env:
+          DOCKER_TLS_CERTDIR: ""
+        options: --privileged
+        ports:
+          - 2375:2375
+
+    env:
+      DOCKER_HOST: tcp://localhost:2375
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -123,8 +135,19 @@ jobs:
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
 
+      - name: Wait for Docker
+        run: |
+          for i in {1..30}; do
+            if docker info > /dev/null 2>&1; then
+              echo "Docker is ready"
+              break
+            fi
+            echo "Waiting for Docker..."
+            sleep 2
+          done
+
       - name: Generate coverage
-        run: cargo tarpaulin --out Xml --all-features --workspace
+        run: cargo tarpaulin --out Xml --all-features --workspace -- --include-ignored
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
