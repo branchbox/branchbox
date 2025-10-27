@@ -21,6 +21,10 @@ pub enum Error {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// JSON errors
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     /// Validation errors
     #[error("Validation error: {0}")]
     Validation(String),
@@ -90,5 +94,62 @@ impl Error {
     /// Create an other error
     pub fn other(msg: impl Into<String>) -> Self {
         Self::Other(msg.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_error() {
+        let err = Error::validation("test message");
+        assert!(matches!(err, Error::Validation(_)));
+        assert_eq!(err.to_string(), "Validation error: test message");
+    }
+
+    #[test]
+    fn test_git_error() {
+        let err = Error::git("git command failed");
+        assert!(matches!(err, Error::CommandFailed(_)));
+        assert_eq!(
+            err.to_string(),
+            "Command execution failed: git command failed"
+        );
+    }
+
+    #[test]
+    fn test_module_error() {
+        let err = Error::module("module failed");
+        assert!(matches!(err, Error::Module(_)));
+        assert_eq!(err.to_string(), "Module error: module failed");
+    }
+
+    #[test]
+    fn test_config_error() {
+        let err = Error::config("config invalid");
+        assert!(matches!(err, Error::Config(_)));
+        assert_eq!(err.to_string(), "Configuration error: config invalid");
+    }
+
+    #[test]
+    fn test_other_error() {
+        let err = Error::other("something else");
+        assert!(matches!(err, Error::Other(_)));
+        assert_eq!(err.to_string(), "something else");
+    }
+
+    #[test]
+    fn test_worktree_exists_error() {
+        let path = PathBuf::from("/tmp/test");
+        let err = Error::WorktreeExists(path.clone());
+        assert!(err.to_string().contains("/tmp/test"));
+    }
+
+    #[test]
+    fn test_io_error_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
     }
 }

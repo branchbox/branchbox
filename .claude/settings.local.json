@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(if [ -f /Users/rbarazi/projects/branchbox/universal-init/.env ])",
+      "Bash(then grep WORK_FEATURE /Users/rbarazi/projects/branchbox/universal-init/.env)",
+      "Bash(else echo \"No .env file\")",
+      "Bash(fi)",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/branchbox feature:*)",
+      "Bash(cat:*)",
+      "Read(//Users/rbarazi/projects/branchbox/universal-init/**)",
+      "Bash(docker compose:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

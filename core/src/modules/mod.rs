@@ -259,4 +259,73 @@ mod tests {
 
         assert!(!names.contains(&"compose"));
     }
+
+    #[test]
+    fn test_module_plan_new() {
+        let plan = ModulePlan::new(vec![], vec!["test warning".to_string()]);
+        assert_eq!(plan.warnings.len(), 1);
+        assert_eq!(plan.warnings[0], "test warning");
+        assert_eq!(plan.handles.len(), 0);
+    }
+
+    #[test]
+    fn test_module_default_dependencies() {
+        struct TestModule;
+        impl Module for TestModule {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn detect(&self, _: &Path) -> bool {
+                true
+            }
+            fn init(&mut self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn setup(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn teardown(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn validate(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let module = TestModule;
+        let deps: &[&str] = module.dependencies();
+        assert_eq!(deps.len(), 0);
+    }
+
+    #[test]
+    fn test_module_handle_new() {
+        struct TestModule;
+        impl Module for TestModule {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn detect(&self, _: &Path) -> bool {
+                true
+            }
+            fn init(&mut self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn setup(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn teardown(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn validate(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn dependencies(&self) -> &[&str] {
+                &["other"]
+            }
+        }
+
+        let handle = ModuleHandle::new(Box::new(TestModule));
+        assert_eq!(handle.name, "test");
+        assert_eq!(handle.dependencies, vec!["other"]);
+    }
 }

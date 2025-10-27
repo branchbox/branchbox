@@ -1621,7 +1621,7 @@ const STATE_VERSION: u32 = 1;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// // Internal function - not exposed in public API
 /// let color = generate_feature_color("oauth-integration");
 /// assert_eq!(color.len(), 7); // #RRGGBB format
@@ -1686,6 +1686,304 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_build_branch_name_with_default_prefix() {
+        assert_eq!(build_branch_name(None, "oauth"), "feature/oauth");
+    }
+
+    #[test]
+    fn test_build_branch_name_with_custom_prefix() {
+        assert_eq!(
+            build_branch_name(Some("bugfix"), "issue-123"),
+            "bugfix/issue-123"
+        );
+    }
+
+    #[test]
+    fn test_build_branch_name_with_trailing_slash() {
+        assert_eq!(build_branch_name(Some("feature/"), "test"), "feature/test");
+    }
+
+    #[test]
+    fn test_build_branch_name_with_empty_prefix() {
+        assert_eq!(build_branch_name(Some(""), "test"), "test");
+    }
+
+    #[test]
+    fn test_feature_title_from_work_feature() {
+        assert_eq!(
+            feature_title_from_work_feature("oauth-integration"),
+            "Oauth Integration"
+        );
+        assert_eq!(
+            feature_title_from_work_feature("fix-bug-123"),
+            "Fix Bug 123"
+        );
+        assert_eq!(feature_title_from_work_feature("a"), "A");
+        assert_eq!(feature_title_from_work_feature(""), "");
+    }
+
+    #[test]
+    fn test_feature_status_display() {
+        assert_eq!(FeatureStatus::Active.to_string(), "active");
+        assert_eq!(FeatureStatus::Removed.to_string(), "removed");
+    }
+
+    #[test]
+    fn test_feature_status_from_str() {
+        assert_eq!(
+            FeatureStatus::from_str("active").unwrap(),
+            FeatureStatus::Active
+        );
+        assert_eq!(
+            FeatureStatus::from_str("removed").unwrap(),
+            FeatureStatus::Removed
+        );
+        assert_eq!(
+            FeatureStatus::from_str("ACTIVE").unwrap(),
+            FeatureStatus::Active
+        );
+        assert_eq!(
+            FeatureStatus::from_str(" removed ").unwrap(),
+            FeatureStatus::Removed
+        );
+    }
+
+    #[test]
+    fn test_feature_status_from_str_invalid() {
+        let result = FeatureStatus::from_str("invalid");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+        assert!(err.to_string().contains("active"));
+        assert!(err.to_string().contains("removed"));
+    }
+
+    #[test]
+    fn test_update_spec_frontmatter_creates_new() {
+        let temp = TempDir::new().unwrap();
+        let spec_path = temp.path().join("spec.md");
+        fs::write(&spec_path, "# Feature\n\nSome content\n").unwrap();
+
+        let updates = vec![
+            ("status".to_string(), "in-progress".to_string()),
+            ("branch".to_string(), "feature/test".to_string()),
+        ];
+        update_spec_frontmatter(&spec_path, &updates).unwrap();
+
+        let content = fs::read_to_string(&spec_path).unwrap();
+        assert!(content.starts_with("---\n"));
+        assert!(content.contains("branch: feature/test"));
+        assert!(content.contains("status: in-progress"));
+        assert!(content.contains("# Feature"));
+    }
+
+    #[test]
+    fn test_update_spec_frontmatter_updates_existing() {
+        let temp = TempDir::new().unwrap();
+        let spec_path = temp.path().join("spec.md");
+        fs::write(
+            &spec_path,
+            "---\nstatus: backlog\nold_key: old_value\n---\n# Feature\n",
+        )
+        .unwrap();
+
+        let updates = vec![("status".to_string(), "in-progress".to_string())];
+        update_spec_frontmatter(&spec_path, &updates).unwrap();
+
+        let content = fs::read_to_string(&spec_path).unwrap();
+        assert!(content.contains("status: in-progress"));
+        assert!(content.contains("old_key: old_value"));
+    }
+
+    #[test]
+    fn test_split_feature_section_no_marker() {
+        let temp = TempDir::new().unwrap();
+        let env_path = temp.path().join(".env");
+        fs::write(&env_path, "FOO=bar\nBAZ=qux").unwrap();
+
+        let (base, feature) = split_feature_section(&env_path).unwrap();
+        assert_eq!(base.trim(), "FOO=bar\nBAZ=qux");
+        assert!(feature.is_none());
+    }
+
+    #[test]
+    fn test_split_feature_section_with_marker() {
+        let temp = TempDir::new().unwrap();
+        let env_path = temp.path().join(".env");
+        fs::write(
+            &env_path,
+            "FOO=bar\n# Feature-specific configuration\nWORK_FEATURE=test\n",
+        )
+        .unwrap();
+
+        let (base, feature) = split_feature_section(&env_path).unwrap();
+        assert_eq!(base.trim(), "FOO=bar");
+        assert!(feature.is_some());
+        assert!(feature.unwrap().contains("WORK_FEATURE=test"));
+    }
+
+    #[test]
+    fn test_env_outcome_skipped() {
+        let outcome = EnvOutcome::skipped();
+        assert!(outcome.skipped);
+        assert!(outcome.env_path.is_none());
+        assert!(outcome.feature_url.is_none());
+        assert!(outcome.compose_project_name.is_none());
+    }
+
+    #[test]
+    fn test_resolve_repo_root_direct_repo() {
+        let temp = TempDir::new().unwrap();
+        let repo_path = temp.path();
+
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let resolved = resolve_repo_root(repo_path).unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            repo_path.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_resolve_repo_root_not_a_repo() {
+        let temp = TempDir::new().unwrap();
+        let result = resolve_repo_root(temp.path());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Not a git repository"));
+    }
+
+    #[test]
+    fn test_state_store_load_empty() {
+        let temp = TempDir::new().unwrap();
+        let store = FeatureStateStore::new(temp.path());
+        let registry = store.load_registry().unwrap();
+        assert_eq!(registry.features.len(), 0);
+    }
+
+    #[test]
+    fn test_state_store_record_start() {
+        let temp = TempDir::new().unwrap();
+        let store = FeatureStateStore::new(temp.path());
+
+        let metadata = FeatureMetadata {
+            work_feature: "test".to_string(),
+            branch_name: "feature/test".to_string(),
+            worktree_path: temp.path().join("test"),
+            base_branch: Some("main".to_string()),
+            feature_url: Some("test.example.com".to_string()),
+            compose_project_name: Some("test".to_string()),
+            env_path: Some(temp.path().join("test/.env")),
+            status: FeatureStatus::Active,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
+        };
+
+        store.record_start(metadata.clone()).unwrap();
+
+        let features = store.list_features().unwrap();
+        assert_eq!(features.len(), 1);
+        assert_eq!(features[0].work_feature, "test");
+        assert_eq!(features[0].status, FeatureStatus::Active);
+    }
+
+    #[test]
+    fn test_state_store_record_teardown() {
+        let temp = TempDir::new().unwrap();
+        let store = FeatureStateStore::new(temp.path());
+
+        let metadata = FeatureMetadata {
+            work_feature: "test".to_string(),
+            branch_name: "feature/test".to_string(),
+            worktree_path: temp.path().join("test"),
+            base_branch: Some("main".to_string()),
+            feature_url: Some("test.example.com".to_string()),
+            compose_project_name: Some("test".to_string()),
+            env_path: Some(temp.path().join("test/.env")),
+            status: FeatureStatus::Active,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
+        };
+
+        store.record_start(metadata).unwrap();
+        store.record_teardown("test").unwrap();
+
+        let features = store.list_features().unwrap();
+        assert_eq!(features.len(), 1);
+        assert_eq!(features[0].status, FeatureStatus::Removed);
+        assert!(features[0].removed_at.is_some());
+    }
+
+    #[test]
+    fn test_state_store_record_start_updates_existing() {
+        let temp = TempDir::new().unwrap();
+        let store = FeatureStateStore::new(temp.path());
+
+        let now = Utc::now();
+        let metadata1 = FeatureMetadata {
+            work_feature: "test".to_string(),
+            branch_name: "feature/test".to_string(),
+            worktree_path: temp.path().join("test"),
+            base_branch: Some("main".to_string()),
+            feature_url: Some("test.example.com".to_string()),
+            compose_project_name: Some("test".to_string()),
+            env_path: Some(temp.path().join("test/.env")),
+            status: FeatureStatus::Active,
+            created_at: now,
+            updated_at: now,
+            removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
+        };
+
+        store.record_start(metadata1).unwrap();
+
+        // Record start again with updated data
+        let metadata2 = FeatureMetadata {
+            work_feature: "test".to_string(),
+            branch_name: "feature/test".to_string(),
+            worktree_path: temp.path().join("test"),
+            base_branch: Some("develop".to_string()), // Changed
+            feature_url: Some("new.example.com".to_string()), // Changed
+            compose_project_name: Some("test".to_string()),
+            env_path: Some(temp.path().join("test/.env")),
+            status: FeatureStatus::Active,
+            created_at: Utc::now(), // This should be ignored
+            updated_at: Utc::now(),
+            removed_at: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
+        };
+
+        store.record_start(metadata2).unwrap();
+
+        let features = store.list_features().unwrap();
+        assert_eq!(features.len(), 1);
+        assert_eq!(features[0].work_feature, "test");
+        assert_eq!(features[0].base_branch, Some("develop".to_string()));
+        assert_eq!(features[0].feature_url, Some("new.example.com".to_string()));
+        // created_at should be preserved from first record
+        assert_eq!(features[0].created_at, now);
+    }
 
     fn setup_test_repo() -> TempDir {
         let temp_dir = TempDir::new().unwrap();

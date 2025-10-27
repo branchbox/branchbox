@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "features": [
+    {
+      "work_feature": "universal-init",
+      "branch_name": "feature/universal-init",
+      "worktree_path": "/Users/rbarazi/projects/branchbox/universal-init",
+      "base_branch": null,
+      "feature_url": "dev-universal-init.localhost",
+      "compose_project_name": "branchbox-universal-init",
+      "env_path": "/Users/rbarazi/projects/branchbox/universal-init/.env",
+      "status": "active",
+      "created_at": "2025-10-24T02:28:38.119938Z",
+      "updated_at": "2025-10-25T02:49:45.099820Z",
+      "removed_at": null
+    },
+    {
+      "work_feature": "devcontainer-env-isolation",
+      "branch_name": "feature/devcontainer-env-isolation",
+      "worktree_path": "/Users/rbarazi/projects/branchbox/devcontainer-env-isolation",
+      "base_branch": null,
+      "feature_url": "dev-devcontainer-env-isolation.localhost",
+      "compose_project_name": "branchbox-devcontainer-env-isolation",
+      "env_path": "/Users/rbarazi/projects/branchbox/devcontainer-env-isolation/.env",
+      "status": "removed",
+      "created_at": "2025-10-25T03:12:48.318519Z",
+      "updated_at": "2025-10-27T10:09:40.628146Z",
+      "removed_at": "2025-10-27T10:09:40.628146Z"
+    }
+  ]
+}

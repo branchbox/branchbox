@@ -129,4 +129,83 @@ mod tests {
         // Rails confidence (95) should beat Generic confidence (10)
         assert_eq!(adapter.name(), "Rails");
     }
+
+    #[test]
+    fn test_adapter_default_service_url() {
+        struct TestAdapter;
+        impl Adapter for TestAdapter {
+            fn name(&self) -> &str {
+                "Test"
+            }
+            fn detect(&self, _: &Path) -> u8 {
+                0
+            }
+            fn copy_secrets(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let adapter = TestAdapter;
+        assert_eq!(adapter.service_url(), "http://localhost:3000");
+    }
+
+    #[test]
+    fn test_adapter_default_setup_database() {
+        struct TestAdapter;
+        impl Adapter for TestAdapter {
+            fn name(&self) -> &str {
+                "Test"
+            }
+            fn detect(&self, _: &Path) -> u8 {
+                0
+            }
+            fn copy_secrets(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let adapter = TestAdapter;
+        let temp_dir = TempDir::new().unwrap();
+        assert!(adapter.setup_database(temp_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn test_adapter_default_healthcheck() {
+        struct TestAdapter;
+        impl Adapter for TestAdapter {
+            fn name(&self) -> &str {
+                "Test"
+            }
+            fn detect(&self, _: &Path) -> u8 {
+                0
+            }
+            fn copy_secrets(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let adapter = TestAdapter;
+        let temp_dir = TempDir::new().unwrap();
+        assert!(adapter.healthcheck(temp_dir.path()).is_ok());
+    }
+
+    #[test]
+    fn test_adapter_default_cleanup() {
+        struct TestAdapter;
+        impl Adapter for TestAdapter {
+            fn name(&self) -> &str {
+                "Test"
+            }
+            fn detect(&self, _: &Path) -> u8 {
+                0
+            }
+            fn copy_secrets(&self, _: &Path, _: &Path) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let adapter = TestAdapter;
+        let temp_dir = TempDir::new().unwrap();
+        assert!(adapter.cleanup(temp_dir.path()).is_ok());
+    }
 }

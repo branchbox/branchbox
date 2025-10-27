@@ -487,4 +487,348 @@ mod tests {
         let token = module.read_existing_token(temp_dir.path());
         assert_eq!(token.as_deref(), Some("abc123"));
     }
+
+    #[test]
+    fn test_name() {
+        let module = TunnelModule::new();
+        assert_eq!(module.name(), "tunnel");
+    }
+
+    #[test]
+    fn test_default() {
+        let module = TunnelModule::default();
+        assert_eq!(module.name(), "tunnel");
+        assert!(!module.enabled);
+    }
+
+    #[test]
+    fn test_validate_config_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+
+        let module = TunnelModule::new();
+        // Should not error when config file doesn't exist
+        module.validate_config(temp_dir.path()).unwrap();
+    }
+
+    #[test]
+    fn test_validate_config_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/.cloudflared.env"),
+            "TUNNEL_TOKEN=test_token\n",
+        )
+        .unwrap();
+
+        let module = TunnelModule::new();
+        module.validate_config(temp_dir.path()).unwrap();
+    }
+
+    #[test]
+    fn test_validate() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+
+        let module = TunnelModule::new();
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+    }
+
+    #[test]
+    fn test_find_feature_hostname_from_env() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".env"),
+            "APP_URL=https://test.example.com\n",
+        )
+        .unwrap();
+
+        let module = TunnelModule::new();
+        let hostname = module.find_feature_hostname(temp_dir.path());
+        assert_eq!(hostname, Some("https://test.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_find_feature_hostname_from_cloudflared() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/.cloudflared.env"),
+            "DEV_HOSTNAME=test.example.com\n",
+        )
+        .unwrap();
+
+        let module = TunnelModule::new();
+        let hostname = module.find_feature_hostname(temp_dir.path());
+        assert_eq!(hostname, Some("test.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_find_feature_hostname_none() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let module = TunnelModule::new();
+        let hostname = module.find_feature_hostname(temp_dir.path());
+        assert_eq!(hostname, None);
+    }
+
+    #[test]
+    fn test_extract_env_var() {
+        let temp_dir = TempDir::new().unwrap();
+        let env_file = temp_dir.path().join(".env");
+        std::fs::write(&env_file, "FOO=bar\nBAZ=\"quoted\"\n").unwrap();
+
+        let value = TunnelModule::extract_env_var(&env_file, "FOO");
+        assert_eq!(value, Some("bar".to_string()));
+
+        let value = TunnelModule::extract_env_var(&env_file, "BAZ");
+        assert_eq!(value, Some("quoted".to_string()));
+
+        let value = TunnelModule::extract_env_var(&env_file, "MISSING");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_infer_base_domain() {
+        let module = TunnelModule {
+            enabled: false,
+            tunnel_name: String::new(),
+            feature_url: String::new(),
+            base_domain: "fallback.com".to_string(),
+            service_url: String::new(),
+            cloudflare_api_key: None,
+            cloudflare_account_id: None,
+        };
+
+        assert_eq!(
+            module.infer_base_domain("subdomain.example.com"),
+            "example.com"
+        );
+        assert_eq!(
+            module.infer_base_domain("deep.subdomain.example.com"),
+            "subdomain.example.com"
+        );
+        assert_eq!(module.infer_base_domain("simple"), "fallback.com");
+    }
+
+    #[test]
+    fn test_read_existing_token_missing() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let module = TunnelModule::new();
+        let token = module.read_existing_token(temp_dir.path());
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn test_read_existing_token_quoted() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/.cloudflared.env"),
+            "TUNNEL_TOKEN=\"token_value\"\n",
+        )
+        .unwrap();
+
+        let module = TunnelModule::new();
+        let token = module.read_existing_token(temp_dir.path());
+        assert_eq!(token.as_deref(), Some("token_value"));
+    }
+
+    // Integration tests requiring full workflow
+    // Run with: cargo test -- --ignored
+
+    #[test]
+    #[ignore]
+    fn test_setup_without_credentials() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-tunnel");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            main_dir.path().join(".env"),
+            "APP_URL=https://dev.example.com\n",
+        )
+        .unwrap();
+
+        // Ensure no credentials in env
+        std::env::remove_var("CLOUDFLARE_API_KEY");
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+
+        let mut module = TunnelModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Setup should succeed with manual instructions
+        let result = module.setup(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_setup_with_existing_token() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-tunnel-token");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main_dir.path().join(".env"),
+            "APP_URL=https://dev.example.com\n",
+        )
+        .unwrap();
+        std::fs::write(
+            feature_dir.join(".devcontainer/.cloudflared.env"),
+            "TUNNEL_TOKEN=existing_token\n",
+        )
+        .unwrap();
+
+        let mut module = TunnelModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Setup should use existing token
+        let result = module.setup(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+
+        // Config should be preserved
+        let config =
+            std::fs::read_to_string(feature_dir.join(".devcontainer/.cloudflared.env")).unwrap();
+        assert!(config.contains("TUNNEL_TOKEN="));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_with_token() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main_dir.path().join(".env"),
+            "APP_URL=https://dev.example.com\n",
+        )
+        .unwrap();
+        std::fs::write(
+            feature_dir.join(".devcontainer/.cloudflared.env"),
+            "TUNNEL_TOKEN=test_token\nDEV_HOSTNAME=test.example.com\n",
+        )
+        .unwrap();
+
+        let mut module = TunnelModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_teardown_no_config() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-teardown-no-config");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            main_dir.path().join(".env"),
+            "APP_URL=https://dev.example.com\n",
+        )
+        .unwrap();
+
+        let mut module = TunnelModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown should succeed even without config
+        let result = module.teardown(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_full_lifecycle() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-tunnel-lifecycle");
+        std::fs::create_dir(&feature_dir).unwrap();
+        std::fs::write(
+            main_dir.path().join(".env"),
+            "APP_URL=https://dev.example.com\n",
+        )
+        .unwrap();
+
+        // Ensure no credentials for this test
+        std::env::remove_var("CLOUDFLARE_API_KEY");
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+
+        let mut module = TunnelModule::new();
+
+        // Init
+        module.init(main_dir.path(), &feature_dir).unwrap();
+        assert!(module.enabled);
+        assert!(!module.tunnel_name.is_empty());
+        assert!(!module.feature_url.is_empty());
+
+        // Setup (manual path)
+        module.setup(main_dir.path(), &feature_dir).unwrap();
+
+        // Validate
+        module.validate(main_dir.path(), &feature_dir).unwrap();
+
+        // Teardown
+        module.teardown(main_dir.path(), &feature_dir).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_validate_config_with_invalid_token() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/.cloudflared.env"),
+            "# Config without token\nDEV_HOSTNAME=test.example.com\n",
+        )
+        .unwrap();
+
+        let module = TunnelModule::new();
+        // Should not error, just warn
+        let result = module.validate_config(temp_dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_write_config_creates_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        // Don't create .devcontainer directory
+
+        let module = TunnelModule::new();
+        let result = module.write_tunnel_config(temp_dir.path(), "token123", "test.example.com");
+        assert!(result.is_ok());
+
+        let config_path = temp_dir.path().join(".devcontainer/.cloudflared.env");
+        assert!(config_path.exists());
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("TUNNEL_TOKEN=token123"));
+        assert!(content.contains("DEV_HOSTNAME=test.example.com"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_setup_with_fallback_domain() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("test-fallback");
+        std::fs::create_dir(&feature_dir).unwrap();
+        // No .env file, should use fallback
+
+        std::env::set_var("BASE_PREFIX", "myapp");
+        std::env::set_var("BASE_DOMAIN", "localhost");
+
+        let mut module = TunnelModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        assert_eq!(module.base_domain, "localhost");
+        assert!(module.tunnel_name.contains("myapp"));
+
+        // Setup should work with fallback
+        let result = module.setup(main_dir.path(), &feature_dir);
+        assert!(result.is_ok());
+
+        std::env::remove_var("BASE_PREFIX");
+        std::env::remove_var("BASE_DOMAIN");
+    }
 }
