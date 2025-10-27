@@ -45,7 +45,8 @@
         "serayuzgur.crates",
         "vadimcn.vscode-lldb",
         "KnisterPeter.vscode-github",
-        "GitHub.vscode-github-actions"
+        "GitHub.vscode-github-actions",
+        "johnpapa.vscode-peacock"
       ],
       "settings": {
         "rust-analyzer.check": {

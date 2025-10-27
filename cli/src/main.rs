@@ -84,7 +84,7 @@ fn main() -> Result<()> {
             println!("Adapter: {}", adapters.name());
 
             // Show what modules would be enabled
-            let module_plan = worktree_core::modules::detect_modules(&project_path);
+            let module_plan = worktree_core::modules::detect_modules(&project_path, &[]);
             println!();
             println!("Enabled modules: {}", module_plan.handles.len());
             for handle in &module_plan.handles {

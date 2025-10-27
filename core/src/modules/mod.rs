@@ -107,10 +107,20 @@ pub fn all_modules() -> Vec<Box<dyn Module>> {
 /// Detect and initialize enabled modules
 ///
 /// Returns a plan containing ordered modules and dependency warnings.
-pub fn detect_modules(project_dir: &Path) -> ModulePlan {
+///
+/// # Arguments
+///
+/// * `project_dir` - Project directory to detect modules in
+/// * `skip_modules` - Optional list of module names to skip
+pub fn detect_modules(project_dir: &Path, skip_modules: &[String]) -> ModulePlan {
+    let skip_set: HashSet<String> = skip_modules.iter().cloned().collect();
+
     let mut detected: Vec<ModuleHandle> = all_modules()
         .into_iter()
-        .filter(|module| module.detect(project_dir))
+        .filter(|module| {
+            let name = module.name();
+            !skip_set.contains(name) && module.detect(project_dir)
+        })
         .map(ModuleHandle::new)
         .collect();
 
@@ -197,7 +207,7 @@ mod tests {
     #[test]
     fn test_detect_modules_empty_project() {
         let temp_dir = TempDir::new().unwrap();
-        let plan = detect_modules(temp_dir.path());
+        let plan = detect_modules(temp_dir.path(), &[]);
 
         // Tunnel module is always enabled for manual setup
         assert!(!plan.handles.is_empty());
@@ -215,7 +225,7 @@ mod tests {
         )
         .unwrap();
 
-        let plan = detect_modules(temp_dir.path());
+        let plan = detect_modules(temp_dir.path(), &[]);
         let names: Vec<&str> = plan.handles.iter().map(|m| m.name.as_str()).collect();
 
         assert!(names.contains(&"compose"));
@@ -227,10 +237,27 @@ mod tests {
         std::fs::create_dir_all(temp_dir.path().join("config")).unwrap();
         std::fs::write(temp_dir.path().join("config/database.yml"), "test").unwrap();
 
-        let plan = detect_modules(temp_dir.path());
+        let plan = detect_modules(temp_dir.path(), &[]);
         let names: Vec<&str> = plan.handles.iter().map(|m| m.name.as_str()).collect();
 
         assert!(names.contains(&"database"));
+    }
+
+    #[test]
+    fn test_skip_modules() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/compose.yaml"),
+            "version: '3'",
+        )
+        .unwrap();
+
+        // Test skipping compose module
+        let plan = detect_modules(temp_dir.path(), &[String::from("compose")]);
+        let names: Vec<&str> = plan.handles.iter().map(|m| m.name.as_str()).collect();
+
+        assert!(!names.contains(&"compose"));
     }
 
     #[test]
