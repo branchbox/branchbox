@@ -1181,7 +1181,7 @@ mod tests {
         };
 
         let mut workflow = InitWorkflow::new(options);
-        let summary = workflow.execute().unwrap();
+        let _summary = workflow.execute().unwrap();
 
         // Dry run should not create registry
         assert!(!repo_path.join(".branchbox/registry.json").exists());

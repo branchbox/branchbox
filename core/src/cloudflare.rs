@@ -943,7 +943,7 @@ mod tests {
         let result = client.delete_dns_record("test.example.com", "example.com");
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         zone_mock.assert();
         dns_get_mock.assert();
         dns_delete_mock.assert();
@@ -975,7 +975,7 @@ mod tests {
         let result = client.delete_dns_record("test.example.com", "example.com");
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
         zone_mock.assert();
     }
 }
