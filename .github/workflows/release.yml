@@ -259,10 +259,17 @@ jobs:
           Compress-Archive -Path "$ARCHIVE_NAME/*" -DestinationPath "$ARCHIVE_NAME.zip"
           echo "ASSET_PATH=$ARCHIVE_NAME.zip" >> $env:GITHUB_ENV
 
-      - name: Generate checksum (Unix)
-        if: runner.os != 'Windows'
+      - name: Generate checksum (Linux)
+        if: runner.os == 'Linux'
         run: |
           sha256sum "${{ env.ASSET_PATH }}" > "${{ env.ASSET_PATH }}.sha256"
+          cat "${{ env.ASSET_PATH }}.sha256"
+        shell: bash
+
+      - name: Generate checksum (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          shasum -a 256 "${{ env.ASSET_PATH }}" > "${{ env.ASSET_PATH }}.sha256"
           cat "${{ env.ASSET_PATH }}.sha256"
         shell: bash
 
