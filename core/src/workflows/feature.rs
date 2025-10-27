@@ -1621,7 +1621,7 @@ const STATE_VERSION: u32 = 1;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// // Internal function - not exposed in public API
 /// let color = generate_feature_color("oauth-integration");
 /// assert_eq!(color.len(), 7); // #RRGGBB format
