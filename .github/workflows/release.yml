@@ -249,7 +249,7 @@ jobs:
         run: |
           ARCHIVE_NAME=$(cat archive_name.txt)
           tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
-          echo "ASSET_PATH=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_ENV
+          echo "${ARCHIVE_NAME}.tar.gz" > asset_path.txt
         shell: bash
 
       - name: Create archive (Windows)
@@ -257,37 +257,42 @@ jobs:
         run: |
           $ARCHIVE_NAME = Get-Content archive_name.txt
           Compress-Archive -Path "$ARCHIVE_NAME/*" -DestinationPath "$ARCHIVE_NAME.zip"
-          echo "ASSET_PATH=$ARCHIVE_NAME.zip" >> $env:GITHUB_ENV
+          "$ARCHIVE_NAME.zip" | Out-File -FilePath asset_path.txt -Encoding ASCII -NoNewline
 
       - name: Generate checksum (Linux)
         if: runner.os == 'Linux'
         run: |
-          sha256sum "${{ env.ASSET_PATH }}" > "${{ env.ASSET_PATH }}.sha256"
-          cat "${{ env.ASSET_PATH }}.sha256"
+          ASSET_PATH=$(cat asset_path.txt)
+          sha256sum "$ASSET_PATH" > "$ASSET_PATH.sha256"
+          cat "$ASSET_PATH.sha256"
         shell: bash
 
       - name: Generate checksum (macOS)
         if: runner.os == 'macOS'
         run: |
-          shasum -a 256 "${{ env.ASSET_PATH }}" > "${{ env.ASSET_PATH }}.sha256"
-          cat "${{ env.ASSET_PATH }}.sha256"
+          ASSET_PATH=$(cat asset_path.txt)
+          shasum -a 256 "$ASSET_PATH" > "$ASSET_PATH.sha256"
+          cat "$ASSET_PATH.sha256"
         shell: bash
 
       - name: Generate checksum (Windows)
         if: runner.os == 'Windows'
         run: |
-          $hash = (Get-FileHash "${{ env.ASSET_PATH }}" -Algorithm SHA256).Hash.ToLower()
-          $filename = Split-Path "${{ env.ASSET_PATH }}" -Leaf
-          "$hash  $filename" | Out-File -FilePath "${{ env.ASSET_PATH }}.sha256" -Encoding ASCII
-          Get-Content "${{ env.ASSET_PATH }}.sha256"
+          $ASSET_PATH = Get-Content asset_path.txt -Raw
+          $ASSET_PATH = $ASSET_PATH.Trim()
+          $hash = (Get-FileHash "$ASSET_PATH" -Algorithm SHA256).Hash.ToLower()
+          $filename = Split-Path "$ASSET_PATH" -Leaf
+          "$hash  $filename" | Out-File -FilePath "$ASSET_PATH.sha256" -Encoding ASCII
+          Get-Content "$ASSET_PATH.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
           path: |
-            ${{ env.ASSET_PATH }}
-            ${{ env.ASSET_PATH }}.sha256
+            *.tar.gz
+            *.zip
+            *.sha256
           retention-days: 1
 
   publish-release:
