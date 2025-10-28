@@ -22,6 +22,7 @@
 //!     skip_devcontainer: false,
 //!     skip_env: false,
 //!     reorganize: false,
+//!     use_parent_structure: false,
 //!     update: false,
 //!     validate_only: false,
 //!     dry_run: false,
