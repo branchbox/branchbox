@@ -36,7 +36,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Tool configs (normally in parent dir via volume mounts, but excluded if created here)
 .codex/
+.claude-code/
+.gh/
 
 # BranchBox local state (per-worktree)
 .branchbox/

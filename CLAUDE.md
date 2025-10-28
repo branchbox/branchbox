@@ -2,89 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
-
-BranchBox is a distributed development environment orchestrator that manages git worktrees and devcontainers. The project is migrating from bash scripts to a Rust-based implementation with a distributed architecture (local agents + control plane).
-
-**Current state**: Milestone 0 complete - Core workflow orchestration for feature worktrees is implemented in Rust. The CLI supports `branchbox feature start/teardown/list` commands with full lifecycle management.
-
-## Essential Commands
-
-### Building & Testing
-
-```bash
-# Build entire workspace
-cargo build
-
-# Build with optimizations
-cargo build --release
-
-# Run CLI locally (without installing)
-cargo run -p branchbox-cli -- feature list
-cargo run -p branchbox-cli -- --help
-
-# Run all tests
-cargo test
-
-# Run specific test
-cargo test feature_commands
-
-# Run tests with output visible
-cargo test -- --nocapture
-
-# Run with all features enabled
-cargo test --all-features
-
-# Run doctests
-cargo test --doc
-```
-
-### Code Quality
-
-```bash
-# Format (must pass in CI)
-cargo fmt --all -- --check
-
-# Lint (must pass with -D warnings in CI)
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Quick compile check (fast iteration)
-cargo check
-
-# Security audit
-cargo audit
-
-# Coverage report (CI enforces 90%)
-cargo tarpaulin --out Html --all-features --workspace
-```
-
-### Development Workflow
-
-```bash
-# Watch mode (requires cargo-watch)
-cargo watch -x test
-cargo watch -x clippy
-
-# Generate and view documentation
-cargo doc --open
-cargo doc --no-deps
-```
+@AGENTS.md
 
 ## Architecture Deep Dive
 
-### Repository Structure
+This section provides detailed context for understanding the codebase structure and generating correct code. For basic commands, coding style, and project overview, consult AGENTS.md above.
 
-The workspace has two active members defined in root `Cargo.toml`:
-
-- **`core/`** - The `worktree-core` library containing all business logic
-- **`cli/`** - The `branchbox-cli` binary that exports the `branchbox` command
-
-Future planned members (currently commented out):
-- **`agent/`** - Long-running daemon for distributed operation
-- **`control-plane/`** (separate repo) - Rails app for multi-device coordination
-- **`macos/`** (separate repo) - Native SwiftUI app
-
-### Core Library (`core/src/`)
+### Core Library Architecture (`core/src/`)
 
 The `worktree-core` library is organized into these key subsystems:
 
@@ -169,28 +93,7 @@ Pre-flight checks before running workflows:
 - `validate_feature_name()` - Check DNS safety
 - `AppUrl` type - Parse and validate `APP_URL` from .env files
 
-#### 7. State Management (`workflows/feature.rs` - `FeatureStateStore`)
-
-JSON-based registry tracking active/removed features:
-
-```rust
-// Stored at {repo_root}/.branchbox/registry.json
-{
-  "features": [{
-    "work_feature": "oauth-integration",
-    "branch_name": "feature/oauth-integration",
-    "worktree_path": "/path/to/oauth-integration",
-    "feature_url": "oauth-integration.example.com",
-    "status": "Active",
-    "created_at": "...",
-    "updated_at": "..."
-  }]
-}
-```
-
-Status enum: `Active` | `Removed`
-
-### CLI (`cli/src/`)
+### CLI Architecture (`cli/src/`)
 
 The CLI exports the `branchbox` binary with these subcommands:
 
@@ -236,50 +139,6 @@ Both use trait objects for polymorphism. Adapters are detected once per workflow
 
 The future agent architecture will queue state updates to a control plane but always execute operations locally first. The current implementation already tracks state locally in JSON, which will migrate to SQLite in the agent.
 
-## Testing Strategy
-
-### Test Organization
-
-- **Unit tests**: Live in `#[cfg(test)]` modules alongside code
-- **Integration tests**: Live in `{crate}/tests/` directories
-- **Doc tests**: Embedded in doc comments with `/// # Examples` sections
-
-### Running Subset of Tests
-
-```bash
-# Single test by name
-cargo test test_generate_work_feature
-
-# All tests in a module
-cargo test naming::tests
-
-# Integration tests only
-cargo test --test feature_commands
-
-# Specific integration test
-cargo test --test feature_commands feature_start_list_teardown
-```
-
-### Test Fixtures
-
-Integration tests use `tempfile::TempDir` for isolated test repos. The `init_test_repo()` helper creates a minimal git repo with a commit:
-
-```rust
-fn init_test_repo() -> TestRepo {
-    // Creates temp_dir/repo with initialized git, .env file, etc.
-}
-```
-
-### CI Requirements
-
-GitHub Actions CI enforces:
-- `cargo fmt --check`
-- `cargo clippy -- -D warnings`
-- `cargo test --all`
-- 90% code coverage (Tarpaulin)
-
-The workflow runs tests with Docker-in-Docker for testing Docker operations.
-
 ## Common Development Patterns
 
 ### Adding a New Adapter
@@ -309,31 +168,6 @@ The workflow runs tests with Docker-in-Docker for testing Docker operations.
 4. Add integration test in `cli/tests/`
 5. Pretty-print results with clear sections and bullet points
 
-## Environment Variables & Configuration
-
-### Development Environment
-
-The devcontainer (`.devcontainer/`) provides:
-
-- Rust stable toolchain + `cargo-watch`, `cargo-edit`, `cargo-expand`
-- Node.js 20 + Codex/Claude Code CLIs
-- Docker-in-Docker (privileged mode required)
-- Persistent `.codex/` config and `.cargo/` cache
-
-**Important**: The container runs privileged for DinD. Be aware of security implications.
-
-### Test Environment
-
-Tests should set `BRANCHBOX_SKIP_HOST_VALIDATION=1` to bypass host environment checks (see `cli/tests/feature_commands.rs` for example).
-
-### Feature Environment
-
-During `feature start`, the workflow:
-
-1. Copies `.env` from repo root to worktree (if exists)
-2. Injects `APP_URL` and `COMPOSE_PROJECT_NAME` into worktree `.env`
-3. Adapters may copy additional secrets (`.env.local`, `master.key`, etc.)
-
 ## Migration from Bash Scripts
 
 The repo contains legacy bash scripts in `lib/` and `bin/feature-*`. These are being replaced by Rust:
@@ -345,74 +179,3 @@ The repo contains legacy bash scripts in `lib/` and `bin/feature-*`. These are b
 - ✅ `bin/feature-teardown` → `branchbox feature teardown`
 
 When migrating bash code to Rust, maintain the same behavior but leverage Rust's type safety and error handling.
-
-## Specs Module Behavior
-
-The specs module manages feature specifications:
-
-1. **Start workflow**: Promotes spec from `docs/features/backlog/{name}.md` → `docs/features/in-progress/{name}.md` (or creates stub if missing)
-2. **Teardown workflow**: If `--complete-spec` flag is set, moves spec from `in-progress/` → `completed/`
-
-Spec stubs are scaffolded with front matter:
-
-```markdown
----
-title: Feature Title
-status: in-progress
-created_at: 2025-10-24T...
----
-
-## Overview
-
-## Requirements
-
-## Implementation Notes
-```
-
-## Commit Message Convention
-
-Follow Conventional Commits:
-
-```
-<type>(<scope>): <description>
-
-feat(modules): add tunnel dependency on compose
-fix(cli): validate feature name before creating worktree
-docs(architecture): document module dependency system
-test(adapters): cover Rails secret copying
-```
-
-Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`
-
-Scopes: `modules`, `adapters`, `workflows`, `cli`, `core`, `devcontainer`, `ci`
-
-See recent commit history for examples:
-- `feat(workflows): migrate tunnel and adapter orchestration to rust`
-- `feat(specs): support completing specs during teardown`
-- `feat(modules): auto-promote backlog specs`
-
-## Known Issues & TODOs
-
-From the recent code review (PR #2):
-
-1. **Repository URL is incorrect** - `Cargo.toml` has `branchbox-branchbox` instead of actual org/repo
-2. **Placeholder author metadata** - `Cargo.toml` has `Your Name <you@example.com>`
-3. **Generic error types** - Should migrate from `anyhow::Error` to `thiserror`-based domain errors
-4. **Missing input validation** - CLI should validate that either `--name` or `--title` is provided
-5. **Race conditions** - Registry check + worktree creation isn't atomic
-6. **Hardcoded config** - Docker network names, port ranges, spec templates should be configurable
-7. **Missing unit tests** - Registry operations, workflow components, module implementations need dedicated unit tests
-
-## Future Architecture Notes
-
-The long-term vision includes:
-
-- **Agent** - Rust daemon running on each device (gRPC server)
-- **Control Plane** - Rails app for multi-device orchestration (hosted)
-- **Mac App** - SwiftUI native app talking to local agent
-- **Tailscale** - Secure mesh VPN for agent ↔ control plane communication
-- **Offline-first** - SQLite queue for operations when disconnected
-
-See `docs/ARCHITECTURE.md` for the full distributed system design.
-
-For now, focus on the local-first workflow: CLI → FeatureWorkflow → Git + Adapters + Modules.
