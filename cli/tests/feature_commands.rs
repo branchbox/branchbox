@@ -69,7 +69,7 @@ fn feature_start_list_teardown_end_to_end() {
         .expect("binary exists")
         .current_dir(repo_path)
         .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
-        .args(["feature", "start", "--name", work_feature])
+        .args(["feature", "start", work_feature])
         .assert()
         .success()
         .stdout(predicate::str::contains("Feature workspace ready"));
@@ -118,7 +118,6 @@ fn feature_start_list_teardown_end_to_end() {
         .args([
             "feature",
             "teardown",
-            "--name",
             work_feature,
             "--delete-branch",
             "--force",
