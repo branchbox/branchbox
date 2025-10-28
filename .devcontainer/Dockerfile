@@ -17,8 +17,10 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Install useful Rust tools
-RUN cargo install cargo-watch cargo-edit cargo-expand
+# Install useful Rust tools as root, then fix permissions
+RUN cargo install cargo-watch cargo-edit cargo-expand \
+    && chown -R vscode:rustlang /usr/local/cargo \
+    && chmod -R g+w /usr/local/cargo
 
 # Switch back to vscode user
 USER vscode

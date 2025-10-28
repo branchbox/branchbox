@@ -20,15 +20,14 @@
 
   "containerEnv": {
     "DOCKER_CONTAINER": "true",
-    "RUST_BACKTRACE": "1",
-    "CARGO_HOME": "/workspaces/${localWorkspaceFolderBasename}/.cargo"
+    "RUST_BACKTRACE": "1"
   },
 
   // Use 'forwardPorts' to make ports available locally
   "forwardPorts": [50051],
 
   // Use 'postCreateCommand' to run commands after container creation
-  "postCreateCommand": "cargo --version && rustc --version",
+  "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version'",
 
   // Run args
   "runArgs": [
