@@ -87,6 +87,9 @@ pub struct InitOptions {
     /// Force reorganization into worktree structure
     pub reorganize: bool,
 
+    /// Use in-place parent structure (reorganize current dir as container)
+    pub use_parent_structure: bool,
+
     /// Update existing setup without restructuring
     pub update: bool,
 
@@ -112,6 +115,7 @@ impl Default for InitOptions {
             skip_devcontainer: false,
             skip_env: false,
             reorganize: false,
+            use_parent_structure: false,
             update: false,
             validate_only: false,
             dry_run: false,
@@ -283,6 +287,7 @@ impl InitWorkflow {
                 needs_reorganization: true,
             } => {
                 if self.options.reorganize || self.should_prompt_reorganize()? {
+                    summary.reorganized = true;
                     self.reorganize_to_worktree()?
                 } else {
                     self.current_path()
@@ -294,6 +299,7 @@ impl InitWorkflow {
                 // Good location, no reorganization needed
                 if self.options.reorganize {
                     // User explicitly requested reorganization
+                    summary.reorganized = true;
                     self.reorganize_to_worktree()?
                 } else {
                     self.current_path()
@@ -658,7 +664,12 @@ impl InitWorkflow {
 
         println!("⚠ Reorganization requested");
 
-        // Determine target path
+        // Check if using in-place parent structure
+        if self.options.use_parent_structure {
+            return self.reorganize_in_place_parent(&current_path);
+        }
+
+        // Determine target path for standard reorganization
         let target_path = if let Some(path) = &self.options.target_dir {
             path.clone()
         } else {
@@ -715,6 +726,144 @@ impl InitWorkflow {
         println!("✓ Moved to {}", target_path.display());
 
         Ok(target_path)
+    }
+
+    /// Reorganize repository in-place using parent structure
+    ///
+    /// Transforms:
+    ///   /path/to/project-folder/  (git repo)
+    /// Into:
+    ///   /path/to/project-folder/  (container directory)
+    ///     main/                   (git repo moved here)
+    ///
+    /// This enables sibling feature worktrees:
+    ///   /path/to/project-folder/
+    ///     main/
+    ///     feature-1/
+    ///     feature-2/
+    fn reorganize_in_place_parent(&self, current_path: &Path) -> Result<PathBuf> {
+        // Get the parent directory and directory name
+        let parent_dir = current_path
+            .parent()
+            .ok_or_else(|| Error::validation("Cannot reorganize root directory"))?;
+
+        let dir_name = current_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error::validation("Invalid directory name"))?;
+
+        // Generate unique temporary name to avoid collisions
+        let temp_name = format!(".branchbox-temp-{}", uuid::Uuid::new_v4());
+        let temp_path = parent_dir.join(&temp_name);
+
+        // Final paths
+        let container_path = current_path.to_path_buf();
+        let main_path = container_path.join("main");
+
+        if self.options.dry_run {
+            println!("[DRY RUN] Would reorganize in-place:");
+            println!("  Current: {}", current_path.display());
+            println!("  Result:  {}/main/", dir_name);
+            println!();
+            println!("  Future worktrees will be siblings:");
+            println!("    {}/main/", dir_name);
+            println!("    {}/feature-name/", dir_name);
+            return Ok(main_path);
+        }
+
+        // Show user what will happen
+        if !self.options.non_interactive {
+            println!();
+            println!("  Creating parent directory structure:");
+            println!("    Current: {}", current_path.display());
+            println!("    Result:  {}/main/", current_path.display());
+            println!();
+            println!("  Future worktrees will be created as:");
+            println!("    {}/feature-name/", current_path.display());
+            println!();
+            println!("Continue? (y/N)");
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Reorganization cancelled. Continuing with current location.");
+                return Ok(current_path.to_path_buf());
+            }
+        }
+
+        if self.options.verbose {
+            println!();
+            println!("Starting safe reorganization:");
+            println!("  Step 1: Rename current directory to temporary name");
+            println!("  Step 2: Create parent container directory");
+            println!("  Step 3: Move repository into container as 'main'");
+        }
+
+        // Step 1: Rename current directory to temporary location
+        if self.options.verbose {
+            println!();
+            println!("  → Renaming {} to temporary location...", dir_name);
+        }
+
+        fs::rename(current_path, &temp_path).map_err(|e| {
+            Error::validation(format!(
+                "Failed to rename directory to temporary location: {}",
+                e
+            ))
+        })?;
+
+        // Step 2: Create the container directory (with original name)
+        // If this fails, we can roll back by renaming temp back
+        if self.options.verbose {
+            println!("  → Creating container directory...");
+        }
+
+        if let Err(e) = fs::create_dir(&container_path) {
+            // Rollback: restore original directory
+            if self.options.verbose {
+                println!("  ✗ Failed to create container. Rolling back...");
+            }
+
+            let _ = fs::rename(&temp_path, current_path);
+
+            return Err(Error::validation(format!(
+                "Failed to create container directory: {}. Changes rolled back.",
+                e
+            )));
+        }
+
+        // Step 3: Move temp directory into container as 'main'
+        // If this fails, cleanup and rollback
+        if self.options.verbose {
+            println!("  → Moving repository into container as 'main'...");
+        }
+
+        if let Err(e) = fs::rename(&temp_path, &main_path) {
+            // Rollback: remove container and restore original
+            if self.options.verbose {
+                println!("  ✗ Failed to move repository. Rolling back...");
+            }
+
+            let _ = fs::remove_dir(&container_path);
+            let _ = fs::rename(&temp_path, current_path);
+
+            return Err(Error::validation(format!(
+                "Failed to move repository into container: {}. Changes rolled back.",
+                e
+            )));
+        }
+
+        if self.options.verbose {
+            println!();
+            println!("✓ Reorganization complete");
+            println!("  Repository is now at: {}", main_path.display());
+            println!("  Container directory: {}", container_path.display());
+        } else {
+            println!("✓ Reorganized into parent structure: {}/main/", dir_name);
+        }
+
+        Ok(main_path)
     }
 
     /// Detect stack or use forced stack
@@ -1510,5 +1659,124 @@ mod tests {
 
         // Should attempt reorganization (may fail in test env, just verify it tries)
         assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_reorganize_in_place_parent_structure() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            reorganize: true,
+            use_parent_structure: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Verify the result structure
+        // The main repo should now be at: {original_path}/main/
+        let expected_main_path = repo_path.join("main");
+
+        assert!(summary.reorganized);
+        assert_eq!(summary.workspace_path, expected_main_path);
+
+        // Verify the directory structure exists
+        assert!(expected_main_path.exists(), "Main directory should exist");
+        assert!(
+            expected_main_path.join(".git").exists(),
+            "Git repo should be in main/"
+        );
+
+        // Verify parent container exists
+        assert!(
+            repo_path.exists(),
+            "Parent container directory should exist"
+        );
+
+        // Verify .branchbox registry was created in main/
+        assert!(
+            expected_main_path.join(".branchbox").exists(),
+            "BranchBox registry should exist in main/"
+        );
+    }
+
+    #[test]
+    fn test_reorganize_in_place_dry_run() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            reorganize: true,
+            use_parent_structure: true,
+            dry_run: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // In dry run, no actual changes should be made
+        // The repository should still be at original location
+        assert!(repo_path.join(".git").exists());
+
+        // Main subdirectory should NOT exist
+        assert!(!repo_path.join("main").exists());
+
+        // But the summary should reflect what WOULD happen
+        assert_eq!(summary.workspace_path, repo_path.join("main"));
+    }
+
+    #[test]
+    fn test_reorganize_in_place_preserves_git_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create a test file and commit it
+        fs::write(repo_path.join("test.txt"), "test content").unwrap();
+
+        Command::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["commit", "-m", "Add test file"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            reorganize: true,
+            use_parent_structure: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        let main_path = summary.workspace_path;
+
+        // Verify git repository is intact
+        assert!(main_path.join(".git").exists());
+        assert!(main_path.join("test.txt").exists());
+
+        // Verify git history is preserved
+        let log_output = Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&main_path)
+            .output()
+            .unwrap();
+
+        let log_str = String::from_utf8_lossy(&log_output.stdout);
+        assert!(log_str.contains("Add test file"));
     }
 }
