@@ -830,7 +830,8 @@ impl InitWorkflow {
 
             return Err(Error::validation(format!(
                 "Failed to create container directory '{}': {}. Changes rolled back.",
-                container_path.display(), e
+                container_path.display(),
+                e
             )));
         }
 
@@ -851,7 +852,8 @@ impl InitWorkflow {
 
             return Err(Error::validation(format!(
                 "Failed to move repository into container '{}': {}. Changes rolled back.",
-                main_path.display(), e
+                main_path.display(),
+                e
             )));
         }
 
