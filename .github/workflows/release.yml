@@ -350,3 +350,146 @@ jobs:
           gh release edit "v${{ needs.create-release.outputs.version }}" \
             --draft=false \
             --repo ${{ github.repository }}
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: [create-release, build-release, publish-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: needs.create-release.outputs.is_prerelease == 'false'
+
+    env:
+      HOMEBREW_TAP_REPO: branchbox/homebrew-tap
+
+    steps:
+      - name: Validate prerequisites
+        run: |
+          if [[ -z "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]]; then
+            echo "❌ Error: HOMEBREW_TAP_TOKEN secret is not set"
+            echo "See docs/HOMEBREW_SETUP.md for setup instructions"
+            exit 1
+          fi
+          echo "✓ Prerequisites validated"
+
+      - name: Checkout homebrew-tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HOMEBREW_TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download checksums with retry
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/v$VERSION/checksums.txt"
+
+          echo "Downloading checksums from: $URL"
+          for i in {1..5}; do
+            if curl -fsSL "$URL" -o checksums.txt; then
+              echo "✓ Downloaded checksums (attempt $i)"
+              echo "Contents:"
+              cat checksums.txt
+              exit 0
+            fi
+            echo "⏳ Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+
+          echo "❌ Failed to download checksums after 5 attempts"
+          exit 1
+
+      - name: Extract checksums for macOS binaries
+        id: checksums
+        run: |
+          # More robust pattern matching to avoid false positives
+          INTEL_CHECKSUM=$(grep "branchbox-.*-x86_64-apple-darwin\.tar\.gz$" checksums.txt | awk '{print $1}')
+          ARM_CHECKSUM=$(grep "branchbox-.*-aarch64-apple-darwin\.tar\.gz$" checksums.txt | awk '{print $1}')
+
+          if [[ -z "$INTEL_CHECKSUM" ]] || [[ -z "$ARM_CHECKSUM" ]]; then
+            echo "❌ Error: Failed to extract checksums"
+            echo "Intel checksum: '$INTEL_CHECKSUM'"
+            echo "ARM checksum: '$ARM_CHECKSUM'"
+            echo ""
+            echo "Checksums file contents:"
+            cat checksums.txt
+            exit 1
+          fi
+
+          # Validate checksum format (64 hex characters for SHA256)
+          if ! [[ "$INTEL_CHECKSUM" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "❌ Error: Invalid Intel checksum format: $INTEL_CHECKSUM"
+            exit 1
+          fi
+          if ! [[ "$ARM_CHECKSUM" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "❌ Error: Invalid ARM checksum format: $ARM_CHECKSUM"
+            exit 1
+          fi
+
+          echo "intel=$INTEL_CHECKSUM" >> $GITHUB_OUTPUT
+          echo "arm=$ARM_CHECKSUM" >> $GITHUB_OUTPUT
+
+          echo "✓ Extracted checksums:"
+          echo "  Intel: $INTEL_CHECKSUM"
+          echo "  ARM:   $ARM_CHECKSUM"
+
+      - name: Update formula
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          cd homebrew-tap/Formula
+
+          echo "Updating formula to version $VERSION..."
+
+          # Update version
+          sed -i 's/version ".*"/version "'$VERSION'"/' branchbox.rb
+
+          # Update Intel URL and checksum
+          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-x86_64-apple-darwin.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-x86_64-apple-darwin.tar.gz"|' branchbox.rb
+          sed -i '/Hardware::CPU.intel?/,/sha256/ s/sha256 ".*"/sha256 "'${{ steps.checksums.outputs.intel }}'"/' branchbox.rb
+
+          # Update ARM URL and checksum
+          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-aarch64-apple-darwin.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-aarch64-apple-darwin.tar.gz"|' branchbox.rb
+          sed -i '/Hardware::CPU.arm?/,/sha256/ s/sha256 ".*"/sha256 "'${{ steps.checksums.outputs.arm }}'"/' branchbox.rb
+
+      - name: Verify formula updates
+        run: |
+          cd homebrew-tap/Formula
+
+          # Verify version was updated
+          if ! grep -q 'version "'${{ needs.create-release.outputs.version }}'"' branchbox.rb; then
+            echo "❌ Error: Failed to update version in formula"
+            exit 1
+          fi
+
+          # Verify Intel checksum was updated
+          if ! grep -q "${{ steps.checksums.outputs.intel }}" branchbox.rb; then
+            echo "❌ Error: Failed to update Intel checksum in formula"
+            exit 1
+          fi
+
+          # Verify ARM checksum was updated
+          if ! grep -q "${{ steps.checksums.outputs.arm }}" branchbox.rb; then
+            echo "❌ Error: Failed to update ARM checksum in formula"
+            exit 1
+          fi
+
+          echo "✓ Formula updates verified"
+          echo ""
+          echo "Changes made:"
+          git diff branchbox.rb
+
+      - name: Commit and push changes
+        run: |
+          cd homebrew-tap
+          git config user.name "branchbox-release-bot"
+          git config user.email "noreply+release-bot@github.com"
+          git add Formula/branchbox.rb
+
+          # Only commit if there are changes
+          if git diff --cached --quiet; then
+            echo "ℹ️  No changes to commit (formula already up to date)"
+          else
+            git commit -m "chore: update formula to v${{ needs.create-release.outputs.version }}"
+            git push
+            echo "✓ Successfully updated Homebrew formula to v${{ needs.create-release.outputs.version }}"
+          fi
