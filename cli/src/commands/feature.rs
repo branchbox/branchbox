@@ -21,7 +21,6 @@ pub enum FeatureCommands {
 #[derive(Args)]
 pub struct FeatureStartArgs {
     /// Dasherized feature name (e.g., oauth-integration)
-    #[arg(long)]
     pub name: Option<String>,
 
     /// Free-form feature title (converted to dasherized name)
@@ -57,7 +56,6 @@ pub struct FeatureStartArgs {
 #[derive(Args)]
 pub struct FeatureTeardownArgs {
     /// Dasherized feature name to tear down (e.g., oauth-integration)
-    #[arg(long)]
     pub name: String,
 
     /// Override branch prefix (defaults to "feature")
