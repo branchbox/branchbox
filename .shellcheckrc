@@ -1,0 +1,14 @@
+# Shellcheck configuration for install.sh
+
+# Enable all optional checks
+enable=all
+
+# Disable specific checks
+# SC2034: Variable appears unused (we use variables for clarity even if not referenced)
+disable=SC2034
+
+# Set shell dialect
+shell=bash
+
+# Source paths for shellcheck
+source-path=SCRIPTDIR

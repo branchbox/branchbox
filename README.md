@@ -48,11 +48,34 @@ brew install branchbox/tap/branchbox
 
 #### Linux
 
-*Coming soon - Install script will be available in a future release.*
+Install with our automated script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash
 ```
+
+**Options:**
+
+```bash
+# Install specific version
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | BRANCHBOX_VERSION=v0.1.0 bash
+
+# Install to custom directory
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | INSTALL_DIR=$HOME/bin bash
+
+# Download and inspect script first (recommended)
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh -o install.sh
+less install.sh  # Review the script
+chmod +x install.sh
+./install.sh
+```
+
+**What the script does:**
+- Detects your architecture (x86_64 or ARM64)
+- Downloads the latest release from GitHub
+- Verifies SHA256 checksums
+- Installs to `/usr/local/bin` (with sudo) or `~/.local/bin` (without sudo)
+- Provides clear output and error messages
 
 #### Windows (Scoop)
 
@@ -159,6 +182,62 @@ branchbox --help
 
 # List available commands
 branchbox feature --help
+```
+
+### Installation Troubleshooting
+
+#### Linux Install Script
+
+**Q: The script says my architecture is unsupported**
+
+A: BranchBox currently supports x86_64 and aarch64 (ARM64) on Linux. For other architectures, try building from source.
+
+**Q: Installation fails with permission denied**
+
+A: Try installing to a user directory:
+```bash
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | INSTALL_DIR=$HOME/.local/bin bash
+```
+
+Then add `~/.local/bin` to your PATH:
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Q: Checksum verification fails**
+
+A: This could indicate a corrupted download or a network issue. Try running the installer again. If the problem persists, download the binary manually from the [GitHub Releases](https://github.com/branchbox/branchbox/releases/latest) page.
+
+**Q: I don't want to pipe curl to sh**
+
+A: You can download and inspect the script first:
+```bash
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh -o install.sh
+less install.sh  # Inspect the script
+chmod +x install.sh
+./install.sh
+```
+
+**Q: The script cannot find the release**
+
+A: Make sure you have an active internet connection. If a specific version doesn't exist, you'll see an error. Check available versions at [GitHub Releases](https://github.com/branchbox/branchbox/releases).
+
+#### Windows
+
+**Q: Scoop install fails**
+
+A: Make sure you have Scoop installed first:
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+irm get.scoop.sh | iex
+```
+
+**Q: branchbox.exe is not recognized**
+
+A: Restart your terminal or run:
+```powershell
+scoop reset branchbox
 ```
 
 ## Components
@@ -409,12 +488,27 @@ Migration plan:
 - [Protocol](docs/PROTOCOL.md) - Communication protocols (gRPC, REST)
 - [Original Docs](../docs/architecture/) - Bash implementation docs
 
+## Testing
+
+The install script has automated tests. See [test/README.md](test/README.md) for details.
+
+```bash
+# Run tests
+bats test/install.bats         # All tests
+shellcheck install.sh          # Linting
+
+# Test on specific distro
+docker run -it --rm -v $(pwd)/install.sh:/install.sh:ro ubuntu:22.04 bash /install.sh
+```
+
+**Coverage**: Static analysis (shellcheck) + automated tests (bats) + CI (GitHub Actions)
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests: `cargo test --all`
+4. Run tests: `cargo test --all` (Rust) or `./test/run-tests.sh` (install script)
 5. Submit a pull request
 
 ## License

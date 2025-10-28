@@ -1,0 +1,88 @@
+name: Test Install Script
+
+on:
+  push:
+    branches: [main, feature/install-scripts]
+    paths:
+      - 'install.sh'
+      - 'test/**'
+      - '.github/workflows/test-install-script.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'test/**'
+      - '.github/workflows/test-install-script.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Install Script
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+          additional_files: 'install.sh'
+
+      - name: Setup bats
+        uses: mig4/setup-bats@v1
+        with:
+          bats-version: 1.10.0
+
+      - name: Run tests
+        run: bats test/install.bats
+
+  test-distros:
+    name: Test on ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - distro: ubuntu:22.04
+            name: Ubuntu 22.04
+            cache-key: ubuntu-22-04
+          - distro: debian:12
+            name: Debian 12
+            cache-key: debian-12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-cache-${{ matrix.cache-key }}
+          key: docker-${{ matrix.cache-key }}-${{ hashFiles('.github/workflows/test-install-script.yml') }}
+          restore-keys: |
+            docker-${{ matrix.cache-key }}-
+
+      - name: Load or pull Docker image
+        run: |
+          CACHE_DIR="/tmp/docker-cache-${{ matrix.cache-key }}"
+          if [ -f "$CACHE_DIR/image.tar" ]; then
+            echo "Loading cached image..."
+            docker load -i "$CACHE_DIR/image.tar"
+          else
+            echo "Pulling fresh image..."
+            docker pull ${{ matrix.distro }}
+            mkdir -p "$CACHE_DIR"
+            docker save ${{ matrix.distro }} -o "$CACHE_DIR/image.tar"
+          fi
+
+      - name: Test syntax on ${{ matrix.name }}
+        run: |
+          docker run --rm \
+            -v $(pwd)/install.sh:/install.sh:ro \
+            ${{ matrix.distro }} \
+            bash -c "apt-get update -qq && apt-get install -y -qq curl && bash -n /install.sh"
