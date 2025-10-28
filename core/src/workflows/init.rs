@@ -809,8 +809,8 @@ impl InitWorkflow {
 
         fs::rename(current_path, &temp_path).map_err(|e| {
             Error::validation(format!(
-                "Failed to rename directory to temporary location: {}",
-                e
+                "Failed to rename directory '{}' to temporary location: {}",
+                dir_name, e
             ))
         })?;
 
@@ -829,8 +829,8 @@ impl InitWorkflow {
             let _ = fs::rename(&temp_path, current_path);
 
             return Err(Error::validation(format!(
-                "Failed to create container directory: {}. Changes rolled back.",
-                e
+                "Failed to create container directory '{}': {}. Changes rolled back.",
+                container_path.display(), e
             )));
         }
 
@@ -850,8 +850,8 @@ impl InitWorkflow {
             let _ = fs::rename(&temp_path, current_path);
 
             return Err(Error::validation(format!(
-                "Failed to move repository into container: {}. Changes rolled back.",
-                e
+                "Failed to move repository into container '{}': {}. Changes rolled back.",
+                main_path.display(), e
             )));
         }
 
