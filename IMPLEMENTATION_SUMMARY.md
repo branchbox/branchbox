@@ -1,196 +1,112 @@
 # Homebrew Tap Distribution - Implementation Summary
 
-## Completed: 2025-10-27
+**Completed**: 2025-10-27
 
-## Overview
+## What Was Built
 
-Implemented automated Homebrew formula updates for the BranchBox CLI. When stable releases are published, the workflow automatically updates the [branchbox/homebrew-tap](https://github.com/branchbox/homebrew-tap) repository with new version numbers, download URLs, and SHA256 checksums.
+Automated Homebrew formula updates that run when stable releases are published.
 
-## What Was Implemented
+### Core Workflow (`update-homebrew` job)
 
-### 1. Automated Homebrew Update Job
+Runs after release jobs complete:
+- Downloads checksums from GitHub Release
+- Extracts macOS Intel + ARM checksums
+- Updates `Formula/branchbox.rb` with new version and SHA256s
+- Commits to [branchbox/homebrew-tap](https://github.com/branchbox/homebrew-tap)
+- Skips pre-releases automatically
 
-**File**: `.github/workflows/release.yml`
+### Error Handling
 
-Added the `update-homebrew` job that:
-- Runs after `create-release`, `build-release`, and `publish-release` complete
-- Only executes for stable releases (skips alpha, beta, rc)
-- Checks out the homebrew-tap repository using `HOMEBREW_TAP_TOKEN` secret
-- Downloads the `checksums.txt` from the GitHub release
-- Extracts checksums for macOS Intel and Apple Silicon binaries
-- Updates `Formula/branchbox.rb` with new version, URLs, and checksums
-- Commits and pushes changes to the tap repository
+- Pre-flight: Validates `HOMEBREW_TAP_TOKEN` exists
+- Downloads: 5 retry attempts with backoff
+- Checksums: SHA256 format validation
+- Formula: Post-update verification
+- Commits: Idempotent (only when changed)
 
-**Key Features**:
-- Error handling: Validates checksums were extracted successfully
-- Conditional execution: Only commits if there are actual changes
-- Clear logging: Shows checksums and updated formula for debugging
-- Fail-safe: Exits with error if checksums are missing or empty
+### Documentation
 
-### 2. Setup Documentation
+- [Setup guide](docs/HOMEBREW_SETUP.md) - Token creation, troubleshooting
+- Working notes in `tmp/` (git-ignored, not part of deliverable)
 
-**File**: `docs/HOMEBREW_SETUP.md`
-
-Comprehensive documentation covering:
-- Prerequisites and requirements
-- GitHub Personal Access Token setup
-- Secret configuration instructions
-- How the workflow operates
-- Verification steps
-- Troubleshooting guide
-- Manual update procedures
-- Security considerations
-
-### 3. Reference Documentation
-
-**Note**: The `tmp/` directory contains working notes and reference materials used during development. These files are not part of the deliverable and are git-ignored. The information from these references has been incorporated into the official documentation (`docs/HOMEBREW_SETUP.md`).
-
-Key reference topics that were incorporated:
-- Initial formula setup with first release
-- Homebrew tap repository structure
-- Formula template and patterns
-- Testing procedures
-
-### 4. Feature Spec Completion
-
-**File**: Moved from `docs/features/backlog/homebrew-tap-distribution.md` to `docs/features/completed/`
-
-Updated front matter to reflect completion:
-```yaml
-status: completed
-completed: 2025-10-27
-```
-
-## Integration Points
-
-### Workflow Dependencies
-
-```yaml
-update-homebrew:
-  needs: [create-release, build-release, publish-release]
-```
-
-The Homebrew update job depends on:
-1. **create-release**: Provides version and prerelease status
-2. **build-release**: Builds macOS binaries (Intel + ARM)
-3. **publish-release**: Uploads binaries and checksums.txt to GitHub Releases
-
-### Required Secret
-
-**Name**: `HOMEBREW_TAP_TOKEN`
-**Scope**: `repo` (full control of homebrew-tap repository)
-**Created**: Needs to be added to repository secrets
-
-📝 **Action Required**: Create and add this token before the next release.
+---
 
 ## How It Works
 
-### Release Workflow
-
 ```
-1. Tag pushed (e.g., v0.2.0)
-   ↓
-2. create-release: Create GitHub Release (draft)
-   ↓
-3. build-release: Build binaries for all platforms
-   ↓
-4. publish-release: Upload binaries + checksums.txt, publish release
-   ↓
-5. update-homebrew: Update Formula/branchbox.rb in tap repo
-   ↓
-6. Users run: brew update && brew upgrade branchbox
+Release tagged (v0.2.0)
+  ↓
+Create + Build + Publish
+  ↓
+Update Homebrew Formula
+  ├─ Validate prerequisites
+  ├─ Download checksums (with retry)
+  ├─ Extract & validate
+  ├─ Update formula
+  ├─ Verify updates
+  └─ Commit & push
 ```
 
-### Formula Updates
-
-The workflow uses `sed` to update:
-
+Formula updates:
 ```ruby
-version "0.2.0"  # → Updated to new version
-
-# Intel Mac
-url "https://github.com/branchbox/branchbox/releases/download/v0.2.0/..."
-sha256 "abc123..."  # → Updated with new checksum
-
-# Apple Silicon Mac
-url "https://github.com/branchbox/branchbox/releases/download/v0.2.0/..."
-sha256 "def456..."  # → Updated with new checksum
+version "0.2.0" → "0.2.1"
+sha256 "abc..." → "def..."  # Intel
+sha256 "xyz..." → "uvw..."  # ARM
 ```
 
-## Testing Plan
+---
 
-Before the next release, verify:
+## Required Setup
 
-1. **Secret exists**: Check repository Settings → Secrets → Actions
-2. **Token works**: Test token has push access to homebrew-tap repo
-3. **Formula structure**: Ensure `Formula/branchbox.rb` matches expected patterns
-4. **Test release**: Consider a dry-run with a test tag
+**Secret**: `HOMEBREW_TAP_TOKEN`
+- Fine-grained token recommended
+- Scoped to `branchbox/homebrew-tap`
+- Contents: Read and write
 
-### Post-Release Verification
+See [setup guide](docs/HOMEBREW_SETUP.md) for details.
 
-After the next release:
-
-1. Check GitHub Actions for successful `update-homebrew` job
-2. Verify commit in homebrew-tap: `chore: update formula to vX.Y.Z`
-3. Test installation: `brew install branchbox/tap/branchbox`
-4. Verify version: `branchbox --version`
+---
 
 ## Files Changed
 
 ```
 Modified:
-  .github/workflows/release.yml     (+74 lines)
+  .github/workflows/release.yml
 
 Added:
-  docs/HOMEBREW_SETUP.md            (new file)
-  IMPLEMENTATION_SUMMARY.md         (new file)
-  CODE_REVIEW_RESPONSE.md           (new file)
-  CHANGES.md                        (new file)
+  docs/HOMEBREW_SETUP.md
+  IMPLEMENTATION_SUMMARY.md
+  CODE_REVIEW_RESPONSE.md
+  CHANGES.md
 
 Moved:
   docs/features/backlog/homebrew-tap-distribution.md
   → docs/features/completed/homebrew-tap-distribution.md
-
-Note: Working references in tmp/ directory are git-ignored and not included in PR
 ```
 
-## Checklist for Next Release
-
-- [ ] Create `HOMEBREW_TAP_TOKEN` personal access token
-- [ ] Add token to repository secrets as `HOMEBREW_TAP_TOKEN`
-- [ ] Verify homebrew-tap repo exists at `github.com/branchbox/homebrew-tap`
-- [ ] Ensure `Formula/branchbox.rb` has correct structure
-- [ ] Tag a new release (e.g., `v0.2.0`)
-- [ ] Monitor GitHub Actions for successful completion
-- [ ] Verify formula update in homebrew-tap repo
-- [ ] Test installation from Homebrew
-
-## Benefits
-
-1. **Zero manual work**: Formula updates happen automatically
-2. **Fast availability**: New versions available via Homebrew within minutes
-3. **Architecture support**: Seamless Intel/ARM detection
-4. **Checksum verification**: Security through SHA256 validation
-5. **User-friendly**: Standard Homebrew update/upgrade workflow
-
-## References
-
-- Main spec: `docs/features/completed/homebrew-tap-distribution.md`
-- Setup guide: `docs/HOMEBREW_SETUP.md`
-- Release workflow: `.github/workflows/release.yml`
-- Homebrew tap: https://github.com/branchbox/homebrew-tap
-- Homebrew docs: https://docs.brew.sh/Formula-Cookbook
+---
 
 ## Next Steps
 
-1. **Add the secret**: Create and configure `HOMEBREW_TAP_TOKEN`
-2. **Test with next release**: Verify automation works end-to-end
-3. **Update main README**: Add Homebrew installation instructions
-4. **Announce**: Let users know about Homebrew availability
-5. **Monitor**: Watch for any formula issues after first automated update
+1. Create and add `HOMEBREW_TAP_TOKEN` secret ✓
+2. Merge PR
+3. Tag next stable release
+4. Monitor workflow and verify update
+5. Test: `brew install branchbox/tap/branchbox`
 
-## Support
+---
 
-- Automation issues: Open issue in `branchbox/branchbox`
-- Formula issues: Open issue in `branchbox/homebrew-tap`
-- Questions: Check `docs/HOMEBREW_SETUP.md` troubleshooting section
+## Benefits
+
+- Zero manual formula updates
+- Available within minutes of release
+- Automatic architecture detection
+- SHA256 security verification
+- Standard Homebrew workflow
+
+---
+
+## References
+
+- Setup: [docs/HOMEBREW_SETUP.md](docs/HOMEBREW_SETUP.md)
+- Feature spec: [docs/features/completed/homebrew-tap-distribution.md](docs/features/completed/homebrew-tap-distribution.md)
+- Workflow: [.github/workflows/release.yml](.github/workflows/release.yml)
