@@ -28,14 +28,37 @@ This token is used by the workflow to push updates to the homebrew-tap repositor
 
 #### Creating the Token
 
+**Recommended: Use a fine-grained personal access token** for better security and minimal permissions.
+
+1. Go to: https://github.com/settings/tokens?type=beta
+2. Click "Generate new token"
+3. Configure:
+   - **Token name**: `Homebrew Tap Updates`
+   - **Expiration**: 1 year (set a calendar reminder to renew)
+   - **Repository access**: Select "Only select repositories"
+     - Choose: `branchbox/homebrew-tap`
+   - **Permissions**:
+     - Under "Repository permissions", find **Contents**
+     - Set to: **Read and write**
+4. Click "Generate token"
+5. **Copy the token immediately** - you won't see it again
+
+<details>
+<summary>Alternative: Classic Token (Less Secure)</summary>
+
+If you need to use a classic token:
+
 1. Go to: https://github.com/settings/tokens/new
 2. Configure:
    - **Note**: `Homebrew Tap Updates`
-   - **Expiration**: 1 year (set a calendar reminder to renew)
-   - **Scopes**:
-     - ✅ `repo` (Full control of private repositories)
-3. Click "Generate token"
-4. **Copy the token immediately** - you won't see it again
+   - **Expiration**: 1 year
+   - **Scopes**: ✅ `repo`
+3. Generate and copy the token
+
+**Note**: Classic tokens grant broader access. Fine-grained tokens are more secure.
+</details>
+
+For more security details, see the [Security Notes](#security-notes) section below.
 
 #### Adding the Secret
 
@@ -147,9 +170,34 @@ branchbox --version
 **Cause**: Formula structure doesn't match expected patterns
 
 **Fix**:
-1. Compare `Formula/branchbox.rb` with the template in `tmp/INITIAL_SETUP.md`
-2. Ensure version/url/sha256 patterns match
-3. Test sed commands locally before updating workflow
+1. Compare current formula with expected structure:
+   ```bash
+   # View current formula in homebrew-tap repo
+   curl -fsSL https://raw.githubusercontent.com/branchbox/homebrew-tap/main/Formula/branchbox.rb
+   ```
+
+2. Verify formula has this exact structure (required for sed patterns):
+   ```ruby
+   class Branchbox < Formula
+     desc "..."
+     homepage "..."
+     version "X.Y.Z"  # ← Must be this format
+     license "MIT"
+
+     on_macos do
+       if Hardware::CPU.intel?
+         url "https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-X.Y.Z-x86_64-apple-darwin.tar.gz"
+         sha256 "abc123..."  # ← Must be on separate line
+       elsif Hardware::CPU.arm?
+         url "https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-X.Y.Z-aarch64-apple-darwin.tar.gz"
+         sha256 "def456..."  # ← Must be on separate line
+       end
+     end
+   end
+   ```
+
+3. Ensure version/url/sha256 patterns match exactly
+4. Test sed commands locally before updating workflow
 
 ### No Homebrew Update for Pre-Release
 
@@ -322,7 +370,7 @@ Then commit and push normally.
 
 - [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)
 - [GitHub Actions Secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets)
-- [Release Automation Spec](../docs/features/backlog/homebrew-tap-distribution.md)
+- [Homebrew Tap Distribution Feature Spec](../features/completed/homebrew-tap-distribution.md)
 
 ## Support
 
