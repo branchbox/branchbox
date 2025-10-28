@@ -51,7 +51,7 @@ detect_os() {
 # Get latest version
 get_latest_version() {
   local version
-  version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep -oP '"tag_name": "\K[^"]+')
+  version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | sed -n -E 's/.*"tag_name": "([^"]+)".*/\1/p')
 
   if [ -z "$version" ]; then
     echo -e "${RED}Error: Could not fetch latest version${NC}" >&2
@@ -105,15 +105,15 @@ main() {
   # Download and verify checksum
   echo "Verifying checksum..."
   if ! curl -fsSL "$checksum_url" -o "$tmp_dir/checksums.txt"; then
-    echo -e "${YELLOW}Warning: Could not download checksums, skipping verification${NC}" >&2
-  else
-    cd "$tmp_dir"
-    if ! sha256sum -c checksums.txt --ignore-missing 2>/dev/null; then
-      echo -e "${RED}Error: Checksum verification failed${NC}" >&2
-      exit 1
-    fi
-    echo -e "${GREEN}Checksum verified${NC}"
+    echo -e "${RED}Error: Failed to download checksum file. Aborting installation.${NC}" >&2
+    exit 1
   fi
+
+  if ! (cd "$tmp_dir" && sha256sum -c checksums.txt --ignore-missing 2>/dev/null); then
+    echo -e "${RED}Error: Checksum verification failed${NC}" >&2
+    exit 1
+  fi
+  echo -e "${GREEN}Checksum verified${NC}"
 
   # Extract archive
   echo "Extracting..."

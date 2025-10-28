@@ -51,17 +51,17 @@ brew install branchbox/tap/branchbox
 Install with our automated script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash
 ```
 
 **Options:**
 
 ```bash
 # Install specific version
-curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | BRANCHBOX_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | BRANCHBOX_VERSION=v0.1.0 bash
 
 # Install to custom directory
-curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | INSTALL_DIR=$HOME/bin sh
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | INSTALL_DIR=$HOME/bin bash
 
 # Download and inspect script first (recommended)
 curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh -o install.sh
@@ -196,7 +196,7 @@ A: BranchBox currently supports x86_64 and aarch64 (ARM64) on Linux. For other a
 
 A: Try installing to a user directory:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | INSTALL_DIR=$HOME/.local/bin sh
+curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | INSTALL_DIR=$HOME/.local/bin bash
 ```
 
 Then add `~/.local/bin` to your PATH:

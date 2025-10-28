@@ -665,6 +665,34 @@ Test:
 - Mitigation: Document how to whitelist
 - Mitigation: Submit to Windows Defender for analysis
 
+## Code Review Follow-up Items
+
+### Phase 2: UX Improvements
+
+1. **INSTALL_DIR Reassignment Clarity** (MEDIUM)
+   - **Issue**: The script reassigns `INSTALL_DIR` during fallback to user directory, which can be confusing if a user explicitly set it via environment variable.
+   - **Scope**: Affects install.sh fallback logic (lines 135-147)
+   - **Solution**: Use a separate local variable for the fallback path and explicitly inform the user why the fallback is happening:
+     ```bash
+     local fallback_install_dir="$HOME/.local/bin"
+     mkdir -p "$fallback_install_dir"
+     echo "Installing to $fallback_install_dir (user installation, as '$INSTALL_DIR' was not writable)"
+     mv "$tmp_dir/branchbox-${version_number}-${target}/$BINARY_NAME" "$fallback_install_dir/"
+     chmod +x "$fallback_install_dir/$BINARY_NAME"
+
+     # Check if in PATH
+     if ! echo "$PATH" | grep -q "$fallback_install_dir"; then
+       echo ""
+       echo -e "${YELLOW}Warning: $fallback_install_dir is not in your PATH${NC}"
+       echo "Add this to your ~/.bashrc or ~/.zshrc:"
+       echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+     fi
+     ```
+   - **Status**: Deferred to Phase 2 (UX improvements)
+   - **Reference**: PR #7, Thread 2467097027
+   - **Priority**: Medium - improves user experience but doesn't block functionality
+   - **Rationale**: Current implementation works correctly and provides necessary feedback. This enhancement improves clarity but isn't blocking for Phase 1 release.
+
 ## Success Criteria
 
 ### Linux
