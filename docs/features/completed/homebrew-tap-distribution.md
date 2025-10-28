@@ -1,8 +1,9 @@
 ---
 work_feature: homebrew-tap-distribution
-status: backlog
+status: completed
 created: 2025-10-27
 updated: 2025-10-27
+completed: 2025-10-27
 ---
 
 # Homebrew Tap Distribution for macOS
