@@ -44,6 +44,11 @@ This project includes a complete devcontainer setup that provides a consistent d
 - Docker-in-Docker runtime (official Docker packages) for container orchestration tests
 - Persistent Codex configuration/history stored on the host at `.codex/`
 
+**Devcontainer sync strategy:**
+- By default BranchBox copies the `.devcontainer/` directory into each feature worktree.
+- Override behaviour per command with `BRANCHBOX_DEVCONTAINER_STRATEGY=copy|symlink branchbox feature start`.
+- Persist a different default by setting `BRANCHBOX_DEVCONTAINER_STRATEGY` in your `.env` (template comment provided in generated `env.sample` files).
+
 ### Local Development (without devcontainer)
 
 **Prerequisites:**

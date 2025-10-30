@@ -12,7 +12,7 @@ architecture: module-based
 
 ## Executive Summary
 
-**Goal**: Ensure every feature worktree has a complete devcontainer setup AND shares tool configurations (Claude, Codex, GitHub CLI, Cloudflared) across all worktrees for seamless development.
+**Goal**: Ensure every feature worktree has a complete devcontainer setup AND shares tool configurations (Claude, Codex, GitHub CLI) across all worktrees for seamless development, while paving the way for per-worktree Cloudflare tunnels.
 
 **Core Problem**: Currently, when you run `branchbox feature start`, the new worktree lacks `.devcontainer/` files, preventing VSCode/Cursor from reopening in a container. Additionally, while the shared configuration volume mounting mechanism exists in templates, it has minor inconsistencies and needs better documentation.
 
@@ -24,7 +24,8 @@ architecture: module-based
 
 **Result**:
 - Feature worktrees get complete devcontainer configuration automatically via `DevcontainerModule`
-- All worktrees share Claude, Codex, gh, and cloudflared credentials (template fixes)
+- All worktrees share Claude, Codex, and gh credentials (template fixes)
+- Cloudflare tunnels are provision-ready for per-worktree credentials managed outside shared volumes
 - Single authentication per tool across all features
 - Seamless "Reopen in Container" workflow in VSCode/Cursor
 - Ability to sync devcontainer updates: `branchbox devcontainer sync`
@@ -68,12 +69,12 @@ ls .devcontainer/
 - `core/src/bootstrap/templates/nodejs/compose.yaml:17`
 - `core/src/bootstrap/templates/generic/compose.yaml:17`
 
-**Current (incorrect):**
+**Previous (incorrect) state:**
 ```yaml
 - ${SHARED_CONFIG_DIR:-../..}/.claude-code:/home/vscode/.claude
 ```
 
-**Should be:**
+**Current fix (implemented in templates and docs):**
 ```yaml
 - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
 ```
@@ -82,15 +83,14 @@ ls .devcontainer/
 
 **Impact**: New projects generated with `branchbox init` will mount to wrong directory name.
 
-#### 3. **Missing Cloudflared Config Mount**
+#### Claude Credential Path Verification
 
-While cloudflared isn't implemented yet (Milestone 1), the volume mount should be added to templates proactively:
+- Anthropic's CLI stores session files in `~/.claude/` (confirmed in the devcontainer: `/home/vscode/.claude/` plus `.claude.json` artifacts).
+- Docs, templates, and module tests should reference that canonical path to avoid regressions.
 
-```yaml
-- ${SHARED_CONFIG_DIR:-../..}/.cloudflared:/home/vscode/.cloudflared
-```
+#### 3. **Cloudflared Strategy Not Reflected in Docs**
 
-**Config location**: Cloudflared typically stores credentials in `~/.cloudflared/cert.pem`.
+Milestone 1 migrates tunnel provisioning to the Cloudflare APIs, generating per-worktree credentials and env files (see `docs/features/completed/rust-workflow-migration.md`). The spec still references the legacy shared-volume approach, which no longer aligns with the planned implementation.
 
 #### 4. **Documentation Gap**
 
@@ -469,7 +469,7 @@ pub fn all_modules() -> Vec<Box<dyn Module>> {
 
 ### Component 2: Shared Config Mounts - Data-Driven Approach
 
-**Problem**: Currently, shared config volume mounts are duplicated across 4 template files. Adding cloudflared requires editing 4 files. This doesn't scale.
+**Problem**: Currently, shared config volume mounts are duplicated across 4 template files. Every adjustment (like fixing the Claude directory) requires editing 4 files. This doesn't scale.
 
 **Better approach**: Extract to a constant/config that's reused across templates.
 
@@ -480,7 +480,6 @@ pub const SHARED_CONFIG_MOUNTS: &[(&str, &str)] = &[
     (".codex", "/home/vscode/.codex"),
     (".claude", "/home/vscode/.claude"),
     (".gh", "/home/vscode/.config/gh"),
-    (".cloudflared", "/home/vscode/.cloudflared"),
 ];
 
 pub fn render_shared_volumes() -> String {
@@ -503,12 +502,12 @@ volumes:
 {{ render_shared_volumes() }}
 ```
 
-**Immediate fixes** (for now, fix manually):
-- ✅ `core/src/bootstrap/templates/rust/compose.yaml:17` - `.claude-code` → `.claude`
-- ✅ `core/src/bootstrap/templates/rails/compose.yaml:17` - `.claude-code` → `.claude`
-- ✅ `core/src/bootstrap/templates/nodejs/compose.yaml:17` - `.claude-code` → `.claude`
-- ✅ `core/src/bootstrap/templates/generic/compose.yaml:17` - `.claude-code` → `.claude`
-- ✅ All templates: Add cloudflared mount
+**Immediate fixes** (applied in this iteration):
+- [x] `core/src/bootstrap/templates/rust/compose.yaml:17` - `.claude-code` → `.claude`
+- [x] `core/src/bootstrap/templates/rails/compose.yaml:17` - `.claude-code` → `.claude`
+- [x] `core/src/bootstrap/templates/nodejs/compose.yaml:17` - `.claude-code` → `.claude`
+- [x] `core/src/bootstrap/templates/generic/compose.yaml:17` - `.claude-code` → `.claude`
+- [x] Confirm all shared-volume mounts reference the canonical Claude directory (`~/.claude`)
 
 **Future**: Migrate to template engine (handlebars, tera) for proper code generation.
 
@@ -516,12 +515,9 @@ volumes:
 
 **File**: `.devcontainer/compose.yaml`
 
-**Single change needed**: Add cloudflared mount (line 18):
-```yaml
-- ${SHARED_CONFIG_DIR:-../..}/.cloudflared:/home/vscode/.cloudflared
-```
-
-The current project already uses `.claude` correctly (not `.claude-code`), so only cloudflared is missing.
+**Changes applied**:
+- Update shared-volume mounts to use `.claude` (not `.claude-code`)
+- Leave Cloudflare tunnel credentials to the per-worktree provisioning flow (see Milestone 1 design notes)
 
 ### Component 4: Documentation in README.md
 
@@ -560,9 +556,11 @@ All feature worktrees share authentication for common development tools, so you 
 
 **Supported tools:**
 - **GitHub CLI** (`gh`) - Credentials stored in `~/.config/gh/`
-- **Claude Code** (`claude`) - Session stored in `~/.claude/`
+- **Claude Code** (`claude`) - Session stored in `~/.claude/` (Anthropic CLI default)
 - **Codex** (`codex`) - Config stored in `~/.codex/`
-- **Cloudflared** (`cloudflared`) - Credentials in `~/.cloudflared/` (Milestone 1)
+
+**Upcoming**:
+- **Cloudflare tunnels** - Provisioned via API per worktree (no shared volume). See `docs/features/completed/rust-workflow-migration.md` for tunnel background.
 
 **How it works:**
 
@@ -594,7 +592,6 @@ volumes:
   - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
   - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
   - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
-  - ${SHARED_CONFIG_DIR:-../..}/.cloudflared:/home/vscode/.cloudflared
 ```
 
 **Directory structure:**
@@ -603,7 +600,6 @@ volumes:
 ├── .gh/              # Shared GitHub CLI credentials
 ├── .claude/          # Shared Claude session
 ├── .codex/           # Shared Codex config
-├── .cloudflared/     # Shared Cloudflare tunnel credentials
 ├── myapp/            # Main worktree devcontainer mounts these
 ├── myapp-feature1/   # Feature 1 devcontainer mounts same directories
 └── myapp-feature2/   # Feature 2 devcontainer mounts same directories
@@ -675,10 +671,10 @@ cat .devcontainer/compose.yaml | yq .
 - [ ] Unit tests for `DevcontainerModule` (detection, sync, exclusion)
 
 ### Phase 2: Template Fixes (1 day)
-- [ ] Fix `.claude-code` → `.claude` in all 4 template `compose.yaml` files
-- [ ] Add `.cloudflared:/home/vscode/.cloudflared` mount to all 4 templates
-- [ ] Fix current project's `.devcontainer/compose.yaml` (add cloudflared)
-- [ ] Update `.env.sample` to document `BRANCHBOX_DEVCONTAINER_STRATEGY`
+- [x] Fix `.claude-code` → `.claude` in all 4 template `compose.yaml` files
+- [x] Update comments and docs to reference the Claude default directory (`~/.claude`)
+- [x] Fix current project's `.devcontainer/compose.yaml` to use `.claude`
+- [x] Update `.env.sample` to document `BRANCHBOX_DEVCONTAINER_STRATEGY`
 - [ ] Add test: verify bootstrap generates correct volume mounts
 
 ### Phase 3: Sync Command (1-2 days)
@@ -688,9 +684,8 @@ cat .devcontainer/compose.yaml | yq .
 - [ ] Add `--dry-run` flag to preview changes
 - [ ] Integration test: sync updates existing feature worktrees
 
-### Phase 4: Documentation (1 day)
 - [ ] Add "Devcontainer Workflow" section to `README.md`
-- [ ] Document `BRANCHBOX_DEVCONTAINER_STRATEGY` env var
+- [x] Document `BRANCHBOX_DEVCONTAINER_STRATEGY` env var
 - [ ] Document `branchbox devcontainer sync` command
 - [ ] Add troubleshooting guide for "Reopen in Container" issues
 - [ ] Update `docs/DEVELOPMENT.md` with module architecture notes
@@ -1007,7 +1002,7 @@ branchbox config sync  # Update all feature devcontainers from main
 ## Timeline (Revised)
 
 - **Day 1-3**: Core `DevcontainerModule` implementation + unit tests
-- **Day 4**: Template fixes (`.claude-code` → `.claude`, add cloudflared)
+- **Day 4**: Template fixes (`.claude-code` → `.claude`, doc updates for Claude path)
 - **Day 5-6**: `branchbox devcontainer sync` command + integration tests
 - **Day 7**: Documentation (README, DEVELOPMENT.md, env vars)
 - **Day 8-9**: Manual testing across platforms, bug fixes
@@ -1058,5 +1053,5 @@ branchbox config sync  # Update all feature devcontainers from main
 ## Related Features
 
 - Universal Init Workflow (depends on this for devcontainer copying)
-- Cloudflare Tunnel Provisioning (needs `.cloudflared` mount - Milestone 1)
+- Cloudflare Tunnel Provisioning (per-worktree credentials via Cloudflare API - Milestone 1)
 - Agent Daemon (will need access to shared configs - Milestone 1)
