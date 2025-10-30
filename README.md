@@ -141,9 +141,20 @@ branchbox --version
 # Download
 Invoke-WebRequest -Uri "https://github.com/branchbox/branchbox/releases/download/vVERSION/branchbox-VERSION-x86_64-pc-windows-msvc.zip" -OutFile branchbox.zip
 
+# Download checksums
+Invoke-WebRequest -Uri "https://github.com/branchbox/branchbox/releases/download/vVERSION/checksums.txt" -OutFile checksums.txt
+
 # Verify checksum
 $hash = (Get-FileHash branchbox.zip -Algorithm SHA256).Hash.ToLower()
-# Compare with checksums.txt
+$expectedHash = (Get-Content checksums.txt | Select-String "branchbox-VERSION-x86_64-pc-windows-msvc.zip" | ForEach-Object { $_.Line.Split(' ')[0] })
+if ($hash -eq $expectedHash) {
+    Write-Host "✓ Checksum verification passed" -ForegroundColor Green
+} else {
+    Write-Host "✗ Checksum verification failed!" -ForegroundColor Red
+    Write-Host "  Expected: $expectedHash"
+    Write-Host "  Got:      $hash"
+    exit 1
+}
 
 # Extract
 Expand-Archive branchbox.zip

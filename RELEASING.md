@@ -203,9 +203,20 @@ git push origin v1.0.0
    # Download artifact
    Invoke-WebRequest -Uri "https://github.com/branchbox/branchbox/releases/download/v1.0.0/branchbox-1.0.0-x86_64-pc-windows-msvc.zip" -OutFile branchbox.zip
 
+   # Download checksums
+   Invoke-WebRequest -Uri "https://github.com/branchbox/branchbox/releases/download/v1.0.0/checksums.txt" -OutFile checksums.txt
+
    # Verify checksum
-   $hash = (Get-FileHash branchbox.zip -Algorithm SHA256).Hash
-   # Compare with checksums.txt manually
+   $hash = (Get-FileHash branchbox.zip -Algorithm SHA256).Hash.ToLower()
+   $expectedHash = (Get-Content checksums.txt | Select-String "branchbox-1.0.0-x86_64-pc-windows-msvc.zip" | ForEach-Object { $_.Line.Split(' ')[0] })
+   if ($hash -eq $expectedHash) {
+       Write-Host "✓ Checksum verification passed" -ForegroundColor Green
+   } else {
+       Write-Host "✗ Checksum verification failed!" -ForegroundColor Red
+       Write-Host "  Expected: $expectedHash"
+       Write-Host "  Got:      $hash"
+       exit 1
+   }
 
    # Extract and test
    Expand-Archive branchbox.zip
@@ -283,26 +294,49 @@ git branch -d hotfix/v1.0.1
 
 ## Post-Release Tasks
 
-### 1. Update Installation Methods (Future)
+### 1. Verify Homebrew Formula Update
 
-When we add Homebrew/Scoop support:
+The release workflow **automatically updates** the Homebrew formula for stable releases (non-pre-release only).
 
+**What happens automatically:**
+- The `update-homebrew` job runs after `publish-release` completes
+- Downloads checksums.txt from the new release
+- Updates the formula in [branchbox/homebrew-tap](https://github.com/branchbox/homebrew-tap)
+- Updates version, URLs, and SHA256 checksums for both Intel and ARM macOS builds
+- Commits and pushes changes with message: `chore: update formula to vX.Y.Z`
+
+**Verify the update:**
 ```bash
-# Update Homebrew formula
-# (Will be automated in future milestones)
+# Check the homebrew-tap repository for the update
+gh repo view branchbox/homebrew-tap --web
 
-# Update Scoop manifest
-# (Will be automated in future milestones)
+# Or check the commit history
+gh api repos/branchbox/homebrew-tap/commits --jq '.[0] | {message: .commit.message, date: .commit.author.date}'
+
+# Test installation locally (requires adding the tap first)
+brew tap branchbox/tap
+brew install branchbox
+branchbox --version
 ```
 
-### 2. Announce the Release
+**Troubleshooting:**
+- If the job fails, check the workflow logs: `gh run view`
+- Ensure `HOMEBREW_TAP_TOKEN` secret is set in repository settings
+- The job only runs for stable releases (skipped for pre-releases)
+- See workflow file: `.github/workflows/release.yml` (lines 354-496)
+
+### 2. Update Scoop Manifest (Future)
+
+Scoop support is planned for a future milestone. When implemented, it will follow a similar automated pattern.
+
+### 3. Announce the Release
 
 - Post to project communication channels
 - Update documentation site (if applicable)
 - Social media announcements
 - Blog post for major releases
 
-### 3. Monitor for Issues
+### 4. Monitor for Issues
 
 - Watch GitHub Issues for bug reports
 - Monitor download metrics
