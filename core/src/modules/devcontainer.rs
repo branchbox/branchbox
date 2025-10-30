@@ -1,6 +1,26 @@
 //! Devcontainer Module
 //!
-//! Manages devcontainer configuration synchronization between main repo and feature worktrees
+//! Manages devcontainer configuration synchronization between main repo and feature worktrees.
+//!
+//! ## Configuration Strategy (Phase 1)
+//!
+//! This module uses environment variables for configuration rather than a config file:
+//!
+//! - `BRANCHBOX_DEVCONTAINER_STRATEGY`: Set to "copy" (default) or "symlink"
+//!
+//! **Design Rationale:**
+//!
+//! Environment variables were chosen for Phase 1 because:
+//! 1. **Simplicity**: No additional config file format or parsing logic needed
+//! 2. **Per-session control**: Easy to override for one-off operations (e.g., `BRANCHBOX_DEVCONTAINER_STRATEGY=symlink branchbox feature start`)
+//! 3. **Consistency**: Aligns with existing BranchBox patterns (e.g., `BRANCHBOX_SKIP_HOST_VALIDATION`)
+//! 4. **Minimal scope**: Phase 1 only needs one configuration option (strategy)
+//!
+//! **Future Work (Phase 2+):**
+//!
+//! When more configuration options are needed (e.g., per-file sync rules, custom exclude patterns),
+//! migrate to a structured config file (`.branchbox/config.toml` or similar). The environment
+//! variable can remain as an override mechanism for backward compatibility.
 
 use super::Module;
 use crate::{Error, Result};
@@ -54,7 +74,16 @@ impl DevcontainerModule {
                 .map_err(|e| Error::validation(format!("Path strip failed: {}", e)))?;
             let dest_path = dest.join(rel_path);
 
-            if entry.file_type().is_dir() {
+            // Use metadata to properly handle symlinks and special files
+            let metadata = entry.metadata().map_err(|e| {
+                Error::validation(format!(
+                    "Failed to read metadata for {}: {}",
+                    entry.path().display(),
+                    e
+                ))
+            })?;
+
+            if metadata.is_dir() {
                 std::fs::create_dir_all(&dest_path)?;
             } else {
                 match self.strategy {

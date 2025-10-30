@@ -96,23 +96,21 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
 
         // Initialize and sync module
         let mut module = DevcontainerModule::new();
-        match module.init(&project_path, &feature.worktree_path) {
-            Ok(_) => match module.sync_to(&feature.worktree_path) {
-                Ok(outcome) => {
-                    println!(
-                        "✓ synced {} files ({:?})",
-                        outcome.synced_files.len(),
-                        outcome.strategy
-                    );
-                    synced_count += 1;
-                }
-                Err(e) => {
-                    println!("✗ sync failed: {}", e);
-                    errors.push((feature.work_feature.clone(), e.to_string()));
-                }
-            },
+        let result = module
+            .init(&project_path, &feature.worktree_path)
+            .and_then(|_| module.sync_to(&feature.worktree_path));
+
+        match result {
+            Ok(outcome) => {
+                println!(
+                    "✓ synced {} files ({:?})",
+                    outcome.synced_files.len(),
+                    outcome.strategy
+                );
+                synced_count += 1;
+            }
             Err(e) => {
-                println!("✗ init failed: {}", e);
+                println!("✗ failed: {}", e);
                 errors.push((feature.work_feature.clone(), e.to_string()));
             }
         }

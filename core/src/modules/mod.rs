@@ -1,8 +1,9 @@
 //! Module system
 //!
-//! Composable feature components (tunnel, database, compose, specs)
+//! Composable feature components (devcontainer, tunnel, database, compose, specs)
 //!
 //! Modules provide optional features that can be enabled per worktree:
+//! - **Devcontainer**: Devcontainer configuration synchronization
 //! - **Compose**: Docker Compose configuration management
 //! - **Database**: Database isolation and setup
 //! - **Tunnel**: Cloudflare tunnel provisioning
@@ -14,11 +15,13 @@ use std::path::Path;
 
 pub mod compose;
 pub mod database;
+pub mod devcontainer;
 pub mod specs;
 pub mod tunnel;
 
 pub use compose::ComposeModule;
 pub use database::{DatabaseEngine, DatabaseModule};
+pub use devcontainer::{DevcontainerModule, SyncStrategy};
 pub use specs::{SpecStatus, SpecsModule};
 pub use tunnel::TunnelModule;
 
@@ -97,6 +100,7 @@ pub trait Module {
 /// detect and configure features for a worktree.
 pub fn all_modules() -> Vec<Box<dyn Module>> {
     vec![
+        Box::new(DevcontainerModule::new()),
         Box::new(ComposeModule::new()),
         Box::new(DatabaseModule::new()),
         Box::new(TunnelModule::new()),
@@ -195,9 +199,10 @@ mod tests {
     #[test]
     fn test_all_modules() {
         let modules = all_modules();
-        assert_eq!(modules.len(), 4);
+        assert_eq!(modules.len(), 5);
 
         let names: Vec<&str> = modules.iter().map(|m| m.name()).collect();
+        assert!(names.contains(&"devcontainer"));
         assert!(names.contains(&"compose"));
         assert!(names.contains(&"database"));
         assert!(names.contains(&"tunnel"));

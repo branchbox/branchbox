@@ -524,7 +524,6 @@ The current project already uses `.claude` correctly (not `.claude-code`), so on
 
 Add new section after "Usage Examples" and before "Installation":
 
-```markdown
 ## Devcontainer Workflow
 
 BranchBox features work seamlessly with VS Code/Cursor devcontainers, giving each feature its own isolated Docker environment while sharing tool credentials.
@@ -658,7 +657,6 @@ cat .devcontainer/devcontainer.json | jq .
 
 # Check YAML syntax
 cat .devcontainer/compose.yaml | yq .
-```
 ```
 
 ## Implementation Plan (Module-Based Approach)
