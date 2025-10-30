@@ -1,4 +1,4 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ fn detect_command_shows_stack_info() {
     fs::write(project_path.join("Gemfile"), "gem 'rails'\n").unwrap();
     fs::write(project_path.join("config.ru"), "# Rails app\n").unwrap();
 
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect")
         .arg("--path")
         .arg(project_path.to_str().unwrap());
@@ -32,7 +32,7 @@ fn detect_command_shows_rails_adapter() {
 
     fs::write(project_path.join("Gemfile"), "gem 'rails'\n").unwrap();
 
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect")
         .arg("--path")
         .arg(project_path.to_str().unwrap());
@@ -49,7 +49,7 @@ fn detect_command_shows_nodejs_adapter() {
 
     fs::write(project_path.join("package.json"), "{}").unwrap();
 
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect")
         .arg("--path")
         .arg(project_path.to_str().unwrap());
@@ -66,7 +66,7 @@ fn detect_command_shows_generic_adapter() {
 
     // No stack-specific files
 
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect")
         .arg("--path")
         .arg(project_path.to_str().unwrap());
@@ -88,7 +88,7 @@ fn detect_command_shows_compose_module() {
     )
     .unwrap();
 
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect")
         .arg("--path")
         .arg(project_path.to_str().unwrap());
@@ -106,7 +106,7 @@ fn detect_command_shows_database_module() {
     fs::create_dir_all(project_path.join("config")).unwrap();
     fs::write(project_path.join("config/database.yml"), "# Rails DB\n").unwrap();
 
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect")
         .arg("--path")
         .arg(project_path.to_str().unwrap());
@@ -118,7 +118,7 @@ fn detect_command_shows_database_module() {
 
 #[test]
 fn detect_command_defaults_to_current_directory() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("detect");
 
     // Should not fail, will detect from current directory
@@ -127,7 +127,7 @@ fn detect_command_defaults_to_current_directory() {
 
 #[test]
 fn name_generate_converts_title_to_name() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("generate").arg("OAuth Integration");
 
     cmd.assert().success().stdout("oauth\n");
@@ -135,7 +135,7 @@ fn name_generate_converts_title_to_name() {
 
 #[test]
 fn name_generate_handles_special_characters() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("generate").arg("Fix Bug #123");
 
     cmd.assert().success().stdout("fix-bug-123\n");
@@ -143,7 +143,7 @@ fn name_generate_handles_special_characters() {
 
 #[test]
 fn name_generate_handles_multiple_words() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("generate").arg("Add New API Endpoint");
 
     cmd.assert().success().stdout("add-new-api\n");
@@ -151,7 +151,7 @@ fn name_generate_handles_multiple_words() {
 
 #[test]
 fn name_validate_accepts_valid_name() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("oauth-integration");
 
     cmd.assert()
@@ -162,7 +162,7 @@ fn name_validate_accepts_valid_name() {
 
 #[test]
 fn name_validate_rejects_invalid_name_uppercase() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("OAuth-Integration");
 
     cmd.assert()
@@ -174,7 +174,7 @@ fn name_validate_rejects_invalid_name_uppercase() {
 
 #[test]
 fn name_validate_rejects_invalid_name_spaces() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("oauth integration");
 
     cmd.assert()
@@ -185,7 +185,7 @@ fn name_validate_rejects_invalid_name_spaces() {
 
 #[test]
 fn name_validate_rejects_invalid_name_special_chars() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("oauth_integration");
 
     cmd.assert()
@@ -196,7 +196,7 @@ fn name_validate_rejects_invalid_name_special_chars() {
 
 #[test]
 fn name_validate_rejects_empty_name() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("");
 
     cmd.assert()
@@ -207,7 +207,7 @@ fn name_validate_rejects_empty_name() {
 
 #[test]
 fn name_validate_accepts_single_word() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("oauth");
 
     cmd.assert().success().stdout(predicate::str::contains("✓"));
@@ -215,7 +215,7 @@ fn name_validate_accepts_single_word() {
 
 #[test]
 fn name_validate_accepts_numbers() {
-    let mut cmd = cargo_bin_cmd!("branchbox");
+    let mut cmd = Command::cargo_bin("branchbox").unwrap();
     cmd.arg("name").arg("validate").arg("fix-bug-123");
 
     cmd.assert().success().stdout(predicate::str::contains("✓"));

@@ -1,4 +1,4 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,7 +65,8 @@ fn feature_start_list_teardown_end_to_end() {
     let worktree_path = test_repo.worktree_parent().join(work_feature);
 
     // Start feature
-    cargo_bin_cmd!("branchbox")
+    Command::cargo_bin("branchbox")
+        .unwrap()
         .current_dir(repo_path)
         .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
         .args(["feature", "start", work_feature])
@@ -100,7 +101,8 @@ fn feature_start_list_teardown_end_to_end() {
     );
 
     // List features
-    cargo_bin_cmd!("branchbox")
+    Command::cargo_bin("branchbox")
+        .unwrap()
         .current_dir(repo_path)
         .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
         .args(["feature", "list"])
@@ -109,7 +111,8 @@ fn feature_start_list_teardown_end_to_end() {
         .stdout(predicate::str::contains(work_feature));
 
     // Teardown feature
-    cargo_bin_cmd!("branchbox")
+    Command::cargo_bin("branchbox")
+        .unwrap()
         .current_dir(repo_path)
         .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
         .args([
@@ -130,7 +133,8 @@ fn feature_start_list_teardown_end_to_end() {
     );
 
     // Listing after teardown still reports historical entry as removed
-    cargo_bin_cmd!("branchbox")
+    Command::cargo_bin("branchbox")
+        .unwrap()
         .current_dir(repo_path)
         .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
         .args(["feature", "list", "--status", "removed"])
