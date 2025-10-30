@@ -319,8 +319,11 @@ impl DevcontainerModule {
             .into_iter()
             .filter_entry(|e| !self.is_excluded(e.path()))
         {
-            let entry = entry?;
-            let rel_path = entry.path().strip_prefix(&self.source_dir)?;
+            let entry = entry.map_err(|e| Error::validation(format!("Failed to walk: {}", e)))?;
+            let rel_path = entry
+                .path()
+                .strip_prefix(&self.source_dir)
+                .map_err(|e| Error::validation(format!("Path strip failed: {}", e)))?;
             let dest_path = dest.join(rel_path);
 
             if entry.file_type().is_dir() {

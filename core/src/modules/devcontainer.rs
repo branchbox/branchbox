@@ -84,8 +84,16 @@ impl DevcontainerModule {
             })?;
 
             if metadata.is_dir() {
+                // Handle type mismatch: if destination is a file, remove it before creating directory
+                if dest_path.is_file() {
+                    std::fs::remove_file(&dest_path)?;
+                }
                 std::fs::create_dir_all(&dest_path)?;
             } else {
+                // Handle type mismatch: if destination is a directory, remove it before creating file
+                if dest_path.is_dir() {
+                    std::fs::remove_dir_all(&dest_path)?;
+                }
                 match self.strategy {
                     SyncStrategy::Copy => {
                         std::fs::copy(entry.path(), &dest_path)?;
