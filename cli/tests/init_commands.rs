@@ -1,4 +1,6 @@
-use assert_cmd::cargo::cargo_bin;
+#[macro_use]
+extern crate assert_cmd;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
