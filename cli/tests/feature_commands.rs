@@ -1,3 +1,5 @@
+#![allow(deprecated)] // Command::cargo_bin is deprecated but replacement is unclear
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
