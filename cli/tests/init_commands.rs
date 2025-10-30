@@ -1,4 +1,4 @@
-use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,8 +55,7 @@ fn init_basic_repository() {
     let repo_path = test_repo.path();
 
     // Run init command
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y"])
         .assert()
@@ -103,8 +102,7 @@ fn init_skip_devcontainer() {
     let repo_path = test_repo.path();
 
     // Run init command with --skip-devcontainer
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y", "--skip-devcontainer"])
         .assert()
@@ -127,16 +125,14 @@ fn init_idempotent() {
     let repo_path = test_repo.path();
 
     // First init
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y"])
         .assert()
         .success();
 
     // Second init should succeed and report already initialized
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y"])
         .assert()
@@ -150,16 +146,14 @@ fn init_validate_mode() {
     let repo_path = test_repo.path();
 
     // Initialize first
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y"])
         .assert()
         .success();
 
     // Run in validate mode
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "--validate"])
         .assert()
@@ -173,8 +167,7 @@ fn init_dry_run() {
     let repo_path = test_repo.path();
 
     // Run in dry-run mode
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y", "--dry-run"])
         .assert()
@@ -195,8 +188,7 @@ fn init_not_git_repo() {
     fs::create_dir(&not_repo).expect("create dir");
 
     // Should fail on non-git directory
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(&not_repo)
         .args(["init", "-y"])
         .assert()
@@ -212,8 +204,7 @@ fn init_with_rails_stack() {
     // Create Gemfile to make it look like Rails
     fs::write(repo_path.join("Gemfile"), "gem 'rails'\n").expect("write Gemfile");
 
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y"])
         .assert()
@@ -237,8 +228,7 @@ fn init_verbose_mode() {
     let repo_path = test_repo.path();
 
     // Run with verbose flag
-    Command::cargo_bin("branchbox")
-        .expect("binary exists")
+    cargo_bin_cmd!("branchbox")
         .current_dir(repo_path)
         .args(["init", "-y", "-v"])
         .assert()
