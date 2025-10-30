@@ -24,6 +24,7 @@
 
 use super::Module;
 use crate::{Error, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -59,6 +60,7 @@ impl DevcontainerModule {
         }
 
         let mut synced_files = Vec::new();
+        let mut expected_paths: HashSet<PathBuf> = HashSet::new();
 
         // Walk source directory, sync all files except excluded ones
         for entry in WalkDir::new(&self.source_dir)
@@ -89,6 +91,7 @@ impl DevcontainerModule {
                     std::fs::remove_file(&dest_path)?;
                 }
                 std::fs::create_dir_all(&dest_path)?;
+                expected_paths.insert(rel_path.to_path_buf());
             } else {
                 // Handle type mismatch: if destination is a directory, remove it before creating file
                 if dest_path.is_dir() {
@@ -120,6 +123,33 @@ impl DevcontainerModule {
                 }
                 synced_files.push(rel_path.display().to_string());
                 tracing::debug!("Synced .devcontainer/{}", rel_path.display());
+                expected_paths.insert(rel_path.to_path_buf());
+            }
+        }
+
+        // Remove files/directories that no longer exist in the source
+        for entry in WalkDir::new(&dest)
+            .min_depth(1)
+            .contents_first(true)
+            .into_iter()
+        {
+            let entry =
+                entry.map_err(|e| Error::validation(format!("Failed to walk directory: {}", e)))?;
+            if self.is_excluded(entry.path()) {
+                continue;
+            }
+            let rel_path = entry
+                .path()
+                .strip_prefix(&dest)
+                .map_err(|e| Error::validation(format!("Path strip failed: {}", e)))?;
+
+            if !expected_paths.contains(rel_path) {
+                if entry.file_type().is_dir() {
+                    std::fs::remove_dir_all(entry.path())?;
+                } else {
+                    std::fs::remove_file(entry.path())?;
+                }
+                tracing::debug!("Removed stale .devcontainer/{}", rel_path.display());
             }
         }
 
@@ -213,10 +243,17 @@ pub struct SyncOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn test_detect_with_devcontainer() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         std::fs::create_dir_all(temp.path().join(".devcontainer")).unwrap();
 
@@ -226,6 +263,7 @@ mod tests {
 
     #[test]
     fn test_detect_without_devcontainer() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let module = DevcontainerModule::new();
         assert!(!module.detect(temp.path()));
@@ -233,6 +271,7 @@ mod tests {
 
     #[test]
     fn test_sync_to_copies_files() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
@@ -261,6 +300,7 @@ mod tests {
 
     #[test]
     fn test_sync_excludes_env_file() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
@@ -283,6 +323,7 @@ mod tests {
 
     #[test]
     fn test_sync_with_subdirectories() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
@@ -301,6 +342,7 @@ mod tests {
 
     #[test]
     fn test_strategy_from_env_var() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
@@ -318,12 +360,14 @@ mod tests {
 
     #[test]
     fn test_name() {
+        let _guard = env_guard();
         let module = DevcontainerModule::new();
         assert_eq!(module.name(), "devcontainer");
     }
 
     #[test]
     fn test_default() {
+        let _guard = env_guard();
         let module = DevcontainerModule::default();
         assert_eq!(module.name(), "devcontainer");
         assert!(matches!(module.strategy, SyncStrategy::Copy));
@@ -331,6 +375,7 @@ mod tests {
 
     #[test]
     fn test_validate_missing_devcontainer() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
@@ -343,6 +388,7 @@ mod tests {
 
     #[test]
     fn test_validate_with_devcontainer() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
@@ -354,7 +400,51 @@ mod tests {
     }
 
     #[test]
+    fn test_sync_removes_stale_files() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let feature = temp.path().join("feature");
+
+        // Setup source devcontainer with one file
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/settings.json"),
+            r#"{"keep": true}"#,
+        )
+        .unwrap();
+
+        // Prepare feature devcontainer with stale content
+        let feature_dev = feature.join(".devcontainer");
+        std::fs::create_dir_all(feature_dev.join("stale_dir")).unwrap();
+        std::fs::write(feature_dev.join("settings.json"), "old").unwrap();
+        std::fs::write(feature_dev.join("stale.txt"), "remove me").unwrap();
+        std::fs::write(feature_dev.join("stale_dir/nested.txt"), "remove me").unwrap();
+        // Simulate symlinked .env that should be preserved
+        std::fs::write(feature_dev.join(".env"), "SHOULD_STAY=1").unwrap();
+
+        std::fs::create_dir_all(&feature).unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.sync_to(&feature).unwrap();
+
+        // Verify source file refreshed
+        let new_contents =
+            std::fs::read_to_string(feature.join(".devcontainer/settings.json")).unwrap();
+        assert_eq!(new_contents, r#"{"keep": true}"#);
+
+        // Stale artifacts should be removed
+        assert!(!feature.join(".devcontainer/stale.txt").exists());
+        assert!(!feature.join(".devcontainer/stale_dir").exists());
+
+        // Excluded .env should remain untouched
+        assert!(feature.join(".devcontainer/.env").exists());
+    }
+
+    #[test]
     fn test_teardown_does_nothing() {
+        let _guard = env_guard();
         let temp = TempDir::new().unwrap();
         let main = temp.path().join("main");
         let feature = temp.path().join("feature");
