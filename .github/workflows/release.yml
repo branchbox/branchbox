@@ -399,17 +399,24 @@ jobs:
           echo "❌ Failed to download checksums after 5 attempts"
           exit 1
 
-      - name: Extract checksums for macOS binaries
+      - name: Extract checksums for all platforms
         id: checksums
         run: |
-          # More robust pattern matching to avoid false positives
-          INTEL_CHECKSUM=$(grep "branchbox-.*-x86_64-apple-darwin\.tar\.gz$" checksums.txt | awk '{print $1}')
-          ARM_CHECKSUM=$(grep "branchbox-.*-aarch64-apple-darwin\.tar\.gz$" checksums.txt | awk '{print $1}')
+          # Extract macOS checksums
+          MACOS_INTEL=$(grep "branchbox-.*-x86_64-apple-darwin\.tar\.gz$" checksums.txt | awk '{print $1}')
+          MACOS_ARM=$(grep "branchbox-.*-aarch64-apple-darwin\.tar\.gz$" checksums.txt | awk '{print $1}')
 
-          if [[ -z "$INTEL_CHECKSUM" ]] || [[ -z "$ARM_CHECKSUM" ]]; then
-            echo "❌ Error: Failed to extract checksums"
-            echo "Intel checksum: '$INTEL_CHECKSUM'"
-            echo "ARM checksum: '$ARM_CHECKSUM'"
+          # Extract Linux checksums
+          LINUX_INTEL=$(grep "branchbox-.*-x86_64-unknown-linux-gnu\.tar\.gz$" checksums.txt | awk '{print $1}')
+          LINUX_ARM=$(grep "branchbox-.*-aarch64-unknown-linux-gnu\.tar\.gz$" checksums.txt | awk '{print $1}')
+
+          # Validate all checksums were found
+          if [[ -z "$MACOS_INTEL" ]] || [[ -z "$MACOS_ARM" ]] || [[ -z "$LINUX_INTEL" ]] || [[ -z "$LINUX_ARM" ]]; then
+            echo "❌ Error: Failed to extract all checksums"
+            echo "macOS Intel: '$MACOS_INTEL'"
+            echo "macOS ARM: '$MACOS_ARM'"
+            echo "Linux Intel: '$LINUX_INTEL'"
+            echo "Linux ARM: '$LINUX_ARM'"
             echo ""
             echo "Checksums file contents:"
             cat checksums.txt
@@ -417,21 +424,24 @@ jobs:
           fi
 
           # Validate checksum format (64 hex characters for SHA256)
-          if ! [[ "$INTEL_CHECKSUM" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "❌ Error: Invalid Intel checksum format: $INTEL_CHECKSUM"
-            exit 1
-          fi
-          if ! [[ "$ARM_CHECKSUM" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "❌ Error: Invalid ARM checksum format: $ARM_CHECKSUM"
-            exit 1
-          fi
+          for checksum in "$MACOS_INTEL" "$MACOS_ARM" "$LINUX_INTEL" "$LINUX_ARM"; do
+            if ! [[ "$checksum" =~ ^[a-f0-9]{64}$ ]]; then
+              echo "❌ Error: Invalid checksum format: $checksum"
+              exit 1
+            fi
+          done
 
-          echo "intel=$INTEL_CHECKSUM" >> $GITHUB_OUTPUT
-          echo "arm=$ARM_CHECKSUM" >> $GITHUB_OUTPUT
+          # Output all checksums
+          echo "macos_intel=$MACOS_INTEL" >> $GITHUB_OUTPUT
+          echo "macos_arm=$MACOS_ARM" >> $GITHUB_OUTPUT
+          echo "linux_intel=$LINUX_INTEL" >> $GITHUB_OUTPUT
+          echo "linux_arm=$LINUX_ARM" >> $GITHUB_OUTPUT
 
           echo "✓ Extracted checksums:"
-          echo "  Intel: $INTEL_CHECKSUM"
-          echo "  ARM:   $ARM_CHECKSUM"
+          echo "  macOS Intel: $MACOS_INTEL"
+          echo "  macOS ARM:   $MACOS_ARM"
+          echo "  Linux Intel: $LINUX_INTEL"
+          echo "  Linux ARM:   $LINUX_ARM"
 
       - name: Update formula
         run: |
@@ -440,38 +450,36 @@ jobs:
 
           echo "Updating formula to version $VERSION..."
 
-          # Update version
-          sed -i 's/version ".*"/version "'$VERSION'"/' branchbox.rb
-
-          # Update Intel URL and checksum
+          # Update macOS Intel URL and checksum
           sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-x86_64-apple-darwin.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-x86_64-apple-darwin.tar.gz"|' branchbox.rb
-          sed -i '/Hardware::CPU.intel?/,/sha256/ s/sha256 ".*"/sha256 "'${{ steps.checksums.outputs.intel }}'"/' branchbox.rb
+          sed -i '0,/x86_64-apple-darwin/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.macos_intel }}'"/' branchbox.rb
 
-          # Update ARM URL and checksum
+          # Update macOS ARM URL and checksum
           sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-aarch64-apple-darwin.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-aarch64-apple-darwin.tar.gz"|' branchbox.rb
-          sed -i '/Hardware::CPU.arm?/,/sha256/ s/sha256 ".*"/sha256 "'${{ steps.checksums.outputs.arm }}'"/' branchbox.rb
+          sed -i '0,/aarch64-apple-darwin/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.macos_arm }}'"/' branchbox.rb
+
+          # Update Linux Intel URL and checksum
+          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-x86_64-unknown-linux-gnu.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-x86_64-unknown-linux-gnu.tar.gz"|' branchbox.rb
+          sed -i '0,/x86_64-unknown-linux-gnu/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.linux_intel }}'"/' branchbox.rb
+
+          # Update Linux ARM URL and checksum
+          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-aarch64-unknown-linux-gnu.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-aarch64-unknown-linux-gnu.tar.gz"|' branchbox.rb
+          sed -i '0,/aarch64-unknown-linux-gnu/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.linux_arm }}'"/' branchbox.rb
 
       - name: Verify formula updates
         run: |
           cd homebrew-tap/Formula
 
-          # Verify version was updated
-          if ! grep -q 'version "'${{ needs.create-release.outputs.version }}'"' branchbox.rb; then
-            echo "❌ Error: Failed to update version in formula"
-            exit 1
-          fi
-
-          # Verify Intel checksum was updated
-          if ! grep -q "${{ steps.checksums.outputs.intel }}" branchbox.rb; then
-            echo "❌ Error: Failed to update Intel checksum in formula"
-            exit 1
-          fi
-
-          # Verify ARM checksum was updated
-          if ! grep -q "${{ steps.checksums.outputs.arm }}" branchbox.rb; then
-            echo "❌ Error: Failed to update ARM checksum in formula"
-            exit 1
-          fi
+          # Verify all checksums were updated
+          for checksum in "${{ steps.checksums.outputs.macos_intel }}" \
+                          "${{ steps.checksums.outputs.macos_arm }}" \
+                          "${{ steps.checksums.outputs.linux_intel }}" \
+                          "${{ steps.checksums.outputs.linux_arm }}"; do
+            if ! grep -q "$checksum" branchbox.rb; then
+              echo "❌ Error: Failed to update checksum $checksum in formula"
+              exit 1
+            fi
+          done
 
           echo "✓ Formula updates verified"
           echo ""
