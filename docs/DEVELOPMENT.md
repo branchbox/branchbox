@@ -58,12 +58,13 @@ This project includes a complete devcontainer setup that provides a consistent d
 
 ### Devcontainer Smoke Test Playgrounds
 
-- Run `./scripts/setup-sample-workspaces.sh` to copy tracked templates from `test/workspaces/templates/` into the git-ignored `test/workspaces/local/`.
-- Each sample is a self-contained playground; start with the Rust CLI template:
+- Run `./scripts/setup-sample-workspaces.sh` to copy tracked templates from `test/workspaces/templates/` into the git-ignored `test/workspaces/local/`. Each template declares its stack via `template.json`, so the script prints the correct `branchbox init --stack <stack>` command.
+- The repository currently ships `rust-cli` and `node-api` samples; add more templates as needed for other stacks.
+- Example flow:
   ```bash
-  ./scripts/setup-sample-workspaces.sh rust-cli
-  cd test/workspaces/local/rust-cli
-  BRANCHBOX_SKIP_HOST_VALIDATION=1 branchbox init --stack rust
+  ./scripts/setup-sample-workspaces.sh node-api
+  cd test/workspaces/local/node-api
+  BRANCHBOX_SKIP_HOST_VALIDATION=1 branchbox init --stack nodejs
   branchbox feature start devcontainer-smoke
   ```
 - Open both the main sample and generated feature worktree in VS Code/Cursor to confirm devcontainer propagation, shared credential mounts, and module telemetry.

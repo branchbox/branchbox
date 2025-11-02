@@ -68,6 +68,25 @@ for template in "${selected_templates[@]}"; do
 
     target_path="${LOCAL_DIR}/${template}"
 
+    stack=""
+    description=""
+    metadata_file="${template_path}/template.json"
+    if [ -f "$metadata_file" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            stack="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("stack",""))' "$metadata_file" 2>/dev/null || true)"
+            description="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("description",""))' "$metadata_file" 2>/dev/null || true)"
+        fi
+        if [ -z "$stack" ] && command -v python >/dev/null 2>&1; then
+            stack="$(python -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("stack",""))' "$metadata_file" 2>/dev/null || true)"
+            description="$(python -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("description",""))' "$metadata_file" 2>/dev/null || true)"
+        fi
+    fi
+
+    if [ -z "$stack" ]; then
+        echo "⚠️  Template '${template}' is missing stack metadata; defaulting to 'rust'."
+        stack="rust"
+    fi
+
     if [ -e "$target_path" ]; then
         if [ "$force" = true ]; then
             rm -rf "$target_path"
@@ -93,9 +112,11 @@ for template in "${selected_templates[@]}"; do
     cat <<EOF
 ✅ Prepared sample '${template}'
    Path: ${target_path}
+   Stack: ${stack}
+   Description: ${description:-n/a}
    Next steps:
      cd ${target_path}
-     BRANCHBOX_SKIP_HOST_VALIDATION=1 branchbox init --stack rust
+     BRANCHBOX_SKIP_HOST_VALIDATION=1 branchbox init --stack ${stack}
      branchbox feature start "devcontainer-smoke"
      # Open both the main repo and feature worktree in your editor to confirm devcontainer propagation.
 EOF

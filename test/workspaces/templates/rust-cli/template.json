@@ -1,0 +1,4 @@
+{
+  "stack": "rust",
+  "description": "Minimal Rust CLI used to validate devcontainer propagation."
+}

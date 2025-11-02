@@ -166,7 +166,7 @@ BranchBox ships a full VS Code/Cursor devcontainer setup and propagates it to ev
   #   --strategy   copy|symlink (overrides env var for this run)
   ```
 - The sync command copies new files, refreshes existing ones, and prunes stale artifacts.
-- Need a safe playground? Run `./scripts/setup-sample-workspaces.sh` to spin up sample repositories under `test/workspaces/local/` and practice `branchbox init`, `feature start`, `devcontainer sync`, and `feature teardown` end-to-end.
+- Need a safe playground? Run `./scripts/setup-sample-workspaces.sh` to spin up sample repositories under `test/workspaces/local/`; the script reads each template’s metadata and prints the exact `branchbox init --stack <stack>` command before you proceed with `feature start`, `devcontainer sync`, and `feature teardown`.
 
 ### Troubleshooting
 - **No “Reopen in Container” prompt**: confirm `.devcontainer/` exists in the feature (`ls .devcontainer/`); rerun `branchbox devcontainer sync` if it is missing files.
