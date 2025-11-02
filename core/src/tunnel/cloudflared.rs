@@ -400,6 +400,7 @@ mod tests {
         let find = server
             .mock("GET", Matcher::Exact(cfd_path.clone()))
             .match_query(Matcher::UrlEncoded("name".into(), expected_tunnel.into()))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"errors":[],"result":[]}"#)
@@ -531,6 +532,7 @@ mod tests {
         let find = server
             .mock("GET", Matcher::Exact(cfd_path.clone()))
             .match_query(Matcher::UrlEncoded("name".into(), expected_tunnel.into()))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(
