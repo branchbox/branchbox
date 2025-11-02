@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Local;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
+use worktree_core::modules::SyncStrategy;
 use worktree_core::workflows::feature::{
     FeatureStatus, FeatureWorkflow, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
 };
@@ -183,7 +184,10 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             println!(
                 "    Devcontainer synced: {} ({})",
                 sync_at.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S"),
-                feature.sync_strategy.as_deref().unwrap_or("copy")
+                feature
+                    .sync_strategy
+                    .as_deref()
+                    .unwrap_or(SyncStrategy::default().as_str())
             );
         }
         if feature.devcontainer_outdated {

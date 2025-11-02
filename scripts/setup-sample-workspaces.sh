@@ -23,6 +23,8 @@ TEMPLATE_DIR="${ROOT_DIR}/test/workspaces/templates"
 LOCAL_DIR="${ROOT_DIR}/test/workspaces/local"
 
 force=false
+warned_no_jq=false
+warned_no_json_parser=false
 declare -a selected_templates=()
 
 while (($#)); do
@@ -73,13 +75,24 @@ for template in "${selected_templates[@]}"; do
     description=""
     metadata_file="${template_path}/template.json"
     if [ -f "$metadata_file" ]; then
-        if command -v python3 >/dev/null 2>&1; then
-            stack="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("stack",""))' "$metadata_file" 2>/dev/null || true)"
-            description="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("description",""))' "$metadata_file" 2>/dev/null || true)"
-        fi
-        if [ -z "$stack" ] && command -v python >/dev/null 2>&1; then
-            stack="$(python -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("stack",""))' "$metadata_file" 2>/dev/null || true)"
-            description="$(python -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("description",""))' "$metadata_file" 2>/dev/null || true)"
+        if command -v jq >/dev/null 2>&1; then
+            stack="$(jq -r '.stack // ""' "$metadata_file" 2>/dev/null || printf '')"
+            description="$(jq -r '.description // ""' "$metadata_file" 2>/dev/null || printf '')"
+        else
+            if [ "$warned_no_jq" = false ]; then
+                echo "⚠️  Warning: 'jq' not found. Falling back to python for JSON parsing." >&2
+                warned_no_jq=true
+            fi
+            if command -v python3 >/dev/null 2>&1; then
+                stack="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("stack",""))' "$metadata_file" 2>/dev/null || printf '')"
+                description="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("description",""))' "$metadata_file" 2>/dev/null || printf '')"
+            elif command -v python >/dev/null 2>&1; then
+                stack="$(python -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("stack",""))' "$metadata_file" 2>/dev/null || printf '')"
+                description="$(python -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("description",""))' "$metadata_file" 2>/dev/null || printf '')"
+            elif [ "$warned_no_json_parser" = false ]; then
+                echo "⚠️  Warning: Could not parse template metadata (install 'jq' or Python). Using defaults." >&2
+                warned_no_json_parser=true
+            fi
         fi
     fi
 

@@ -28,9 +28,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncStrategy {
     /// Copy files (default - allows per-feature customization)
+    #[default]
     Copy,
     /// Symlink files (updates propagate automatically but no customization)
     Symlink,

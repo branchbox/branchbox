@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use std::io::Write;
 use std::path::PathBuf;
 use worktree_core::modules::{DevcontainerModule, Module};
 use worktree_core::workflows::feature::{FeatureStatus, FeatureWorkflow};
@@ -75,9 +76,19 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
 
     let mut synced_count = 0;
     let mut errors = Vec::new();
+    let module = if dry_run {
+        None
+    } else {
+        let mut module = DevcontainerModule::new();
+        module
+            .init(&project_path, project_path.as_path())
+            .context("Failed to initialize devcontainer module")?;
+        Some(module)
+    };
 
     for feature in active_features {
         print!("  {} ... ", feature.work_feature);
+        std::io::stdout().flush()?;
 
         // Check if worktree still exists
         if !feature.worktree_path.exists() {
@@ -94,11 +105,10 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
             continue;
         }
 
-        // Initialize and sync module
-        let mut module = DevcontainerModule::new();
-        let result = module
-            .init(&project_path, &feature.worktree_path)
-            .and_then(|_| module.sync_to(&feature.worktree_path));
+        let module_ref = module
+            .as_ref()
+            .expect("Devcontainer module should be initialised when not running in dry-run mode");
+        let result = module_ref.sync_to(&feature.worktree_path);
 
         match result {
             Ok(outcome) => {
@@ -119,7 +129,7 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
                 errors.push((feature.work_feature.clone(), e.to_string()));
                 if let Err(err) = workflow.record_devcontainer_sync(
                     &feature.work_feature,
-                    Some(module.strategy().as_str()),
+                    Some(module_ref.strategy().as_str()),
                     false,
                 ) {
                     println!("    ⚠️ failed to update registry: {}", err);
