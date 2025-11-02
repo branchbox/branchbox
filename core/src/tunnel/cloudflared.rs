@@ -424,6 +424,7 @@ mod tests {
 
         let configure = server
             .mock("PUT", Matcher::Exact(configure_path))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"errors":[],"result":{}}"#)
@@ -435,6 +436,7 @@ mod tests {
                 "name".into(),
                 config.dns_zone.clone().unwrap(),
             ))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"errors":[],"result":[{"id":"zone-id"}]}"#)
@@ -448,6 +450,7 @@ mod tests {
                 Matcher::Exact("/client/v4/zones/zone-id/dns_records".to_string()),
             )
             .match_query(Matcher::UrlEncoded("name".into(), hostname.into()))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"errors":[],"result":[]}"#)
@@ -458,6 +461,7 @@ mod tests {
                 "POST",
                 Matcher::Exact("/client/v4/zones/zone-id/dns_records".to_string()),
             )
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -481,7 +485,11 @@ mod tests {
                 assert_eq!(descriptor.hostname, hostname);
                 assert_eq!(descriptor.tunnel_id.as_deref(), Some("tunnel-id"));
                 assert_eq!(descriptor.tunnel_name.as_deref(), Some(expected_tunnel));
-                assert!(descriptor.token_path.as_ref().unwrap().exists());
+                let token_path = descriptor
+                    .token_path
+                    .as_ref()
+                    .expect("expected token path for automated provisioning");
+                assert!(token_path.exists());
                 assert_eq!(token.as_deref(), Some("connector-token"));
             }
             other => panic!("unexpected outcome: {:?}", other),
@@ -549,6 +557,7 @@ mod tests {
 
         let configure = server
             .mock("PUT", Matcher::Exact(configure_path))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"errors":[],"result":{}}"#)
@@ -560,6 +569,7 @@ mod tests {
                 "name".into(),
                 config.dns_zone.clone().unwrap(),
             ))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"errors":[],"result":[{"id":"zone-id"}]}"#)
@@ -571,6 +581,7 @@ mod tests {
                 Matcher::Exact("/client/v4/zones/zone-id/dns_records".to_string()),
             )
             .match_query(Matcher::UrlEncoded("name".into(), hostname.into()))
+            .expect_at_least(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -590,13 +601,11 @@ mod tests {
         match outcome {
             ProvisioningOutcome::Automated { descriptor, token } => {
                 assert!(token.is_none(), "existing tunnel should not return token");
-                assert_eq!(
-                    descriptor
-                        .token_path
-                        .as_ref()
-                        .expect("token path preserved"),
-                    &expected_token_path
-                );
+                let token_path = descriptor
+                    .token_path
+                    .as_ref()
+                    .expect("expected token path for existing tunnel");
+                assert_eq!(token_path, &expected_token_path);
             }
             other => panic!("unexpected outcome: {:?}", other),
         }
