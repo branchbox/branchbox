@@ -16,6 +16,8 @@
     --branchbox-text-inverse: #f0f7ff;
     --branchbox-text-soft: #eaf4ff;
     --branchbox-text-white: #ffffff;
+    --branchbox-radius-sm: 6px;
+    --branchbox-radius-md: 8px;
 }
 
 /* Sidebar styling */
@@ -25,7 +27,7 @@
 }
 
 #sidebar .chapter a {
-    border-radius: 6px;
+    border-radius: var(--branchbox-radius-sm);
     transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
@@ -63,13 +65,13 @@ a:hover {
     background: var(--branchbox-surface);
     border-left: 4px solid var(--branchbox-primary);
     padding: 1rem 1.25rem;
-    border-radius: 6px;
+    border-radius: var(--branchbox-radius-sm);
     box-shadow: 0 12px 24px rgba(var(--branchbox-slate-rgb), 0.08);
 }
 
 /* Make callouts feel cohesive with the brand */
 .content .admonition {
-    border-radius: 8px;
+    border-radius: var(--branchbox-radius-md);
     border-left-width: 6px;
 }
 
@@ -83,7 +85,7 @@ a:hover {
 
 /* Improve code readability */
 pre code {
-    border-radius: 8px;
+    border-radius: var(--branchbox-radius-md);
     box-shadow: 0 8px 18px rgba(var(--branchbox-slate-rgb), 0.12);
 }
 
