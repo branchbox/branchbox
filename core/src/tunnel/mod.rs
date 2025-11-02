@@ -26,6 +26,7 @@ pub struct ProvisioningIntent<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelDescriptor {
     pub provider: String,
+    pub tunnel_name: Option<String>,
     pub tunnel_id: Option<String>,
     pub hostname: String,
     pub token_path: Option<PathBuf>,

@@ -1,15 +1,16 @@
-//! Cloudflared tunnel provider stub.
+//! Cloudflared tunnel provider.
 //!
-//! The initial implementation focuses on capturing configuration and surfacing
-//! clear manual instructions when automation is unavailable. Full API-backed
-//! provisioning will be layered on in subsequent milestones.
+//! Provides automated provisioning, DNS management, and teardown when the
+//! workspace is configured with Cloudflare API credentials. Falls back to
+//! manual instructions when automation is unavailable.
 
 use super::{
     ManualInstructions, ProvisioningIntent, ProvisioningOutcome, TunnelDescriptor, TunnelProvider,
     TunnelStatus,
 };
-use crate::config::CloudflaredConfig;
-use crate::Result;
+use crate::cloudflare::{CloudflareClient, TunnelProvision, TunnelSummary};
+use crate::{config::CloudflaredConfig, Error, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Cloudflared provider wrapping the workspace-level configuration.
@@ -29,10 +30,13 @@ impl<'a> CloudflaredProvider<'a> {
     }
 
     fn credentials_path(&self) -> Option<PathBuf> {
-        self.config
-            .api_token_path
-            .clone()
-            .map(|path| self.workspace_root.join(path))
+        self.config.api_token_path.clone().map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                self.workspace_root.join(path)
+            }
+        })
     }
 
     fn has_automation_credentials(&self) -> bool {
@@ -74,11 +78,149 @@ impl<'a> CloudflaredProvider<'a> {
         };
         steps.push(credentials_hint);
         steps.push(
-            "Refer to `legacy/cloudflared/README.md` for script-driven helpers until automation lands."
-                .to_string(),
+            "Refer to `legacy/cloudflared/README.md` for script-driven helpers until automation lands.".to_string(),
         );
 
         ManualInstructions { reason, steps }
+    }
+
+    fn load_api_token(&self) -> Result<String> {
+        let path = self
+            .credentials_path()
+            .ok_or_else(|| Error::validation("Cloudflare API token path not configured"))?;
+
+        let content = fs::read_to_string(&path).map_err(|err| {
+            Error::validation(format!(
+                "Failed to read Cloudflare API token file {}: {}",
+                path.display(),
+                err
+            ))
+        })?;
+
+        for line in content.lines() {
+            if let Some(value) = line.strip_prefix("CLOUDFLARE_API_TOKEN=") {
+                return Ok(value.trim().trim_matches(['"', '\'']).to_string());
+            }
+            if let Some(value) = line.strip_prefix("CLOUDFLARE_API_KEY=") {
+                return Ok(value.trim().trim_matches(['"', '\'']).to_string());
+            }
+        }
+
+        Err(Error::validation(format!(
+            "CLOUDFLARE_API_TOKEN not found in {}",
+            path.display()
+        )))
+    }
+
+    fn account_id(&self) -> Result<String> {
+        self.config
+            .account_id
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| Error::validation("Cloudflare account ID missing from configuration"))
+    }
+
+    fn build_client(&self) -> Result<CloudflareClient> {
+        let token = self.load_api_token()?;
+        let account_id = self.account_id()?;
+        if let Ok(base) = std::env::var("BRANCHBOX_CLOUDFLARE_API_BASE") {
+            CloudflareClient::with_base_url(token, account_id, base)
+        } else {
+            CloudflareClient::new(token, account_id)
+        }
+    }
+
+    fn tunnel_name(&self, feature_name: &str) -> String {
+        let prefix = self
+            .config
+            .tunnel_name_prefix
+            .clone()
+            .unwrap_or_else(|| "branchbox".to_string());
+        format!(
+            "{}-{}",
+            prefix,
+            feature_name
+                .replace('/', "-")
+                .replace(':', "-")
+                .replace(' ', "-")
+        )
+    }
+
+    fn dns_zone(&self, hostname: &str) -> Result<String> {
+        if let Some(zone) = self
+            .config
+            .dns_zone
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(zone.to_string());
+        }
+
+        let parts: Vec<&str> = hostname.split('.').collect();
+        if parts.len() < 2 {
+            return Err(Error::validation(format!(
+                "Cannot derive DNS zone from hostname '{}'",
+                hostname
+            )));
+        }
+
+        let zone = format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+        Ok(zone)
+    }
+
+    fn tunnel_token_store(&self) -> PathBuf {
+        self.workspace_root
+            .join(".branchbox")
+            .join("secure")
+            .join("tunnels")
+    }
+
+    fn write_connector_token(&self, feature_name: &str, token: &str) -> Result<PathBuf> {
+        let store = self.tunnel_token_store();
+        fs::create_dir_all(&store)?;
+
+        let sanitized = feature_name
+            .replace('/', "-")
+            .replace(':', "-")
+            .replace(' ', "-");
+        let path = store.join(format!("{}.env", sanitized));
+
+        fs::write(
+            &path,
+            format!(
+                "TUNNEL_TOKEN={}\nFEATURE_NAME={}\n",
+                token.trim(),
+                sanitized
+            ),
+        )?;
+
+        Ok(path.canonicalize().unwrap_or(path))
+    }
+
+    fn configure_existing_tunnel(
+        &self,
+        client: &CloudflareClient,
+        summary: &TunnelSummary,
+        intent: &ProvisioningIntent<'_>,
+        dns_zone: &str,
+    ) -> Result<()> {
+        client.configure_tunnel(&summary.id, intent.hostname, intent.service_url)?;
+        client.ensure_cname_record(intent.hostname, dns_zone, &summary.id)?;
+        Ok(())
+    }
+
+    fn configure_new_tunnel(
+        &self,
+        client: &CloudflareClient,
+        provision: &TunnelProvision,
+        intent: &ProvisioningIntent<'_>,
+        dns_zone: &str,
+    ) -> Result<()> {
+        client.configure_tunnel(&provision.id, intent.hostname, intent.service_url)?;
+        client.ensure_cname_record(intent.hostname, dns_zone, &provision.id)?;
+        Ok(())
     }
 }
 
@@ -99,21 +241,96 @@ impl<'a> TunnelProvider for CloudflaredProvider<'a> {
             ));
         }
 
-        // Automation hooks are not yet wired; return a manual path noting the limitation.
-        let manual = self.manual_steps(
-            intent,
-            "Cloudflare automation stub reached; API provisioning will be added in the next milestone.",
-        );
-        Ok(ProvisioningOutcome::Manual(manual))
+        let client = self.build_client()?;
+        let tunnel_name = self.tunnel_name(intent.feature_name);
+        let dns_zone = self.dns_zone(intent.hostname)?;
+
+        match client.find_tunnel_by_name(&tunnel_name)? {
+            Some(existing) => {
+                self.configure_existing_tunnel(&client, &existing, intent, &dns_zone)?;
+                let descriptor = TunnelDescriptor {
+                    provider: self.name().to_string(),
+                    tunnel_name: Some(tunnel_name),
+                    tunnel_id: Some(existing.id.clone()),
+                    hostname: intent.hostname.to_string(),
+                    token_path: None,
+                };
+                Ok(ProvisioningOutcome::Automated {
+                    descriptor,
+                    token: None,
+                })
+            }
+            None => {
+                let provision = client.create_tunnel(&tunnel_name)?;
+                self.configure_new_tunnel(&client, &provision, intent, &dns_zone)?;
+
+                let token_path =
+                    self.write_connector_token(intent.feature_name, &provision.token)?;
+
+                let descriptor = TunnelDescriptor {
+                    provider: self.name().to_string(),
+                    tunnel_name: Some(tunnel_name),
+                    tunnel_id: Some(provision.id.clone()),
+                    hostname: intent.hostname.to_string(),
+                    token_path: Some(token_path.clone()),
+                };
+
+                Ok(ProvisioningOutcome::Automated {
+                    descriptor,
+                    token: Some(provision.token),
+                })
+            }
+        }
     }
 
-    fn status(&self, _descriptor: &TunnelDescriptor) -> Result<TunnelStatus> {
-        // Without API integration we cannot determine live status.
-        Ok(TunnelStatus::Manual)
+    fn status(&self, descriptor: &TunnelDescriptor) -> Result<TunnelStatus> {
+        if !self.has_automation_credentials() {
+            return Ok(TunnelStatus::Manual);
+        }
+
+        let client = self.build_client()?;
+        let tunnel_name = descriptor
+            .tunnel_name
+            .as_ref()
+            .cloned()
+            .or_else(|| descriptor.hostname.split('.').next().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        if tunnel_name.is_empty() {
+            return Ok(TunnelStatus::Unknown);
+        }
+
+        match client.find_tunnel_by_name(&tunnel_name)? {
+            Some(_) => Ok(TunnelStatus::Active),
+            None => Ok(TunnelStatus::Pending),
+        }
     }
 
-    fn teardown(&self, _descriptor: &TunnelDescriptor) -> Result<()> {
-        // Stub implementation: real teardown will arrive with API integration.
+    fn teardown(&self, descriptor: &TunnelDescriptor) -> Result<()> {
+        if !self.has_automation_credentials() {
+            return Ok(());
+        }
+
+        let client = self.build_client()?;
+
+        if let Some(tunnel_id) = descriptor.tunnel_id.as_ref() {
+            if let Err(err) = client.delete_tunnel(tunnel_id) {
+                tracing::warn!("Failed to delete Cloudflare tunnel {}: {}", tunnel_id, err);
+            }
+        }
+
+        if !descriptor.hostname.is_empty() {
+            let zone = self.dns_zone(&descriptor.hostname)?;
+            if let Err(err) = client.delete_dns_record(&descriptor.hostname, &zone) {
+                tracing::warn!(
+                    "Failed to delete DNS record {} in zone {}: {}",
+                    descriptor.hostname,
+                    zone,
+                    err
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -122,6 +339,7 @@ impl<'a> TunnelProvider for CloudflaredProvider<'a> {
 mod tests {
     use super::*;
     use crate::config::CloudflaredConfig;
+    use mockito::{Matcher, Server};
     use std::fs;
     use tempfile::TempDir;
 
@@ -143,31 +361,125 @@ mod tests {
     }
 
     #[test]
-    fn manual_outcome_even_when_credentials_present_for_now() {
+    fn automated_outcome_with_valid_credentials() {
         let mut config = CloudflaredConfig::default();
         config.manual_instructions = false;
         config.account_id = Some("acct".into());
-        config.api_token_path = Some(PathBuf::from(".branchbox/secure/cloudflared.env"));
+        config.dns_zone = Some("example.com".into());
 
         let temp = TempDir::new().unwrap();
         let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
         fs::create_dir_all(credentials_path.parent().unwrap()).unwrap();
-        fs::write(&credentials_path, "CLOUDFLARE_TUNNEL_TOKEN=faketoken\n").unwrap();
+        fs::write(&credentials_path, "CLOUDFLARE_API_TOKEN=test-token\n").unwrap();
+        config.api_token_path = Some(credentials_path.clone());
+
+        let mut server = Server::new();
+        let base = format!("{}/client/v4", server.url());
+        std::env::set_var("BRANCHBOX_CLOUDFLARE_API_BASE", &base);
+
+        let expected_tunnel = "branchbox-feature-login";
+
+        let cfd_path = format!(
+            "/client/v4/accounts/{}/cfd_tunnel",
+            config.account_id.as_ref().unwrap()
+        );
+
+        let find = server
+            .mock("GET", Matcher::Exact(cfd_path.clone()))
+            .match_query(Matcher::UrlEncoded("name".into(), expected_tunnel.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[]}"#)
+            .create();
+
+        let create = server
+            .mock("POST", Matcher::Exact(cfd_path.clone()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                "{{\"success\":true,\"errors\":[],\"result\":{{\"id\":\"tunnel-id\",\"name\":\"{}\",\"token\":\"connector-token\"}}}}",
+                expected_tunnel
+            ))
+            .create();
+
+        let configure_path = format!(
+            "/client/v4/accounts/{}/cfd_tunnel/{}/configurations",
+            config.account_id.as_ref().unwrap(),
+            "tunnel-id"
+        );
+
+        let configure = server
+            .mock("PUT", Matcher::Exact(configure_path))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":{}}"#)
+            .create();
+
+        let zones = server
+            .mock("GET", "/client/v4/zones")
+            .match_query(Matcher::UrlEncoded(
+                "name".into(),
+                config.dns_zone.clone().unwrap(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[{"id":"zone-id"}]}"#)
+            .create();
+
+        let hostname = "login.dev.example.com";
+
+        let records = server
+            .mock(
+                "GET",
+                Matcher::Exact("/client/v4/zones/zone-id/dns_records".to_string()),
+            )
+            .match_query(Matcher::UrlEncoded("name".into(), hostname.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[]}"#)
+            .create();
+
+        let create_record = server
+            .mock(
+                "POST",
+                Matcher::Exact("/client/v4/zones/zone-id/dns_records".to_string()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"success":true,"errors":[],"result":{"id":"dns-id","content":"target"}}"#,
+            )
+            .create();
 
         let provider = CloudflaredProvider::new(&config, temp.path());
         let intent = ProvisioningIntent {
             workspace_root: temp.path(),
             feature_name: "feature/login",
-            hostname: "login.dev.example.com",
+            hostname,
             service_url: "web:3000",
         };
 
         let outcome = provider.provision(&intent).unwrap();
+
         match outcome {
-            ProvisioningOutcome::Manual(instructions) => {
-                assert!(instructions.reason.contains("stub"), "expected stub notice");
+            ProvisioningOutcome::Automated { descriptor, token } => {
+                assert_eq!(descriptor.provider, "cloudflared");
+                assert_eq!(descriptor.hostname, hostname);
+                assert_eq!(descriptor.tunnel_id.as_deref(), Some("tunnel-id"));
+                assert_eq!(descriptor.tunnel_name.as_deref(), Some(expected_tunnel));
+                assert!(descriptor.token_path.as_ref().unwrap().exists());
+                assert_eq!(token.as_deref(), Some("connector-token"));
             }
             other => panic!("unexpected outcome: {:?}", other),
         }
+
+        find.assert();
+        create.assert();
+        configure.assert();
+        zones.assert();
+        records.assert();
+        create_record.assert();
+
+        std::env::remove_var("BRANCHBOX_CLOUDFLARE_API_BASE");
     }
 }

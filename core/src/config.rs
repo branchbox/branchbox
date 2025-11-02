@@ -133,6 +133,10 @@ pub struct CloudflaredConfig {
     #[serde(default)]
     pub tunnel_name_prefix: Option<String>,
 
+    /// Root DNS zone (e.g., `example.com`) used when creating proxied records.
+    #[serde(default)]
+    pub dns_zone: Option<String>,
+
     #[serde(default)]
     pub manual_instructions: bool,
 }
@@ -143,6 +147,7 @@ impl Default for CloudflaredConfig {
             account_id: None,
             api_token_path: None,
             tunnel_name_prefix: Some("branchbox".to_string()),
+            dns_zone: None,
             manual_instructions: true,
         }
     }

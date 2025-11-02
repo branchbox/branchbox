@@ -20,6 +20,7 @@ Cargo.lock
 # Environment
 .env
 .env.local
+.devcontainer/.cloudflared.env
 
 # OS
 .DS_Store
