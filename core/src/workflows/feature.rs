@@ -266,10 +266,41 @@ impl FeatureWorkflow {
             }
         };
 
+        let mut module_skip = request.skip_modules.clone();
+
+        if let Ok(config) = BranchBoxConfig::load(&self.repo_root) {
+            let provider_is_cloudflared = config
+                .tunnel
+                .default_provider
+                .as_deref()
+                .map(|name| name.eq_ignore_ascii_case("cloudflared"))
+                .unwrap_or(true);
+
+            if config.tunnel.enabled && provider_is_cloudflared {
+                if let Some(cloudflared) = config.tunnel.providers.cloudflared.as_ref() {
+                    let has_credentials = cloudflared.api_token_path.is_some()
+                        && cloudflared
+                            .account_id
+                            .as_ref()
+                            .map(|value| !value.trim().is_empty())
+                            .unwrap_or(false);
+
+                    if has_credentials
+                        && !cloudflared.manual_instructions
+                        && !module_skip
+                            .iter()
+                            .any(|name| name.eq_ignore_ascii_case("tunnel"))
+                    {
+                        module_skip.push("tunnel".to_string());
+                    }
+                }
+            }
+        }
+
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root, &request.skip_modules);
+        } = modules::detect_modules(&self.repo_root, &module_skip);
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings.clone());
         }
