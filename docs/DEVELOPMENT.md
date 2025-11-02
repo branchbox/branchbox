@@ -131,12 +131,20 @@ cargo check
 
 ## Documentation
 
+The devcontainer image ships with mdBook `0.4.40`. For local environments, install the same version with `cargo install mdbook --locked --version 0.4.40`.
+
 ```bash
-# Generate and open docs
+# Generate and open API docs
 cargo doc --open
 
-# Generate docs without opening
+# Generate API docs without opening
 cargo doc --no-deps
+
+# Build the mdBook site (install via `cargo install mdbook --locked`)
+mdbook build docs
+
+# Regenerate CLI reference pages after modifying commands
+./docs/scripts/render-cli-reference.sh
 ```
 
 ## Project Structure

@@ -32,5 +32,12 @@ During feature start, the specs module promotes `docs/features/backlog/{name}.md
 ## Environment & Configuration Tips
 Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it preinstalls Rust, Clippy, Tarpaulin, and Docker. The container runs privileged for Docker-in-Docker. Tool configurations (`.codex/`, `.claude-code/`, `.gh/`) are volume-mounted via the `SHARED_CONFIG_DIR` environment variable (defaults to `../..`, the parent directory), ensuring credentials and session state persist across container rebuilds and are shared across all feature worktrees—authenticate once with `gh auth login` in any worktree and credentials are available everywhere. Non-worktree users can override with `SHARED_CONFIG_DIR=..` in `.env`. Local setups should copy `.env.sample` into a private `.env` and avoid committing secrets. Tests should set `BRANCHBOX_SKIP_HOST_VALIDATION=1` to bypass host checks. During feature start, the workflow copies `.env` from repo root to worktree and injects `APP_URL` and `COMPOSE_PROJECT_NAME`.
 
+## Documentation Website Workflow
+- Publish user-facing documentation with `mdBook`. Source files live under `docs/book.toml` + `docs/src/`; keep specs automation untouched in `docs/features/`.
+- The devcontainer ships with mdBook `0.4.40`; on bare-metal setups install the same version via `cargo install mdbook --locked --version 0.4.40`, then build locally with `mdbook build docs`.
+- CI must always include a fast `mdbook build docs` check on PRs. A dedicated Pages workflow deploys the rendered book to `gh-pages` on successful pushes to `main`.
+- Keep CLI reference pages generated: use the helper script (check `docs/scripts/render-cli-reference.sh` once added) that captures `branchbox --help` output into `docs/src/reference/`. Regenerate during releases or when command flags change.
+- Engineers and coding agents must update the book’s `SUMMARY.md` whenever new guides are added, mirror critical entry points in `README.md`, and document any automation adjustments in this file so future contributors know how docs are built and shipped.
+
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.
