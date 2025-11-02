@@ -166,6 +166,9 @@ impl<'a> CloudflaredProvider<'a> {
             )));
         }
 
+        // Heuristic: derive the zone by taking the last two segments of the hostname.
+        // Multi-part public suffixes (e.g., `.co.uk`) are not handled; configure `dns_zone`
+        // explicitly for those cases.
         let zone = format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
         Ok(zone)
     }

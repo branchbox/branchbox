@@ -851,7 +851,8 @@ impl InitWorkflow {
                     );
                     fs::write(&secure_path, file_content)?;
 
-                    cloudflared.api_token_path = Some(secure_path);
+                    cloudflared.api_token_path =
+                        Some(PathBuf::from(".branchbox/secure/cloudflared.env"));
                     cloudflared.manual_instructions = false;
                 } else {
                     cloudflared.api_token_path = None;
