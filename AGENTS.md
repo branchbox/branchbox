@@ -32,5 +32,75 @@ During feature start, the specs module promotes `docs/features/backlog/{name}.md
 ## Environment & Configuration Tips
 Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it preinstalls Rust, Clippy, Tarpaulin, and Docker. The container runs privileged for Docker-in-Docker. Tool configurations (`.codex/`, `.claude/`, `.gh/`) are volume-mounted via the `SHARED_CONFIG_DIR` environment variable (defaults to `../..`, the parent directory), ensuring credentials and session state persist across container rebuilds and are shared across all feature worktrees—authenticate once with `gh auth login` in any worktree and credentials are available everywhere. Non-worktree users can override with `SHARED_CONFIG_DIR=..` in `.env`. Local setups should copy `.env.sample` into a private `.env` and avoid committing secrets. Tests should set `BRANCHBOX_SKIP_HOST_VALIDATION=1` to bypass host checks. During feature start, the workflow copies `.env` from repo root to worktree and injects `APP_URL` and `COMPOSE_PROJECT_NAME`.
 
+## Module Implementation: Devcontainer
+- **Detection**: `DevcontainerModule::detect` returns true when `.devcontainer/` exists in the main worktree. Agent bootstrap should ensure the directory is present before queuing the module.
+- **Init/Setup flow**: `init` captures the source `.devcontainer/` path and picks a sync strategy (`copy` by default, override via `BRANCHBOX_DEVCONTAINER_STRATEGY`). `setup` invokes `sync_to(feature_dir)` to mirror files into each worktree, skipping excluded entries like `.env`.
+- **Strategies**: Copy keeps feature-specific edits isolated; symlink keeps worktrees auto-updated. Agents may expose a policy knob but must default to copy to avoid permission prompts on macOS.
+- **Sync command**: `branchbox devcontainer sync [--strategy copy|symlink] [--dry-run]` replays the module across all registered worktrees. Agents should call this after updating `.devcontainer/` in the main repo or during migrations.
+- **Telemetry hooks**: The module emits tracing spans (`module.devcontainer.sync`) with outcome, duration, and strategy. Capture these for observability dashboards and to flag stale worktrees (module failures should surface as soft errors).
+- **Feature flags**: Gate early rollouts with `BRANCHBOX_ENABLE_DEVCONTAINER_MODULE`. Agents can toggle this per-workspace to coordinate canary deploys.
+- **Failure handling**: If sync fails, mark the worktree as `devcontainer_outdated` in registry metadata and warn the user instead of aborting the workflow. Agents should surface remediation guidance in the CLI/UX.
+- **Shared credentials**: Confirm shared mounts remain intact (`.gh`, `.claude`, `.codex`) after sync or teardown. Agents must never delete host-side shared directories.
+
+## Agent Integration Plan
+- **Daemon wiring**: Expose a `DevcontainerSyncJob` in the Rust agent that triggers when `.devcontainer/` changes in the main worktree (file watcher) or when a new worktree registers. Job should enqueue module execution via the existing workflow runner.
+- **Command bridge**: Use the CLI as a fallback (`branchbox devcontainer sync --json`) until native library bindings are exported. Parse the sync outcome to update registry metadata and emit structured logs.
+- **Registry extensions**: Add optional fields to worktree entries (`devcontainer_outdated`, `last_sync_at`, `sync_strategy`). Ensure schema migrations remain backward compatible for Milestone 0 installations.
+- **Observability**: Forward module spans to the agent’s OpenTelemetry pipeline. Track counters for `sync_success`, `sync_skipped`, `sync_failed`, with labels for strategy and stack (rails/nodejs/rust/generic).
+- **Policy management**: Introduce `AgentPolicy.devcontainer.strategy` config knob (defaults to `copy`). Allow per-workspace overrides via `.branchbox/agent.toml`.
+- **Health reporting**: Surface stale sync warnings through the forthcoming control plane API (`/v1/worktrees/:id/health`). Include remediation actions in the payload.
+- **Cross-platform validation**: Run agent regression suite on Linux (devcontainer), macOS (local), and Windows (WSL2). Verify symlink strategy behaves under each OS’s permission model.
+- **User messaging**: Teach the agent to emit actionable CLI guidance when a sync fails (example: "Run `branchbox devcontainer sync --strategy copy` manually after fixing permissions").
+- **Security review**: Coordinate with security to audit shared credential mounts and file permission expectations before enabling automated sync outside devcontainers.
+- **Rollout**: Stage deployment—enable feature flag for internal repositories, monitor telemetry, then progressively roll out to early adopters before global enablement.
+
+## Sync Workflow Blueprint
+- **Trigger sources**:
+  1. File watcher detects change under `.devcontainer/`.
+  2. Registry mutation (`FeatureStateStore::register_worktree`) for new worktrees.
+  3. Manual control-plane instruction (`/v1/devcontainers/sync`).
+- **Job pipeline**:
+  ```
+  Trigger -> enqueue(Job::DevcontainerSync { workspace, strategy_override }) 
+          -> rate_limit (per workspace) 
+          -> Worker acquires registry read lock 
+          -> For each worktree:
+               - skip if removed or archived
+               - call core::modules::devcontainer::sync_to()
+               - collect SyncOutcome (files, duration, status)
+          -> persist outcomes -> emit telemetry -> respond to caller
+  ```
+- **Backoff**: Use exponential backoff (base 2s, cap 2m) when sync encounters filesystem errors to avoid hammering disk on permission failures.
+- **Concurrency**: Allow one active devcontainer sync per workspace to avoid conflicting writes; queue subsequent requests.
+- **Configuration precedence**: `strategy_override` (CLI/HTTP) > `AgentPolicy.devcontainer.strategy` > env `BRANCHBOX_DEVCONTAINER_STRATEGY` > module default (`copy`).
+
+## Error Handling Matrix
+- **Permission denied** (`EACCES`, `EPERM`): Mark worktree `devcontainer_outdated`, emit warning, suggest manual remediation. Do not retry automatically until configuration changes.
+- **Missing source** (`.devcontainer/` deleted): Downgrade to informational event, clear `last_sync_at`, notify control plane to prompt project maintainers.
+- **Disk full** (`ENOSPC`): Abort job, escalate to control plane with severity `critical`, include disk usage snapshot if available.
+- **Symlink unsupported** (Windows without developer mode): Force fallback to copy strategy, log downgrade, continue.
+- **Unknown errors**: Capture stack trace, persist to `agent.log`, flag telemetry with `error.type`.
+
+## Agent Test Plan
+- **Unit**: Mock `ModuleExecutor` to verify job orchestrates strategy precedence and registry updates.
+- **Integration**: Spin up ephemeral workspaces via devcontainer; run automated scenario:
+  1. Modify `.devcontainer/devcontainer.json` → watch event triggers sync → verify feature worktree reflects change.
+  2. Force permission error by chowning `.devcontainer/compose.yaml` to root → ensure job marks worktree `devcontainer_outdated`.
+- **E2E smoke**: With control plane prototype, invoke `/v1/devcontainers/sync` and assert telemetry matches expected counts.
+- **Regression**: Add cases to agent CI making sure `branchbox devcontainer sync --dry-run` returns zero exit status and does not mutate files.
+
+## Outstanding Tasks
+- [ ] Define protobuf/JSON schema for `DevcontainerSyncOutcome` emitted by agent.
+- [ ] Implement registry migration adding new metadata fields with forward/backward compatibility.
+- [ ] Extend CLI `branchbox feature list --json` to include `devcontainer_outdated` and `last_sync_at`.
+- [ ] Wire OpenTelemetry exporter in agent to include new metrics and spans.
+- [ ] Draft runbooks covering recovery steps for each error class in the matrix above.
+- [ ] Coordinate with docs team to update onboarding once automated sync is live.
+- [ ] Prototype `DevcontainerSyncJob` worker with CLI bridge.
+- [ ] Build file watcher abstraction (Debounced notify) resilient to large repo bursts.
+- [ ] Integrate control plane endpoint `/v1/devcontainers/sync` with authentication and rate limiting.
+- [ ] Add acceptance test in staging environment with multi-workspace setup.
+- [ ] Review security implications of shared credential mounts with infosec.
+
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.
