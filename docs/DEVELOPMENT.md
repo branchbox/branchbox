@@ -131,12 +131,20 @@ cargo check
 
 ## Documentation
 
+Install mdBook locally with `cargo install mdbook --locked` if it is not already available in your toolchain.
+
 ```bash
-# Generate and open docs
+# Generate and open API docs
 cargo doc --open
 
-# Generate docs without opening
+# Generate API docs without opening
 cargo doc --no-deps
+
+# Build the mdBook site (install via `cargo install mdbook --locked`)
+mdbook build docs
+
+# Regenerate CLI reference pages after modifying commands
+./docs/scripts/render-cli-reference.sh
 ```
 
 ## Project Structure

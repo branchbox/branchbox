@@ -265,6 +265,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install mdBook
+        run: cargo install mdbook --locked
+
       - name: Check documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -272,3 +275,6 @@ jobs:
 
       - name: Test documentation examples
         run: cargo test --doc --all-features
+
+      - name: Build mdBook site
+        run: mdbook build docs

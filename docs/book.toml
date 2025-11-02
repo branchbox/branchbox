@@ -1,0 +1,20 @@
+[book]
+title = "BranchBox Documentation"
+description = "Guides for installing, operating, and extending BranchBox."
+authors = ["BranchBox Team"]
+language = "en"
+multilingual = false
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+preferred-dark-theme = "coal"
+default-theme = "light"
+git-repository-url = "https://github.com/branchbox/branchbox"
+git-repository-icon = "fa-github"
+additional-css = []
+
+[output.html.print]
+enable = false
