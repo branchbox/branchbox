@@ -92,6 +92,10 @@ pub struct FeatureListArgs {
     /// Filter by status (active, removed)
     #[arg(long)]
     pub status: Option<String>,
+
+    /// Emit JSON output instead of human-readable summary
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub fn execute(command: FeatureCommands) -> Result<()> {
@@ -134,7 +138,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
 }
 
 fn run_list(args: FeatureListArgs) -> Result<()> {
-    let FeatureListArgs { repo, status } = args;
+    let FeatureListArgs { repo, status, json } = args;
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
@@ -147,6 +151,12 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
 
     if features.is_empty() {
         println!("ℹ️  No features tracked yet. Run `branchbox feature start` to create one.");
+        return Ok(());
+    }
+
+    if json {
+        let payload = serde_json::to_string_pretty(&features)?;
+        println!("{}", payload);
         return Ok(());
     }
 
@@ -169,6 +179,16 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
                 .with_timezone(&Local)
                 .format("%Y-%m-%d %H:%M:%S")
         );
+        if let Some(sync_at) = feature.last_sync_at.as_ref() {
+            println!(
+                "    Devcontainer synced: {} ({})",
+                sync_at.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S"),
+                feature.sync_strategy.as_deref().unwrap_or("copy")
+            );
+        }
+        if feature.devcontainer_outdated {
+            println!("    ⚠️  Devcontainer out of date. Run `branchbox devcontainer sync`.");
+        }
     }
 
     Ok(())

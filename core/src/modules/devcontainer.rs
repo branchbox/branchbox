@@ -36,6 +36,16 @@ pub enum SyncStrategy {
     Symlink,
 }
 
+impl SyncStrategy {
+    /// Returns a lowercase string representation for telemetry/registry use.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SyncStrategy::Copy => "copy",
+            SyncStrategy::Symlink => "symlink",
+        }
+    }
+}
+
 pub struct DevcontainerModule {
     source_dir: PathBuf,
     strategy: SyncStrategy,
@@ -164,6 +174,11 @@ impl DevcontainerModule {
             .and_then(|n| n.to_str())
             .map(|n| self.exclude.iter().any(|e| n == e))
             .unwrap_or(false)
+    }
+
+    /// Returns the configured sync strategy (copy or symlink).
+    pub fn strategy(&self) -> SyncStrategy {
+        self.strategy
     }
 }
 

@@ -102,16 +102,28 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
 
         match result {
             Ok(outcome) => {
-                println!(
-                    "✓ synced {} files ({:?})",
-                    outcome.synced_files.len(),
-                    outcome.strategy
-                );
+                let file_count = outcome.synced_files.len();
+                let strategy = outcome.strategy;
+                println!("✓ synced {} files ({})", file_count, strategy.as_str());
                 synced_count += 1;
+                if let Err(err) = workflow.record_devcontainer_sync(
+                    &feature.work_feature,
+                    Some(strategy.as_str()),
+                    true,
+                ) {
+                    println!("    ⚠️ failed to update registry: {}", err);
+                }
             }
             Err(e) => {
                 println!("✗ failed: {}", e);
                 errors.push((feature.work_feature.clone(), e.to_string()));
+                if let Err(err) = workflow.record_devcontainer_sync(
+                    &feature.work_feature,
+                    Some(module.strategy().as_str()),
+                    false,
+                ) {
+                    println!("    ⚠️ failed to update registry: {}", err);
+                }
             }
         }
     }
