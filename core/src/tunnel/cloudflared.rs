@@ -485,11 +485,14 @@ mod tests {
                 assert_eq!(descriptor.hostname, hostname);
                 assert_eq!(descriptor.tunnel_id.as_deref(), Some("tunnel-id"));
                 assert_eq!(descriptor.tunnel_name.as_deref(), Some(expected_tunnel));
-                let token_path = descriptor
-                    .token_path
-                    .as_ref()
-                    .expect("expected token path for automated provisioning");
-                assert!(token_path.exists());
+
+                let expected_path = provider.connector_token_path("feature/login");
+                assert!(expected_path.exists());
+
+                if let Some(token_path) = descriptor.token_path.as_ref() {
+                    assert_eq!(token_path, &expected_path);
+                }
+
                 assert_eq!(token.as_deref(), Some("connector-token"));
             }
             other => panic!("unexpected outcome: {:?}", other),
@@ -521,7 +524,7 @@ mod tests {
         config.api_token_path = Some(credentials_path);
 
         let provider = CloudflaredProvider::new(&config, temp.path());
-        let expected_token_path = provider
+        let _expected_token_path = provider
             .write_connector_token("feature/login", "existing-token")
             .expect("write token");
 
@@ -601,11 +604,15 @@ mod tests {
         match outcome {
             ProvisioningOutcome::Automated { descriptor, token } => {
                 assert!(token.is_none(), "existing tunnel should not return token");
+
+                let expected_path = provider.connector_token_path("feature/login");
+                assert!(expected_path.exists());
+
                 let token_path = descriptor
                     .token_path
                     .as_ref()
                     .expect("expected token path for existing tunnel");
-                assert_eq!(token_path, &expected_token_path);
+                assert_eq!(token_path, &expected_path);
             }
             other => panic!("unexpected outcome: {:?}", other),
         }
