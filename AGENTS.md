@@ -97,5 +97,12 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 - Capture telemetry during each validation session—OpenTelemetry spans and metrics should surface strategy choice, duration, and outcome so the control plane dashboard mirrors reality.
 - Keep operator documentation current: after every validation cycle, update runbooks and onboarding snippets so field teams can replicate the procedure without rediscovering steps.
 
+## Documentation Website Workflow
+- Publish user-facing documentation with `mdBook`. Source files live under `docs/book.toml` + `docs/src/`; keep specs automation untouched in `docs/features/`.
+- The devcontainer ships with mdBook `0.4.40`; on bare-metal setups install the same version via `cargo install mdbook --locked --version 0.4.40`, then build locally with `mdbook build docs`.
+- CI must always include a fast `mdbook build docs` check on PRs. A dedicated Pages workflow deploys the rendered book to `gh-pages` on successful pushes to `main`.
+- Keep CLI reference pages generated: use the helper script (check `docs/scripts/render-cli-reference.sh` once added) that captures `branchbox --help` output into `docs/src/reference/`. Regenerate during releases or when command flags change.
+- Engineers and coding agents must update the book’s `SUMMARY.md` whenever new guides are added, mirror critical entry points in `README.md`, and document any automation adjustments in this file so future contributors know how docs are built and shipped.
+
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.

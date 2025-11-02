@@ -50,3 +50,5 @@ coverage/
 
 # Sample workspace artifacts
 test/workspaces/local/
+# Generated documentation
+docs/book/

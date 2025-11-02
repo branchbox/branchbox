@@ -25,6 +25,12 @@ cd ../oauth-integration/
 
 See [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
 
+## Documentation
+
+- **Docs site:** https://branchbox.github.io/branchbox/ (built with mdBook and deployed from `main`)
+- **Source:** `docs/` (run `mdbook build docs` locally to preview)
+- **CLI reference:** regenerate via `./docs/scripts/render-cli-reference.sh` after changing command flags
+
 ## Why BranchBox?
 
 Traditional git workflows force you to:

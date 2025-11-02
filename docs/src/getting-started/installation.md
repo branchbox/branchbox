@@ -1,0 +1,3 @@
+# Installation
+
+{{#include ../../INSTALLATION.md}}
