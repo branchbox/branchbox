@@ -44,6 +44,32 @@ This project includes a complete devcontainer setup that provides a consistent d
 - Docker-in-Docker runtime (official Docker packages) for container orchestration tests
 - Persistent Codex configuration/history stored on the host at `.codex/`
 
+**Devcontainer sync strategy:**
+- By default BranchBox copies the `.devcontainer/` directory into each feature worktree.
+- Override behaviour per command with `BRANCHBOX_DEVCONTAINER_STRATEGY=copy|symlink branchbox feature start`.
+- Persist a different default by setting `BRANCHBOX_DEVCONTAINER_STRATEGY` in your `.env` (template comment provided in generated `env.sample` files).
+- Refresh existing worktrees whenever the main `.devcontainer/` changes: `branchbox devcontainer sync [--dry-run] [--strategy copy|symlink]`.
+
+### Module Architecture Notes
+
+- Devcontainer provisioning is handled by `DevcontainerModule`, one of the composable modules executed during feature start.
+- The module copies or symlinks files from the main `.devcontainer/` directory, excluding `.env`, and prunes stale artifacts during sync.
+- `branchbox devcontainer sync` reuses the module to propagate updates to all active feature worktrees, respecting the same strategy logic.
+
+### Devcontainer Smoke Test Playgrounds
+
+- Run `./scripts/setup-sample-workspaces.sh` to copy tracked templates from `test/workspaces/templates/` into the git-ignored `test/workspaces/local/`. Each template declares its stack via `template.json`, so the script prints the correct `branchbox init --stack <stack>` command.
+- The repository currently ships `rust-cli` and `node-api` samples; add more templates as needed for other stacks.
+- Example flow:
+  ```bash
+  ./scripts/setup-sample-workspaces.sh node-api
+  cd test/workspaces/local/node-api
+  BRANCHBOX_SKIP_HOST_VALIDATION=1 branchbox init --stack nodejs
+  branchbox feature start devcontainer-smoke
+  ```
+- Open both the main sample and generated feature worktree in VS Code/Cursor to confirm devcontainer propagation, shared credential mounts, and module telemetry.
+- After testing, clean up with `branchbox feature teardown devcontainer-smoke --complete-spec` and simply delete `test/workspaces/local/` if you want a fresh slate.
+
 ### Local Development (without devcontainer)
 
 **Prerequisites:**

@@ -1,0 +1,9 @@
+{
+  "name": "branchbox-node-smoke",
+  "version": "1.0.0",
+  "description": "BranchBox Node.js smoke test service",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  }
+}

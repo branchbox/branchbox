@@ -39,6 +39,7 @@ which = "6.0"
 
 # File system
 walkdir = "2.4"
+pathdiff = "0.2"
 tempfile = "3.8"
 dirs = "5.0"
 
