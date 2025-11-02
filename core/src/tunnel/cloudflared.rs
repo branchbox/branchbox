@@ -177,22 +177,39 @@ impl<'a> CloudflaredProvider<'a> {
             .join("tunnels")
     }
 
+    fn sanitized_feature_name(&self, feature_name: &str) -> String {
+        feature_name
+            .replace('/', "-")
+            .replace(':', "-")
+            .replace(' ', "-")
+    }
+
+    fn connector_token_path(&self, feature_name: &str) -> PathBuf {
+        let sanitized = self.sanitized_feature_name(feature_name);
+        self.tunnel_token_store().join(format!("{}.env", sanitized))
+    }
+
+    fn existing_connector_token_path(&self, feature_name: &str) -> Option<PathBuf> {
+        let path = self.connector_token_path(feature_name);
+        if path.exists() {
+            Some(path.canonicalize().unwrap_or(path))
+        } else {
+            None
+        }
+    }
+
     fn write_connector_token(&self, feature_name: &str, token: &str) -> Result<PathBuf> {
         let store = self.tunnel_token_store();
         fs::create_dir_all(&store)?;
 
-        let sanitized = feature_name
-            .replace('/', "-")
-            .replace(':', "-")
-            .replace(' ', "-");
-        let path = store.join(format!("{}.env", sanitized));
+        let path = self.connector_token_path(feature_name);
 
         fs::write(
             &path,
             format!(
                 "TUNNEL_TOKEN={}\nFEATURE_NAME={}\n",
                 token.trim(),
-                sanitized
+                self.sanitized_feature_name(feature_name)
             ),
         )?;
 
@@ -248,12 +265,13 @@ impl<'a> TunnelProvider for CloudflaredProvider<'a> {
         match client.find_tunnel_by_name(&tunnel_name)? {
             Some(existing) => {
                 self.configure_existing_tunnel(&client, &existing, intent, &dns_zone)?;
+                let token_path = self.existing_connector_token_path(intent.feature_name);
                 let descriptor = TunnelDescriptor {
                     provider: self.name().to_string(),
                     tunnel_name: Some(tunnel_name),
                     tunnel_id: Some(existing.id.clone()),
                     hostname: intent.hostname.to_string(),
-                    token_path: None,
+                    token_path,
                 };
                 Ok(ProvisioningOutcome::Automated {
                     descriptor,
@@ -479,6 +497,115 @@ mod tests {
         zones.assert();
         records.assert();
         create_record.assert();
+
+        std::env::remove_var("BRANCHBOX_CLOUDFLARE_API_BASE");
+    }
+
+    #[test]
+    fn existing_tunnel_preserves_token_path() {
+        let mut config = CloudflaredConfig::default();
+        config.manual_instructions = false;
+        config.account_id = Some("acct".into());
+        config.dns_zone = Some("example.com".into());
+
+        let temp = TempDir::new().unwrap();
+        let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
+        fs::create_dir_all(credentials_path.parent().unwrap()).unwrap();
+        fs::write(&credentials_path, "CLOUDFLARE_API_TOKEN=test-token\n").unwrap();
+        config.api_token_path = Some(credentials_path);
+
+        let provider = CloudflaredProvider::new(&config, temp.path());
+        let expected_token_path = provider
+            .write_connector_token("feature/login", "existing-token")
+            .expect("write token");
+
+        let mut server = Server::new();
+        let base = format!("{}/client/v4", server.url());
+        std::env::set_var("BRANCHBOX_CLOUDFLARE_API_BASE", &base);
+
+        let expected_tunnel = "branchbox-feature-login";
+        let hostname = "login.dev.example.com";
+
+        let cfd_path = format!(
+            "/client/v4/accounts/{}/cfd_tunnel",
+            config.account_id.as_ref().unwrap()
+        );
+
+        let find = server
+            .mock("GET", Matcher::Exact(cfd_path.clone()))
+            .match_query(Matcher::UrlEncoded("name".into(), expected_tunnel.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                "{{\"success\":true,\"errors\":[],\"result\":[{{\"id\":\"tunnel-id\",\"name\":\"{}\",\"deleted_at\":null}}]}}",
+                expected_tunnel
+            ))
+            .create();
+
+        let configure_path = format!(
+            "/client/v4/accounts/{}/cfd_tunnel/{}/configurations",
+            config.account_id.as_ref().unwrap(),
+            "tunnel-id"
+        );
+
+        let configure = server
+            .mock("PUT", Matcher::Exact(configure_path))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":{}}"#)
+            .create();
+
+        let zones = server
+            .mock("GET", "/client/v4/zones")
+            .match_query(Matcher::UrlEncoded(
+                "name".into(),
+                config.dns_zone.clone().unwrap(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[{"id":"zone-id"}]}"#)
+            .create();
+
+        let dns_records = server
+            .mock(
+                "GET",
+                Matcher::Exact("/client/v4/zones/zone-id/dns_records".to_string()),
+            )
+            .match_query(Matcher::UrlEncoded("name".into(), hostname.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"success":true,"errors":[],"result":[{"id":"record-123","content":"tunnel-id.cfargotunnel.com"}]}"#,
+            )
+            .create();
+
+        let intent = ProvisioningIntent {
+            workspace_root: temp.path(),
+            feature_name: "feature/login",
+            hostname,
+            service_url: "web:3000",
+        };
+
+        let outcome = provider.provision(&intent).unwrap();
+
+        match outcome {
+            ProvisioningOutcome::Automated { descriptor, token } => {
+                assert!(token.is_none(), "existing tunnel should not return token");
+                assert_eq!(
+                    descriptor
+                        .token_path
+                        .as_ref()
+                        .expect("token path preserved"),
+                    &expected_token_path
+                );
+            }
+            other => panic!("unexpected outcome: {:?}", other),
+        }
+
+        find.assert();
+        configure.assert();
+        zones.assert();
+        dns_records.assert();
 
         std::env::remove_var("BRANCHBOX_CLOUDFLARE_API_BASE");
     }
