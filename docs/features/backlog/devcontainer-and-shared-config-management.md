@@ -1055,3 +1055,44 @@ branchbox config sync  # Update all feature devcontainers from main
 - Universal Init Workflow (depends on this for devcontainer copying)
 - Cloudflare Tunnel Provisioning (per-worktree credentials via Cloudflare API - Milestone 1)
 - Agent Daemon (will need access to shared configs - Milestone 1)
+
+## Migration Plan
+
+- **Inventory active worktrees**: Extend `branchbox feature list --json` so the CLI can feed the devcontainer sync command with an authoritative set of worktrees.
+- **One-time bulk sync**: Ship a helper script (`scripts/devcontainer-sync.sh`) invoked by maintainers after upgrading BranchBox to the module-based release. Script runs `branchbox devcontainer sync --strategy copy` and captures a report per worktree for auditability.
+- **Workspace bootstrap**: Update onboarding docs to instruct new contributors to run `branchbox devcontainer sync` after cloning older repositories lacking `.devcontainer/`.
+- **Graceful fallback**: If sync fails (e.g., corrupted `.devcontainer`), log a warning, mark the worktree in the registry with a `devcontainer_outdated` flag, and skip blocking the workflow. CLI surfaces this flag in `branchbox feature list`.
+
+## Rollout Checklist
+
+- Feature flag the module with `BRANCHBOX_ENABLE_DEVCONTAINER_MODULE=1` for canary testing.
+- Validate on a real project with 3+ parallel worktrees, including at least one Rails and one Rust repository.
+- Confirm VS Code and Cursor both prompt "Reopen in Container" post-sync.
+- Ensure the shared credential directories remain untouched when running `branchbox feature teardown`.
+- Publish an internal changelog entry outlining new commands, env vars, and troubleshooting guidance.
+
+## Telemetry & Observability
+
+- Emit `module.devcontainer.sync` tracing spans with attributes: `strategy`, `synced_files`, `duration_ms`, `outcome`.
+- Add a lightweight metrics exporter in the future daemon to count sync successes vs. failures.
+- Record module status in the workflow summary JSON (already exposed), allowing the control plane to surface stale worktrees in dashboards.
+- Capture CLI exit codes for `branchbox devcontainer sync` and wire them into existing analytics (Milestone 1 agent work).
+
+## Risks & Mitigations
+
+- **Risk**: Symlink strategy on macOS requires developer to grant additional permissions.
+  - **Mitigation**: Default to copy, document symlink caveats, and gate symlink with explicit opt-in.
+- **Risk**: Large devcontainer directories inflate sync time.
+  - **Mitigation**: Add `.branchboxignore` support in `.devcontainer/` to skip heavy assets (e.g., prebuilt language servers).
+- **Risk**: Shared credentials leak across teams sharing a workstation.
+  - **Mitigation**: Document per-user `SHARED_CONFIG_DIR` overrides and encourage `branchbox devcontainer sync --strategy symlink` only for trusted environments.
+- **Risk**: Module errors block feature workflows.
+  - **Mitigation**: Treat failures as soft errors with actionable warnings, and surface remediation steps directly in CLI output.
+
+## Future Enhancements
+
+- Integrate JSON/YAML schema validation (`jsonschema`, `schemars`) to catch malformed devcontainer files before sync completes.
+- Allow per-feature overrides by honoring `.devcontainer/.branchbox-local.toml` with exclusion/inclusion lists.
+- Teach the module to diff existing files and show a concise changelog when running with `--dry-run`.
+- Coordinate with the upcoming agent daemon to trigger background syncs whenever main `.devcontainer/` changes (file watcher integration).
+- Explore selective sync for multi-root repos, mapping `.devcontainer` directories per package or workspace member.
