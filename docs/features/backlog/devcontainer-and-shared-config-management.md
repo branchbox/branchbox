@@ -678,17 +678,17 @@ cat .devcontainer/compose.yaml | yq .
 - [ ] Add test: verify bootstrap generates correct volume mounts
 
 ### Phase 3: Sync Command (1-2 days)
-- [ ] Add `branchbox devcontainer sync` CLI command
-- [ ] Implement: iterate all feature worktrees, call `DevcontainerModule::sync_to()`
-- [ ] Add `--strategy` flag to override copy/symlink behavior
-- [ ] Add `--dry-run` flag to preview changes
-- [ ] Integration test: sync updates existing feature worktrees
+- [x] Add `branchbox devcontainer sync` CLI command
+- [x] Implement: iterate all feature worktrees, call `DevcontainerModule::sync_to()`
+- [x] Add `--strategy` flag to override copy/symlink behavior
+- [x] Add `--dry-run` flag to preview changes
+- [x] Integration test: sync updates existing feature worktrees
 
-- [ ] Add "Devcontainer Workflow" section to `README.md`
+- [x] Add "Devcontainer Workflow" section to `README.md`
 - [x] Document `BRANCHBOX_DEVCONTAINER_STRATEGY` env var
-- [ ] Document `branchbox devcontainer sync` command
-- [ ] Add troubleshooting guide for "Reopen in Container" issues
-- [ ] Update `docs/DEVELOPMENT.md` with module architecture notes
+- [x] Document `branchbox devcontainer sync` command
+- [x] Add troubleshooting guide for "Reopen in Container" issues
+- [x] Update `docs/DEVELOPMENT.md` with module architecture notes
 
 ### Phase 5: Testing & Validation (1-2 days)
 - [ ] Integration test: Create feature, verify `.devcontainer/` exists

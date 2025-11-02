@@ -48,6 +48,13 @@ This project includes a complete devcontainer setup that provides a consistent d
 - By default BranchBox copies the `.devcontainer/` directory into each feature worktree.
 - Override behaviour per command with `BRANCHBOX_DEVCONTAINER_STRATEGY=copy|symlink branchbox feature start`.
 - Persist a different default by setting `BRANCHBOX_DEVCONTAINER_STRATEGY` in your `.env` (template comment provided in generated `env.sample` files).
+- Refresh existing worktrees whenever the main `.devcontainer/` changes: `branchbox devcontainer sync [--dry-run] [--strategy copy|symlink]`.
+
+### Module Architecture Notes
+
+- Devcontainer provisioning is handled by `DevcontainerModule`, one of the composable modules executed during feature start.
+- The module copies or symlinks files from the main `.devcontainer/` directory, excluding `.env`, and prunes stale artifacts during sync.
+- `branchbox devcontainer sync` reuses the module to propagate updates to all active feature worktrees, respecting the same strategy logic.
 
 ### Local Development (without devcontainer)
 
