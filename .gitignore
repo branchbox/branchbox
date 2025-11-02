@@ -47,3 +47,6 @@ Thumbs.db
 
 # Coverage reports
 coverage/
+
+# Generated documentation
+docs/book/

@@ -1,0 +1,110 @@
+:root {
+    --branchbox-primary: #0a7dc8;
+    --branchbox-primary-rgb: 10, 125, 200;
+    --branchbox-primary-hover: #0e95f2;
+    --branchbox-primary-hover-rgb: 14, 149, 242;
+    --branchbox-primary-light: #5fc3ff;
+    --branchbox-slate: #0b1624;
+    --branchbox-slate-rgb: 11, 22, 36;
+    --branchbox-slate-light: #13263a;
+    --branchbox-slate-dark: #050b13;
+    --branchbox-slate-darkest: #03070d;
+    --branchbox-surface: #f8fbff;
+    --branchbox-dark-surface-rgb: 8, 18, 31;
+    --branchbox-dark-surface: rgba(var(--branchbox-dark-surface-rgb), 0.85);
+    --branchbox-shadow-dark-rgb: 3, 7, 13;
+    --branchbox-text-inverse: #f0f7ff;
+    --branchbox-text-soft: #eaf4ff;
+    --branchbox-text-white: #ffffff;
+    --branchbox-radius-sm: 6px;
+    --branchbox-radius-md: 8px;
+}
+
+/* Sidebar styling */
+#sidebar {
+    background: linear-gradient(180deg, var(--branchbox-slate) 0%, var(--branchbox-slate-darkest) 100%);
+    border-right: 1px solid rgba(var(--branchbox-primary-rgb), 0.2);
+}
+
+#sidebar .chapter a {
+    border-radius: var(--branchbox-radius-sm);
+    transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+#sidebar .chapter a:hover,
+#sidebar .chapter a:focus {
+    background-color: rgba(var(--branchbox-primary-rgb), 0.12);
+    color: var(--branchbox-text-inverse);
+    transform: translateX(2px);
+}
+
+#sidebar .chapter-item.active > a {
+    background-color: rgba(var(--branchbox-primary-rgb), 0.18);
+    color: var(--branchbox-text-white);
+}
+
+/* Link and accent colors */
+a {
+    color: var(--branchbox-primary);
+}
+
+a:hover {
+    color: var(--branchbox-primary-hover);
+    text-decoration: none;
+}
+
+/* Main content polish */
+.content .chapter h1 {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.content .chapter > p:first-of-type {
+    font-size: 1.15rem;
+    line-height: 1.8;
+    background: var(--branchbox-surface);
+    border-left: 4px solid var(--branchbox-primary);
+    padding: 1rem 1.25rem;
+    border-radius: var(--branchbox-radius-sm);
+    box-shadow: 0 12px 24px rgba(var(--branchbox-slate-rgb), 0.08);
+}
+
+/* Make callouts feel cohesive with the brand */
+.content .admonition {
+    border-radius: var(--branchbox-radius-md);
+    border-left-width: 6px;
+}
+
+.content .admonition.tip {
+    border-left-color: var(--branchbox-primary);
+}
+
+.content .admonition.note {
+    border-left-color: var(--branchbox-primary-hover);
+}
+
+/* Improve code readability */
+pre code {
+    border-radius: var(--branchbox-radius-md);
+    box-shadow: 0 8px 18px rgba(var(--branchbox-slate-rgb), 0.12);
+}
+
+/* Dark theme tweaks */
+.theme-dark #sidebar {
+    background: linear-gradient(180deg, var(--branchbox-slate-light) 0%, var(--branchbox-slate-dark) 100%);
+    border-right-color: rgba(var(--branchbox-primary-hover-rgb), 0.25);
+}
+
+.theme-dark .content .chapter > p:first-of-type {
+    background: var(--branchbox-dark-surface);
+    color: var(--branchbox-text-soft);
+    box-shadow: 0 12px 28px rgba(var(--branchbox-shadow-dark-rgb), 0.4);
+}
+
+.theme-dark a {
+    color: var(--branchbox-primary-hover);
+}
+
+.theme-dark a:hover {
+    color: var(--branchbox-primary-light);
+}
