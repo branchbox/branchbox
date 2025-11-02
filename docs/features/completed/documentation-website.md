@@ -39,3 +39,4 @@ Deliver a maintainable, mdBook-powered documentation site for BranchBox, complet
 - 2025-11-03: Merged PR #13 with a merge commit to land the docs pipeline on `main`, then enabled GitHub Pages via `gh api repos/branchbox/branchbox/pages --method POST`.
 - 2025-11-03: Reran the Docs Pages workflow (`gh run rerun 19014761620`) to publish the site after enabling Pages; deployment succeeded with environment URL `https://branchbox.github.io/branchbox/`.
 - 2025-11-03: Logged the rollout in `CHANGELOG.md` so contributors have a reference to the new docs workflow and site location.
+- 2025-11-03: Follow-up PR #14 archived the spec in `docs/features/completed/` and recorded the docs launch in the changelog after the rerun succeeded.
