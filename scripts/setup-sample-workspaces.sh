@@ -52,9 +52,10 @@ if [ ! -d "$TEMPLATE_DIR" ]; then
 fi
 
 if [ ${#selected_templates[@]} -eq 0 ]; then
-    while IFS= read -r -d '' dir; do
+    while IFS= read -r dir; do
+        [ -z "$dir" ] && continue
         selected_templates+=("$(basename "$dir")")
-    done < <(find "$TEMPLATE_DIR" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+    done < <(find "$TEMPLATE_DIR" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort)
 fi
 
 mkdir -p "$LOCAL_DIR"
