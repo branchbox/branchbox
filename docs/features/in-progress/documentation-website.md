@@ -2,7 +2,7 @@
 work_feature: documentation-website
 status: in-progress
 created: 2025-11-02
-updated: 2025-11-02
+updated: 2025-11-03
 owner: codex-agent
 ---
 
@@ -18,7 +18,8 @@ Deliver a maintainable, mdBook-powered documentation site for BranchBox, complet
 - [x] Wire `mdbook build docs` into CI for PR validation (2025-11-02)
 - [x] Create GitHub Pages deployment workflow targeting `gh-pages` (2025-11-02)
 - [x] Update contributor docs (`DEVELOPMENT.md`, `README.md`) with new workflow details (2025-11-02)
-- [ ] Verify local and CI builds, then announce rollout in CHANGELOG
+- [x] Verify local mdBook build (2025-11-03)
+- [ ] Watch CI/Pages pipeline and announce rollout in CHANGELOG
 
 ## Progress Log
 - 2025-11-02: Documented current docs + automation landscape and committed to mdBook + GitHub Pages approach. Added workflow expectations to `AGENTS.md` for engineers and coding agents.
@@ -31,3 +32,6 @@ Deliver a maintainable, mdBook-powered documentation site for BranchBox, complet
 - 2025-11-02: Ran CLI reference generator and refreshed README/DEVELOPMENT docs to point contributors at the mdBook tooling and online site.
 - 2025-11-02: Ran `cargo fmt --all -- --check` as a sanity check; will run `mdbook build docs` once the tool is available locally before closing out the feature.
 - 2025-11-02: Baked mdBook `0.4.40` into the devcontainer image and switched CI/Pages workflows to use the prebuilt release action for faster builds while keeping local instructions pinned to the same version.
+- 2025-11-02: Installed mdBook in the devcontainer landed successfully; verified `mdbook build docs` runs cleanly locally and captured the output for future debugging. Holding the CHANGELOG announcement until we see the first green Pages deployment in CI.
+- 2025-11-03: Confirmed local `mdbook build docs` still passes under the refreshed toolchain; split the final checklist item so CI validation and CHANGELOG announcement remain explicit follow-ups.
+- 2025-11-03: Ran `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, and `mdbook build docs` to mirror the CI matrix locally. All checks passed, so the remaining work is watching the Pages publish and capturing the CHANGELOG entry once production verifies clean.
