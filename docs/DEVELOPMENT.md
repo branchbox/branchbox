@@ -131,7 +131,7 @@ cargo check
 
 ## Documentation
 
-Install mdBook locally with `cargo install mdbook --locked` if it is not already available in your toolchain.
+The devcontainer image ships with mdBook `0.4.40`. For local environments, install the same version with `cargo install mdbook --locked --version 0.4.40`.
 
 ```bash
 # Generate and open API docs

@@ -34,7 +34,7 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 
 ## Documentation Website Workflow
 - Publish user-facing documentation with `mdBook`. Source files live under `docs/book.toml` + `docs/src/`; keep specs automation untouched in `docs/features/`.
-- Before proposing changes, run `cargo install mdbook --locked` once (or ensure the devcontainer image already has it), then build locally via `mdbook build docs`.
+- The devcontainer ships with mdBook `0.4.40`; on bare-metal setups install the same version via `cargo install mdbook --locked --version 0.4.40`, then build locally with `mdbook build docs`.
 - CI must always include a fast `mdbook build docs` check on PRs. A dedicated Pages workflow deploys the rendered book to `gh-pages` on successful pushes to `main`.
 - Keep CLI reference pages generated: use the helper script (check `docs/scripts/render-cli-reference.sh` once added) that captures `branchbox --help` output into `docs/src/reference/`. Regenerate during releases or when command flags change.
 - Engineers and coding agents must update the book’s `SUMMARY.md` whenever new guides are added, mirror critical entry points in `README.md`, and document any automation adjustments in this file so future contributors know how docs are built and shipped.

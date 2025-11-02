@@ -35,7 +35,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install mdBook
-        run: cargo install mdbook --locked
+        uses: peaceiris/actions-mdbook@v1
+        with:
+          mdbook-version: '0.4.40'
 
       - name: Build site
         run: mdbook build docs

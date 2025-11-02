@@ -30,3 +30,4 @@ Deliver a maintainable, mdBook-powered documentation site for BranchBox, complet
 - 2025-11-02: Added `docs-deploy.yml` workflow to build the book and publish `docs/book` to GitHub Pages on `main`.
 - 2025-11-02: Ran CLI reference generator and refreshed README/DEVELOPMENT docs to point contributors at the mdBook tooling and online site.
 - 2025-11-02: Ran `cargo fmt --all -- --check` as a sanity check; will run `mdbook build docs` once the tool is available locally before closing out the feature.
+- 2025-11-02: Baked mdBook `0.4.40` into the devcontainer image and switched CI/Pages workflows to use the prebuilt release action for faster builds while keeping local instructions pinned to the same version.
