@@ -17,6 +17,7 @@ git2.workspace = true
 regex.workspace = true
 which.workspace = true
 walkdir.workspace = true
+pathdiff.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 chrono.workspace = true

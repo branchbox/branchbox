@@ -344,6 +344,9 @@ impl FeatureWorkflow {
             color,
             pr_number: None, // Can be populated later via gh CLI integration
             last_commit,
+            devcontainer_outdated: false,
+            last_sync_at: None,
+            sync_strategy: None,
         }) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -688,6 +691,17 @@ impl FeatureWorkflow {
             updated_state: updated.tunnel.clone(),
             warnings,
         })
+    }
+
+    /// Record the outcome of a devcontainer sync attempt for a feature worktree.
+    pub fn record_devcontainer_sync(
+        &self,
+        work_feature: &str,
+        strategy: Option<&str>,
+        success: bool,
+    ) -> Result<()> {
+        self.state
+            .record_devcontainer_sync(work_feature, strategy, success)
     }
 
     fn resolve_work_feature(&self, request: &StartRequest) -> Result<String> {
@@ -2152,6 +2166,15 @@ pub struct FeatureMetadata {
     /// Useful for tracking branch state and detecting stale worktrees.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
+    /// Indicates if the devcontainer configuration is out of date for this worktree.
+    #[serde(default)]
+    pub devcontainer_outdated: bool,
+    /// Last time the devcontainer configuration was synchronized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<DateTime<Utc>>,
+    /// Last devcontainer sync strategy that was applied (copy/symlink).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_strategy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2193,13 +2216,16 @@ impl FeatureStateStore {
                 metadata.tunnel = existing.tunnel.clone();
             }
             metadata.created_at = existing.created_at;
-            *existing = FeatureMetadata {
-                created_at: existing.created_at,
-                updated_at: now,
-                status: FeatureStatus::Active,
-                removed_at: None,
-                ..metadata
-            };
+            metadata.updated_at = now;
+            metadata.status = FeatureStatus::Active;
+            metadata.removed_at = None;
+            if metadata.last_sync_at.is_none() {
+                metadata.last_sync_at = existing.last_sync_at;
+            }
+            if metadata.sync_strategy.is_none() {
+                metadata.sync_strategy = existing.sync_strategy.clone();
+            }
+            *existing = metadata;
         } else {
             registry.features.push(metadata);
         }
@@ -2261,6 +2287,34 @@ impl FeatureStateStore {
         let updated = feature.clone();
         self.save_registry(&registry)?;
         Ok(updated)
+    }
+
+    fn record_devcontainer_sync(
+        &self,
+        work_feature: &str,
+        strategy: Option<&str>,
+        success: bool,
+    ) -> Result<()> {
+        let mut registry = self.load_registry()?;
+        if let Some(existing) = registry
+            .features
+            .iter_mut()
+            .find(|item| item.work_feature == work_feature)
+        {
+            let now = Utc::now();
+            existing.devcontainer_outdated = !success;
+            existing.last_sync_at = Some(now);
+            if let Some(value) = strategy {
+                existing.sync_strategy = Some(value.to_string());
+            }
+            existing.updated_at = now;
+            self.save_registry(&registry)
+        } else {
+            Err(Error::validation(format!(
+                "Feature '{}' not present in registry during devcontainer sync",
+                work_feature
+            )))
+        }
     }
 
     fn list_features(&self) -> Result<Vec<FeatureMetadata>> {
@@ -2586,6 +2640,9 @@ mod tests {
             color: None,
             pr_number: None,
             last_commit: None,
+            devcontainer_outdated: false,
+            last_sync_at: None,
+            sync_strategy: None,
         };
 
         store.record_start(metadata.clone()).unwrap();
@@ -2617,6 +2674,9 @@ mod tests {
             color: None,
             pr_number: None,
             last_commit: None,
+            devcontainer_outdated: false,
+            last_sync_at: None,
+            sync_strategy: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -2650,6 +2710,9 @@ mod tests {
             color: None,
             pr_number: None,
             last_commit: None,
+            devcontainer_outdated: false,
+            last_sync_at: None,
+            sync_strategy: None,
         };
 
         store.record_start(metadata1).unwrap();
@@ -2671,6 +2734,9 @@ mod tests {
             color: None,
             pr_number: None,
             last_commit: None,
+            devcontainer_outdated: false,
+            last_sync_at: None,
+            sync_strategy: None,
         };
 
         store.record_start(metadata2).unwrap();
@@ -2682,6 +2748,58 @@ mod tests {
         assert_eq!(features[0].feature_url, Some("new.example.com".to_string()));
         // created_at should be preserved from first record
         assert_eq!(features[0].created_at, now);
+    }
+
+    #[test]
+    fn test_state_store_record_devcontainer_sync_success() {
+        let temp = TempDir::new().unwrap();
+        let store = FeatureStateStore::new(temp.path());
+
+        let metadata = FeatureMetadata {
+            work_feature: "test".to_string(),
+            branch_name: "feature/test".to_string(),
+            worktree_path: temp.path().join("test"),
+            base_branch: Some("main".to_string()),
+            feature_url: None,
+            compose_project_name: None,
+            env_path: None,
+            status: FeatureStatus::Active,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            removed_at: None,
+            tunnel: None,
+            color: None,
+            pr_number: None,
+            last_commit: None,
+            devcontainer_outdated: false,
+            last_sync_at: None,
+            sync_strategy: None,
+        };
+
+        store.record_start(metadata).unwrap();
+        store
+            .record_devcontainer_sync("test", Some("copy"), true)
+            .unwrap();
+
+        let features = store.list_features().unwrap();
+        assert_eq!(features.len(), 1);
+        let feature = &features[0];
+        assert!(!feature.devcontainer_outdated);
+        assert!(feature.last_sync_at.is_some());
+        assert_eq!(feature.sync_strategy.as_deref(), Some("copy"));
+    }
+
+    #[test]
+    fn test_state_store_record_devcontainer_sync_missing_feature() {
+        let temp = TempDir::new().unwrap();
+        let store = FeatureStateStore::new(temp.path());
+
+        let result = store.record_devcontainer_sync("missing", None, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Feature 'missing' not present in registry"));
     }
 
     fn setup_test_repo() -> TempDir {

@@ -25,6 +25,12 @@ cd ../oauth-integration/
 
 See [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
 
+## Documentation
+
+- **Docs site:** https://branchbox.github.io/branchbox/ (built with mdBook and deployed from `main`)
+- **Source:** `docs/` (run `mdbook build docs` locally to preview)
+- **CLI reference:** regenerate via `./docs/scripts/render-cli-reference.sh` after changing command flags
+
 ## Why BranchBox?
 
 Traditional git workflows force you to:
@@ -142,6 +148,36 @@ branchbox feature start "Documentation Update"
 # ✓ Generic adapter (no specific stack detected)
 # ✓ Basic worktree isolation applied
 ```
+
+## Devcontainer Workflow
+
+BranchBox ships a full VS Code/Cursor devcontainer setup and propagates it to every feature worktree.
+
+### Reopen Features in Containers
+- `branchbox feature start "<name>"` copies `.devcontainer/` into the new worktree.
+- `cd ../<worktree>/` then run `code .` (or open in Cursor) and accept the “Reopen in Container” prompt.
+- Each container inherits feature-specific `.env` values (`APP_URL`, `COMPOSE_PROJECT_NAME`, etc.) and isolated Docker resources.
+
+### Shared Tool Credentials
+- Shared configs (`.codex/`, `.claude/`, `.gh/`) live outside the worktree and mount into every container via `SHARED_CONFIG_DIR` (default `../..`).
+- Authenticate once inside the main worktree (`gh auth login`, `claude login`); subsequent feature containers reuse the same credentials.
+- Adjust the sync behaviour with `BRANCHBOX_DEVCONTAINER_STRATEGY=copy|symlink branchbox feature start`; persist your preference by adding the env var to `.env`.
+
+### Keeping Devcontainers in Sync
+- When the main `.devcontainer/` changes, update all active worktrees:  
+  ```bash
+  branchbox devcontainer sync
+  # Optional flags:
+  #   --dry-run    preview changes
+  #   --strategy   copy|symlink (overrides env var for this run)
+  ```
+- The sync command copies new files, refreshes existing ones, and prunes stale artifacts.
+- Need a safe playground? Run `./scripts/setup-sample-workspaces.sh` to spin up sample repositories under `test/workspaces/local/`; the script reads each template’s metadata and prints the exact `branchbox init --stack <stack>` command before you proceed with `feature start`, `devcontainer sync`, and `feature teardown`.
+
+### Troubleshooting
+- **No “Reopen in Container” prompt**: confirm `.devcontainer/` exists in the feature (`ls .devcontainer/`); rerun `branchbox devcontainer sync` if it is missing files.
+- **Tools ask to re-authenticate**: verify shared mounts inside the container (`mount | grep -E '(codex|claude|gh)'`) and ensure `SHARED_CONFIG_DIR` points to the directory holding your credentials.
+- **Custom devcontainer behaviour**: override per run with `BRANCHBOX_DEVCONTAINER_STRATEGY` or update `.env` if you always prefer symlinks.
 
 ## Installation
 

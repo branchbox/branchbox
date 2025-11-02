@@ -1,0 +1,4 @@
+{
+  "stack": "nodejs",
+  "description": "Minimal Node.js API to validate devcontainer propagation."
+}

@@ -2,6 +2,7 @@ mod commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::devcontainer::{self, DevcontainerCommands};
 use commands::feature::{self, FeatureCommands};
 use commands::init::{self, InitArgs};
 use std::path::PathBuf;
@@ -21,6 +22,10 @@ enum Commands {
     /// Initialize project with devcontainer and BranchBox registry
     #[command(alias = "bootstrap")]
     Init(InitArgs),
+
+    /// Manage devcontainer configuration
+    #[command(subcommand)]
+    Devcontainer(DevcontainerCommands),
 
     /// Detect project configuration
     Detect {
@@ -67,6 +72,10 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init(args) => {
             init::execute(args)?;
+        }
+
+        Commands::Devcontainer(devcontainer_cmd) => {
+            devcontainer::execute(devcontainer_cmd)?;
         }
 
         Commands::Detect { path } => {
