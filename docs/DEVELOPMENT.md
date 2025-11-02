@@ -56,6 +56,19 @@ This project includes a complete devcontainer setup that provides a consistent d
 - The module copies or symlinks files from the main `.devcontainer/` directory, excluding `.env`, and prunes stale artifacts during sync.
 - `branchbox devcontainer sync` reuses the module to propagate updates to all active feature worktrees, respecting the same strategy logic.
 
+### Devcontainer Smoke Test Playgrounds
+
+- Run `./scripts/setup-sample-workspaces.sh` to copy tracked templates from `test/workspaces/templates/` into the git-ignored `test/workspaces/local/`.
+- Each sample is a self-contained playground; start with the Rust CLI template:
+  ```bash
+  ./scripts/setup-sample-workspaces.sh rust-cli
+  cd test/workspaces/local/rust-cli
+  BRANCHBOX_SKIP_HOST_VALIDATION=1 branchbox init --stack rust
+  branchbox feature start devcontainer-smoke
+  ```
+- Open both the main sample and generated feature worktree in VS Code/Cursor to confirm devcontainer propagation, shared credential mounts, and module telemetry.
+- After testing, clean up with `branchbox feature teardown devcontainer-smoke --complete-spec` and simply delete `test/workspaces/local/` if you want a fresh slate.
+
 ### Local Development (without devcontainer)
 
 **Prerequisites:**

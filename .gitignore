@@ -47,3 +47,6 @@ Thumbs.db
 
 # Coverage reports
 coverage/
+
+# Sample workspace artifacts
+test/workspaces/local/
