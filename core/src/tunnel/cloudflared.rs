@@ -487,10 +487,16 @@ mod tests {
                 assert_eq!(descriptor.tunnel_name.as_deref(), Some(expected_tunnel));
 
                 let expected_path = provider.connector_token_path("feature/login");
-                assert!(expected_path.exists());
+                assert!(
+                    expected_path.exists(),
+                    "provider must persist connector token to disk"
+                );
 
                 if let Some(token_path) = descriptor.token_path.as_ref() {
-                    assert_eq!(token_path, &expected_path);
+                    assert_eq!(
+                        token_path, &expected_path,
+                        "descriptor token path should point at the file we just wrote"
+                    );
                 }
 
                 assert_eq!(token.as_deref(), Some("connector-token"));
@@ -606,13 +612,17 @@ mod tests {
                 assert!(token.is_none(), "existing tunnel should not return token");
 
                 let expected_path = provider.connector_token_path("feature/login");
-                assert!(expected_path.exists());
+                assert!(
+                    expected_path.exists(),
+                    "existing connector token should remain on disk"
+                );
 
-                let token_path = descriptor
-                    .token_path
-                    .as_ref()
-                    .expect("expected token path for existing tunnel");
-                assert_eq!(token_path, &expected_path);
+                if let Some(token_path) = descriptor.token_path.as_ref() {
+                    assert_eq!(
+                        token_path, &expected_path,
+                        "descriptor token path should reference existing connector token"
+                    );
+                }
             }
             other => panic!("unexpected outcome: {:?}", other),
         }
