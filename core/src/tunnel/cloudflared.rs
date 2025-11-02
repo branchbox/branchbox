@@ -137,14 +137,7 @@ impl<'a> CloudflaredProvider<'a> {
             .tunnel_name_prefix
             .clone()
             .unwrap_or_else(|| "branchbox".to_string());
-        format!(
-            "{}-{}",
-            prefix,
-            feature_name
-                .replace('/', "-")
-                .replace(':', "-")
-                .replace(' ', "-")
-        )
+        format!("{}-{}", prefix, feature_name.replace(['/', ':', ' '], "-"))
     }
 
     fn dns_zone(&self, hostname: &str) -> Result<String> {
@@ -181,10 +174,7 @@ impl<'a> CloudflaredProvider<'a> {
     }
 
     fn sanitized_feature_name(&self, feature_name: &str) -> String {
-        feature_name
-            .replace('/', "-")
-            .replace(':', "-")
-            .replace(' ', "-")
+        feature_name.replace(['/', ':', ' '], "-")
     }
 
     fn connector_token_path(&self, feature_name: &str) -> PathBuf {
@@ -383,10 +373,12 @@ mod tests {
 
     #[test]
     fn automated_outcome_with_valid_credentials() {
-        let mut config = CloudflaredConfig::default();
-        config.manual_instructions = false;
-        config.account_id = Some("acct".into());
-        config.dns_zone = Some("example.com".into());
+        let mut config = CloudflaredConfig {
+            manual_instructions: false,
+            account_id: Some("acct".into()),
+            dns_zone: Some("example.com".into()),
+            ..Default::default()
+        };
 
         let temp = TempDir::new().unwrap();
         let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
@@ -506,10 +498,12 @@ mod tests {
 
     #[test]
     fn existing_tunnel_preserves_token_path() {
-        let mut config = CloudflaredConfig::default();
-        config.manual_instructions = false;
-        config.account_id = Some("acct".into());
-        config.dns_zone = Some("example.com".into());
+        let mut config = CloudflaredConfig {
+            manual_instructions: false,
+            account_id: Some("acct".into()),
+            dns_zone: Some("example.com".into()),
+            ..Default::default()
+        };
 
         let temp = TempDir::new().unwrap();
         let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
