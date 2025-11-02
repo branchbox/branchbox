@@ -1,6 +1,6 @@
 ---
 work_feature: documentation-website
-status: in-progress
+status: completed
 created: 2025-11-02
 updated: 2025-11-03
 owner: codex-agent
@@ -19,7 +19,7 @@ Deliver a maintainable, mdBook-powered documentation site for BranchBox, complet
 - [x] Create GitHub Pages deployment workflow targeting `gh-pages` (2025-11-02)
 - [x] Update contributor docs (`DEVELOPMENT.md`, `README.md`) with new workflow details (2025-11-02)
 - [x] Verify local mdBook build (2025-11-03)
-- [ ] Watch CI/Pages pipeline and announce rollout in CHANGELOG
+- [x] Watch CI/Pages pipeline and announce rollout in CHANGELOG (2025-11-03)
 
 ## Progress Log
 - 2025-11-02: Documented current docs + automation landscape and committed to mdBook + GitHub Pages approach. Added workflow expectations to `AGENTS.md` for engineers and coding agents.
@@ -35,3 +35,7 @@ Deliver a maintainable, mdBook-powered documentation site for BranchBox, complet
 - 2025-11-02: Installed mdBook in the devcontainer landed successfully; verified `mdbook build docs` runs cleanly locally and captured the output for future debugging. Holding the CHANGELOG announcement until we see the first green Pages deployment in CI.
 - 2025-11-03: Confirmed local `mdbook build docs` still passes under the refreshed toolchain; split the final checklist item so CI validation and CHANGELOG announcement remain explicit follow-ups.
 - 2025-11-03: Ran `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, and `mdbook build docs` to mirror the CI matrix locally. All checks passed, so the remaining work is watching the Pages publish and capturing the CHANGELOG entry once production verifies clean.
+- 2025-11-03: Opened PR #13 and tracked CI via `gh run watch`; all matrix jobs, including mdBook docs build, passed.
+- 2025-11-03: Merged PR #13 with a merge commit to land the docs pipeline on `main`, then enabled GitHub Pages via `gh api repos/branchbox/branchbox/pages --method POST`.
+- 2025-11-03: Reran the Docs Pages workflow (`gh run rerun 19014761620`) to publish the site after enabling Pages; deployment succeeded with environment URL `https://branchbox.github.io/branchbox/`.
+- 2025-11-03: Logged the rollout in `CHANGELOG.md` so contributors have a reference to the new docs workflow and site location.
