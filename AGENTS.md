@@ -89,18 +89,18 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 - **E2E smoke**: With control plane prototype, invoke `/v1/devcontainers/sync` and assert telemetry matches expected counts.
 - **Regression**: Add cases to agent CI making sure `branchbox devcontainer sync --dry-run` returns zero exit status and does not mutate files.
 
-## Outstanding Tasks
-- [ ] Define protobuf/JSON schema for `DevcontainerSyncOutcome` emitted by agent.
-- [ ] Implement registry migration adding new metadata fields with forward/backward compatibility.
-- [ ] Extend CLI `branchbox feature list --json` to include `devcontainer_outdated` and `last_sync_at`.
-- [ ] Wire OpenTelemetry exporter in agent to include new metrics and spans.
-- [ ] Draft runbooks covering recovery steps for each error class in the matrix above.
-- [ ] Coordinate with docs team to update onboarding once automated sync is live.
-- [ ] Prototype `DevcontainerSyncJob` worker with CLI bridge.
-- [ ] Build file watcher abstraction (Debounced notify) resilient to large repo bursts.
-- [ ] Integrate control plane endpoint `/v1/devcontainers/sync` with authentication and rate limiting.
-- [ ] Add acceptance test in staging environment with multi-workspace setup.
-- [ ] Review security implications of shared credential mounts with infosec.
+## Operational Guidelines
+- Capture `DevcontainerSyncOutcome` as a stable protobuf/JSON contract so downstream telemetry consumers remain compatible.
+- Keep the registry schema in sync with sync metadata needs (`devcontainer_outdated`, `last_sync_at`, `sync_strategy`) and ship forward/backward-safe migrations whenever the shape evolves.
+- Ensure CLI surfaces the latest registry fields (e.g., `devcontainer_outdated`) so operators can diagnose issues without dropping into raw JSON.
+- Emit OpenTelemetry metrics/spans (`sync_success`, `sync_failed`, strategy labels) and forward them to the control plane for monitoring.
+- Maintain runbooks for each error class in the handling matrix, covering detection, remediation, and escalation paths.
+- Update onboarding/documentation promptly when the automated sync workflow changes to keep developer expectations aligned.
+- Provide a CLI bridge for the agent (`branchbox devcontainer sync --json`) until native bindings are available; audit stdout/stderr for machine-readable consumption.
+- Use debounced file watchers resilient to bursty writes so `.devcontainer/` edits trigger sync exactly once.
+- Guard the `/v1/devcontainers/sync` control-plane endpoint with authentication/rate limits and mirror those policies in the agent.
+- Validate the workflow in staging across multiple workspaces before promoting to production, exercising both success and failure paths.
+- Coordinate security reviews for shared credential mounts and document mitigations before rolling out automation broadly.
 
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.
