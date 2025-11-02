@@ -89,18 +89,13 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 - **E2E smoke**: With control plane prototype, invoke `/v1/devcontainers/sync` and assert telemetry matches expected counts.
 - **Regression**: Add cases to agent CI making sure `branchbox devcontainer sync --dry-run` returns zero exit status and does not mutate files.
 
-## Operational Guidelines
-- Capture `DevcontainerSyncOutcome` as a stable protobuf/JSON contract so downstream telemetry consumers remain compatible.
-- Keep the registry schema in sync with sync metadata needs (`devcontainer_outdated`, `last_sync_at`, `sync_strategy`) and ship forward/backward-safe migrations whenever the shape evolves.
-- Ensure CLI surfaces the latest registry fields (e.g., `devcontainer_outdated`) so operators can diagnose issues without dropping into raw JSON.
-- Emit OpenTelemetry metrics/spans (`sync_success`, `sync_failed`, strategy labels) and forward them to the control plane for monitoring.
-- Maintain runbooks for each error class in the handling matrix, covering detection, remediation, and escalation paths.
-- Update onboarding/documentation promptly when the automated sync workflow changes to keep developer expectations aligned.
-- Provide a CLI bridge for the agent (`branchbox devcontainer sync --json`) until native bindings are available; audit stdout/stderr for machine-readable consumption.
-- Use debounced file watchers resilient to bursty writes so `.devcontainer/` edits trigger sync exactly once.
-- Guard the `/v1/devcontainers/sync` control-plane endpoint with authentication/rate limits and mirror those policies in the agent.
-- Validate the workflow in staging across multiple workspaces before promoting to production, exercising both success and failure paths.
-- Coordinate security reviews for shared credential mounts and document mitigations before rolling out automation broadly.
+## Manual Validation Guidelines
+- Treat `branchbox devcontainer sync --json` as the canonical probe: run it after any agent-side change to confirm the CLI contract and registry metadata (`devcontainer_outdated`, `last_sync_at`, `sync_strategy`) remain consistent.
+- Exercise watcher-triggered syncs by editing `.devcontainer/` in quick succession; healthy setups emit a single job thanks to debounced file events.
+- Before coordinating with the control plane, rehearse the workflow locally: invoke the forthcoming `/v1/devcontainers/sync` equivalent via `curl` against a staging agent and verify authentication, rate limits, and payload schema.
+- When rehearsing failure paths, walk through the error matrix manually (permission denied, missing source, disk full, unsupported symlink) and confirm log output plus registry flags match the documented expectations.
+- Capture telemetry during each validation session—OpenTelemetry spans and metrics should surface strategy choice, duration, and outcome so the control plane dashboard mirrors reality.
+- Keep operator documentation current: after every validation cycle, update runbooks and onboarding snippets so field teams can replicate the procedure without rediscovering steps.
 
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.
