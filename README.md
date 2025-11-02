@@ -3,6 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/branchbox/branchbox)](https://github.com/branchbox/branchbox/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/branchbox/branchbox/total)](https://github.com/branchbox/branchbox/releases)
 [![CI](https://github.com/branchbox/branchbox/workflows/CI/badge.svg)](https://github.com/branchbox/branchbox/actions)
+[![Docs](https://img.shields.io/badge/docs-branchbox.github.io-0a7dc8.svg)](https://branchbox.github.io/branchbox/)
 [![License](https://img.shields.io/github/license/branchbox/branchbox)](LICENSE)
 
 **Stop context-switching between features. Start working in parallel.**
@@ -23,7 +24,7 @@ cd ../oauth-integration/
 # Your feature has its own database, Docker network, and configuration
 ```
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
+See the [BranchBox docs](https://branchbox.github.io/branchbox/) or [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
 
 ## Documentation
 

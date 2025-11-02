@@ -14,7 +14,7 @@ preferred-dark-theme = "coal"
 default-theme = "light"
 git-repository-url = "https://github.com/branchbox/branchbox"
 git-repository-icon = "fa-github"
-additional-css = []
+additional-css = ["theme/branchbox.css"]
 
 [output.html.print]
 enable = false
