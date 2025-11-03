@@ -10,7 +10,7 @@ Automated Homebrew formula updates that run when stable releases are published.
 
 Runs after release jobs complete:
 - Downloads checksums from GitHub Release
-- Extracts macOS Intel + ARM checksums
+- Extracts macOS/Linux Intel + ARM checksums
 - Updates `Formula/branchbox.rb` with new version and SHA256s
 - Commits to [branchbox/homebrew-tap](https://github.com/branchbox/homebrew-tap)
 - Skips pre-releases automatically
@@ -46,12 +46,7 @@ Update Homebrew Formula
   └─ Commit & push
 ```
 
-Formula updates:
-```ruby
-version "0.2.0" → "0.2.1"
-sha256 "abc..." → "def..."  # Intel
-sha256 "xyz..." → "uvw..."  # ARM
-```
+Formula updates touch only the version line and four `sha256` entries; all URLs derive from `#{version}` inside platform-specific blocks.
 
 ---
 

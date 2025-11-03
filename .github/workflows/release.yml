@@ -445,30 +445,42 @@ jobs:
 
       - name: Update formula
         run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
-          cd homebrew-tap/Formula
+          export VERSION="${{ needs.create-release.outputs.version }}"
+          export MACOS_INTEL="${{ steps.checksums.outputs.macos_intel }}"
+          export MACOS_ARM="${{ steps.checksums.outputs.macos_arm }}"
+          export LINUX_INTEL="${{ steps.checksums.outputs.linux_intel }}"
+          export LINUX_ARM="${{ steps.checksums.outputs.linux_arm }}"
 
-          echo "Updating formula to version $VERSION..."
+          echo "Updating branchbox.rb to version $VERSION"
+          sed -i 's/^  version ".*"/  version "'$VERSION'"/' homebrew-tap/Formula/branchbox.rb
 
-          # Update macOS Intel URL and checksum
-          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-x86_64-apple-darwin.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-x86_64-apple-darwin.tar.gz"|' branchbox.rb
-          sed -i '0,/x86_64-apple-darwin/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.macos_intel }}'"/' branchbox.rb
-
-          # Update macOS ARM URL and checksum
-          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-aarch64-apple-darwin.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-aarch64-apple-darwin.tar.gz"|' branchbox.rb
-          sed -i '0,/aarch64-apple-darwin/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.macos_arm }}'"/' branchbox.rb
-
-          # Update Linux Intel URL and checksum
-          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-x86_64-unknown-linux-gnu.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-x86_64-unknown-linux-gnu.tar.gz"|' branchbox.rb
-          sed -i '0,/x86_64-unknown-linux-gnu/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.linux_intel }}'"/' branchbox.rb
-
-          # Update Linux ARM URL and checksum
-          sed -i 's|url "https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-aarch64-unknown-linux-gnu.tar.gz"|url "https://github.com/branchbox/branchbox/releases/download/v'$VERSION'/branchbox-'$VERSION'-aarch64-unknown-linux-gnu.tar.gz"|' branchbox.rb
-          sed -i '0,/aarch64-unknown-linux-gnu/{//!b};N;s/sha256 "[^"]*"/sha256 "'${{ steps.checksums.outputs.linux_arm }}'"/' branchbox.rb
+          ruby <<'RUBY'
+            path = "homebrew-tap/Formula/branchbox.rb"
+            sha = {
+              "x86_64-apple-darwin"      => ENV.fetch("MACOS_INTEL"),
+              "aarch64-apple-darwin"     => ENV.fetch("MACOS_ARM"),
+              "x86_64-unknown-linux-gnu" => ENV.fetch("LINUX_INTEL"),
+              "aarch64-unknown-linux-gnu"=> ENV.fetch("LINUX_ARM"),
+            }
+            contents = File.read(path)
+            sha.each do |arch, checksum|
+              pattern = /(#{Regexp.escape(arch)}.*?\n\s*sha256 ")[0-9a-f]{64}"/
+              unless contents.sub!(pattern, "\\1#{checksum}\"")
+                abort "Failed to update checksum for #{arch} in #{path}"
+              end
+            end
+            File.write(path, contents)
+          RUBY
 
       - name: Verify formula updates
         run: |
           cd homebrew-tap/Formula
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          if ! grep -q "  version \"$VERSION\"" branchbox.rb; then
+            echo "❌ Error: Version line not updated to $VERSION"
+            exit 1
+          fi
 
           # Verify all checksums were updated
           for checksum in "${{ steps.checksums.outputs.macos_intel }}" \

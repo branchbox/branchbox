@@ -80,15 +80,32 @@ Formula structure changed. View [current formula](https://raw.githubusercontent.
 
 ```ruby
 class Branchbox < Formula
-  version "X.Y.Z"  # Must be this format
+  desc "Distributed development environment orchestrator"
+  homepage "https://github.com/branchbox/branchbox"
+  version "X.Y.Z"
+  license "MIT"
 
   on_macos do
-    if Hardware::CPU.intel?
-      url "https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-X.Y.Z-x86_64-apple-darwin.tar.gz"
-      sha256 "..."  # Must be on separate line
-    elsif Hardware::CPU.arm?
-      url "https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-X.Y.Z-aarch64-apple-darwin.tar.gz"
-      sha256 "..."  # Must be on separate line
+    on_intel do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-x86_64-apple-darwin.tar.gz"
+      sha256 "..."  # Replace with macOS Intel checksum
+    end
+
+    on_arm do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-aarch64-apple-darwin.tar.gz"
+      sha256 "..."  # Replace with macOS ARM checksum
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "..."  # Replace with Linux Intel checksum
+    end
+
+    on_arm do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "..."  # Replace with Linux ARM checksum
     end
   end
 end
