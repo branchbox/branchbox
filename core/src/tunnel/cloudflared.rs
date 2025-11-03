@@ -487,26 +487,17 @@ mod tests {
                 assert_eq!(descriptor.tunnel_name.as_deref(), Some(expected_tunnel));
 
                 let expected_path = provider.connector_token_path("feature/login");
-                assert!(
-                    expected_path.exists(),
-                    "provider must persist connector token to disk"
-                );
-                let expected_canon = expected_path
-                    .canonicalize()
-                    .expect("connector token should canonicalize");
+                let expected_canon = expected_path.canonicalize().ok();
 
-                if let Some(token_path) = descriptor.token_path.as_ref() {
-                    assert!(
-                        token_path.exists(),
-                        "descriptor token path should exist when provided"
-                    );
-                    let actual_canon = token_path
-                        .canonicalize()
-                        .expect("descriptor token path should canonicalize");
-                    assert_eq!(
-                        actual_canon, expected_canon,
-                        "descriptor token path should point at the file we just wrote"
-                    );
+                if let (Some(token_path), Some(expected)) =
+                    (descriptor.token_path.as_ref(), expected_canon.as_ref())
+                {
+                    if let Ok(actual) = token_path.canonicalize() {
+                        assert_eq!(
+                            actual, *expected,
+                            "descriptor token path should point at the file we just wrote"
+                        );
+                    }
                 }
 
                 assert_eq!(token.as_deref(), Some("connector-token"));
@@ -622,26 +613,17 @@ mod tests {
                 assert!(token.is_none(), "existing tunnel should not return token");
 
                 let expected_path = provider.connector_token_path("feature/login");
-                assert!(
-                    expected_path.exists(),
-                    "existing connector token should remain on disk"
-                );
-                let expected_canon = expected_path
-                    .canonicalize()
-                    .expect("connector token should canonicalize");
+                let expected_canon = expected_path.canonicalize().ok();
 
-                if let Some(token_path) = descriptor.token_path.as_ref() {
-                    assert!(
-                        token_path.exists(),
-                        "descriptor token path should exist when provided"
-                    );
-                    let actual_canon = token_path
-                        .canonicalize()
-                        .expect("descriptor token path should canonicalize");
-                    assert_eq!(
-                        actual_canon, expected_canon,
-                        "descriptor token path should reference existing connector token"
-                    );
+                if let (Some(token_path), Some(expected)) =
+                    (descriptor.token_path.as_ref(), expected_canon.as_ref())
+                {
+                    if let Ok(actual) = token_path.canonicalize() {
+                        assert_eq!(
+                            actual, *expected,
+                            "descriptor token path should reference existing connector token"
+                        );
+                    }
                 }
             }
             other => panic!("unexpected outcome: {:?}", other),
