@@ -42,6 +42,7 @@ Thumbs.db
 .codex/
 .claude-code/
 .gh/
+tools/
 
 # BranchBox local state (per-worktree)
 .branchbox/
