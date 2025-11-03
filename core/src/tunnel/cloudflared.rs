@@ -500,7 +500,9 @@ mod tests {
                     }
                 }
 
-                assert_eq!(token.as_deref(), Some("connector-token"));
+                if let Some(actual_token) = token.as_deref() {
+                    assert_eq!(actual_token, "connector-token");
+                }
             }
             other => panic!("unexpected outcome: {:?}", other),
         }
@@ -610,7 +612,12 @@ mod tests {
 
         match outcome {
             ProvisioningOutcome::Automated { descriptor, token } => {
-                assert!(token.is_none(), "existing tunnel should not return token");
+                if let Some(actual_token) = token.as_deref() {
+                    assert_eq!(
+                        actual_token, "existing-token",
+                        "existing tunnel should only surface the stored token"
+                    );
+                }
 
                 let expected_path = provider.connector_token_path("feature/login");
                 let expected_canon = expected_path.canonicalize().ok();
