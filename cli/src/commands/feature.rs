@@ -2,7 +2,6 @@ use anyhow::Result;
 use chrono::Local;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
-use worktree_core::modules::SyncStrategy;
 use worktree_core::workflows::feature::{
     FeatureStatus, FeatureWorkflow, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
 };
@@ -94,6 +93,10 @@ pub struct FeatureListArgs {
     #[arg(long)]
     pub status: Option<String>,
 
+    /// Include removed features even if --status is not provided
+    #[arg(long, conflicts_with = "status")]
+    pub all: bool,
+
     /// Emit JSON output instead of human-readable summary
     #[arg(long)]
     pub json: bool,
@@ -139,19 +142,36 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
 }
 
 fn run_list(args: FeatureListArgs) -> Result<()> {
-    let FeatureListArgs { repo, status, json } = args;
+    let FeatureListArgs {
+        repo,
+        status,
+        all,
+        json,
+    } = args;
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
     let mut features = workflow.list_features()?;
+    let total_count = features.len();
+    let active_count = features
+        .iter()
+        .filter(|feature| feature.status == FeatureStatus::Active)
+        .count();
+    let removed_count = total_count.saturating_sub(active_count);
 
-    if let Some(status_filter) = status {
+    if let Some(status_filter) = status.as_ref() {
         let parsed: FeatureStatus = status_filter.parse()?;
         features.retain(|feature| feature.status == parsed);
+    } else if !all {
+        features.retain(|feature| feature.status == FeatureStatus::Active);
     }
 
-    if features.is_empty() {
-        println!("ℹ️  No features tracked yet. Run `branchbox feature start` to create one.");
+    if total_count == 0 {
+        if json {
+            println!("[]");
+        } else {
+            println!("ℹ️  No features tracked yet. Run `branchbox feature start` to create one.");
+        }
         return Ok(());
     }
 
@@ -161,38 +181,129 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("📚 Tracked features ({}):", features.len());
-    for feature in features {
-        println!(
-            "- {name} [{status:?}]",
-            name = feature.work_feature,
-            status = feature.status
-        );
-        println!("    Branch: {}", feature.branch_name);
-        println!("    Worktree: {}", feature.worktree_path.display());
-        if let Some(url) = feature.feature_url.as_ref() {
-            println!("    URL: https://{}", url);
-        }
-        println!(
-            "    Updated: {}",
-            feature
-                .updated_at
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M:%S")
-        );
-        if let Some(sync_at) = feature.last_sync_at.as_ref() {
+    if features.is_empty() {
+        if let Some(filter) = status.as_ref() {
             println!(
-                "    Devcontainer synced: {} ({})",
-                sync_at.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S"),
-                feature
-                    .sync_strategy
-                    .as_deref()
-                    .unwrap_or(SyncStrategy::default().as_str())
+                "ℹ️  No features found with status '{}'.",
+                filter.to_ascii_lowercase()
             );
+        } else if !all {
+            println!(
+                "ℹ️  No active features. Use `branchbox feature list --all` to include removed entries."
+            );
+        } else {
+            println!("ℹ️  No features match the requested filters.");
         }
-        if feature.devcontainer_outdated {
-            println!("    ⚠️  Devcontainer out of date. Run `branchbox devcontainer sync`.");
+        return Ok(());
+    }
+
+    let showing_count = features.len();
+    println!(
+        "📚 Feature registry — {} active · {} removed (showing {}/{})",
+        active_count, removed_count, showing_count, total_count
+    );
+
+    let headers = [
+        "Feature",
+        "Status",
+        "Branch",
+        "URL",
+        "Tunnel",
+        "Devcontainer",
+        "PR",
+        "Color",
+        "Updated",
+    ];
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    let format_ts = |ts: &chrono::DateTime<chrono::Utc>| -> String {
+        ts.with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
+    };
+
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(features.len());
+    for feature in features {
+        let url = feature
+            .feature_url
+            .as_ref()
+            .map(|url| format!("https://{}", url))
+            .unwrap_or_else(|| "—".to_string());
+
+        let tunnel = feature
+            .tunnel
+            .as_ref()
+            .map(|state| {
+                let mut label = state.status.to_string();
+                if let Some(host) = state.hostname.as_ref() {
+                    if !host.is_empty() {
+                        label = format!("{label} ({host})");
+                    }
+                }
+                label
+            })
+            .unwrap_or_else(|| "—".to_string());
+
+        let devcontainer = if feature.devcontainer_outdated {
+            "outdated".to_string()
+        } else if let Some(sync_at) = feature.last_sync_at.as_ref() {
+            format!(
+                "synced {}",
+                sync_at.with_timezone(&Local).format("%Y-%m-%d")
+            )
+        } else {
+            "never".to_string()
+        };
+
+        let pr = feature
+            .pr_number
+            .map(|number| format!("#{number}"))
+            .unwrap_or_else(|| "—".to_string());
+
+        let color = feature.color.as_deref().unwrap_or("—").to_string();
+        let updated = format_ts(&feature.updated_at);
+
+        let row = vec![
+            feature.work_feature,
+            feature.status.to_string(),
+            feature.branch_name,
+            url,
+            tunnel,
+            devcontainer,
+            pr,
+            color,
+            updated,
+        ];
+
+        for (idx, cell) in row.iter().enumerate() {
+            widths[idx] = widths[idx].max(cell.len());
         }
+
+        rows.push(row);
+    }
+
+    let header_line = headers
+        .iter()
+        .enumerate()
+        .map(|(idx, header)| format!("{:<width$}", header, width = widths[idx]))
+        .collect::<Vec<_>>()
+        .join("  ");
+    println!("{}", header_line);
+
+    let separator = widths
+        .iter()
+        .map(|width| "-".repeat(*width))
+        .collect::<Vec<_>>()
+        .join("  ");
+    println!("{}", separator);
+
+    for row in rows {
+        let line = row
+            .iter()
+            .enumerate()
+            .map(|(idx, cell)| format!("{:<width$}", cell, width = widths[idx]))
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("{}", line);
     }
 
     Ok(())
