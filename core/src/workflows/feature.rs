@@ -2495,7 +2495,7 @@ fn lighten_rgb((r, g, b): (u8, u8, u8), factor: f32) -> (u8, u8, u8) {
     let adjust = |value: u8| -> u8 {
         let value_f = value as f32;
         let adjusted = value_f + (255.0 - value_f) * factor;
-        adjusted.max(0.0).min(255.0).round() as u8
+        adjusted.clamp(0.0, 255.0).round() as u8
     };
 
     (adjust(r), adjust(g), adjust(b))
@@ -2505,7 +2505,7 @@ fn darken_rgb((r, g, b): (u8, u8, u8), factor: f32) -> (u8, u8, u8) {
     let adjust = |value: u8| -> u8 {
         let value_f = value as f32;
         let adjusted = value_f - (value_f * factor);
-        adjusted.max(0.0).min(255.0).round() as u8
+        adjusted.clamp(0.0, 255.0).round() as u8
     };
 
     (adjust(r), adjust(g), adjust(b))
