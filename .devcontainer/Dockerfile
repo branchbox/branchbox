@@ -21,6 +21,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 ARG MDBOOK_VERSION=0.4.40
 RUN cargo install cargo-watch cargo-edit cargo-expand \
     && cargo install mdbook --locked --version ${MDBOOK_VERSION} \
+    && cargo install cargo-release --locked \
     && chown -R vscode:rustlang /usr/local/cargo \
     && chmod -R g+w /usr/local/cargo
 
