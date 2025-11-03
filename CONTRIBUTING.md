@@ -101,12 +101,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 - **Coverage**: Maintain >90% code coverage
 
 ```bash
-# Run all tests
-cargo test --all
+# Run all tests (uses cargo-nextest for parity with CI)
+cargo nextest run --all-features --no-fail-fast
 
-# Run with coverage (requires cargo-tarpaulin)
-cargo install cargo-tarpaulin
-cargo tarpaulin --out Html --all-features
+# Run doc tests
+cargo test --doc --all-features
+
+# Generate coverage locally (matches CI configuration)
+cargo install cargo-llvm-cov
+cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 ```
 
 #### Documentation
