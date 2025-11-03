@@ -14,7 +14,7 @@ on:
         default: "true"
       run_extra_targets:
         description: Run additional macOS/Windows build + test targets
-        default: "false"
+        default: "true"
 
 env:
   CARGO_TERM_COLOR: always
