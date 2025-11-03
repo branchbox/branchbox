@@ -97,6 +97,12 @@ impl Error {
     }
 }
 
+impl From<dialoguer::Error> for Error {
+    fn from(err: dialoguer::Error) -> Self {
+        Self::Other(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

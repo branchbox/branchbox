@@ -8,209 +8,147 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  # Fast quality checks (linting, formatting, security)
   quality_checks:
     name: Quality Checks
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        check: [fmt, clippy, audit]
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-
+      - uses: Swatinem/rust-cache@v2
       - name: Check formatting
-        if: matrix.check == 'fmt'
         run: cargo fmt --all -- --check
-
       - name: Run Clippy
-        if: matrix.check == 'clippy'
         run: cargo clippy --all-targets --all-features -- -D warnings
-
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Security audit
-        if: matrix.check == 'audit'
-        run: |
-          cargo install cargo-audit
-          cargo audit
+        run: cargo audit
 
-  # Unit tests with coverage
-  unit_tests:
-    name: Unit Tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        rust: [stable]
-
+  unit_tests_linux:
+    name: Unit Tests (linux)
+    runs-on: ubuntu-latest
+    needs: quality_checks
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.rust }}-cargo-registry-
-
-      - name: Cache Cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.rust }}-cargo-build-
-
-      - name: Run tests
-        run: cargo test --all-features --verbose
-
+          tool: cargo-nextest
+      - name: Run nextest suite
+        run: cargo nextest run --all-features --no-fail-fast
       - name: Run doc tests
         run: cargo test --doc --all-features
 
-  # Code coverage (Linux only)
-  coverage:
-    name: Code Coverage
+  build_linux:
+    name: Build (linux)
     runs-on: ubuntu-latest
-
-    services:
-      docker:
-        image: docker:24-dind
-        env:
-          DOCKER_TLS_CERTDIR: ""
-        options: --privileged
-        ports:
-          - 2375:2375
-
-    env:
-      DOCKER_HOST: tcp://localhost:2375
-
+    needs: quality_checks
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
-
-      - name: Wait for Docker
-        run: |
-          for i in {1..30}; do
-            if docker info > /dev/null 2>&1; then
-              echo "Docker is ready"
-              break
-            fi
-            echo "Waiting for Docker..."
-            sleep 2
-          done
-
-      - name: Generate coverage
-        run: cargo tarpaulin --out Xml --all-features --workspace -- --include-ignored
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
-          files: ./cobertura.xml
-          fail_ci_if_error: false
-
-      - name: Report coverage
-        run: |
-          # Extract coverage percentage from XML
-          coverage=$(grep -oP 'line-rate="\K[0-9.]+' cobertura.xml | head -1)
-          coverage_percent=$(echo "$coverage * 100" | bc)
-
-          echo "::notice title=Code Coverage::Coverage: $coverage_percent%"
-          echo "Coverage report uploaded to Codecov for tracking"
-
-  # Build check across platforms
-  build:
-    name: Build Check
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, beta]
-        exclude:
-          # Skip beta builds on Windows to save CI time
-          - os: windows-latest
-            rust: beta
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache Cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build debug
         run: cargo build --all-features --verbose
-
       - name: Build release
         run: cargo build --release --all-features --verbose
 
-  # Integration tests (Docker operations)
+  unit_tests_extra:
+    name: Unit Tests (extra targets)
+    runs-on: ${{ matrix.os }}
+    needs: quality_checks
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            rust: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}-${{ matrix.rust }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run nextest suite
+        run: cargo nextest run --all-features --no-fail-fast
+
+  build_extra:
+    name: Build (extra targets)
+    runs-on: ${{ matrix.os }}
+    needs: quality_checks
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust: beta
+          - os: macos-latest
+            rust: beta
+          - os: windows-latest
+            rust: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}-${{ matrix.rust }}
+      - name: Build debug
+        run: cargo build --all-features --verbose
+      - name: Build release
+        run: cargo build --release --all-features --verbose
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    needs: [unit_tests_linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./lcov.info
+          disable_search: true
+          fail_ci_if_error: false
+      - name: Report coverage
+        run: |
+          cargo llvm-cov report --json --summary-only > coverage-summary.json
+          coverage=$(jq '.summary.lines.percent' coverage-summary.json)
+          echo "::notice title=Code Coverage::Coverage: ${coverage}%"
+
   integration_tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-
+    needs: [unit_tests_linux]
     services:
       docker:
         image: docker:24-dind
@@ -219,26 +157,16 @@ jobs:
         options: --privileged
         ports:
           - 2375:2375
-
     env:
       DOCKER_HOST: tcp://localhost:2375
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
-
+          tool: cargo-nextest
       - name: Wait for Docker
         run: |
           for i in {1..30}; do
@@ -249,34 +177,26 @@ jobs:
             echo "Waiting for Docker..."
             sleep 2
           done
+      - name: Run integration suite
+        run: cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fast
 
-      - name: Run integration tests
-        run: cargo test --test '*' --all-features -- --ignored
-
-  # Documentation check
   docs:
     name: Documentation
     runs-on: ubuntu-latest
-
+    needs: quality_checks
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install mdBook
         uses: peaceiris/actions-mdbook@v1
         with:
           mdbook-version: '0.4.40'
-
-      - name: Check documentation
+      - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features --document-private-items
-
-      - name: Test documentation examples
+      - name: Doc tests
         run: cargo test --doc --all-features
-
-      - name: Build mdBook site
+      - name: Build mdBook
         run: mdbook build docs

@@ -1,8 +1,13 @@
 use crate::{
     adapters,
+    config::BranchBoxConfig,
     git::GitWorktree,
     modules::{self, ModuleHandle},
     naming,
+    tunnel::{
+        cloudflared::CloudflaredProvider, ProvisioningIntent, ProvisioningOutcome,
+        TunnelDescriptor, TunnelProvider,
+    },
     validation::{self, AppUrl},
     Error, Result,
 };
@@ -48,6 +53,7 @@ pub struct StartSummary {
     pub feature_url: Option<String>,
     pub compose_project_name: Option<String>,
     pub env_path: Option<PathBuf>,
+    pub tunnel: Option<FeatureTunnelState>,
     pub adapter: Option<AdapterSummary>,
     pub module_reports: Vec<ModuleSetupReport>,
     pub warnings: Vec<String>,
@@ -104,6 +110,36 @@ pub struct ModuleTeardownReport {
     pub name: String,
     pub teardown_ok: bool,
     pub errors: Vec<String>,
+}
+
+/// Parameters for opening (provisioning) a tunnel outside feature start.
+#[derive(Debug)]
+pub struct TunnelOpenRequest {
+    pub work_feature: String,
+}
+
+/// Result of running a tunnel open/provision operation.
+#[derive(Debug)]
+pub struct TunnelOpenSummary {
+    pub work_feature: String,
+    pub state: FeatureTunnelState,
+    pub warnings: Vec<String>,
+}
+
+/// Parameters for removing a tunnel.
+#[derive(Debug)]
+pub struct TunnelRemoveRequest {
+    pub work_feature: String,
+    pub force: bool,
+}
+
+/// Result of removing a tunnel for a feature.
+#[derive(Debug)]
+pub struct TunnelRemoveSummary {
+    pub work_feature: String,
+    pub previous_state: Option<FeatureTunnelState>,
+    pub updated_state: Option<FeatureTunnelState>,
+    pub warnings: Vec<String>,
 }
 
 /// Adapter orchestration summary.
@@ -230,10 +266,41 @@ impl FeatureWorkflow {
             }
         };
 
+        let mut module_skip = request.skip_modules.clone();
+
+        if let Ok(config) = BranchBoxConfig::load(&self.repo_root) {
+            let provider_is_cloudflared = config
+                .tunnel
+                .default_provider
+                .as_deref()
+                .map(|name| name.eq_ignore_ascii_case("cloudflared"))
+                .unwrap_or(true);
+
+            if config.tunnel.enabled && provider_is_cloudflared {
+                if let Some(cloudflared) = config.tunnel.providers.cloudflared.as_ref() {
+                    let has_credentials = cloudflared.api_token_path.is_some()
+                        && cloudflared
+                            .account_id
+                            .as_ref()
+                            .map(|value| !value.trim().is_empty())
+                            .unwrap_or(false);
+
+                    if has_credentials
+                        && !cloudflared.manual_instructions
+                        && !module_skip
+                            .iter()
+                            .any(|name| name.eq_ignore_ascii_case("tunnel"))
+                    {
+                        module_skip.push("tunnel".to_string());
+                    }
+                }
+            }
+        }
+
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root, &request.skip_modules);
+        } = modules::detect_modules(&self.repo_root, &module_skip);
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings.clone());
         }
@@ -273,6 +340,21 @@ impl FeatureWorkflow {
         let feature_url = env_outcome.feature_url.clone();
         let compose_project_name = env_outcome.compose_project_name.clone();
 
+        let service_url_for_tunnel = adapter_summary
+            .as_ref()
+            .map(|summary| summary.service_url.clone())
+            .unwrap_or_else(|| "web:3000".to_string());
+        let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
+            &request,
+            &work_feature,
+            &worktree_path,
+            feature_url.as_deref(),
+            &service_url_for_tunnel,
+        )?;
+        if !tunnel_warnings.is_empty() {
+            warnings.append(&mut tunnel_warnings);
+        }
+
         let color = Some(generate_feature_color(&work_feature));
         let summary_color = color.clone();
         let last_commit = get_last_commit_sha(&self.repo_root, &branch_name);
@@ -285,6 +367,7 @@ impl FeatureWorkflow {
             feature_url: feature_url.clone(),
             compose_project_name: compose_project_name.clone(),
             env_path: env_path.clone(),
+            tunnel: tunnel_state.clone(),
             status: FeatureStatus::Active,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -318,6 +401,7 @@ impl FeatureWorkflow {
             feature_url,
             compose_project_name,
             env_path,
+            tunnel: tunnel_state,
             adapter: adapter_summary,
             module_reports,
             warnings,
@@ -329,35 +413,58 @@ impl FeatureWorkflow {
     pub fn teardown(&self, request: TeardownRequest) -> Result<TeardownSummary> {
         self.ensure_host_environment()?;
 
-        let work_feature = request.work_feature;
+        let TeardownRequest {
+            work_feature,
+            branch_prefix,
+            delete_branch,
+            force_remove,
+            complete_spec,
+            telemetry,
+        } = request;
+
         if !naming::validate_work_feature(&work_feature) {
             return Err(Error::InvalidFeatureName(work_feature));
         }
 
-        let branch_name = build_branch_name(request.branch_prefix.as_deref(), &work_feature);
+        let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
         if !worktree_path.exists() {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
         }
 
-        if request.telemetry {
+        if telemetry {
             std::env::set_var("BRANCHBOX_EMIT_TELEMETRY", "1");
         } else {
             std::env::remove_var("BRANCHBOX_EMIT_TELEMETRY");
         }
 
         let previous_complete = std::env::var("BRANCHBOX_COMPLETE_SPEC").ok();
-        if request.complete_spec {
+        if complete_spec {
             std::env::set_var("BRANCHBOX_COMPLETE_SPEC", "1");
         } else {
             std::env::remove_var("BRANCHBOX_COMPLETE_SPEC");
         }
 
         let mut warnings = Vec::new();
+        let mut skip_modules: Vec<String> = Vec::new();
+
+        if let Ok(Some(_metadata)) = self.state.get_feature(&work_feature) {
+            match self.tunnel_remove(TunnelRemoveRequest {
+                work_feature: work_feature.clone(),
+                force: force_remove,
+            }) {
+                Ok(summary) => {
+                    warnings.extend(summary.warnings);
+                    skip_modules.push("tunnel".to_string());
+                }
+                Err(err) => warnings.push(format!("Automated tunnel teardown failed: {}", err)),
+            }
+        }
+
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root, &[]); // No skip during teardown
+        } = modules::detect_modules(&self.repo_root, &skip_modules);
         let (module_reports, module_warnings) = self.run_module_teardown(handles, &worktree_path);
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings);
@@ -369,7 +476,7 @@ impl FeatureWorkflow {
             &work_feature,
             &branch_name,
             &worktree_path,
-            request.complete_spec,
+            complete_spec,
             &mut warnings,
         );
 
@@ -385,7 +492,7 @@ impl FeatureWorkflow {
         }
 
         let mut worktree_removed = false;
-        match self.git.remove(&worktree_path, request.force_remove) {
+        match self.git.remove(&worktree_path, force_remove) {
             Ok(_) => {
                 worktree_removed = true;
             }
@@ -412,8 +519,8 @@ impl FeatureWorkflow {
         }
 
         let mut branch_deleted = false;
-        if request.delete_branch {
-            match self.git.delete_branch(&branch_name, request.force_remove) {
+        if delete_branch {
+            match self.git.delete_branch(&branch_name, force_remove) {
                 Ok(_) => {
                     branch_deleted = true;
                 }
@@ -447,6 +554,174 @@ impl FeatureWorkflow {
         let mut entries = self.state.list_features()?;
         entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(entries)
+    }
+
+    /// Open (provision) a tunnel for an existing feature.
+    pub fn tunnel_open(&self, request: TunnelOpenRequest) -> Result<TunnelOpenSummary> {
+        let mut warnings = Vec::new();
+        let metadata = self
+            .state
+            .get_feature(&request.work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(request.work_feature.clone()))?;
+
+        if metadata.status == FeatureStatus::Removed {
+            return Err(Error::validation(format!(
+                "Feature '{}' has been removed. Recreate the feature before provisioning a tunnel.",
+                request.work_feature
+            )));
+        }
+
+        let mut config = BranchBoxConfig::load(&self.repo_root)?;
+        config.tunnel.ensure_defaults();
+        if !config.tunnel.enabled {
+            return Err(Error::validation(
+                "Tunnel provisioning is disabled in project configuration",
+            ));
+        }
+
+        let provider_name = metadata
+            .tunnel
+            .as_ref()
+            .map(|state| state.provider.clone())
+            .or_else(|| config.tunnel.default_provider.clone())
+            .unwrap_or_else(|| "cloudflared".to_string());
+
+        let hostname = self.resolve_tunnel_hostname(&metadata)?;
+        let service_url = self.resolve_service_url();
+
+        let (mut state, mut provider_warnings, provision_token) = self.invoke_tunnel_provider(
+            &provider_name,
+            &metadata.work_feature,
+            &hostname,
+            &service_url,
+            &config,
+        )?;
+        warnings.append(&mut provider_warnings);
+
+        if state.hostname.is_none() {
+            state.hostname = Some(hostname.clone());
+        }
+
+        if state.descriptor.is_some() {
+            match self.persist_tunnel_credentials(
+                &metadata.worktree_path,
+                &hostname,
+                provision_token.as_deref(),
+                state
+                    .descriptor
+                    .as_ref()
+                    .and_then(|stored| stored.token_path.as_ref()),
+            ) {
+                Ok(_) => {
+                    state.status = FeatureTunnelStatus::Active;
+                }
+                Err(err) => warnings.push(format!("Failed to write tunnel credentials: {}", err)),
+            }
+        }
+
+        let cloned_state = state.clone();
+        let updated = self
+            .state
+            .update_feature(&metadata.work_feature, |feature| {
+                feature.tunnel = Some(cloned_state.clone());
+                feature.updated_at = cloned_state.last_updated;
+            })?;
+
+        Ok(TunnelOpenSummary {
+            work_feature: updated.work_feature,
+            state,
+            warnings,
+        })
+    }
+
+    /// Remove tunnel metadata (and attempt teardown) for a feature.
+    pub fn tunnel_remove(&self, request: TunnelRemoveRequest) -> Result<TunnelRemoveSummary> {
+        let mut warnings = Vec::new();
+        let metadata = self
+            .state
+            .get_feature(&request.work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(request.work_feature.clone()))?;
+
+        let previous_state = metadata.tunnel.clone();
+        if previous_state.is_none() {
+            return Err(Error::validation(format!(
+                "Feature '{}' has no tunnel metadata recorded",
+                request.work_feature
+            )));
+        }
+
+        let mut config = BranchBoxConfig::load(&self.repo_root)?;
+        config.tunnel.ensure_defaults();
+
+        if let Some(ref tunnel_state) = previous_state {
+            if let Some(ref descriptor) = tunnel_state.descriptor {
+                let runtime_descriptor =
+                    self.stored_descriptor_to_runtime(tunnel_state, descriptor);
+                if let Err(err) = self.invoke_tunnel_teardown(
+                    &tunnel_state.provider,
+                    &runtime_descriptor,
+                    &config,
+                ) {
+                    if request.force {
+                        warnings.push(format!(
+                            "Failed to tear down tunnel via provider '{}': {}",
+                            tunnel_state.provider, err
+                        ));
+                    } else {
+                        return Err(err);
+                    }
+                }
+
+                if let Some(path) = descriptor.token_path.as_ref() {
+                    if let Err(err) = fs::remove_file(path) {
+                        warnings.push(format!(
+                            "Failed to remove stored tunnel token {}: {}",
+                            path.display(),
+                            err
+                        ));
+                    }
+                }
+            } else {
+                warnings.push("Tunnel descriptor missing; skipping provider teardown".to_string());
+            }
+        }
+
+        let env_file = metadata
+            .worktree_path
+            .join(".devcontainer")
+            .join(".cloudflared.env");
+        if env_file.exists() {
+            if let Err(err) = fs::remove_file(&env_file) {
+                warnings.push(format!(
+                    "Failed to remove tunnel environment file {}: {}",
+                    env_file.display(),
+                    err
+                ));
+            }
+        }
+
+        let now = Utc::now();
+        let mut updated_state = previous_state.clone().unwrap();
+        updated_state.status = FeatureTunnelStatus::Disabled;
+        updated_state.instructions = None;
+        updated_state.descriptor = None;
+        updated_state.notes = Some("Tunnel removed via CLI".to_string());
+        updated_state.last_updated = now;
+        updated_state.removed_at = Some(now);
+
+        let updated = self
+            .state
+            .update_feature(&metadata.work_feature, |feature| {
+                feature.tunnel = Some(updated_state.clone());
+                feature.updated_at = now;
+            })?;
+
+        Ok(TunnelRemoveSummary {
+            work_feature: updated.work_feature,
+            previous_state,
+            updated_state: updated.tunnel.clone(),
+            warnings,
+        })
     }
 
     /// Record the outcome of a devcontainer sync attempt for a feature worktree.
@@ -856,6 +1131,319 @@ impl FeatureWorkflow {
         }
 
         ModuleSetupOutcome { reports, warnings }
+    }
+
+    fn prepare_tunnel_state(
+        &self,
+        request: &StartRequest,
+        work_feature: &str,
+        feature_dir: &Path,
+        hostname: Option<&str>,
+        service_url: &str,
+    ) -> Result<(Option<FeatureTunnelState>, Vec<String>)> {
+        let mut warnings = Vec::new();
+
+        let service_url = if service_url.trim().is_empty() {
+            "web:3000"
+        } else {
+            service_url
+        };
+
+        if request
+            .skip_modules
+            .iter()
+            .any(|module| module.eq_ignore_ascii_case("tunnel"))
+        {
+            warnings.push("Tunnel provisioning skipped (--skip-module tunnel)".to_string());
+            let state =
+                FeatureTunnelState::disabled(None, "Tunnel module skipped for this feature");
+            return Ok((Some(state), warnings));
+        }
+
+        let config = match BranchBoxConfig::load(&self.repo_root) {
+            Ok(config) => config,
+            Err(err) => {
+                warnings.push(format!("Failed to load tunnel configuration: {}", err));
+                return Ok((None, warnings));
+            }
+        };
+
+        if !config.tunnel.enabled {
+            let state = FeatureTunnelState::disabled(
+                config.tunnel.default_provider.clone(),
+                "Tunnel provisioning disabled in project configuration",
+            );
+            return Ok((Some(state), warnings));
+        }
+
+        let provider_name = config
+            .tunnel
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| "cloudflared".to_string());
+
+        let hostname = match hostname {
+            Some(value) if !value.is_empty() => value,
+            _ => {
+                warnings.push(
+                    "Tunnel provisioning skipped; feature hostname unavailable. Configure APP_URL before enabling tunnels."
+                        .to_string(),
+                );
+                let state = FeatureTunnelState::manual(
+                    provider_name.clone(),
+                    None,
+                    "Feature hostname unavailable; manual setup required.",
+                    Vec::new(),
+                );
+                return Ok((Some(state), warnings));
+            }
+        };
+
+        let (mut state, mut provider_warnings, provision_token) = self.invoke_tunnel_provider(
+            &provider_name,
+            work_feature,
+            hostname,
+            service_url,
+            &config,
+        )?;
+        warnings.append(&mut provider_warnings);
+
+        if state.descriptor.is_some() {
+            match self.persist_tunnel_credentials(
+                feature_dir,
+                hostname,
+                provision_token.as_deref(),
+                state
+                    .descriptor
+                    .as_ref()
+                    .and_then(|stored| stored.token_path.as_ref()),
+            ) {
+                Ok(_) => {
+                    state.status = FeatureTunnelStatus::Active;
+                }
+                Err(err) => warnings.push(format!("Failed to write tunnel credentials: {}", err)),
+            }
+        }
+
+        Ok((Some(state), warnings))
+    }
+
+    fn resolve_tunnel_hostname(&self, metadata: &FeatureMetadata) -> Result<String> {
+        if let Some(host) = metadata
+            .tunnel
+            .as_ref()
+            .and_then(|state| state.hostname.clone())
+            .filter(|host| !host.is_empty())
+        {
+            return Ok(host);
+        }
+
+        if let Some(host) = metadata.feature_url.as_ref() {
+            if !host.is_empty() {
+                return Ok(host.clone());
+            }
+        }
+
+        let env_path = self.repo_root.join(".env");
+        let app_url = AppUrl::from_env_file(&env_path)?;
+        Ok(naming::generate_feature_url(
+            &app_url.url,
+            &metadata.work_feature,
+        ))
+    }
+
+    fn resolve_service_url(&self) -> String {
+        match adapters::detect_adapter(&self.repo_root) {
+            Ok(adapter) => adapter.service_url(),
+            Err(err) => {
+                tracing::debug!(
+                    "Falling back to default service URL during tunnel provisioning: {}",
+                    err
+                );
+                "web:3000".to_string()
+            }
+        }
+    }
+
+    fn persist_tunnel_credentials(
+        &self,
+        feature_dir: &Path,
+        hostname: &str,
+        token: Option<&str>,
+        token_path: Option<&PathBuf>,
+    ) -> Result<()> {
+        let token_value = if let Some(value) = token {
+            value.trim().to_string()
+        } else if let Some(path) = token_path {
+            match self.read_connector_token(path)? {
+                Some(value) => value,
+                None => {
+                    return Err(Error::validation(format!(
+                        "Tunnel token not found in {}",
+                        path.display()
+                    )))
+                }
+            }
+        } else {
+            return Err(Error::validation(
+                "Tunnel token not provided by tunnel provider".to_string(),
+            ));
+        };
+
+        if token_value.is_empty() {
+            return Err(Error::validation("Tunnel token is empty".to_string()));
+        }
+
+        self.write_feature_tunnel_env(feature_dir, hostname, &token_value)?;
+        Ok(())
+    }
+
+    fn write_feature_tunnel_env(
+        &self,
+        feature_dir: &Path,
+        hostname: &str,
+        token: &str,
+    ) -> Result<PathBuf> {
+        let dev_dir = feature_dir.join(".devcontainer");
+        fs::create_dir_all(&dev_dir)?;
+        let env_file = dev_dir.join(".cloudflared.env");
+        let content = format!("TUNNEL_TOKEN={token}\nDEV_HOSTNAME={hostname}\n");
+        fs::write(&env_file, content)?;
+        Ok(env_file)
+    }
+
+    fn read_connector_token(&self, path: &Path) -> Result<Option<String>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(path)?;
+        for line in content.lines() {
+            if let Some(value) = line.strip_prefix("TUNNEL_TOKEN=") {
+                let cleaned = value.trim().trim_matches(|c| matches!(c, '"' | '\''));
+                return Ok(Some(cleaned.to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn invoke_tunnel_provider(
+        &self,
+        provider_name: &str,
+        work_feature: &str,
+        hostname: &str,
+        service_url: &str,
+        config: &BranchBoxConfig,
+    ) -> Result<(FeatureTunnelState, Vec<String>, Option<String>)> {
+        let mut warnings = Vec::new();
+
+        match provider_name {
+            "cloudflared" => {
+                let provider_config = config
+                    .tunnel
+                    .providers
+                    .cloudflared
+                    .clone()
+                    .unwrap_or_default();
+                let provider = CloudflaredProvider::new(&provider_config, &self.repo_root);
+                let intent = ProvisioningIntent {
+                    workspace_root: &self.repo_root,
+                    feature_name: work_feature,
+                    hostname,
+                    service_url,
+                };
+
+                match provider.provision(&intent) {
+                    Ok(ProvisioningOutcome::Automated { descriptor, token }) => {
+                        let state = FeatureTunnelState::automated(descriptor);
+                        Ok((state, warnings, token))
+                    }
+                    Ok(ProvisioningOutcome::Manual(instructions)) => {
+                        warnings.push(format!(
+                            "Tunnel requires manual setup: {}",
+                            instructions.reason
+                        ));
+                        let state = FeatureTunnelState::manual(
+                            provider.name().to_string(),
+                            Some(hostname.to_string()),
+                            instructions.reason,
+                            instructions.steps,
+                        );
+                        Ok((state, warnings, None))
+                    }
+                    Ok(ProvisioningOutcome::Disabled(reason)) => {
+                        warnings.push(format!("Tunnel provisioning disabled: {}", reason));
+                        let state =
+                            FeatureTunnelState::disabled(Some(provider.name().to_string()), reason);
+                        Ok((state, warnings, None))
+                    }
+                    Err(err) => {
+                        warnings.push(format!(
+                            "Tunnel provider error ({}): {}",
+                            provider.name(),
+                            err
+                        ));
+                        let state = FeatureTunnelState::manual(
+                            provider.name().to_string(),
+                            Some(hostname.to_string()),
+                            "Tunnel provisioning failed; follow manual setup instructions.",
+                            Vec::new(),
+                        );
+                        Ok((state, warnings, None))
+                    }
+                }
+            }
+            _ => {
+                warnings.push(format!(
+                    "Tunnel provider '{}' not recognized; skipping provisioning",
+                    provider_name
+                ));
+                let state = FeatureTunnelState::disabled(
+                    Some(provider_name.to_string()),
+                    "Unsupported tunnel provider",
+                );
+                Ok((state, warnings, None))
+            }
+        }
+    }
+
+    fn invoke_tunnel_teardown(
+        &self,
+        provider_name: &str,
+        descriptor: &TunnelDescriptor,
+        config: &BranchBoxConfig,
+    ) -> Result<()> {
+        match provider_name {
+            "cloudflared" => {
+                let provider_config = config
+                    .tunnel
+                    .providers
+                    .cloudflared
+                    .clone()
+                    .unwrap_or_default();
+                let provider = CloudflaredProvider::new(&provider_config, &self.repo_root);
+                provider.teardown(descriptor)
+            }
+            _ => Err(Error::validation(format!(
+                "Unsupported tunnel provider '{}'",
+                provider_name
+            ))),
+        }
+    }
+
+    fn stored_descriptor_to_runtime(
+        &self,
+        tunnel: &FeatureTunnelState,
+        stored: &StoredTunnelDescriptor,
+    ) -> TunnelDescriptor {
+        TunnelDescriptor {
+            provider: tunnel.provider.clone(),
+            tunnel_name: stored.tunnel_name.clone(),
+            tunnel_id: stored.tunnel_id.clone(),
+            hostname: tunnel.hostname.clone().unwrap_or_default(),
+            token_path: stored.token_path.clone(),
+        }
     }
 
     fn run_module_teardown(
@@ -1477,6 +2065,104 @@ impl fmt::Display for ParseFeatureStatusError {
 
 impl std::error::Error for ParseFeatureStatusError {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureTunnelStatus {
+    Pending,
+    Active,
+    Manual,
+    Disabled,
+}
+
+impl fmt::Display for FeatureTunnelStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            FeatureTunnelStatus::Pending => "degraded",
+            FeatureTunnelStatus::Active => "online",
+            FeatureTunnelStatus::Manual => "manual",
+            FeatureTunnelStatus::Disabled => "disabled",
+        };
+        write!(f, "{label}")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredTunnelDescriptor {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureTunnelState {
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    pub status: FeatureTunnelStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<StoredTunnelDescriptor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub last_updated: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<DateTime<Utc>>,
+}
+
+impl FeatureTunnelState {
+    fn manual(
+        provider: impl Into<String>,
+        hostname: Option<String>,
+        reason: impl Into<String>,
+        steps: Vec<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            hostname,
+            status: FeatureTunnelStatus::Manual,
+            descriptor: None,
+            instructions: if steps.is_empty() { None } else { Some(steps) },
+            notes: Some(reason.into()),
+            last_updated: Utc::now(),
+            removed_at: None,
+        }
+    }
+
+    fn disabled(provider: Option<String>, reason: impl Into<String>) -> Self {
+        Self {
+            provider: provider.unwrap_or_else(|| "manual".to_string()),
+            hostname: None,
+            status: FeatureTunnelStatus::Disabled,
+            descriptor: None,
+            instructions: None,
+            notes: Some(reason.into()),
+            last_updated: Utc::now(),
+            removed_at: None,
+        }
+    }
+
+    fn automated(descriptor: TunnelDescriptor) -> Self {
+        Self {
+            provider: descriptor.provider.clone(),
+            hostname: Some(descriptor.hostname.clone()),
+            status: FeatureTunnelStatus::Pending,
+            descriptor: Some(StoredTunnelDescriptor {
+                tunnel_name: descriptor.tunnel_name.clone(),
+                tunnel_id: descriptor.tunnel_id.clone(),
+                token_path: descriptor.token_path.clone(),
+            }),
+            instructions: None,
+            notes: None,
+            last_updated: Utc::now(),
+            removed_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureMetadata {
     pub work_feature: String,
@@ -1490,6 +2176,8 @@ pub struct FeatureMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub removed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<FeatureTunnelState>,
     /// Workspace color for visual differentiation.
     ///
     /// Hex color code (e.g., "#3498db") generated deterministically from the feature name.
@@ -1555,6 +2243,9 @@ impl FeatureStateStore {
             .iter_mut()
             .find(|item| item.work_feature == metadata.work_feature)
         {
+            if metadata.tunnel.is_none() {
+                metadata.tunnel = existing.tunnel.clone();
+            }
             metadata.created_at = existing.created_at;
             metadata.updated_at = now;
             metadata.status = FeatureStatus::Active;
@@ -1584,6 +2275,16 @@ impl FeatureStateStore {
             existing.status = FeatureStatus::Removed;
             existing.updated_at = now;
             existing.removed_at = Some(now);
+            if let Some(tunnel) = existing.tunnel.as_mut() {
+                tunnel.status = FeatureTunnelStatus::Disabled;
+                tunnel.last_updated = now;
+                tunnel.removed_at = Some(now);
+                tunnel.descriptor = None;
+                tunnel.instructions = None;
+                if tunnel.notes.is_none() {
+                    tunnel.notes = Some("Tunnel removed during teardown".to_string());
+                }
+            }
         } else {
             tracing::debug!(
                 "Feature '{}' not present in registry during teardown",
@@ -1592,6 +2293,31 @@ impl FeatureStateStore {
         }
 
         self.save_registry(&registry)
+    }
+
+    fn get_feature(&self, work_feature: &str) -> Result<Option<FeatureMetadata>> {
+        let registry = self.load_registry()?;
+        Ok(registry
+            .features
+            .into_iter()
+            .find(|item| item.work_feature == work_feature))
+    }
+
+    fn update_feature<F>(&self, work_feature: &str, mut update: F) -> Result<FeatureMetadata>
+    where
+        F: FnMut(&mut FeatureMetadata),
+    {
+        let mut registry = self.load_registry()?;
+        let feature = registry
+            .features
+            .iter_mut()
+            .find(|item| item.work_feature == work_feature)
+            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
+
+        update(feature);
+        let updated = feature.clone();
+        self.save_registry(&registry)?;
+        Ok(updated)
     }
 
     fn record_devcontainer_sync(
@@ -1941,6 +2667,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             removed_at: None,
+            tunnel: None,
             color: None,
             pr_number: None,
             last_commit: None,
@@ -1974,6 +2701,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             removed_at: None,
+            tunnel: None,
             color: None,
             pr_number: None,
             last_commit: None,
@@ -2009,6 +2737,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             removed_at: None,
+            tunnel: None,
             color: None,
             pr_number: None,
             last_commit: None,
@@ -2032,6 +2761,7 @@ mod tests {
             created_at: Utc::now(), // This should be ignored
             updated_at: Utc::now(),
             removed_at: None,
+            tunnel: None,
             color: None,
             pr_number: None,
             last_commit: None,
@@ -2068,6 +2798,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             removed_at: None,
+            tunnel: None,
             color: None,
             pr_number: None,
             last_commit: None,
@@ -2177,7 +2908,14 @@ mod tests {
         assert_eq!(adapter.name, "Generic");
         assert_eq!(adapter.service_url, "http://dev:3000");
         assert!(adapter.warnings.is_empty());
-        assert!(summary.warnings.is_empty());
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|warn| warn.contains("Tunnel requires manual setup")),
+            "expected manual tunnel warning, got {:?}",
+            summary.warnings
+        );
 
         // Stashed README changes should be applied to the new worktree only
         let worktree_readme = fs::read_to_string(summary.worktree_path.join("README.md")).unwrap();

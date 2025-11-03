@@ -37,9 +37,11 @@
 //! ```
 
 use crate::bootstrap::{Bootstrap, Stack};
+use crate::config::{BranchBoxConfig, CloudflaredConfig};
 use crate::git::GitWorktree;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
+use dialoguer::console::Term;
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -214,31 +216,6 @@ pub enum DevcontainerStatus {
     None,
 }
 
-/// BranchBox registry configuration
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RegistryConfig {
-    pub version: String,
-    pub workspace_path: PathBuf,
-}
-
-/// BranchBox configuration file
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BranchBoxConfig {
-    pub workspace: WorkspaceConfig,
-    pub defaults: DefaultsConfig,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WorkspaceConfig {
-    pub parent: PathBuf,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DefaultsConfig {
-    pub base_branch: String,
-    pub branch_prefix: String,
-}
-
 impl InitWorkflow {
     /// Create a new initialization workflow
     pub fn new(options: InitOptions) -> Self {
@@ -372,6 +349,13 @@ impl InitWorkflow {
 
         // Phase 6: Initialize BranchBox registry
         summary.registry_initialized = self.initialize_registry(&workspace_path)?;
+
+        // Phase 6b: Configure tunnel defaults
+        if self.options.dry_run {
+            println!("[DRY RUN] Would configure tunnel defaults");
+        } else if let Some(warning) = self.configure_tunnel_settings(&workspace_path)? {
+            summary.warnings.push(warning);
+        }
 
         // Phase 7: Generate next steps
         summary.next_steps = self.generate_next_steps(&summary);
@@ -779,6 +763,115 @@ impl InitWorkflow {
     ///
     /// Uses atomic file creation to prevent race conditions when multiple
     /// init processes run concurrently.
+    fn configure_tunnel_settings(&self, workspace_path: &Path) -> Result<Option<String>> {
+        let mut config = BranchBoxConfig::load(workspace_path)?;
+        let original = config.clone();
+        let mut warning: Option<String> = None;
+
+        // Always ensure defaults align with our expectations.
+        config.tunnel.ensure_defaults();
+
+        let interactive = !self.options.non_interactive && Term::stdout().is_term();
+
+        if !interactive {
+            if config.tunnel.enabled && !config.tunnel.has_cloudflared() {
+                config.tunnel.providers.cloudflared = Some(CloudflaredConfig::default());
+            }
+
+            if let Some(cloudflared) = config.tunnel.providers.cloudflared.as_mut() {
+                if cloudflared.api_token_path.is_none() {
+                    cloudflared.manual_instructions = true;
+                    warning = Some("Cloudflare credentials not provided; BranchBox will emit manual tunnel setup instructions until configured.".to_string());
+                }
+            }
+        } else {
+            let theme = ColorfulTheme::default();
+
+            let enable = Confirm::with_theme(&theme)
+                .with_prompt("Enable Cloudflare tunnels for feature worktrees?")
+                .default(config.tunnel.enabled)
+                .interact()?;
+            config.tunnel.enabled = enable;
+
+            if enable {
+                let cloudflared = config
+                    .tunnel
+                    .providers
+                    .cloudflared
+                    .get_or_insert_with(CloudflaredConfig::default);
+
+                let current_prefix = cloudflared
+                    .tunnel_name_prefix
+                    .clone()
+                    .unwrap_or_else(|| "branchbox".to_string());
+
+                let prefix: String = Input::with_theme(&theme)
+                    .with_prompt("Tunnel name prefix (used when provisioning Cloudflare tunnels)")
+                    .with_initial_text(current_prefix)
+                    .allow_empty(false)
+                    .interact_text()?;
+                cloudflared.tunnel_name_prefix = Some(prefix.trim().to_string());
+
+                let has_credentials = Confirm::with_theme(&theme)
+                    .with_prompt(
+                        "Provide Cloudflare API credentials now for automatic provisioning?",
+                    )
+                    .default(cloudflared.has_api_token())
+                    .interact()?;
+
+                if has_credentials {
+                    let account_id = Input::with_theme(&theme)
+                        .with_prompt("Cloudflare account ID")
+                        .with_initial_text(cloudflared.account_id.clone().unwrap_or_default())
+                        .validate_with(|input: &String| -> std::result::Result<(), &str> {
+                            if input.trim().is_empty() {
+                                Err("Account ID cannot be empty")
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .interact_text()?;
+                    cloudflared.account_id = Some(account_id.trim().to_string());
+
+                    let api_token = Password::with_theme(&theme)
+                        .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
+                        .with_confirmation("Confirm API token", "Tokens did not match")
+                        .allow_empty_password(false)
+                        .interact()?;
+
+                    let secure_path = CloudflaredConfig::default_credentials_path(workspace_path);
+                    if let Some(parent) = secure_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+
+                    let file_content = format!(
+                        "CLOUDFLARE_API_TOKEN={}\nCLOUDFLARE_ACCOUNT_ID={}\n",
+                        api_token.trim(),
+                        cloudflared.account_id.clone().unwrap_or_default()
+                    );
+                    fs::write(&secure_path, file_content)?;
+
+                    cloudflared.api_token_path =
+                        Some(PathBuf::from(".branchbox/secure/cloudflared.env"));
+                    cloudflared.manual_instructions = false;
+                } else {
+                    cloudflared.api_token_path = None;
+                    cloudflared.manual_instructions = true;
+                    warning = Some("Cloudflare credentials skipped; BranchBox will emit manual tunnel setup instructions until configured.".to_string());
+                }
+            } else {
+                config.tunnel.providers.cloudflared = None;
+                config.tunnel.default_provider = None;
+            }
+        }
+
+        if config != original {
+            config.save(workspace_path)?;
+        }
+
+        Ok(warning)
+    }
+
     fn initialize_registry(&self, path: &Path) -> Result<bool> {
         let branchbox_dir = path.join(".branchbox");
         let registry_path = branchbox_dir.join("registry.json");
@@ -850,7 +943,12 @@ impl InitWorkflow {
         };
 
         // Check which entries need to be added
-        let entries = vec![".branchbox/registry.json", ".env", ".env.local"];
+        let entries = vec![
+            ".branchbox/registry.json",
+            ".branchbox/secure/",
+            ".env",
+            ".env.local",
+        ];
 
         let mut new_entries = Vec::new();
         for entry in entries {

@@ -30,7 +30,7 @@ impl CloudflareClient {
     }
 
     /// Build a new client with a custom API base URL (useful for testing).
-    fn with_base_url(
+    pub(crate) fn with_base_url(
         api_token: impl Into<String>,
         account_id: impl Into<String>,
         api_base: impl Into<String>,
