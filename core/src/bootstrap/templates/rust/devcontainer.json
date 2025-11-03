@@ -4,8 +4,8 @@
   "name": "Rust Project",
   "dockerComposeFile": "compose.yaml",
   "service": "rust-dev",
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached",
 
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},

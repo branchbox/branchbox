@@ -11,7 +11,7 @@ services:
     container_name: ${DEVCONTAINER_NAME:-rust-project}
 
     volumes:
-      - ../..:/workspaces:cached
+      - ..:/workspaces:cached
       - dind-data:/var/lib/docker
       - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
       - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude

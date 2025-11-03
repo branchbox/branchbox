@@ -533,6 +533,13 @@ impl FeatureWorkflow {
             }
         }
 
+        if worktree_removed {
+            if let Err(err) = self.git.prune() {
+                tracing::warn!("Failed to prune stale worktrees: {}", err);
+                warnings.push(format!("Failed to prune stale git worktrees: {}", err));
+            }
+        }
+
         if let Err(err) = self.state.record_teardown(&work_feature) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -1697,6 +1704,10 @@ impl FeatureWorkflow {
 
         if let Some(color_value) = color {
             settings["peacock.color"] = serde_json::json!(color_value);
+            settings["peacock.remoteColor"] = serde_json::json!(color_value);
+            if let Some(customizations) = build_color_customizations(color_value) {
+                settings["workbench.colorCustomizations"] = customizations;
+            }
         }
 
         // Customize window title to show feature name
@@ -2437,6 +2448,73 @@ fn generate_feature_color(work_feature: &str) -> String {
     palette[index].to_string()
 }
 
+fn build_color_customizations(base_color: &str) -> Option<serde_json::Value> {
+    let rgb = parse_hex_color(base_color)?;
+    let lighter = format_rgb(lighten_rgb(rgb, 0.20));
+    let lighter_strong = format_rgb(lighten_rgb(rgb, 0.35));
+    let badge_background = format_rgb(lighten_rgb(rgb, 0.15));
+    let hover = format_rgb(darken_rgb(rgb, 0.25));
+    let inactive_background = format!("{}99", base_color);
+    let text_primary = "#15202b";
+    let text_muted = "#15202b99";
+    let badge_foreground = "#e7e7e7";
+
+    Some(serde_json::json!({
+        "activityBar.activeBackground": lighter_strong,
+        "activityBar.background": lighter,
+        "activityBar.foreground": text_primary,
+        "activityBar.inactiveForeground": text_muted,
+        "activityBarBadge.background": badge_background,
+        "activityBarBadge.foreground": badge_foreground,
+        "commandCenter.border": lighter_strong,
+        "sash.hoverBorder": lighter_strong,
+        "statusBar.background": base_color,
+        "statusBar.foreground": text_primary,
+        "statusBarItem.hoverBackground": hover,
+        "statusBarItem.remoteBackground": base_color,
+        "statusBarItem.remoteForeground": text_primary,
+        "titleBar.activeBackground": base_color,
+        "titleBar.activeForeground": text_primary,
+        "titleBar.inactiveBackground": inactive_background,
+        "titleBar.inactiveForeground": text_muted,
+    }))
+}
+
+fn parse_hex_color(color: &str) -> Option<(u8, u8, u8)> {
+    if !(color.starts_with('#') && color.len() == 7) {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&color[1..3], 16).ok()?;
+    let g = u8::from_str_radix(&color[3..5], 16).ok()?;
+    let b = u8::from_str_radix(&color[5..7], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn lighten_rgb((r, g, b): (u8, u8, u8), factor: f32) -> (u8, u8, u8) {
+    let adjust = |value: u8| -> u8 {
+        let value_f = value as f32;
+        let adjusted = value_f + (255.0 - value_f) * factor;
+        adjusted.clamp(0.0, 255.0).round() as u8
+    };
+
+    (adjust(r), adjust(g), adjust(b))
+}
+
+fn darken_rgb((r, g, b): (u8, u8, u8), factor: f32) -> (u8, u8, u8) {
+    let adjust = |value: u8| -> u8 {
+        let value_f = value as f32;
+        let adjusted = value_f - (value_f * factor);
+        adjusted.clamp(0.0, 255.0).round() as u8
+    };
+
+    (adjust(r), adjust(g), adjust(b))
+}
+
+fn format_rgb((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
 /// Get the last commit SHA for a branch.
 fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
     let output = Command::new("git")
@@ -3080,6 +3158,54 @@ mod tests {
     }
 
     #[test]
+    fn feature_teardown_prunes_stale_worktree_entries() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .start(StartRequest {
+                name: Some("dirty".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let worktree_path = repo_path.parent().unwrap().join("dirty");
+        assert!(worktree_path.exists());
+
+        // Introduce an untracked change so the git removal path falls back to manual cleanup.
+        fs::write(worktree_path.join("dirty.txt"), "local changes").unwrap();
+
+        let summary = workflow
+            .teardown(TeardownRequest {
+                work_feature: "dirty".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: false,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Failed to remove worktree")));
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Worktree directory removed manually")));
+        assert!(!worktree_path.exists());
+
+        let git = GitWorktree::new(repo_path).unwrap();
+        let worktrees = git.list().unwrap();
+        assert!(worktrees.into_iter().all(|info| info.path != worktree_path));
+    }
+
+    #[test]
     fn feature_teardown_moves_spec_to_completed_when_requested() {
         let temp = setup_test_repo();
         let repo_path = temp.path();
@@ -3425,10 +3551,54 @@ mod tests {
 
         // Verify content
         let content = fs::read_to_string(&settings_path).unwrap();
-        assert!(content.contains("peacock.color"));
-        assert!(content.contains("#3498db"));
-        assert!(content.contains("window.title"));
-        assert!(content.contains("[test-feature]"));
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            settings.get("peacock.color").and_then(|v| v.as_str()),
+            Some("#3498db")
+        );
+        assert_eq!(
+            settings.get("peacock.remoteColor").and_then(|v| v.as_str()),
+            Some("#3498db")
+        );
+        assert_eq!(
+            settings.get("window.title").and_then(|v| v.as_str()),
+            Some("${rootName} [test-feature] - ${activeEditorShort}")
+        );
+
+        let customizations = settings
+            .get("workbench.colorCustomizations")
+            .and_then(|v| v.as_object())
+            .expect("color customizations present");
+        assert_eq!(
+            customizations
+                .get("statusBar.background")
+                .and_then(|v| v.as_str()),
+            Some("#3498db")
+        );
+        assert_eq!(
+            customizations
+                .get("activityBar.background")
+                .and_then(|v| v.as_str()),
+            Some("#5dade2")
+        );
+        assert_eq!(
+            customizations
+                .get("activityBar.activeBackground")
+                .and_then(|v| v.as_str()),
+            Some("#7bbce8")
+        );
+        assert_eq!(
+            customizations
+                .get("statusBarItem.hoverBackground")
+                .and_then(|v| v.as_str()),
+            Some("#2772a4")
+        );
+        assert_eq!(
+            customizations
+                .get("titleBar.inactiveBackground")
+                .and_then(|v| v.as_str()),
+            Some("#3498db99")
+        );
     }
 
     #[test]
@@ -3479,6 +3649,10 @@ mod tests {
         // But no tasks.json without URL
         let tasks_path = worktree_path.join(".vscode/tasks.json");
         assert!(!tasks_path.exists());
+
+        let content = fs::read_to_string(settings_path).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(settings.get("workbench.colorCustomizations").is_none());
     }
 
     #[test]
@@ -3509,10 +3683,19 @@ mod tests {
 
         // Check that custom setting is preserved
         let content = fs::read_to_string(vscode_dir.join("settings.json")).unwrap();
-        assert!(content.contains("custom.setting"));
-        assert!(content.contains("value"));
-        // But peacock color should be updated
-        assert!(content.contains("#3498db"));
-        assert!(!content.contains("#old-color"));
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            settings.get("custom.setting").and_then(|v| v.as_str()),
+            Some("value")
+        );
+        assert_eq!(
+            settings.get("peacock.color").and_then(|v| v.as_str()),
+            Some("#3498db")
+        );
+        assert_ne!(
+            settings.get("peacock.color").and_then(|v| v.as_str()),
+            Some("#old-color")
+        );
+        assert!(settings.get("workbench.colorCustomizations").is_some());
     }
 }

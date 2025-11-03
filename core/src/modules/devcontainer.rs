@@ -24,6 +24,8 @@
 
 use super::Module;
 use crate::{Error, Result};
+use serde_json::Value as JsonValue;
+use serde_yaml::Value as YamlValue;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -226,6 +228,11 @@ impl Module for DevcontainerModule {
     fn setup(&self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
         tracing::info!("Syncing devcontainer configuration...");
         let outcome = self.sync_to(feature_dir)?;
+        if matches!(self.strategy, SyncStrategy::Symlink) {
+            tracing::info!("Skipping workspace configuration (symlink strategy in use)");
+        } else {
+            self.configure_workspace_settings(feature_dir)?;
+        }
         tracing::info!(
             "Synced {} devcontainer files ({:?})",
             outcome.synced_files.len(),
@@ -246,6 +253,143 @@ impl Module for DevcontainerModule {
                 "Feature worktree missing .devcontainer directory".to_string(),
             ));
         }
+        Ok(())
+    }
+}
+
+impl DevcontainerModule {
+    fn configure_workspace_settings(&self, feature_dir: &Path) -> Result<()> {
+        let config_path = feature_dir.join(".devcontainer/devcontainer.json");
+        if !config_path.exists() {
+            return Ok(());
+        }
+
+        let compose_path = feature_dir.join(".devcontainer/compose.yaml");
+        let config_contents = std::fs::read_to_string(&config_path)?;
+        let mut config: JsonValue = serde_json::from_str(&config_contents).map_err(|err| {
+            Error::validation(format!(
+                "Failed to parse {}: {}",
+                config_path.display(),
+                err
+            ))
+        })?;
+
+        let is_main_repo = feature_dir.join(".git").is_dir();
+
+        let (workspace_folder, workspace_mount) = if is_main_repo {
+            (
+                "/workspaces",
+                "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached",
+            )
+        } else {
+            (
+                "/workspaces/${localWorkspaceFolderBasename}",
+                "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+            )
+        };
+
+        match config.as_object_mut() {
+            Some(map) => {
+                map.insert(
+                    "workspaceFolder".to_string(),
+                    JsonValue::String(workspace_folder.to_string()),
+                );
+                map.insert(
+                    "workspaceMount".to_string(),
+                    JsonValue::String(workspace_mount.to_string()),
+                );
+            }
+            None => {
+                return Err(Error::validation(format!(
+                    "{} is not a JSON object",
+                    config_path.display()
+                )))
+            }
+        }
+
+        let mut formatted = serde_json::to_string_pretty(&config)?;
+        formatted.push('\n');
+        std::fs::write(&config_path, formatted)?;
+
+        if compose_path.exists() {
+            let compose_contents = std::fs::read_to_string(&compose_path)?;
+            let mut compose: YamlValue =
+                serde_yaml::from_str(&compose_contents).map_err(|err| {
+                    Error::validation(format!(
+                        "Failed to parse {}: {}",
+                        compose_path.display(),
+                        err
+                    ))
+                })?;
+
+            let desired = if is_main_repo {
+                "..:/workspaces:cached"
+            } else {
+                "../..:/workspaces:cached"
+            };
+            let alternate = if is_main_repo {
+                "../..:/workspaces:cached"
+            } else {
+                "..:/workspaces:cached"
+            };
+
+            let mut updated = false;
+            if let Some(root) = compose.as_mapping_mut() {
+                let services_key = YamlValue::String("services".to_string());
+                if let Some(services) = root
+                    .get_mut(&services_key)
+                    .and_then(|value| value.as_mapping_mut())
+                {
+                    for service in services.values_mut() {
+                        if let Some(service_map) = service.as_mapping_mut() {
+                            let volumes_key = YamlValue::String("volumes".to_string());
+                            if let Some(volumes) = service_map
+                                .get_mut(&volumes_key)
+                                .and_then(|value| value.as_sequence_mut())
+                            {
+                                let mut found_desired = false;
+                                for entry in volumes.iter_mut() {
+                                    let raw = entry.as_str().map(ToString::to_string);
+                                    if let Some(raw) = raw {
+                                        if raw == alternate {
+                                            *entry = YamlValue::String(desired.to_string());
+                                            updated = true;
+                                        }
+                                        if raw == desired {
+                                            found_desired = true;
+                                        }
+                                    }
+                                }
+
+                                if !found_desired {
+                                    volumes.insert(0, YamlValue::String(desired.to_string()));
+                                    updated = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if updated {
+                let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+                    Error::validation(format!(
+                        "Failed to serialize {}: {}",
+                        compose_path.display(),
+                        err
+                    ))
+                })?;
+                if serialized.starts_with("---\n") {
+                    serialized = serialized.split_off(4);
+                }
+                if !serialized.ends_with('\n') {
+                    serialized.push('\n');
+                }
+                std::fs::write(&compose_path, serialized)?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -468,5 +612,147 @@ mod tests {
         let module = DevcontainerModule::new();
         let result = module.teardown(&main, &feature);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_for_feature() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let feature = temp.path().join("feature");
+
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/devcontainer.json"),
+            r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached"
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            main.join(".devcontainer/compose.yaml"),
+            r#"services:
+  rust-dev:
+    volumes:
+      - ..:/workspaces:cached
+      - dind-data:/var/lib/docker
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::write(
+            feature.join(".git"),
+            "gitdir: ../main/.git/worktrees/feature\n",
+        )
+        .unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.setup(&main, &feature).unwrap();
+
+        let feature_config =
+            std::fs::read_to_string(feature.join(".devcontainer/devcontainer.json")).unwrap();
+        assert!(feature_config.contains("/workspaces/${localWorkspaceFolderBasename}"));
+        assert!(feature_config.contains(
+            "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename}"
+        ));
+
+        let feature_compose =
+            std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(feature_compose.contains("- ../..:/workspaces:cached"));
+        assert!(!feature_compose.contains("- ..:/workspaces:cached"));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_for_main_repo() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let target = temp.path().join("main-copy");
+
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/devcontainer.json"),
+            r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached"
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            main.join(".devcontainer/compose.yaml"),
+            r#"services:
+  rust-dev:
+    volumes:
+      - ..:/workspaces:cached
+      - dind-data:/var/lib/docker
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(target.join(".git")).unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &target).unwrap();
+        module.setup(&main, &target).unwrap();
+
+        let config =
+            std::fs::read_to_string(target.join(".devcontainer/devcontainer.json")).unwrap();
+        assert!(config.contains("\"/workspaces\""));
+        assert!(config.contains(
+            "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached"
+        ));
+
+        let compose = std::fs::read_to_string(target.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(compose.contains("- ..:/workspaces:cached"));
+        assert!(!compose.contains("- ../..:/workspaces:cached"));
+    }
+
+    #[test]
+    fn test_workspace_configuration_skips_for_symlink_strategy() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let feature = temp.path().join("feature");
+
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/devcontainer.json"),
+            r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached"
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            main.join(".devcontainer/compose.yaml"),
+            r#"services:
+  rust-dev:
+    volumes:
+      - ..:/workspaces:cached
+      - dind-data:/var/lib/docker
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(&feature).unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.strategy = SyncStrategy::Symlink;
+        module.setup(&main, &feature).unwrap();
+
+        let main_config =
+            std::fs::read_to_string(main.join(".devcontainer/devcontainer.json")).unwrap();
+        let feature_config =
+            std::fs::read_to_string(feature.join(".devcontainer/devcontainer.json")).unwrap();
+
+        assert_eq!(feature_config, main_config);
+        assert!(main_config.contains("\"/workspaces\""));
     }
 }
