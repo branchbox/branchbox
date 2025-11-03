@@ -24,6 +24,7 @@
 
 use super::Module;
 use crate::{Error, Result};
+use jsonc_parser::{parse_to_serde_value, ParseOptions};
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use std::collections::HashSet;
@@ -191,6 +192,26 @@ impl Default for DevcontainerModule {
     }
 }
 
+fn parse_json_with_comments(contents: &str, path: &Path) -> Result<JsonValue> {
+    let options = ParseOptions {
+        allow_trailing_commas: true,
+        ..Default::default()
+    };
+
+    match parse_to_serde_value(contents, &options) {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(Error::validation(format!(
+            "Failed to parse {}: document is empty",
+            path.display()
+        ))),
+        Err(err) => Err(Error::validation(format!(
+            "Failed to parse {}: {}",
+            path.display(),
+            err
+        ))),
+    }
+}
+
 impl Module for DevcontainerModule {
     fn name(&self) -> &str {
         "devcontainer"
@@ -266,13 +287,7 @@ impl DevcontainerModule {
 
         let compose_path = feature_dir.join(".devcontainer/compose.yaml");
         let config_contents = std::fs::read_to_string(&config_path)?;
-        let mut config: JsonValue = serde_json::from_str(&config_contents).map_err(|err| {
-            Error::validation(format!(
-                "Failed to parse {}: {}",
-                config_path.display(),
-                err
-            ))
-        })?;
+        let mut config = parse_json_with_comments(&config_contents, &config_path)?;
 
         let is_main_repo = feature_dir.join(".git").is_dir();
 
@@ -664,6 +679,55 @@ mod tests {
             std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
         assert!(feature_compose.contains("- ../..:/workspaces:cached"));
         assert!(!feature_compose.contains("- ..:/workspaces:cached"));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_handles_jsonc_comments() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let feature = temp.path().join("feature");
+
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/devcontainer.json"),
+            r#"// comment allowed by VS Code JSONC
+{
+  // comment before name
+  "name": "Test",
+  "workspaceFolder": "/workspaces",
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            main.join(".devcontainer/compose.yaml"),
+            r#"services:
+  rust-dev:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::write(
+            feature.join(".git"),
+            "gitdir: ../main/.git/worktrees/feature\n",
+        )
+        .unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.setup(&main, &feature).unwrap();
+
+        let config =
+            std::fs::read_to_string(feature.join(".devcontainer/devcontainer.json")).unwrap();
+        assert!(config.contains("/workspaces/${localWorkspaceFolderBasename}"));
+        assert!(!config.contains("// comment"));
+
+        let compose = std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(compose.contains("- ../..:/workspaces:cached"));
     }
 
     #[test]
