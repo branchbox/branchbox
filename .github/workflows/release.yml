@@ -62,13 +62,9 @@ jobs:
 
       - name: Generate changelog
         run: |
-          if [[ "${{ steps.version.outputs.is_prerelease }}" == "true" ]]; then
-            # For pre-releases, generate changelog from last tag
-            git-cliff --tag v${{ steps.version.outputs.version }} --unreleased > RELEASE_CHANGELOG.md
-          else
-            # For stable releases, generate full changelog for this version
-            git-cliff --tag v${{ steps.version.outputs.version }} --unreleased > RELEASE_CHANGELOG.md
-          fi
+          # Generate the changelog entry for this tag. Using --tag ensures
+          # we capture commits between the previous release and the current one.
+          git-cliff --tag v${{ steps.version.outputs.version }} > RELEASE_CHANGELOG.md
 
           # Add installation instructions to release notes
           cat >> RELEASE_CHANGELOG.md <<'EOF'

@@ -71,6 +71,7 @@ sign-tag = false
 pre-release-commit-message = "chore(release): prepare {{version}}"
 tag-message = "Release {{version}}"
 tag-prefix = "v"
+tag-name = "{{prefix}}{{version}}"
 consolidate-commits = true
 
 # Pre-release validation

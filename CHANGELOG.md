@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 -
 
+## [0.2.1] - 2025-11-03
+
+### Bug Fixes
+- Accept JSONC devcontainer configs so comment-preserving scaffolds sync cleanly *(modules)*
+
+### Miscellaneous
+- Streamline Homebrew formula updates to keep tap automation stable *(release)*
+
 ## [0.2.0] - 2025-11-03
 
 ### Added
