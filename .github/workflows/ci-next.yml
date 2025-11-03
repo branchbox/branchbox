@@ -1,0 +1,215 @@
+name: CI Next
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_docs:
+        description: Run documentation checks
+        default: "true"
+      run_integration:
+        description: Run integration test suite
+        default: "true"
+      run_coverage:
+        description: Generate coverage report
+        default: "true"
+      run_extra_targets:
+        description: Run additional macOS/Windows build + test targets
+        default: "false"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality_checks:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Security audit
+        run: cargo audit
+
+  unit_tests_linux:
+    name: Unit Tests (linux)
+    runs-on: ubuntu-latest
+    needs: quality_checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run nextest suite
+        run: cargo nextest run --all-features --no-fail-fast
+      - name: Run doc tests
+        run: cargo test --doc --all-features
+
+  build_linux:
+    name: Build (linux)
+    runs-on: ubuntu-latest
+    needs: quality_checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build debug
+        run: cargo build --all-features --verbose
+      - name: Build release
+        run: cargo build --release --all-features --verbose
+
+  unit_tests_extra:
+    name: Unit Tests (extra targets)
+    if: inputs.run_extra_targets == 'true'
+    runs-on: ${{ matrix.os }}
+    needs: quality_checks
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            rust: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}-${{ matrix.rust }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run nextest suite
+        run: cargo nextest run --all-features --no-fail-fast
+
+  build_extra:
+    name: Build (extra targets)
+    if: inputs.run_extra_targets == 'true'
+    runs-on: ${{ matrix.os }}
+    needs: quality_checks
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust: beta
+          - os: macos-latest
+            rust: beta
+          - os: windows-latest
+            rust: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}-${{ matrix.rust }}
+      - name: Build debug
+        run: cargo build --all-features --verbose
+      - name: Build release
+        run: cargo build --release --all-features --verbose
+
+  coverage:
+    name: Coverage
+    if: inputs.run_coverage == 'true'
+    runs-on: ubuntu-latest
+    needs: [unit_tests_linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./lcov.info
+          disable_search: true
+          fail_ci_if_error: false
+      - name: Report coverage
+        run: |
+          cargo llvm-cov report --json --summary-only > coverage-summary.json
+          coverage=$(jq '.summary.lines.percent' coverage-summary.json)
+          echo "::notice title=Code Coverage::Coverage: ${coverage}%"
+
+  integration_tests:
+    name: Integration Tests
+    if: inputs.run_integration == 'true'
+    runs-on: ubuntu-latest
+    needs: [unit_tests_linux]
+    services:
+      docker:
+        image: docker:24-dind
+        env:
+          DOCKER_TLS_CERTDIR: ""
+        options: --privileged
+        ports:
+          - 2375:2375
+    env:
+      DOCKER_HOST: tcp://localhost:2375
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Wait for Docker
+        run: |
+          for i in {1..30}; do
+            if docker info > /dev/null 2>&1; then
+              echo "Docker is ready"
+              break
+            fi
+            echo "Waiting for Docker..."
+            sleep 2
+          done
+      - name: Run integration suite
+        run: cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fast
+
+  docs:
+    name: Documentation
+    if: inputs.run_docs == 'true'
+    runs-on: ubuntu-latest
+    needs: quality_checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v1
+        with:
+          mdbook-version: '0.4.40'
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --document-private-items
+      - name: Doc tests
+        run: cargo test --doc --all-features
+      - name: Build mdBook
+        run: mdbook build docs
