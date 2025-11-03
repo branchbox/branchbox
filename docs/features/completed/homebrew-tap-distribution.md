@@ -74,12 +74,26 @@ class Branchbox < Formula
   license "MIT"
 
   on_macos do
-    if Hardware::CPU.intel?
-      url "https://github.com/branchbox/branchbox/releases/download/v0.2.0/branchbox-0.2.0-x86_64-apple-darwin.tar.gz"
-      sha256 "CHECKSUM_INTEL"
-    elsif Hardware::CPU.arm?
-      url "https://github.com/branchbox/branchbox/releases/download/v0.2.0/branchbox-0.2.0-aarch64-apple-darwin.tar.gz"
-      sha256 "CHECKSUM_ARM"
+    on_intel do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-x86_64-apple-darwin.tar.gz"
+      sha256 "CHECKSUM_MACOS_INTEL"
+    end
+
+    on_arm do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-aarch64-apple-darwin.tar.gz"
+      sha256 "CHECKSUM_MACOS_ARM"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "CHECKSUM_LINUX_INTEL"
+    end
+
+    on_arm do
+      url "https://github.com/branchbox/branchbox/releases/download/v#{version}/branchbox-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "CHECKSUM_LINUX_ARM"
     end
   end
 
@@ -98,9 +112,11 @@ class Branchbox < Formula
 end
 ```
 
+> **Release team:** Land this refactor in `branchbox/homebrew-tap` before enabling automation. Ensure the formula adds `version "0.2.0"` immediately after `homepage`, uses `on_macos { on_intel / on_arm }` and `on_linux { on_intel / on_arm }`, and interpolates `#{version}` in every download URL so future bumps only touch the version and checksum lines.
+
 **Key features:**
-- Architecture detection using `Hardware::CPU.intel?` and `Hardware::CPU.arm?`
-- Separate download URLs for each architecture
+- Platform-specific blocks with `on_macos`/`on_linux` and `on_intel`/`on_arm`
+- Separate download URLs for each supported architecture
 - SHA256 verification for each binary
 - Version test to validate installation
 
@@ -130,27 +146,43 @@ update-homebrew:
     - name: Extract checksums
       id: checksums
       run: |
-        INTEL_CHECKSUM=$(grep "x86_64-apple-darwin" checksums.txt | awk '{print $1}')
-        ARM_CHECKSUM=$(grep "aarch64-apple-darwin" checksums.txt | awk '{print $1}')
+        MACOS_INTEL=$(grep "x86_64-apple-darwin" checksums.txt | awk '{print $1}')
+        MACOS_ARM=$(grep "aarch64-apple-darwin" checksums.txt | awk '{print $1}')
+        LINUX_INTEL=$(grep "x86_64-unknown-linux-gnu" checksums.txt | awk '{print $1}')
+        LINUX_ARM=$(grep "aarch64-unknown-linux-gnu" checksums.txt | awk '{print $1}')
 
-        echo "intel=$INTEL_CHECKSUM" >> $GITHUB_OUTPUT
-        echo "arm=$ARM_CHECKSUM" >> $GITHUB_OUTPUT
+        echo "macos_intel=$MACOS_INTEL" >> "$GITHUB_OUTPUT"
+        echo "macos_arm=$MACOS_ARM" >> "$GITHUB_OUTPUT"
+        echo "linux_intel=$LINUX_INTEL" >> "$GITHUB_OUTPUT"
+        echo "linux_arm=$LINUX_ARM" >> "$GITHUB_OUTPUT"
 
     - name: Update formula
       run: |
-        VERSION="${{ needs.create-release.outputs.version }}"
-        cd homebrew-tap/Formula
+        export VERSION="${{ needs.create-release.outputs.version }}"
+        export MACOS_INTEL="${{ steps.checksums.outputs.macos_intel }}"
+        export MACOS_ARM="${{ steps.checksums.outputs.macos_arm }}"
+        export LINUX_INTEL="${{ steps.checksums.outputs.linux_intel }}"
+        export LINUX_ARM="${{ steps.checksums.outputs.linux_arm }}"
 
-        # Update version
-        sed -i "s/version \".*\"/version \"$VERSION\"/" branchbox.rb
+        sed -i 's/^  version ".*"/  version "'$VERSION'"/' homebrew-tap/Formula/branchbox.rb
 
-        # Update Intel URL and checksum
-        sed -i "s|url \"https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-x86_64-apple-darwin.tar.gz\"|url \"https://github.com/branchbox/branchbox/releases/download/v$VERSION/branchbox-$VERSION-x86_64-apple-darwin.tar.gz\"|" branchbox.rb
-        sed -i "/Hardware::CPU.intel?/,/sha256/ s/sha256 \".*\"/sha256 \"${{ steps.checksums.outputs.intel }}\"/" branchbox.rb
-
-        # Update ARM URL and checksum
-        sed -i "s|url \"https://github.com/branchbox/branchbox/releases/download/v.*/branchbox-.*-aarch64-apple-darwin.tar.gz\"|url \"https://github.com/branchbox/branchbox/releases/download/v$VERSION/branchbox-$VERSION-aarch64-apple-darwin.tar.gz\"|" branchbox.rb
-        sed -i "/Hardware::CPU.arm?/,/sha256/ s/sha256 \".*\"/sha256 \"${{ steps.checksums.outputs.arm }}\"/" branchbox.rb
+        ruby <<'RUBY'
+          path = "homebrew-tap/Formula/branchbox.rb"
+          sha = {
+            "x86_64-apple-darwin"      => ENV.fetch("MACOS_INTEL"),
+            "aarch64-apple-darwin"     => ENV.fetch("MACOS_ARM"),
+            "x86_64-unknown-linux-gnu" => ENV.fetch("LINUX_INTEL"),
+            "aarch64-unknown-linux-gnu"=> ENV.fetch("LINUX_ARM"),
+          }
+          contents = File.read(path)
+          sha.each do |arch, checksum|
+            pattern = /(#{Regexp.escape(arch)}.*?\n\s*sha256 ")[0-9a-f]{64}"/
+            unless contents.sub!(pattern, "\\1#{checksum}\"")
+              abort "Failed to update checksum for #{arch} in #{path}"
+            end
+          end
+          File.write(path, contents)
+RUBY
 
     - name: Commit and push
       run: |
@@ -164,6 +196,8 @@ update-homebrew:
 
 **Required secret:**
 - `HOMEBREW_TAP_TOKEN`: GitHub Personal Access Token with `repo` scope for the tap repository
+
+> Keep the verification check plus the final `git diff --exit-code` and commit/push steps unchanged; with URLs deriving from `#{version}` the workflow now only edits the version and checksum lines.
 
 ### Testing
 
