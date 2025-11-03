@@ -94,21 +94,46 @@ jobs:
         if: matrix.check == 'audit'
         run: cargo audit
 
-  # Unit tests with coverage
+  # Unit tests (fast lane)
   unit_tests:
     name: Unit Tests
     needs: change_detection
-    if: (github.event_name != 'pull_request' || needs.change_detection.outputs.code == 'true' || needs.change_detection.outputs.repo == 'true') && (matrix.run_on == 'always' || github.event_name != 'pull_request')
+    if: github.event_name != 'pull_request' || needs.change_detection.outputs.code == 'true' || needs.change_detection.outputs.repo == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests
+        run: cargo nextest run --all-features --no-fail-fast
+
+      - name: Run doc tests
+        run: cargo test --doc --all-features
+
+  unit_tests_push:
+    name: Unit Tests (push matrix)
+    needs: change_detection
+    if: github.event_name == 'push' && (needs.change_detection.outputs.code == 'true' || needs.change_detection.outputs.repo == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            rust: stable
-            run_on: always
           - os: macos-latest
             rust: stable
-            run_on: push
 
     steps:
       - name: Checkout code
@@ -131,9 +156,7 @@ jobs:
 
       - name: Run tests
         run: cargo nextest run --all-features --no-fail-fast
-
-      - name: Run doc tests
-        run: cargo test --doc --all-features
+*** End Patch
 
   # Code coverage (Linux only)
   coverage:
@@ -180,26 +203,43 @@ jobs:
   build:
     name: Build Check
     needs: change_detection
-    if: (github.event_name != 'pull_request' || needs.change_detection.outputs.code == 'true' || needs.change_detection.outputs.repo == 'true') && (matrix.run_on == 'always' || github.event_name != 'pull_request')
+    if: github.event_name != 'pull_request' || needs.change_detection.outputs.code == 'true' || needs.change_detection.outputs.repo == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all-features --verbose
+
+      - name: Build release
+        run: cargo build --release --all-features --verbose
+
+  build_push_matrix:
+    name: Build Check (push matrix)
+    needs: change_detection
+    if: github.event_name == 'push' && (needs.change_detection.outputs.code == 'true' || needs.change_detection.outputs.repo == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
-            rust: stable
-            run_on: always
-          - os: ubuntu-latest
             rust: beta
-            run_on: push
           - os: macos-latest
             rust: stable
-            run_on: push
           - os: macos-latest
             rust: beta
-            run_on: push
           - os: windows-latest
             rust: stable
-            run_on: push
 
     steps:
       - name: Checkout code
