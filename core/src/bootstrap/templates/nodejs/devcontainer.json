@@ -4,8 +4,8 @@
   "name": "Node.js Project",
   "dockerComposeFile": "compose.yaml",
   "service": "nodejs-app",
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached",
 
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},

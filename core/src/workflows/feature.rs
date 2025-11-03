@@ -533,6 +533,13 @@ impl FeatureWorkflow {
             }
         }
 
+        if worktree_removed {
+            if let Err(err) = self.git.prune() {
+                tracing::warn!("Failed to prune stale worktrees: {}", err);
+                warnings.push(format!("Failed to prune stale git worktrees: {}", err));
+            }
+        }
+
         if let Err(err) = self.state.record_teardown(&work_feature) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -3077,6 +3084,54 @@ mod tests {
                 telemetry: false,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn feature_teardown_prunes_stale_worktree_entries() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .start(StartRequest {
+                name: Some("dirty".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let worktree_path = repo_path.parent().unwrap().join("dirty");
+        assert!(worktree_path.exists());
+
+        // Introduce an untracked change so the git removal path falls back to manual cleanup.
+        fs::write(worktree_path.join("dirty.txt"), "local changes").unwrap();
+
+        let summary = workflow
+            .teardown(TeardownRequest {
+                work_feature: "dirty".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: false,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Failed to remove worktree")));
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Worktree directory removed manually")));
+        assert!(!worktree_path.exists());
+
+        let git = GitWorktree::new(repo_path).unwrap();
+        let worktrees = git.list().unwrap();
+        assert!(worktrees.into_iter().all(|info| info.path != worktree_path));
     }
 
     #[test]
