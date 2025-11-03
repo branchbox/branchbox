@@ -23,6 +23,7 @@ tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+jsonc-parser.workspace = true
 
 dialoguer = "0.11"
 
