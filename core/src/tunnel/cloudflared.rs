@@ -493,12 +493,16 @@ mod tests {
                 );
                 let expected_canon = expected_path
                     .canonicalize()
-                    .unwrap_or_else(|_| expected_path.clone());
+                    .expect("connector token should canonicalize");
 
                 if let Some(token_path) = descriptor.token_path.as_ref() {
+                    assert!(
+                        token_path.exists(),
+                        "descriptor token path should exist when provided"
+                    );
                     let actual_canon = token_path
                         .canonicalize()
-                        .unwrap_or_else(|_| token_path.clone());
+                        .expect("descriptor token path should canonicalize");
                     assert_eq!(
                         actual_canon, expected_canon,
                         "descriptor token path should point at the file we just wrote"
@@ -624,12 +628,16 @@ mod tests {
                 );
                 let expected_canon = expected_path
                     .canonicalize()
-                    .unwrap_or_else(|_| expected_path.clone());
+                    .expect("connector token should canonicalize");
 
                 if let Some(token_path) = descriptor.token_path.as_ref() {
+                    assert!(
+                        token_path.exists(),
+                        "descriptor token path should exist when provided"
+                    );
                     let actual_canon = token_path
                         .canonicalize()
-                        .unwrap_or_else(|_| token_path.clone());
+                        .expect("descriptor token path should canonicalize");
                     assert_eq!(
                         actual_canon, expected_canon,
                         "descriptor token path should reference existing connector token"
