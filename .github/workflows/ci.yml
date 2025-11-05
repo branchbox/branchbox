@@ -188,15 +188,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install mdBook
-        uses: peaceiris/actions-mdbook@v1
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          mdbook-version: '0.4.40'
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
       - name: cargo doc
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features --document-private-items
       - name: Doc tests
         run: cargo test --doc --all-features
-      - name: Build mdBook
-        run: mdbook build docs
+      - name: Install Docusaurus dependencies
+        run: cd docs && npm ci
+      - name: Build Docusaurus
+        run: cd docs && npm run build
