@@ -161,21 +161,29 @@ cargo check
 
 ## Documentation
 
-The devcontainer image ships with mdBook `0.4.40`. For local environments, install the same version with `cargo install mdbook --locked --version 0.4.40`.
+The documentation website is built using Docusaurus. The devcontainer ships with Node.js 20.
 
 ```bash
-# Generate and open API docs
+# Navigate to the docs directory
+cd docs
+
+# Install dependencies
+npm install
+
+# Start the local development server
+npm start
+
+# Build the static site for production
+npm run build
+
+# Generate and open Rust API docs
 cargo doc --open
 
 # Generate API docs without opening
 cargo doc --no-deps
-
-# Build the mdBook site (install via `cargo install mdbook --locked`)
-mdbook build docs
-
-# Regenerate CLI reference pages after modifying commands
-./docs/scripts/render-cli-reference.sh
 ```
+
+When updating CLI commands, manually regenerate the CLI reference by capturing `branchbox --help` output and updating `docs/docs/reference/cli.md`.
 
 ## Project Structure
 

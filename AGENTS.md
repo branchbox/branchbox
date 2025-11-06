@@ -101,7 +101,7 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 - Publish user-facing documentation with `Docusaurus`. Source files live under `docs/docs/`; keep specs automation untouched in `docs/features/`.
 - The devcontainer ships with Node.js 20; on bare-metal setups install Node.js and npm, then install dependencies with `cd docs && npm install`, and build locally with `cd docs && npm run build`.
 - CI must always include a fast `npm run build` check on PRs (in the docs directory). A dedicated Pages workflow deploys the built site to GitHub Pages on successful pushes to `main`.
-- Keep CLI reference pages generated: use the helper script (check `docs/scripts/render-cli-reference.sh` once added) that captures `branchbox --help` output into `docs/docs/reference/`. Regenerate during releases or when command flags change.
+- Keep CLI reference pages up to date: manually regenerate `docs/docs/reference/cli.md` by capturing `branchbox --help` output and its subcommands during releases or when command flags change.
 - Engineers and coding agents must update documentation content as needed, mirror critical entry points in `README.md`, and document any automation adjustments in this file so future contributors know how docs are built and shipped.
 
 ## Known Issues & TODOs
