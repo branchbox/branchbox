@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Specs Workflow
 
 BranchBox keeps feature specifications under version control and moves them between lifecycle folders as worktrees advance.
