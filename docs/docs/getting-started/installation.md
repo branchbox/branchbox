@@ -1,3 +1,9 @@
+---
+title: Installation Guide
+sidebar_position: 1
+description: Install BranchBox using Homebrew, Linux scripts, Scoop, or from source.
+---
+
 # Installation Guide
 
 This guide covers all installation methods for BranchBox across different platforms.
@@ -219,4 +225,4 @@ scoop reset branchbox
 
 ## Next Steps
 
-Once installed, check out the main [README](../README.md) for usage examples and getting started guides.
+Once installed, check out the main [README](https://github.com/branchbox/branchbox#readme) for usage examples and getting started guides.

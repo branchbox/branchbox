@@ -1,3 +1,9 @@
+---
+title: In-Place Parent Structure Reorganization
+sidebar_position: 2
+description: Reorganize an existing repository in place to adopt the BranchBox parent structure.
+---
+
 # In-Place Parent Structure Reorganization
 
 ## Overview
@@ -226,6 +232,6 @@ If reorganization fails, the tool automatically restores the original state. Che
 
 ## See Also
 
-- [Universal Init Workflow](../features/completed/universal-init.md)
-- [Feature Workflow Guide](../README.md)
-- [BranchBox CLI Reference](../cli/README.md)
+- [Universal Init Workflow](https://github.com/branchbox/branchbox/blob/main/docs/features/completed/universal-init.md)
+- [Feature Workflow Guide](https://github.com/branchbox/branchbox#readme)
+- [BranchBox CLI Reference](../reference/cli)

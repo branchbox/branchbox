@@ -1,3 +1,9 @@
+---
+title: Communication Protocol Specification
+sidebar_position: 1
+description: Explore the BranchBox agent and control plane communication protocol.
+---
+
 # Communication Protocol Specification
 
 ## gRPC Service Definitions

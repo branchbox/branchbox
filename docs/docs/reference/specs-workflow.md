@@ -1,3 +1,9 @@
+---
+title: Specs Workflow
+sidebar_position: 2
+description: Learn how BranchBox automates spec promotion across backlog, in-progress, and completed states.
+---
+
 # Specs Workflow
 
 BranchBox keeps feature specifications under version control and moves them between lifecycle folders as worktrees advance.

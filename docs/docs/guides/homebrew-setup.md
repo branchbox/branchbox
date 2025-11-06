@@ -1,3 +1,9 @@
+---
+title: Homebrew Tap Automation
+sidebar_position: 1
+description: Configure and maintain the BranchBox Homebrew tap automation pipeline.
+---
+
 # Homebrew Tap Automation
 
 Automated Homebrew formula updates when stable releases are published.
@@ -167,5 +173,5 @@ Enable workflow failure notifications:
 ## Reference
 
 - [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)
-- [Feature Spec](../features/completed/homebrew-tap-distribution.md)
+- [Feature Spec](https://github.com/branchbox/branchbox/blob/main/docs/features/completed/homebrew-tap-distribution.md)
 - Issues: [branchbox/homebrew-tap](https://github.com/branchbox/homebrew-tap/issues)

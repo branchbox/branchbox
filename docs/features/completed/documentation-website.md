@@ -8,6 +8,8 @@ owner: codex-agent
 
 # Documentation Website Rollout
 
+> **Update:** The documentation stack migrated from mdBook to Docusaurus in 2024 to unlock richer navigation, React-based extensions, and a more familiar contributor workflow. The historical notes below capture the original mdBook rollout for posterity.
+
 ## Goal
 Deliver a maintainable, mdBook-powered documentation site for BranchBox, complete with automated GitHub Pages deployment and contributor guidelines woven into the engineering workflow.
 

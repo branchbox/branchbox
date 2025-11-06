@@ -1,6 +1,12 @@
-# BranchBox Documentation
+---
+id: intro
+title: BranchBox Documentation
+sidebar_position: 1
+slug: /
+description: Overview of the BranchBox documentation site and how to navigate it.
+---
 
-Welcome to the mdBook home for BranchBox. This site captures the installation paths, CLI workflows, architectural context, and contributor guidance for operating in distributed feature environments.
+Welcome to the Docusaurus home for BranchBox. This site captures the installation paths, CLI workflows, architectural context, and contributor guidance for operating in distributed feature environments.
 
 - New to BranchBox? Start with the **Getting Started** section for installation and first-run instructions.
 - Setting up your workstation or devcontainer? Jump to **Development Environment**.

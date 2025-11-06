@@ -1,3 +1,9 @@
+---
+title: Development Guide
+sidebar_position: 2
+description: Configure the BranchBox development environment, tooling, and workflows.
+---
+
 # Development Guide
 
 This guide covers the development workflow, building, testing, and contributing to BranchBox.
@@ -129,7 +135,7 @@ cargo watch -x test
 
 ### Install Script Tests
 
-The install script has automated tests. See [test/README.md](../test/README.md) for details.
+The install script has automated tests. See the [install test README](https://github.com/branchbox/branchbox/tree/main/test#readme) for details.
 
 ```bash
 # Run tests
@@ -157,20 +163,24 @@ cargo check
 
 ## Documentation
 
-The devcontainer image ships with mdBook `0.4.40`. For local environments, install the same version with `cargo install mdbook --locked --version 0.4.40`.
+BranchBox uses [Docusaurus](https://docusaurus.io/) for the documentation site.
 
 ```bash
-# Generate and open API docs
-cargo doc --open
+# Install documentation dependencies
+cd docs
+npm install
 
-# Generate API docs without opening
-cargo doc --no-deps
+# Start the local docs server (hot reload)
+npm run start
 
-# Build the mdBook site (install via `cargo install mdbook --locked`)
-mdbook build docs
+# Build the static site for deployment
+npm run build
 
 # Regenerate CLI reference pages after modifying commands
-./docs/scripts/render-cli-reference.sh
+./scripts/render-cli-reference.sh
+
+# Serve the production build locally
+npm run serve
 ```
 
 ## Project Structure
@@ -230,10 +240,10 @@ Before submitting a PR:
 ## Architecture Documentation
 
 For detailed architecture information, see:
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System design and components
-- [PROTOCOL.md](PROTOCOL.md) - Communication protocols (gRPC, REST)
-- [CLAUDE.md](../CLAUDE.md) - AI agent development guidelines
-- [AGENTS.md](../AGENTS.md) - Repository guidelines and patterns
+- [Distributed Architecture Overview](../architecture/overview) - System design and components
+- [Communication Protocol Specification](../protocol/overview) - Communication contracts (gRPC, REST)
+- [CLAUDE.md](https://github.com/branchbox/branchbox/blob/main/CLAUDE.md) - AI agent development guidelines
+- [AGENTS.md](https://github.com/branchbox/branchbox/blob/main/AGENTS.md) - Repository guidelines and patterns
 
 ## Meta Feature: Bootstrap System
 

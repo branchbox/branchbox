@@ -1,3 +1,9 @@
+---
+title: Implementation Status
+sidebar_position: 1
+description: Track the current implementation progress across BranchBox milestones and components.
+---
+
 # Implementation Status
 
 ## Overview
@@ -421,10 +427,10 @@ cargo build --release
 
 ## References
 
-- [Original Architecture](../../docs/architecture/README.md)
-- [Bash Implementation](../../lib/)
-- [Feature Start Script](../../bin/feature-start)
-- [Feature Teardown Script](../../bin/feature-teardown)
+- [Original Architecture](https://github.com/branchbox/branchbox/tree/main/docs/architecture)
+- [Bash Implementation](https://github.com/branchbox/branchbox/tree/main/lib)
+- [Feature Start Script](https://github.com/branchbox/branchbox/blob/main/bin/feature-start)
+- [Feature Teardown Script](https://github.com/branchbox/branchbox/blob/main/bin/feature-teardown)
 
 ## Changelog
 

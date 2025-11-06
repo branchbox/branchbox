@@ -23,12 +23,12 @@ cd ../oauth-integration/
 # Your feature has its own database, Docker network, and configuration
 ```
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
+See [docs/docs/getting-started/installation.md](docs/docs/getting-started/installation.md) for all installation methods.
 
 ## Documentation
 
-- **Docs site:** https://branchbox.github.io/branchbox/ (built with mdBook and deployed from `main`)
-- **Source:** `docs/` (run `mdbook build docs` locally to preview)
+- **Docs site:** https://branchbox.github.io/branchbox/ (built with Docusaurus and deployed from `main`)
+- **Source:** `docs/` (install dependencies with `npm install` and run `npm run start` to preview)
 - **CLI reference:** regenerate via `./docs/scripts/render-cli-reference.sh` after changing command flags
 
 ## Why BranchBox?

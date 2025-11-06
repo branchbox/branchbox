@@ -1,3 +1,9 @@
+---
+title: Distributed Architecture Overview
+sidebar_position: 1
+description: Understand the distributed architecture that powers BranchBox across devices and the control plane.
+---
+
 # Worktree Manager - Distributed Architecture
 
 ## Overview
