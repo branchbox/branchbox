@@ -215,17 +215,11 @@ BranchBox tracks feature worktrees in a local registry at `{repo_root}/.branchbo
 git clone https://github.com/branchbox/branchbox.git
 cd branchbox
 
-# Build core library
-cd core
-cargo build
+# Run tests for the entire workspace
 cargo test
 
-# Build CLI
-cd ../cli
-cargo build --release
-
-# Install locally
-cargo install --path . --locked
+# Build and install the CLI
+cargo install --path cli --locked
 
 # Verify installation
 branchbox --version
