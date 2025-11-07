@@ -14,11 +14,12 @@ Isolated development environments for every feature
 Usage: branchbox <COMMAND>
 
 Commands:
-  init     Initialize project with devcontainer and BranchBox registry
-  detect   Detect project configuration
-  name     Feature name utilities
-  feature  Manage feature worktrees
-  help     Print this message or the help of the given subcommand(s)
+  init          Initialize project with devcontainer and BranchBox registry
+  devcontainer  Manage devcontainer configuration
+  detect        Detect project configuration
+  name          Feature name utilities
+  feature       Manage feature worktrees
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
@@ -26,6 +27,8 @@ Options:
 ```
 
 ## branchbox init
+
+*Alias: `branchbox bootstrap`*
 
 ```text
 Initialize project with devcontainer and BranchBox registry
@@ -48,6 +51,35 @@ Options:
   -y, --yes                   Non-interactive mode (use defaults, answer yes to prompts)
   -v, --verbose               Verbose output
   -h, --help                  Print help
+```
+
+## branchbox devcontainer
+
+```text
+Manage devcontainer configuration
+
+Usage: branchbox devcontainer <COMMAND>
+
+Commands:
+  sync  Sync devcontainer configuration to all feature worktrees
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+
+## branchbox devcontainer sync
+
+```text
+Sync devcontainer configuration to all feature worktrees
+
+Usage: branchbox devcontainer sync [OPTIONS]
+
+Options:
+  -p, --path <PATH>          Project directory (defaults to current directory)
+  -s, --strategy <STRATEGY>  Sync strategy (copy or symlink)
+  -n, --dry-run              Dry run - show what would be synced without making changes
+  -h, --help                 Print help
 ```
 
 ## branchbox detect
@@ -154,6 +186,8 @@ Usage: branchbox feature list [OPTIONS]
 Options:
       --repo <REPO>      Repository path (defaults to current directory)
       --status <STATUS>  Filter by status (active, removed)
+      --all              Include removed features even if --status is not provided
+      --json             Emit JSON output instead of human-readable summary
   -h, --help             Print help
 ```
 
