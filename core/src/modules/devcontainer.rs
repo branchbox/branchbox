@@ -62,7 +62,11 @@ impl DevcontainerModule {
         Self {
             source_dir: PathBuf::new(),
             strategy: SyncStrategy::Copy,
-            exclude: vec![".env".to_string(), ".gitignore".to_string()],
+            exclude: vec![
+                ".env".to_string(),
+                ".branchbox.env".to_string(),
+                ".gitignore".to_string(),
+            ],
         }
     }
 
@@ -248,12 +252,7 @@ impl Module for DevcontainerModule {
 
     fn setup(&self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
         tracing::info!("Syncing devcontainer configuration...");
-        let outcome = self.sync_to(feature_dir)?;
-        if matches!(self.strategy, SyncStrategy::Symlink) {
-            tracing::info!("Skipping workspace configuration (symlink strategy in use)");
-        } else {
-            self.configure_workspace_settings(feature_dir)?;
-        }
+        let outcome = self.sync_with_workspace_settings(feature_dir)?;
         tracing::info!(
             "Synced {} devcontainer files ({:?})",
             outcome.synced_files.len(),
@@ -279,6 +278,17 @@ impl Module for DevcontainerModule {
 }
 
 impl DevcontainerModule {
+    /// Sync devcontainer files and reapply workspace-specific settings (workspace folder/mount).
+    pub fn sync_with_workspace_settings(&self, feature_dir: &Path) -> Result<SyncOutcome> {
+        let outcome = self.sync_to(feature_dir)?;
+        if matches!(self.strategy, SyncStrategy::Symlink) {
+            tracing::info!("Skipping workspace configuration (symlink strategy in use)");
+        } else {
+            self.configure_workspace_settings(feature_dir)?;
+        }
+        Ok(outcome)
+    }
+
     fn configure_workspace_settings(&self, feature_dir: &Path) -> Result<()> {
         let config_path = feature_dir.join(".devcontainer/devcontainer.json");
         if !config_path.exists() {
@@ -327,85 +337,137 @@ impl DevcontainerModule {
         std::fs::write(&config_path, formatted)?;
 
         if compose_path.exists() {
-            let compose_contents = std::fs::read_to_string(&compose_path)?;
-            let mut compose: YamlValue =
-                serde_yaml::from_str(&compose_contents).map_err(|err| {
-                    Error::validation(format!(
-                        "Failed to parse {}: {}",
-                        compose_path.display(),
-                        err
-                    ))
-                })?;
+            self.update_compose_volumes(&compose_path, is_main_repo, feature_dir)?;
+        }
 
-            let desired = if is_main_repo {
-                "..:/workspaces:cached"
-            } else {
-                "../..:/workspaces:cached"
-            };
-            let alternate = if is_main_repo {
-                "../..:/workspaces:cached"
-            } else {
-                "..:/workspaces:cached"
-            };
+        Ok(())
+    }
 
-            let mut updated = false;
-            if let Some(root) = compose.as_mapping_mut() {
-                let services_key = YamlValue::String("services".to_string());
-                if let Some(services) = root
-                    .get_mut(&services_key)
-                    .and_then(|value| value.as_mapping_mut())
-                {
-                    for service in services.values_mut() {
-                        if let Some(service_map) = service.as_mapping_mut() {
-                            let volumes_key = YamlValue::String("volumes".to_string());
-                            if let Some(volumes) = service_map
-                                .get_mut(&volumes_key)
-                                .and_then(|value| value.as_sequence_mut())
-                            {
-                                let mut found_desired = false;
-                                for entry in volumes.iter_mut() {
-                                    let raw = entry.as_str().map(ToString::to_string);
-                                    if let Some(raw) = raw {
-                                        if raw == alternate {
-                                            *entry = YamlValue::String(desired.to_string());
-                                            updated = true;
-                                        }
-                                        if raw == desired {
-                                            found_desired = true;
-                                        }
-                                    }
-                                }
+    fn update_compose_volumes(
+        &self,
+        compose_path: &Path,
+        is_main_repo: bool,
+        feature_dir: &Path,
+    ) -> Result<()> {
+        let compose_contents = std::fs::read_to_string(compose_path)?;
+        let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+            Error::validation(format!(
+                "Failed to parse {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
 
-                                if !found_desired {
-                                    volumes.insert(0, YamlValue::String(desired.to_string()));
-                                    updated = true;
-                                }
-                                break;
+        let mut updated = false;
+        if let Some(root) = compose.as_mapping_mut() {
+            let services_key = YamlValue::String("services".to_string());
+            if let Some(services) = root
+                .get_mut(&services_key)
+                .and_then(|value| value.as_mapping_mut())
+            {
+                for service in services.values_mut() {
+                    if let Some(service_map) = service.as_mapping_mut() {
+                        let volumes_key = YamlValue::String("volumes".to_string());
+                        if let Some(volumes) = service_map
+                            .get_mut(&volumes_key)
+                            .and_then(|value| value.as_sequence_mut())
+                        {
+                            if is_main_repo {
+                                updated |= Self::ensure_main_volumes(volumes);
+                            } else {
+                                updated |= Self::ensure_feature_volumes(volumes, feature_dir);
                             }
+                            break;
                         }
                     }
                 }
             }
+        }
 
-            if updated {
-                let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
-                    Error::validation(format!(
-                        "Failed to serialize {}: {}",
-                        compose_path.display(),
-                        err
-                    ))
-                })?;
-                if serialized.starts_with("---\n") {
-                    serialized = serialized.split_off(4);
-                }
-                if !serialized.ends_with('\n') {
-                    serialized.push('\n');
-                }
-                std::fs::write(&compose_path, serialized)?;
+        if updated {
+            let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+                Error::validation(format!(
+                    "Failed to serialize {}: {}",
+                    compose_path.display(),
+                    err
+                ))
+            })?;
+            if serialized.starts_with("---\n") {
+                serialized = serialized.split_off(4);
             }
+            if !serialized.ends_with('\n') {
+                serialized.push('\n');
+            }
+            std::fs::write(compose_path, serialized)?;
         }
 
         Ok(())
+    }
+
+    fn ensure_main_volumes(volumes: &mut Vec<YamlValue>) -> bool {
+        let desired = "..:/workspaces:cached";
+        let alternate = "../..:/workspaces:cached";
+        let mut updated = false;
+
+        let mut found_desired = false;
+        for entry in volumes.iter_mut() {
+            if let Some(raw) = entry.as_str().map(|s| s.to_string()) {
+                if raw == alternate {
+                    *entry = YamlValue::String(desired.to_string());
+                    updated = true;
+                }
+                if raw == desired {
+                    found_desired = true;
+                }
+            }
+        }
+
+        if !found_desired {
+            volumes.insert(0, YamlValue::String(desired.to_string()));
+            updated = true;
+        }
+
+        updated
+    }
+
+    fn ensure_feature_volumes(volumes: &mut Vec<YamlValue>, feature_dir: &Path) -> bool {
+        let feature_name = feature_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("feature");
+
+        let workspace_mount = format!("..:/workspaces/${{WORK_FEATURE:-{}}}:cached", feature_name);
+        let legacy_mounts = ["../..:/workspaces:cached", "..:/workspaces:cached"];
+
+        let mut updated = false;
+        volumes.retain(|entry| {
+            if let Some(raw) = entry.as_str() {
+                if legacy_mounts.contains(&raw) {
+                    updated = true;
+                    return false;
+                }
+            }
+            true
+        });
+
+        if !volumes
+            .iter()
+            .any(|entry| entry.as_str() == Some(&workspace_mount))
+        {
+            volumes.insert(0, YamlValue::String(workspace_mount.clone()));
+            updated = true;
+        }
+
+        let git_mount = "../../${BRANCHBOX_MAIN_NAME:-main}/.git:/workspaces/${BRANCHBOX_MAIN_NAME:-main}/.git:cached";
+        if !volumes
+            .iter()
+            .any(|entry| entry.as_str() == Some(git_mount))
+        {
+            volumes.insert(1, YamlValue::String(git_mount.to_string()));
+            updated = true;
+        }
+
+        updated
     }
 }
 
@@ -677,8 +739,10 @@ mod tests {
 
         let feature_compose =
             std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
-        assert!(feature_compose.contains("- ../..:/workspaces:cached"));
-        assert!(!feature_compose.contains("- ..:/workspaces:cached"));
+        assert!(feature_compose.contains("- ..:/workspaces/${WORK_FEATURE:-feature}:cached"));
+        assert!(feature_compose.contains(
+            "- ../../${BRANCHBOX_MAIN_NAME:-main}/.git:/workspaces/${BRANCHBOX_MAIN_NAME:-main}/.git:cached"
+        ));
     }
 
     #[test]
@@ -727,7 +791,59 @@ mod tests {
         assert!(!config.contains("// comment"));
 
         let compose = std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
-        assert!(compose.contains("- ../..:/workspaces:cached"));
+        assert!(compose.contains("- ..:/workspaces/${WORK_FEATURE:-feature}:cached"));
+    }
+
+    #[test]
+    fn test_sync_with_workspace_settings_restores_mounts() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let feature = temp.path().join("feature");
+
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/devcontainer.json"),
+            r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached"
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            main.join(".devcontainer/compose.yaml"),
+            r#"services:
+  rust-dev:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::write(
+            feature.join(".git"),
+            "gitdir: ../main/.git/worktrees/feature\n",
+        )
+        .unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+
+        // Simulate a raw sync that would leave the feature with incorrect mounts.
+        module.sync_to(&feature).unwrap();
+        let compose_before =
+            std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(compose_before.contains("- ..:/workspaces:cached"));
+
+        module.sync_with_workspace_settings(&feature).unwrap();
+        let compose_after =
+            std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(compose_after.contains("- ..:/workspaces/${WORK_FEATURE:-feature}:cached"));
+        assert!(compose_after.contains(
+            "- ../../${BRANCHBOX_MAIN_NAME:-main}/.git:/workspaces/${BRANCHBOX_MAIN_NAME:-main}/.git:cached"
+        ));
     }
 
     #[test]

@@ -21,6 +21,7 @@ Cargo.lock
 .env
 .env.local
 .devcontainer/.cloudflared.env
+.devcontainer/.branchbox.env
 
 # OS
 .DS_Store

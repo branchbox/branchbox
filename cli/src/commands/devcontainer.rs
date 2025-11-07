@@ -108,7 +108,7 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
         let module_ref = module
             .as_ref()
             .expect("Devcontainer module should be initialised when not running in dry-run mode");
-        let result = module_ref.sync_to(&feature.worktree_path);
+        let result = module_ref.sync_with_workspace_settings(&feature.worktree_path);
 
         match result {
             Ok(outcome) => {
@@ -122,6 +122,9 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
                     true,
                 ) {
                     println!("    ⚠️ failed to update registry: {}", err);
+                }
+                if let Err(err) = workflow.ensure_branchbox_env_for_feature(&feature) {
+                    println!("    ⚠️ failed to refresh BranchBox env: {}", err);
                 }
             }
             Err(e) => {
