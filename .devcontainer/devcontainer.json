@@ -28,6 +28,7 @@
 
   // Use 'postCreateCommand' to run commands after container creation
   "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version'",
+  "postStartCommand": "bash .devcontainer/scripts/ensure-gitdir.sh",
 
   // Run args
   "runArgs": [

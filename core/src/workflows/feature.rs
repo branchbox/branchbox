@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -846,11 +846,11 @@ impl FeatureWorkflow {
 
         fs::write(&dest_env, base_env)?;
 
-        let mut feature_url = None;
-        let mut compose_project_name = None;
-
         let app_slug = self.resolve_app_slug(&source_env)?;
         std::env::set_var("BASE_PREFIX", &app_slug);
+
+        let mut feature_url = None;
+        let mut compose_project_name = None;
 
         match AppUrl::from_env_file(&source_env) {
             Ok(app_url) => {
@@ -858,17 +858,6 @@ impl FeatureWorkflow {
                 let compose_name = format!("{}-{}", app_slug, work_feature);
                 std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
                 std::env::set_var("DEVCONTAINER_NAME", &compose_name);
-                let mut file = OpenOptions::new().append(true).open(&dest_env)?;
-                ensure_trailing_newline(&mut file)?;
-                writeln!(
-                    file,
-                    "# Feature-specific configuration (managed by branchbox)"
-                )?;
-                writeln!(file, "WORK_FEATURE={}", work_feature)?;
-                writeln!(file, "APP_URL={}", url)?;
-                writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
-                writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
-                writeln!(file, "GIT_BRANCH={}", branch_name)?;
 
                 feature_url = Some(url);
                 compose_project_name = Some(compose_name);
@@ -882,6 +871,14 @@ impl FeatureWorkflow {
             }
         }
 
+        self.write_branchbox_env_file(
+            worktree_path,
+            work_feature,
+            branch_name,
+            feature_url.as_deref(),
+            compose_project_name.as_deref(),
+        )?;
+
         self.link_env_into_devcontainer(worktree_path)?;
 
         Ok(EnvOutcome {
@@ -890,6 +887,52 @@ impl FeatureWorkflow {
             compose_project_name,
             skipped: false,
         })
+    }
+
+    fn write_branchbox_env_file(
+        &self,
+        worktree_path: &Path,
+        work_feature: &str,
+        branch_name: &str,
+        feature_url: Option<&str>,
+        compose_project_name: Option<&str>,
+    ) -> Result<()> {
+        let dev_dir = worktree_path.join(".devcontainer");
+        if !dev_dir.exists() {
+            fs::create_dir_all(&dev_dir)?;
+        }
+
+        let branchbox_env_path = dev_dir.join(".branchbox.env");
+        let mut branchbox_file = File::create(&branchbox_env_path)?;
+        writeln!(
+            branchbox_file,
+            "# BranchBox configuration (managed by branchbox)"
+        )?;
+        writeln!(branchbox_file, "WORK_FEATURE={}", work_feature)?;
+
+        let main_repo = self.repo_root.to_string_lossy();
+        writeln!(
+            branchbox_file,
+            "BRANCHBOX_MAIN_REPO={}",
+            format_env_value(main_repo.as_ref())
+        )?;
+        let main_name = self
+            .repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("main");
+        writeln!(branchbox_file, "BRANCHBOX_MAIN_NAME={}", main_name)?;
+
+        if let Some(url) = feature_url {
+            writeln!(branchbox_file, "APP_URL={}", url)?;
+        }
+        if let Some(compose) = compose_project_name {
+            writeln!(branchbox_file, "COMPOSE_PROJECT_NAME={}", compose)?;
+            writeln!(branchbox_file, "DEVCONTAINER_NAME={}", compose)?;
+        }
+
+        writeln!(branchbox_file, "GIT_BRANCH={}", branch_name)?;
+        Ok(())
     }
 
     fn prepare_adapter(
@@ -1067,6 +1110,27 @@ impl FeatureWorkflow {
         }
 
         Ok(())
+    }
+
+    pub fn ensure_branchbox_env_for_feature(&self, metadata: &FeatureMetadata) -> Result<()> {
+        let worktree_path = &metadata.worktree_path;
+        let dev_dir = worktree_path.join(".devcontainer");
+        if !dev_dir.exists() {
+            return Ok(());
+        }
+
+        let branchbox_env_path = dev_dir.join(".branchbox.env");
+        if branchbox_env_path.exists() {
+            return Ok(());
+        }
+
+        self.write_branchbox_env_file(
+            worktree_path,
+            &metadata.work_feature,
+            &metadata.branch_name,
+            metadata.feature_url.as_deref(),
+            metadata.compose_project_name.as_deref(),
+        )
     }
 
     fn run_module_setup(
@@ -1779,38 +1843,19 @@ impl FeatureWorkflow {
             return Ok(());
         }
 
-        // Extract the main repo name from the current path
-        // Path format: /path/to/main/.git/worktrees/feature-name
         let worktree_name = worktree_path
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| Error::validation("Cannot determine worktree name".to_string()))?;
 
-        // Try to find the main repo directory
-        let parent_dir = worktree_path
-            .parent()
-            .ok_or_else(|| Error::validation("Worktree has no parent directory".to_string()))?;
+        let main_name = self
+            .repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("main");
 
-        // Determine the main repo name from the absolute path
-        // Path format: /path/to/REPO_NAME/.git/worktrees/WORKTREE_NAME
-        let main_name = if parent_dir.join("main").exists() {
-            "main".to_string()
-        } else if let Some(git_idx) = current_path.find("/.git/worktrees/") {
-            // Extract REPO_NAME from the path
-            let before_git = &current_path[..git_idx];
-            if let Some(last_slash) = before_git.rfind('/') {
-                before_git[last_slash + 1..].to_string()
-            } else {
-                "main".to_string()
-            }
-        } else {
-            "main".to_string()
-        };
-
-        // Construct relative path using PathBuf for safer path manipulation
-        // Path: ../MAIN_NAME/.git/worktrees/WORKTREE_NAME
         let mut relative_path = PathBuf::from("..");
-        relative_path.push(&main_name);
+        relative_path.push(main_name);
         relative_path.push(".git");
         relative_path.push("worktrees");
         relative_path.push(worktree_name);
@@ -1834,9 +1879,18 @@ impl FeatureWorkflow {
     }
 }
 
-/// Helper to ensure the file ends with a newline before appending.
-fn ensure_trailing_newline(file: &mut File) -> io::Result<()> {
-    file.write_all(b"\n")
+fn format_env_value(value: &str) -> String {
+    let safe = value.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '/' | '_' | '-' | '.' | ':' | '+' | '=' | '@' | '%')
+    });
+
+    if safe {
+        value.to_string()
+    } else {
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{}\"", escaped)
+    }
 }
 
 fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
@@ -2976,8 +3030,16 @@ mod tests {
         let env_path = summary.worktree_path.join(".env");
         assert!(env_path.exists());
         let env_content = fs::read_to_string(&env_path).unwrap();
-        assert!(env_content.contains("WORK_FEATURE=test-feature"));
-        assert!(env_content.contains("APP_URL=dev-test-feature.example.com"));
+        assert!(env_content.contains("APP_URL=dev.example.com"));
+        let branchbox_env = fs::read_to_string(
+            summary
+                .worktree_path
+                .join(".devcontainer")
+                .join(".branchbox.env"),
+        )
+        .unwrap();
+        assert!(branchbox_env.contains("WORK_FEATURE=test-feature"));
+        assert!(branchbox_env.contains("APP_URL=dev-test-feature.example.com"));
         assert_eq!(
             summary.feature_url.as_deref(),
             Some("dev-test-feature.example.com")
@@ -3279,9 +3341,20 @@ mod tests {
             .iter()
             .any(|w| w.contains("Existing feature-specific configuration replaced")));
 
-        let env_content = fs::read_to_string(summary.worktree_path.join(".env")).unwrap();
-        assert!(env_content.contains("WORK_FEATURE=reuse-env"));
-        assert!(!env_content.contains("OLD_VALUE"));
+        let branchbox_env = fs::read_to_string(
+            summary
+                .worktree_path
+                .join(".devcontainer")
+                .join(".branchbox.env"),
+        )
+        .unwrap();
+        assert!(branchbox_env.contains("WORK_FEATURE=reuse-env"));
+        assert!(!branchbox_env.contains("OLD_VALUE"));
+
+        let refreshed_env =
+            fs::read_to_string(summary.worktree_path.join(".env")).expect("env exists");
+        assert!(refreshed_env.contains("APP_URL=dev.example.com"));
+        assert!(!refreshed_env.contains("OLD_VALUE"));
     }
 
     #[test]
@@ -3389,11 +3462,39 @@ mod tests {
 
     #[test]
     fn test_fix_git_worktree_path_converts_absolute() {
-        let temp_dir = setup_test_repo();
-        let repo_path = temp_dir.path();
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("trunk");
+        fs::create_dir_all(&repo_path).unwrap();
+
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        fs::write(repo_path.join("README.md"), "# Test Repo\n").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
 
         // Create a mock worktree directory
-        let worktree_path = repo_path.join("feature-test");
+        let worktree_path = repo_path.parent().unwrap().join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
         // Write a .git file with absolute path
@@ -3401,20 +3502,31 @@ mod tests {
         fs::write(
             &git_file,
             format!(
-                "gitdir: {}/main/.git/worktrees/feature-test\n",
+                "gitdir: {}/.git/worktrees/feature-test\n",
                 repo_path.display()
             ),
         )
         .unwrap();
 
         // Create the workflow and fix the path
-        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
         // Verify the path was converted to relative
         let content = fs::read_to_string(&git_file).unwrap();
-        assert!(content.starts_with("gitdir: ../main/.git/worktrees/feature-test"));
+        let repo_name = workflow
+            .repo_root()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("main");
+        let expected_prefix = format!("gitdir: ../{}/.git/worktrees/feature-test", repo_name);
+        assert!(
+            content.starts_with(&expected_prefix),
+            "expected prefix '{}', got '{}'",
+            expected_prefix,
+            content.trim()
+        );
         assert!(!content.contains(repo_path.to_str().unwrap()));
     }
 
@@ -3423,7 +3535,7 @@ mod tests {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
 
-        let worktree_path = repo_path.join("feature-test");
+        let worktree_path = repo_path.parent().unwrap().join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
         // Write a .git file with already-relative path
@@ -3483,29 +3595,58 @@ mod tests {
 
     #[test]
     fn test_fix_git_worktree_path_non_standard_main_name() {
-        let temp_dir = setup_test_repo();
-        let repo_path = temp_dir.path();
+        let temp_dir = TempDir::new().unwrap();
+        let repo_container = temp_dir.path();
+        let repo_path = repo_container.join("trunk");
+        fs::create_dir_all(&repo_path).unwrap();
 
-        // Create a worktree with a non-standard main repo name
-        let worktree_path = repo_path.join("feature-test");
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        fs::write(repo_path.join("README.md"), "# Test Repo\n").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+
+        // Create a worktree sibling to the main repo
+        let worktree_path = repo_container.join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
-        // Simulate a main repo named "trunk" instead of "main"
+        // Simulate git recording an absolute path
         let git_file = worktree_path.join(".git");
         fs::write(
             &git_file,
             format!(
-                "gitdir: {}/trunk/.git/worktrees/feature-test\n",
+                "gitdir: {}/.git/worktrees/feature-test\n",
                 repo_path.display()
             ),
         )
         .unwrap();
 
-        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
-        // Verify it extracted "trunk" from the path
+        // Verify it extracted "trunk" from the repo root
         let content = fs::read_to_string(&git_file).unwrap();
         assert!(content.starts_with("gitdir: ../trunk/.git/worktrees/feature-test"));
     }

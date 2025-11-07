@@ -23,6 +23,7 @@ services:
     # Use "forwardPorts" in **devcontainer.json** to forward an app port locally
     env_file:
       - ../.env
+      - .branchbox.env
 
     # Docker-in-Docker daemon runs inside the container (no host socket mount)
     # Tool configs use SHARED_CONFIG_DIR (default: ../.., parent dir) to share across worktrees
