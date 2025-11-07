@@ -339,6 +339,7 @@ impl InitWorkflow {
         // Phase 4: Devcontainer setup/validation
         if !self.options.skip_devcontainer {
             summary.devcontainer_status = self.setup_devcontainer(&workspace_path, stack)?;
+            self.ensure_branchbox_env(&workspace_path)?;
         } else {
             summary.devcontainer_status = DevcontainerStatus::None;
         }
@@ -759,6 +760,32 @@ impl InitWorkflow {
         Ok(DevcontainerStatus::Valid)
     }
 
+    fn ensure_branchbox_env(&self, workspace_path: &Path) -> Result<()> {
+        let env_path = workspace_path.join(".devcontainer/.branchbox.env");
+
+        if env_path.exists() {
+            return Ok(());
+        }
+
+        if self.options.dry_run {
+            println!("[DRY RUN] Would create placeholder {}", env_path.display());
+            return Ok(());
+        }
+
+        if let Some(parent) = env_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let contents = crate::bootstrap::templates::branchbox_env()?;
+        fs::write(&env_path, contents)?;
+
+        if self.options.verbose {
+            println!("✓ Created {}", env_path.display());
+        }
+
+        Ok(())
+    }
+
     /// Initialize BranchBox registry atomically
     ///
     /// Uses atomic file creation to prevent race conditions when multiple
@@ -1085,7 +1112,25 @@ impl Default for InitSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            std::env::set_var(key, value);
+            Self { key }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.key);
+        }
+    }
 
     fn create_test_repo(temp_dir: &TempDir) -> PathBuf {
         let repo_path = temp_dir.path().join("test-repo");
@@ -1831,6 +1876,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().join("test-nodejs-project");
         fs::create_dir(&repo_path).unwrap();
+
+        let projects_dir = temp_dir.path().join("projects");
+        let _projects_guard = EnvVarGuard::set("BRANCHBOX_PROJECTS_DIR", &projects_dir);
 
         fs::write(repo_path.join("package.json"), "{}").unwrap();
 

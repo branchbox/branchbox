@@ -62,7 +62,11 @@ impl DevcontainerModule {
         Self {
             source_dir: PathBuf::new(),
             strategy: SyncStrategy::Copy,
-            exclude: vec![".env".to_string(), ".gitignore".to_string()],
+            exclude: vec![
+                ".env".to_string(),
+                ".branchbox.env".to_string(),
+                ".gitignore".to_string(),
+            ],
         }
     }
 
@@ -418,12 +422,21 @@ pub struct SyncOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
 
     fn env_guard() -> MutexGuard<'static, ()> {
         static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("core crate lives under repo root")
+            .to_path_buf()
     }
 
     #[test]
@@ -516,6 +529,47 @@ mod tests {
     }
 
     #[test]
+    fn test_sync_preserves_canonical_devcontainer_files() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let feature = temp.path().join("feature");
+        let repo_devcontainer = repo_root().join(".devcontainer");
+
+        std::fs::create_dir_all(main.join(".devcontainer/scripts")).unwrap();
+
+        for file in ["compose.yaml", "devcontainer.json"] {
+            fs::copy(
+                repo_devcontainer.join(file),
+                main.join(".devcontainer").join(file),
+            )
+            .unwrap();
+        }
+        fs::copy(
+            repo_devcontainer.join("scripts/ensure-gitdir.sh"),
+            main.join(".devcontainer/scripts/ensure-gitdir.sh"),
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(&feature).unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.sync_to(&feature).unwrap();
+
+        let synced_compose =
+            fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
+        let expected_compose = fs::read_to_string(repo_devcontainer.join("compose.yaml")).unwrap();
+        assert_eq!(synced_compose, expected_compose);
+
+        let synced_devcontainer =
+            fs::read_to_string(feature.join(".devcontainer/devcontainer.json")).unwrap();
+        let expected_devcontainer =
+            fs::read_to_string(repo_devcontainer.join("devcontainer.json")).unwrap();
+        assert_eq!(synced_devcontainer, expected_devcontainer);
+    }
+
+    #[test]
     fn test_strategy_from_env_var() {
         let _guard = env_guard();
         let temp = TempDir::new().unwrap();
@@ -595,8 +649,9 @@ mod tests {
         std::fs::write(feature_dev.join("settings.json"), "old").unwrap();
         std::fs::write(feature_dev.join("stale.txt"), "remove me").unwrap();
         std::fs::write(feature_dev.join("stale_dir/nested.txt"), "remove me").unwrap();
-        // Simulate symlinked .env that should be preserved
+        // Simulate symlinked env artifacts that should be preserved
         std::fs::write(feature_dev.join(".env"), "SHOULD_STAY=1").unwrap();
+        std::fs::write(feature_dev.join(".branchbox.env"), "WORK_FEATURE=keep").unwrap();
 
         std::fs::create_dir_all(&feature).unwrap();
 
@@ -613,8 +668,11 @@ mod tests {
         assert!(!feature.join(".devcontainer/stale.txt").exists());
         assert!(!feature.join(".devcontainer/stale_dir").exists());
 
-        // Excluded .env should remain untouched
+        // Excluded env files should remain untouched
         assert!(feature.join(".devcontainer/.env").exists());
+        let managed_env =
+            std::fs::read_to_string(feature.join(".devcontainer/.branchbox.env")).unwrap();
+        assert!(managed_env.contains("WORK_FEATURE=keep"));
     }
 
     #[test]
