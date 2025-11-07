@@ -748,7 +748,6 @@ impl InitWorkflow {
                 println!("✓ Created devcontainer configuration");
             }
 
-            self.ensure_branchbox_env(path)?;
             return Ok(DevcontainerStatus::Created);
         }
 
@@ -757,35 +756,7 @@ impl InitWorkflow {
             println!("✓ Devcontainer configuration exists");
         }
 
-        self.ensure_branchbox_env(path)?;
         Ok(DevcontainerStatus::Valid)
-    }
-
-    fn ensure_branchbox_env(&self, path: &Path) -> Result<()> {
-        let devcontainer_dir = path.join(".devcontainer");
-        if !devcontainer_dir.exists() {
-            return Ok(());
-        }
-
-        let env_path = devcontainer_dir.join(".branchbox.env");
-        if env_path.exists() {
-            return Ok(());
-        }
-
-        let repo_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("main");
-
-        let mut content = String::from("# BranchBox configuration (managed by branchbox)\n");
-        content.push_str("WORK_FEATURE=main\n");
-        content.push_str(&format!("BRANCHBOX_MAIN_NAME={}\n", repo_name));
-        content.push_str("BRANCHBOX_MAIN_REPO=..\n");
-        content.push_str(&format!("DEVCONTAINER_NAME=branchbox-{}\n", repo_name));
-        content.push_str("GIT_BRANCH=main\n");
-
-        fs::write(env_path, content)?;
-        Ok(())
     }
 
     /// Initialize BranchBox registry atomically
@@ -977,7 +948,6 @@ impl InitWorkflow {
             ".branchbox/secure/",
             ".env",
             ".env.local",
-            ".devcontainer/.branchbox.env",
         ];
 
         let mut new_entries = Vec::new();

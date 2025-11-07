@@ -13,15 +13,130 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
+use std::collections::{hash_map::DefaultHasher, BTreeMap, HashSet};
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
+use std::time::Instant;
+
+/// Feature start execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StartMode {
+    #[default]
+    Full,
+    Minimal,
+}
+
+impl fmt::Display for StartMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            StartMode::Full => "full",
+            StartMode::Minimal => "minimal",
+        };
+        f.write_str(label)
+    }
+}
+
+/// Module execution status for feature workflows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ModuleStatus {
+    #[default]
+    Success,
+    Skipped,
+    Failed,
+}
+
+impl fmt::Display for ModuleStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ModuleStatus::Success => "success",
+            ModuleStatus::Skipped => "skipped",
+            ModuleStatus::Failed => "failed",
+        };
+        f.write_str(label)
+    }
+}
+
+/// Captures runtime outcome for a module during feature start.
+#[derive(Debug, Clone)]
+pub struct ModuleOutcome {
+    pub module: String,
+    pub status: ModuleStatus,
+    pub duration_ms: u64,
+    pub notes: Vec<String>,
+    pub forced: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ModuleSkipReason {
+    Requested,
+    MinimalDefault,
+    Auto,
+    Policy,
+}
+
+impl ModuleSkipReason {
+    pub fn description(&self) -> &'static str {
+        match self {
+            ModuleSkipReason::Requested => "Skipped via --skip-module",
+            ModuleSkipReason::MinimalDefault => "Skipped by minimal mode defaults",
+            ModuleSkipReason::Auto => "Automatically skipped by BranchBox configuration",
+            ModuleSkipReason::Policy => "Skipped due to policy enforcement",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleSkipRecord {
+    pub name: String,
+    pub reason: ModuleSkipReason,
+}
+
+fn register_module_skip(
+    module_skip: &mut Vec<String>,
+    skip_records: &mut Vec<ModuleSkipRecord>,
+    name: &str,
+    reason: ModuleSkipReason,
+) {
+    let normalized = name.to_ascii_lowercase();
+    if !module_skip
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&normalized))
+    {
+        module_skip.push(normalized.clone());
+    }
+
+    if !skip_records
+        .iter()
+        .any(|record| record.name.eq_ignore_ascii_case(&normalized))
+    {
+        skip_records.push(ModuleSkipRecord {
+            name: normalized,
+            reason,
+        });
+    }
+}
+
+fn load_policy_enforced_modules() -> HashSet<String> {
+    let mut modules = HashSet::new();
+
+    if let Ok(raw) = std::env::var("BRANCHBOX_POLICY_ENFORCED_MODULES") {
+        for value in raw.split(',') {
+            let normalized = value.trim().to_ascii_lowercase();
+            if !normalized.is_empty() {
+                modules.insert(normalized);
+            }
+        }
+    }
+
+    modules
+}
 
 /// Manages feature lifecycle workflows (start/teardown) using git worktrees.
 #[derive(Debug)]
@@ -42,6 +157,10 @@ pub struct StartRequest {
     pub telemetry: bool,
     /// List of module names to skip during setup (e.g., "tunnel", "database")
     pub skip_modules: Vec<String>,
+    /// Start mode (full or minimal)
+    pub mode: StartMode,
+    /// Optional prompt seed captured for agent/automation hand-off
+    pub prompt_seed: Option<String>,
 }
 
 /// Result of running feature start workflow.
@@ -58,6 +177,11 @@ pub struct StartSummary {
     pub module_reports: Vec<ModuleSetupReport>,
     pub warnings: Vec<String>,
     pub color: Option<String>,
+    pub mode: StartMode,
+    pub prompt_seed: Option<String>,
+    pub module_outcomes: Vec<ModuleOutcome>,
+    pub skipped_modules: Vec<ModuleSkipRecord>,
+    pub generated_at: DateTime<Utc>,
 }
 
 /// Module setup execution report.
@@ -73,6 +197,7 @@ pub struct ModuleSetupReport {
 struct ModuleSetupOutcome {
     reports: Vec<ModuleSetupReport>,
     warnings: Vec<String>,
+    executions: Vec<ModuleOutcome>,
 }
 
 #[derive(Debug, Default)]
@@ -266,7 +391,28 @@ impl FeatureWorkflow {
             }
         };
 
-        let mut module_skip = request.skip_modules.clone();
+        let mut module_skip: Vec<String> = Vec::new();
+        let mut skip_records: Vec<ModuleSkipRecord> = Vec::new();
+
+        for name in &request.skip_modules {
+            register_module_skip(
+                &mut module_skip,
+                &mut skip_records,
+                name,
+                ModuleSkipReason::Requested,
+            );
+        }
+
+        if matches!(request.mode, StartMode::Minimal) {
+            for default in ["devcontainer", "compose", "specs"] {
+                register_module_skip(
+                    &mut module_skip,
+                    &mut skip_records,
+                    default,
+                    ModuleSkipReason::MinimalDefault,
+                );
+            }
+        }
 
         if let Ok(config) = BranchBoxConfig::load(&self.repo_root) {
             let provider_is_cloudflared = config
@@ -285,16 +431,32 @@ impl FeatureWorkflow {
                             .map(|value| !value.trim().is_empty())
                             .unwrap_or(false);
 
-                    if has_credentials
-                        && !cloudflared.manual_instructions
-                        && !module_skip
-                            .iter()
-                            .any(|name| name.eq_ignore_ascii_case("tunnel"))
-                    {
-                        module_skip.push("tunnel".to_string());
+                    if !has_credentials || cloudflared.manual_instructions {
+                        register_module_skip(
+                            &mut module_skip,
+                            &mut skip_records,
+                            "tunnel",
+                            ModuleSkipReason::Auto,
+                        );
                     }
                 }
             }
+        }
+
+        let policy_enforced = load_policy_enforced_modules();
+        if !policy_enforced.is_empty() {
+            skip_records.retain(|record| {
+                if policy_enforced.contains(&record.name) {
+                    warnings.push(format!(
+                        "Module '{}' is policy enforced and will run even if minimal mode skips it.",
+                        record.name
+                    ));
+                    false
+                } else {
+                    true
+                }
+            });
+            module_skip.retain(|module| !policy_enforced.contains(module));
         }
 
         let modules::ModulePlan {
@@ -304,6 +466,8 @@ impl FeatureWorkflow {
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings.clone());
         }
+
+        let forced_modules = policy_enforced.clone();
 
         let env_outcome = self.prepare_env(
             &worktree_path,
@@ -320,13 +484,29 @@ impl FeatureWorkflow {
         if let Some(summary) = adapter_summary.as_ref() {
             std::env::set_var("SERVICE_URL", &summary.service_url);
         }
-        let setup_outcome = self.run_module_setup(handles, &worktree_path);
+        let setup_outcome = self.run_module_setup(handles, &worktree_path, &forced_modules);
         if !setup_outcome.warnings.is_empty() {
             warnings.extend(setup_outcome.warnings.clone());
         }
         match previous_service_url {
             Some(value) => std::env::set_var("SERVICE_URL", value),
             None => std::env::remove_var("SERVICE_URL"),
+        }
+        let mut module_outcomes = setup_outcome.executions.clone();
+        for record in &skip_records {
+            if module_outcomes
+                .iter()
+                .any(|outcome| outcome.module.eq_ignore_ascii_case(&record.name))
+            {
+                continue;
+            }
+            module_outcomes.push(ModuleOutcome {
+                module: record.name.clone(),
+                status: ModuleStatus::Skipped,
+                duration_ms: 0,
+                notes: vec![record.reason.description().to_string()],
+                forced: matches!(record.reason, ModuleSkipReason::Policy),
+            });
         }
         let module_reports = setup_outcome.reports;
         if !request.reuse_existing {
@@ -345,7 +525,7 @@ impl FeatureWorkflow {
             .map(|summary| summary.service_url.clone())
             .unwrap_or_else(|| "web:3000".to_string());
         let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
-            &request,
+            &module_skip,
             &work_feature,
             &worktree_path,
             feature_url.as_deref(),
@@ -358,6 +538,21 @@ impl FeatureWorkflow {
         let color = Some(generate_feature_color(&work_feature));
         let summary_color = color.clone();
         let last_commit = get_last_commit_sha(&self.repo_root, &branch_name);
+        let summary_generated_at = Utc::now();
+        let devcontainer_skipped = skip_records
+            .iter()
+            .any(|record| record.name.eq_ignore_ascii_case("devcontainer"));
+        let module_outcome_records: Vec<ModuleOutcomeRecord> = module_outcomes
+            .iter()
+            .map(|outcome| ModuleOutcomeRecord {
+                module: outcome.module.clone(),
+                status: outcome.status,
+                duration_ms: outcome.duration_ms,
+                notes: outcome.notes.clone(),
+                forced: outcome.forced,
+                recorded_at: Some(summary_generated_at),
+            })
+            .collect();
 
         if let Err(err) = self.state.record_start(FeatureMetadata {
             work_feature: work_feature.clone(),
@@ -369,15 +564,19 @@ impl FeatureWorkflow {
             env_path: env_path.clone(),
             tunnel: tunnel_state.clone(),
             status: FeatureStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: summary_generated_at,
+            updated_at: summary_generated_at,
             removed_at: None,
             color,
             pr_number: None, // Can be populated later via gh CLI integration
             last_commit,
-            devcontainer_outdated: false,
+            devcontainer_outdated: devcontainer_skipped,
             last_sync_at: None,
             sync_strategy: None,
+            start_mode: request.mode,
+            prompt_seed: request.prompt_seed.clone(),
+            module_outcomes: module_outcome_records.clone(),
+            last_summary_rendered_at: Some(summary_generated_at),
         }) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -406,6 +605,11 @@ impl FeatureWorkflow {
             module_reports,
             warnings,
             color: summary_color,
+            mode: request.mode,
+            prompt_seed: request.prompt_seed.clone(),
+            module_outcomes,
+            skipped_modules: skip_records,
+            generated_at: summary_generated_at,
         })
     }
 
@@ -846,11 +1050,11 @@ impl FeatureWorkflow {
 
         fs::write(&dest_env, base_env)?;
 
-        let app_slug = self.resolve_app_slug(&source_env)?;
-        std::env::set_var("BASE_PREFIX", &app_slug);
-
         let mut feature_url = None;
         let mut compose_project_name = None;
+
+        let app_slug = self.resolve_app_slug(&source_env)?;
+        std::env::set_var("BASE_PREFIX", &app_slug);
 
         match AppUrl::from_env_file(&source_env) {
             Ok(app_url) => {
@@ -858,6 +1062,17 @@ impl FeatureWorkflow {
                 let compose_name = format!("{}-{}", app_slug, work_feature);
                 std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
                 std::env::set_var("DEVCONTAINER_NAME", &compose_name);
+                let mut file = OpenOptions::new().append(true).open(&dest_env)?;
+                ensure_trailing_newline(&mut file)?;
+                writeln!(
+                    file,
+                    "# Feature-specific configuration (managed by branchbox)"
+                )?;
+                writeln!(file, "WORK_FEATURE={}", work_feature)?;
+                writeln!(file, "APP_URL={}", url)?;
+                writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
+                writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
+                writeln!(file, "GIT_BRANCH={}", branch_name)?;
 
                 feature_url = Some(url);
                 compose_project_name = Some(compose_name);
@@ -871,14 +1086,6 @@ impl FeatureWorkflow {
             }
         }
 
-        self.write_branchbox_env_file(
-            worktree_path,
-            work_feature,
-            branch_name,
-            feature_url.as_deref(),
-            compose_project_name.as_deref(),
-        )?;
-
         self.link_env_into_devcontainer(worktree_path)?;
 
         Ok(EnvOutcome {
@@ -887,52 +1094,6 @@ impl FeatureWorkflow {
             compose_project_name,
             skipped: false,
         })
-    }
-
-    fn write_branchbox_env_file(
-        &self,
-        worktree_path: &Path,
-        work_feature: &str,
-        branch_name: &str,
-        feature_url: Option<&str>,
-        compose_project_name: Option<&str>,
-    ) -> Result<()> {
-        let dev_dir = worktree_path.join(".devcontainer");
-        if !dev_dir.exists() {
-            fs::create_dir_all(&dev_dir)?;
-        }
-
-        let branchbox_env_path = dev_dir.join(".branchbox.env");
-        let mut branchbox_file = File::create(&branchbox_env_path)?;
-        writeln!(
-            branchbox_file,
-            "# BranchBox configuration (managed by branchbox)"
-        )?;
-        writeln!(branchbox_file, "WORK_FEATURE={}", work_feature)?;
-
-        let main_repo = self.repo_root.to_string_lossy();
-        writeln!(
-            branchbox_file,
-            "BRANCHBOX_MAIN_REPO={}",
-            format_env_value(main_repo.as_ref())
-        )?;
-        let main_name = self
-            .repo_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("main");
-        writeln!(branchbox_file, "BRANCHBOX_MAIN_NAME={}", main_name)?;
-
-        if let Some(url) = feature_url {
-            writeln!(branchbox_file, "APP_URL={}", url)?;
-        }
-        if let Some(compose) = compose_project_name {
-            writeln!(branchbox_file, "COMPOSE_PROJECT_NAME={}", compose)?;
-            writeln!(branchbox_file, "DEVCONTAINER_NAME={}", compose)?;
-        }
-
-        writeln!(branchbox_file, "GIT_BRANCH={}", branch_name)?;
-        Ok(())
     }
 
     fn prepare_adapter(
@@ -1112,44 +1273,42 @@ impl FeatureWorkflow {
         Ok(())
     }
 
-    pub fn ensure_branchbox_env_for_feature(&self, metadata: &FeatureMetadata) -> Result<()> {
-        let worktree_path = &metadata.worktree_path;
-        let dev_dir = worktree_path.join(".devcontainer");
-        if !dev_dir.exists() {
-            return Ok(());
-        }
-
-        let branchbox_env_path = dev_dir.join(".branchbox.env");
-        if branchbox_env_path.exists() {
-            return Ok(());
-        }
-
-        self.write_branchbox_env_file(
-            worktree_path,
-            &metadata.work_feature,
-            &metadata.branch_name,
-            metadata.feature_url.as_deref(),
-            metadata.compose_project_name.as_deref(),
-        )
-    }
-
     fn run_module_setup(
         &self,
         handles: Vec<ModuleHandle>,
         feature_dir: &Path,
+        forced_modules: &HashSet<String>,
     ) -> ModuleSetupOutcome {
         let mut reports = Vec::with_capacity(handles.len());
         let mut warnings = Vec::new();
+        let mut executions = Vec::with_capacity(handles.len());
         let mut successful: Vec<ModuleHandle> = Vec::new();
         let mut aborted = false;
 
         for mut handle in handles.into_iter() {
+            let normalized_name = handle.name.to_ascii_lowercase();
+            let forced = forced_modules.contains(&normalized_name);
             let mut report = ModuleSetupReport {
                 name: handle.name.clone(),
                 init_ok: false,
                 setup_ok: false,
                 errors: Vec::new(),
             };
+            let mut outcome = ModuleOutcome {
+                module: handle.name.clone(),
+                status: ModuleStatus::Success,
+                duration_ms: 0,
+                notes: Vec::new(),
+                forced,
+            };
+
+            if forced {
+                outcome
+                    .notes
+                    .push("Policy enforced module executed".to_string());
+            }
+
+            let start_instant = Instant::now();
 
             match handle.module.init(&self.repo_root, feature_dir) {
                 Ok(_) => {
@@ -1160,7 +1319,10 @@ impl FeatureWorkflow {
                             successful.push(handle);
                         }
                         Err(err) => {
-                            report.errors.push(err.to_string());
+                            let message = err.to_string();
+                            report.errors.push(message.clone());
+                            outcome.status = ModuleStatus::Failed;
+                            outcome.notes.push(message);
                             // Attempt best-effort cleanup for the module that failed during setup.
                             if let Err(teardown_err) =
                                 handle.module.teardown(&self.repo_root, feature_dir)
@@ -1172,19 +1334,33 @@ impl FeatureWorkflow {
                             }
                             aborted = true;
                             reports.push(report);
+                            outcome.duration_ms =
+                                start_instant.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                            executions.push(outcome);
                             break;
                         }
                     }
                 }
                 Err(err) => {
-                    report.errors.push(err.to_string());
+                    let message = err.to_string();
+                    report.errors.push(message.clone());
+                    outcome.status = ModuleStatus::Failed;
+                    outcome.notes.push(message);
                     aborted = true;
                     reports.push(report);
+                    outcome.duration_ms =
+                        start_instant.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    executions.push(outcome);
                     break;
                 }
             }
 
             reports.push(report);
+            if !aborted {
+                outcome.duration_ms =
+                    start_instant.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                executions.push(outcome);
+            }
         }
 
         if aborted {
@@ -1201,12 +1377,16 @@ impl FeatureWorkflow {
             }
         }
 
-        ModuleSetupOutcome { reports, warnings }
+        ModuleSetupOutcome {
+            reports,
+            warnings,
+            executions,
+        }
     }
 
     fn prepare_tunnel_state(
         &self,
-        request: &StartRequest,
+        skip_modules: &[String],
         work_feature: &str,
         feature_dir: &Path,
         hostname: Option<&str>,
@@ -1220,8 +1400,7 @@ impl FeatureWorkflow {
             service_url
         };
 
-        if request
-            .skip_modules
+        if skip_modules
             .iter()
             .any(|module| module.eq_ignore_ascii_case("tunnel"))
         {
@@ -1843,19 +2022,38 @@ impl FeatureWorkflow {
             return Ok(());
         }
 
+        // Extract the main repo name from the current path
+        // Path format: /path/to/main/.git/worktrees/feature-name
         let worktree_name = worktree_path
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| Error::validation("Cannot determine worktree name".to_string()))?;
 
-        let main_name = self
-            .repo_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("main");
+        // Try to find the main repo directory
+        let parent_dir = worktree_path
+            .parent()
+            .ok_or_else(|| Error::validation("Worktree has no parent directory".to_string()))?;
 
+        // Determine the main repo name from the absolute path
+        // Path format: /path/to/REPO_NAME/.git/worktrees/WORKTREE_NAME
+        let main_name = if parent_dir.join("main").exists() {
+            "main".to_string()
+        } else if let Some(git_idx) = current_path.find("/.git/worktrees/") {
+            // Extract REPO_NAME from the path
+            let before_git = &current_path[..git_idx];
+            if let Some(last_slash) = before_git.rfind('/') {
+                before_git[last_slash + 1..].to_string()
+            } else {
+                "main".to_string()
+            }
+        } else {
+            "main".to_string()
+        };
+
+        // Construct relative path using PathBuf for safer path manipulation
+        // Path: ../MAIN_NAME/.git/worktrees/WORKTREE_NAME
         let mut relative_path = PathBuf::from("..");
-        relative_path.push(main_name);
+        relative_path.push(&main_name);
         relative_path.push(".git");
         relative_path.push("worktrees");
         relative_path.push(worktree_name);
@@ -1879,18 +2077,9 @@ impl FeatureWorkflow {
     }
 }
 
-fn format_env_value(value: &str) -> String {
-    let safe = value.chars().all(|c| {
-        c.is_ascii_alphanumeric()
-            || matches!(c, '/' | '_' | '-' | '.' | ':' | '+' | '=' | '@' | '%')
-    });
-
-    if safe {
-        value.to_string()
-    } else {
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("\"{}\"", escaped)
-    }
+/// Helper to ensure the file ends with a newline before appending.
+fn ensure_trailing_newline(file: &mut File) -> io::Result<()> {
+    file.write_all(b"\n")
 }
 
 fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
@@ -2229,6 +2418,21 @@ impl FeatureTunnelState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleOutcomeRecord {
+    pub module: String,
+    #[serde(default)]
+    pub status: ModuleStatus,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default)]
+    pub forced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureMetadata {
     pub work_feature: String,
     pub branch_name: String,
@@ -2271,6 +2475,18 @@ pub struct FeatureMetadata {
     /// Last devcontainer sync strategy that was applied (copy/symlink).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_strategy: Option<String>,
+    /// Mode used when starting the feature (full/minimal).
+    #[serde(default)]
+    pub start_mode: StartMode,
+    /// Optional prompt seed captured during feature start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_seed: Option<String>,
+    /// Recorded module outcomes for the feature start operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_outcomes: Vec<ModuleOutcomeRecord>,
+    /// Timestamp when the CLI rendered the summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_summary_rendered_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2320,6 +2536,15 @@ impl FeatureStateStore {
             }
             if metadata.sync_strategy.is_none() {
                 metadata.sync_strategy = existing.sync_strategy.clone();
+            }
+            if metadata.module_outcomes.is_empty() && !existing.module_outcomes.is_empty() {
+                metadata.module_outcomes = existing.module_outcomes.clone();
+            }
+            if metadata.last_summary_rendered_at.is_none() {
+                metadata.last_summary_rendered_at = existing.last_summary_rendered_at;
+            }
+            if metadata.prompt_seed.is_none() {
+                metadata.prompt_seed = existing.prompt_seed.clone();
             }
             *existing = metadata;
         } else {
@@ -2806,6 +3031,10 @@ mod tests {
             devcontainer_outdated: false,
             last_sync_at: None,
             sync_strategy: None,
+            start_mode: StartMode::Full,
+            prompt_seed: None,
+            module_outcomes: Vec::new(),
+            last_summary_rendered_at: None,
         };
 
         store.record_start(metadata.clone()).unwrap();
@@ -2840,6 +3069,10 @@ mod tests {
             devcontainer_outdated: false,
             last_sync_at: None,
             sync_strategy: None,
+            start_mode: StartMode::Full,
+            prompt_seed: None,
+            module_outcomes: Vec::new(),
+            last_summary_rendered_at: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -2876,6 +3109,10 @@ mod tests {
             devcontainer_outdated: false,
             last_sync_at: None,
             sync_strategy: None,
+            start_mode: StartMode::Full,
+            prompt_seed: None,
+            module_outcomes: Vec::new(),
+            last_summary_rendered_at: None,
         };
 
         store.record_start(metadata1).unwrap();
@@ -2900,6 +3137,10 @@ mod tests {
             devcontainer_outdated: false,
             last_sync_at: None,
             sync_strategy: None,
+            start_mode: StartMode::Full,
+            prompt_seed: None,
+            module_outcomes: Vec::new(),
+            last_summary_rendered_at: None,
         };
 
         store.record_start(metadata2).unwrap();
@@ -2937,6 +3178,10 @@ mod tests {
             devcontainer_outdated: false,
             last_sync_at: None,
             sync_strategy: None,
+            start_mode: StartMode::Full,
+            prompt_seed: None,
+            module_outcomes: Vec::new(),
+            last_summary_rendered_at: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -3030,16 +3275,8 @@ mod tests {
         let env_path = summary.worktree_path.join(".env");
         assert!(env_path.exists());
         let env_content = fs::read_to_string(&env_path).unwrap();
-        assert!(env_content.contains("APP_URL=dev.example.com"));
-        let branchbox_env = fs::read_to_string(
-            summary
-                .worktree_path
-                .join(".devcontainer")
-                .join(".branchbox.env"),
-        )
-        .unwrap();
-        assert!(branchbox_env.contains("WORK_FEATURE=test-feature"));
-        assert!(branchbox_env.contains("APP_URL=dev-test-feature.example.com"));
+        assert!(env_content.contains("WORK_FEATURE=test-feature"));
+        assert!(env_content.contains("APP_URL=dev-test-feature.example.com"));
         assert_eq!(
             summary.feature_url.as_deref(),
             Some("dev-test-feature.example.com")
@@ -3341,20 +3578,9 @@ mod tests {
             .iter()
             .any(|w| w.contains("Existing feature-specific configuration replaced")));
 
-        let branchbox_env = fs::read_to_string(
-            summary
-                .worktree_path
-                .join(".devcontainer")
-                .join(".branchbox.env"),
-        )
-        .unwrap();
-        assert!(branchbox_env.contains("WORK_FEATURE=reuse-env"));
-        assert!(!branchbox_env.contains("OLD_VALUE"));
-
-        let refreshed_env =
-            fs::read_to_string(summary.worktree_path.join(".env")).expect("env exists");
-        assert!(refreshed_env.contains("APP_URL=dev.example.com"));
-        assert!(!refreshed_env.contains("OLD_VALUE"));
+        let env_content = fs::read_to_string(summary.worktree_path.join(".env")).unwrap();
+        assert!(env_content.contains("WORK_FEATURE=reuse-env"));
+        assert!(!env_content.contains("OLD_VALUE"));
     }
 
     #[test]
@@ -3462,39 +3688,11 @@ mod tests {
 
     #[test]
     fn test_fix_git_worktree_path_converts_absolute() {
-        let temp_dir = TempDir::new().unwrap();
-        let repo_path = temp_dir.path().join("trunk");
-        fs::create_dir_all(&repo_path).unwrap();
-
-        Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        fs::write(repo_path.join("README.md"), "# Test Repo\n").unwrap();
-        Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
 
         // Create a mock worktree directory
-        let worktree_path = repo_path.parent().unwrap().join("feature-test");
+        let worktree_path = repo_path.join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
         // Write a .git file with absolute path
@@ -3502,31 +3700,20 @@ mod tests {
         fs::write(
             &git_file,
             format!(
-                "gitdir: {}/.git/worktrees/feature-test\n",
+                "gitdir: {}/main/.git/worktrees/feature-test\n",
                 repo_path.display()
             ),
         )
         .unwrap();
 
         // Create the workflow and fix the path
-        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
         // Verify the path was converted to relative
         let content = fs::read_to_string(&git_file).unwrap();
-        let repo_name = workflow
-            .repo_root()
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("main");
-        let expected_prefix = format!("gitdir: ../{}/.git/worktrees/feature-test", repo_name);
-        assert!(
-            content.starts_with(&expected_prefix),
-            "expected prefix '{}', got '{}'",
-            expected_prefix,
-            content.trim()
-        );
+        assert!(content.starts_with("gitdir: ../main/.git/worktrees/feature-test"));
         assert!(!content.contains(repo_path.to_str().unwrap()));
     }
 
@@ -3535,7 +3722,7 @@ mod tests {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
 
-        let worktree_path = repo_path.parent().unwrap().join("feature-test");
+        let worktree_path = repo_path.join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
         // Write a .git file with already-relative path
@@ -3595,58 +3782,29 @@ mod tests {
 
     #[test]
     fn test_fix_git_worktree_path_non_standard_main_name() {
-        let temp_dir = TempDir::new().unwrap();
-        let repo_container = temp_dir.path();
-        let repo_path = repo_container.join("trunk");
-        fs::create_dir_all(&repo_path).unwrap();
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
 
-        Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        fs::write(repo_path.join("README.md"), "# Test Repo\n").unwrap();
-        Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-
-        // Create a worktree sibling to the main repo
-        let worktree_path = repo_container.join("feature-test");
+        // Create a worktree with a non-standard main repo name
+        let worktree_path = repo_path.join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
-        // Simulate git recording an absolute path
+        // Simulate a main repo named "trunk" instead of "main"
         let git_file = worktree_path.join(".git");
         fs::write(
             &git_file,
             format!(
-                "gitdir: {}/.git/worktrees/feature-test\n",
+                "gitdir: {}/trunk/.git/worktrees/feature-test\n",
                 repo_path.display()
             ),
         )
         .unwrap();
 
-        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
-        // Verify it extracted "trunk" from the repo root
+        // Verify it extracted "trunk" from the path
         let content = fs::read_to_string(&git_file).unwrap();
         assert!(content.starts_with("gitdir: ../trunk/.git/worktrees/feature-test"));
     }

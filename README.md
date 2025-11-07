@@ -27,9 +27,9 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
 
 ## Documentation
 
-- **Docs site:** https://branchbox.github.io/branchbox/ (built with mdBook and deployed from `main`)
-- **Source:** `docs/` (run `mdbook build docs` locally to preview)
-- **CLI reference:** regenerate via `./docs/scripts/render-cli-reference.sh` after changing command flags
+- **Docs site:** https://branchbox.github.io/branchbox/ (built with Docusaurus, deployed from `main`)
+- **Source:** `docs/` — run `cd docs && npm install && npm run build` to preview locally
+- **CLI reference:** update `docs/docs/reference/cli.md` whenever command flags change (capture `branchbox --help` output)
 
 ## Why BranchBox?
 
@@ -75,6 +75,23 @@ branchbox feature start "Add OAuth Integration"
 - Detected Rails stack and provided database setup instructions
 - Created feature spec in `docs/features/in-progress/oauth-integration.md`
 
+### Fast Path & Prompt Seeds
+
+Need a lightweight worktree to spike an idea? Use the new alias and minimal mode preview:
+
+```bash
+BRANCHBOX_ENABLE_FAST_MODE=1 \
+branchbox feature new backlog-quick-fix \
+  --minimal \
+  --prompt "Triage the specs table overflow" \
+  --json
+```
+
+Highlights:
+- Minimal mode skips the devcontainer, compose, and specs modules (you can still skip others via `--skip-module`). The CLI prints a reminder to run `branchbox devcontainer sync` when you want full provisioning.
+- Prompt seeds (up to 2,000 characters) are stored in the registry so the forthcoming agent bridge can resume context. The summary reports whether `BRANCHBOX_ENABLE_PROMPT_BRIDGE` is active.
+- `--json` mirrors the on-screen summary (module table, skipped modules, warnings, prompt metadata) so automation can ingest it directly. Add `--no-summary` for machine-only output.
+
 ### Working on Your Feature
 
 ```bash
@@ -99,12 +116,15 @@ git push -u origin feature/oauth-integration
 ```bash
 branchbox feature list
 
-# Output:
-# Active features:
-#   oauth-integration       feature/oauth-integration       /Users/you/projects/your-app-oauth-integration/
-#   api-refactor           feature/api-refactor           /Users/you/projects/your-app-api-refactor/
-#   payment-integration    feature/payment-integration    /Users/you/projects/your-app-payment-integration/
+# Output (abbreviated):
+# 📚 Feature registry — 3 active · 0 removed (showing 3/3)
+# Feature             Status  Mode    Prompt            Modules           Branch                       URL                       Tunnel   Devcontainer  PR  Color    Updated
+# oauth-integration   Active  full    —                 4 ok / 1 skip     feature/oauth-integration    https://dev-oauth.local   —        synced 2025-11-03  —  #7a6bff  2025-11-03 10:12
+# backlog-quick-fix   Active  minimal seed (28 chars)   0 fail / 3 skip   feature/backlog-quick-fix    https://dev-backlog.local pending  outdated        —  #8d68ff  2025-11-05 14:20
+# api-refactor        Active  full    seed (41 chars)   5 ok              feature/api-refactor         https://dev-api.local     active   synced 2025-11-04  #42c9f0  #ff6b6b  2025-11-04 09:55
 ```
+
+Use `branchbox feature list --json` when you need machine-readable data; entries include `start_mode`, `prompt_seed`, each module outcome, and the last summary timestamp.
 
 ### Cleaning Up After Merge
 

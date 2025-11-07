@@ -14,12 +14,11 @@ Isolated development environments for every feature
 Usage: branchbox <COMMAND>
 
 Commands:
-  init          Initialize project with devcontainer and BranchBox registry
-  devcontainer  Manage devcontainer configuration
-  detect        Detect project configuration
-  name          Feature name utilities
-  feature       Manage feature worktrees
-  help          Print this message or the help of the given subcommand(s)
+  init     Initialize project with devcontainer and BranchBox registry
+  detect   Detect project configuration
+  name     Feature name utilities
+  feature  Manage feature worktrees
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
@@ -27,8 +26,6 @@ Options:
 ```
 
 ## branchbox init
-
-*Alias: `branchbox bootstrap`*
 
 ```text
 Initialize project with devcontainer and BranchBox registry
@@ -51,35 +48,6 @@ Options:
   -y, --yes                   Non-interactive mode (use defaults, answer yes to prompts)
   -v, --verbose               Verbose output
   -h, --help                  Print help
-```
-
-## branchbox devcontainer
-
-```text
-Manage devcontainer configuration
-
-Usage: branchbox devcontainer <COMMAND>
-
-Commands:
-  sync  Sync devcontainer configuration to all feature worktrees
-  help  Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help  Print help
-```
-
-## branchbox devcontainer sync
-
-```text
-Sync devcontainer configuration to all feature worktrees
-
-Usage: branchbox devcontainer sync [OPTIONS]
-
-Options:
-  -p, --path <PATH>          Project directory (defaults to current directory)
-  -s, --strategy <STRATEGY>  Sync strategy (copy or symlink)
-  -n, --dry-run              Dry run - show what would be synced without making changes
-  -h, --help                 Print help
 ```
 
 ## branchbox detect
@@ -157,6 +125,8 @@ Options:
 
 ## branchbox feature start
 
+Alias: `branchbox feature new`
+
 ```text
 Create a new feature worktree and run module setup
 
@@ -173,8 +143,25 @@ Options:
       --reuse                          Allow reusing an existing worktree directory
       --telemetry                      Emit verbose telemetry (e.g. Cloudflare operations)
       --skip-module <MODULE>           Skip specific modules during setup (can be specified multiple times) Available modules: compose, database, tunnel, specs
+      --minimal                        Start feature workflow in minimal mode (skips devcontainer/compose/specs) — gated by BRANCHBOX_ENABLE_FAST_MODE
+      --fast                           Hidden alias for --minimal
+      --prompt <PROMPT>                Provide a prompt seed (trimmed to 2,000 characters) for future agent hand-off
+      --json                           Emit a JSON summary instead of human-readable output
+      --no-summary                     Suppress the text summary (ignored when --json is set)
   -h, --help                           Print help
 ```
+
+Minimal/fast mode skips heavyweight modules (`devcontainer`, `compose`, `specs`) and prints a reminder to finish provisioning later. Policy-enforced modules listed in `BRANCHBOX_POLICY_ENFORCED_MODULES` always run even when skipped elsewhere. Use `--prompt` to capture a seed hand-off for the forthcoming agent bridge; the CLI truncates it at 2,000 characters and records its length in the summary. Combine `--json` with `--no-summary` for automation-friendly output.
+
+### Feature Start Summary
+
+Every `feature start` (and `feature new`) run ends with:
+- A headline summarizing the mode (`full` or `minimal`), worktree path, branch, workspace color, feature URL, compose project, and `.env` path.
+- Adapter information (name + service URL) plus prompt-seed status with awareness of `BRANCHBOX_ENABLE_PROMPT_BRIDGE`.
+- A tabular breakdown of all modules with status (`success`, `skipped`, `failed`), duration, notes, and forced markers for policy-required modules.
+- Explicit “Skipped modules” and “Warnings” sections, along with next steps for minimal starts (`branchbox devcontainer sync`, etc.).
+
+Pass `--json` to receive the same data as structured JSON (including `module_outcomes`, `skipped_modules`, and telemetry flags) and parse it inside automation such as the forthcoming agent daemon or control plane.
 
 ## branchbox feature list
 
@@ -186,10 +173,17 @@ Usage: branchbox feature list [OPTIONS]
 Options:
       --repo <REPO>      Repository path (defaults to current directory)
       --status <STATUS>  Filter by status (active, removed)
-      --all              Include removed features even if --status is not provided
-      --json             Emit JSON output instead of human-readable summary
+      --all              Show all entries regardless of status
+      --json             Emit JSON output (includes start_mode, prompt_seed, module_outcomes, etc.)
   -h, --help             Print help
 ```
+
+The tabular output now surfaces:
+- `Mode` — how the feature started (`full` vs `minimal`).
+- `Prompt` — whether a prompt seed is stored (and its character count).
+- `Modules` — summary counts for module outcomes (`ok/skip/fail/forced`), helping operators spot failures at a glance.
+
+Combine `--json` with existing filters to feed workflows or dashboards. JSON entries include the stored `module_outcomes`, `prompt_seed`, and timestamps so downstream systems can render richer health signals without rerunning `feature start`.
 
 ## branchbox feature teardown
 

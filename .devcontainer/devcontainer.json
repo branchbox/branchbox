@@ -1,42 +1,8 @@
-// For format details, see https://containers.dev/implementors/json_reference/
 {
-  "name": "Worktree Manager",
-  "dockerComposeFile": "compose.yaml",
-  "service": "rust-dev",
-  "workspaceFolder": "/workspaces",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached",
-
-  // Features to add to the dev container
-  "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "20"
-    },
-    "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {},
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "moby": "false"
-    }
-  },
-
   "containerEnv": {
     "DOCKER_CONTAINER": "true",
     "RUST_BACKTRACE": "1"
   },
-
-  // Use 'forwardPorts' to make ports available locally
-  "forwardPorts": [50051],
-
-  // Use 'postCreateCommand' to run commands after container creation
-  "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version'",
-  "postStartCommand": "bash .devcontainer/scripts/ensure-gitdir.sh",
-
-  // Run args
-  "runArgs": [
-    "--ipc=host",
-    "--init"
-  ],
-
-  // VS Code customizations
   "customizations": {
     "vscode": {
       "extensions": [
@@ -49,16 +15,40 @@
         "johnpapa.vscode-peacock"
       ],
       "settings": {
-        "rust-analyzer.check": {
-          "command": "clippy"
-        },
-        "rust-analyzer.checkOnSave": true,
-        "rust-analyzer.cargo.features": "all",
         "[rust]": {
           "editor.defaultFormatter": "rust-lang.rust-analyzer",
           "editor.formatOnSave": true
-        }
+        },
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.check": {
+          "command": "clippy"
+        },
+        "rust-analyzer.checkOnSave": true
       }
     }
-  }
+  },
+  "dockerComposeFile": "compose.yaml",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": "false"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
+  },
+  "forwardPorts": [
+    50051
+  ],
+  "name": "Worktree Manager",
+  "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version'",
+  "postStartCommand": "bash .devcontainer/scripts/ensure-gitdir.sh",
+  "runArgs": [
+    "--ipc=host",
+    "--init"
+  ],
+  "service": "rust-dev",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
 }

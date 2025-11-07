@@ -1,14 +1,17 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::{Args, Subcommand};
-use std::path::PathBuf;
+use serde_json::json;
+use std::{env, path::PathBuf};
 use worktree_core::workflows::feature::{
-    FeatureStatus, FeatureWorkflow, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+    FeatureMetadata, FeatureStatus, FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord,
+    ModuleStatus, StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
 };
 
 #[derive(Subcommand)]
 pub enum FeatureCommands {
     /// Create a new feature worktree and run module setup
+    #[command(alias = "new")]
     Start(FeatureStartArgs),
 
     /// Tear down an existing feature worktree
@@ -51,6 +54,26 @@ pub struct FeatureStartArgs {
     /// Available modules: compose, database, tunnel, specs
     #[arg(long = "skip-module", value_name = "MODULE")]
     pub skip_modules: Vec<String>,
+
+    /// Start feature workflow in minimal mode (skips heavyweight modules)
+    #[arg(long)]
+    pub minimal: bool,
+
+    /// Alias for --minimal (hidden)
+    #[arg(long = "fast", hide = true)]
+    pub fast: bool,
+
+    /// Provide an optional prompt seed for automation/agent hand-off
+    #[arg(long)]
+    pub prompt: Option<String>,
+
+    /// Emit JSON summary payload instead of human-readable text
+    #[arg(long)]
+    pub json: bool,
+
+    /// Suppress summary output (text mode only)
+    #[arg(long = "no-summary")]
+    pub no_summary: bool,
 }
 
 #[derive(Args)]
@@ -120,7 +143,39 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         reuse,
         telemetry,
         skip_modules,
+        minimal,
+        fast,
+        prompt,
+        json,
+        no_summary,
     } = args;
+
+    let mut mode = if minimal || fast {
+        StartMode::Minimal
+    } else {
+        StartMode::Full
+    };
+
+    let fast_mode_enabled = env_flag("BRANCHBOX_ENABLE_FAST_MODE");
+    if mode == StartMode::Minimal && !fast_mode_enabled {
+        println!(
+            "⚠️  Minimal mode disabled. Set BRANCHBOX_ENABLE_FAST_MODE=1 to enable the preview; running full mode instead."
+        );
+        mode = StartMode::Full;
+    }
+
+    const PROMPT_MAX_CHARS: usize = 2000;
+    let mut prompt_seed = prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(ref mut seed) = prompt_seed {
+        let len = seed.chars().count();
+        if len > PROMPT_MAX_CHARS {
+            let truncated: String = seed.chars().take(PROMPT_MAX_CHARS).collect();
+            println!("⚠️  Prompt truncated to {PROMPT_MAX_CHARS} characters before storage.");
+            *seed = truncated;
+        }
+    }
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
@@ -133,10 +188,12 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         reuse_existing: reuse,
         telemetry,
         skip_modules,
+        mode,
+        prompt_seed: prompt_seed.clone(),
     };
 
     let summary = workflow.start(request)?;
-    print_start_summary(&summary);
+    print_start_summary(&summary, json, no_summary)?;
 
     Ok(())
 }
@@ -206,6 +263,9 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
     let headers = [
         "Feature",
         "Status",
+        "Mode",
+        "Prompt",
+        "Modules",
         "Branch",
         "URL",
         "Tunnel",
@@ -223,49 +283,25 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
 
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(features.len());
     for feature in features {
-        let url = feature
-            .feature_url
-            .as_ref()
-            .map(|url| format!("https://{}", url))
-            .unwrap_or_else(|| "—".to_string());
-
-        let tunnel = feature
-            .tunnel
-            .as_ref()
-            .map(|state| {
-                let mut label = state.status.to_string();
-                if let Some(host) = state.hostname.as_ref() {
-                    if !host.is_empty() {
-                        label = format!("{label} ({host})");
-                    }
-                }
-                label
-            })
-            .unwrap_or_else(|| "—".to_string());
-
-        let devcontainer = if feature.devcontainer_outdated {
-            "outdated".to_string()
-        } else if let Some(sync_at) = feature.last_sync_at.as_ref() {
-            format!(
-                "synced {}",
-                sync_at.with_timezone(&Local).format("%Y-%m-%d")
-            )
-        } else {
-            "never".to_string()
-        };
-
+        let url = feature_url_for_list(&feature);
+        let tunnel = tunnel_summary_for_list(&feature);
+        let devcontainer = devcontainer_status_for_list(&feature);
         let pr = feature
             .pr_number
             .map(|number| format!("#{number}"))
             .unwrap_or_else(|| "—".to_string());
-
         let color = feature.color.as_deref().unwrap_or("—").to_string();
         let updated = format_ts(&feature.updated_at);
+        let prompt = summarize_prompt_seed(feature.prompt_seed.as_ref());
+        let module_health = summarize_module_health(&feature.module_outcomes);
 
         let row = vec![
-            feature.work_feature,
+            feature.work_feature.clone(),
             feature.status.to_string(),
-            feature.branch_name,
+            feature.start_mode.to_string(),
+            prompt,
+            module_health,
+            feature.branch_name.clone(),
             url,
             tunnel,
             devcontainer,
@@ -309,6 +345,92 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
     Ok(())
 }
 
+fn feature_url_for_list(feature: &FeatureMetadata) -> String {
+    feature
+        .feature_url
+        .as_ref()
+        .map(|url| format!("https://{}", url))
+        .unwrap_or_else(|| "—".to_string())
+}
+
+fn tunnel_summary_for_list(feature: &FeatureMetadata) -> String {
+    feature
+        .tunnel
+        .as_ref()
+        .map(|state| {
+            let mut label = state.status.to_string();
+            if let Some(host) = state.hostname.as_ref() {
+                if !host.is_empty() {
+                    label = format!("{label} ({host})");
+                }
+            }
+            label
+        })
+        .unwrap_or_else(|| "—".to_string())
+}
+
+fn devcontainer_status_for_list(feature: &FeatureMetadata) -> String {
+    if feature.devcontainer_outdated {
+        "outdated".to_string()
+    } else if let Some(sync_at) = feature.last_sync_at.as_ref() {
+        format!(
+            "synced {}",
+            sync_at.with_timezone(&Local).format("%Y-%m-%d")
+        )
+    } else {
+        "never".to_string()
+    }
+}
+
+fn summarize_prompt_seed(seed: Option<&String>) -> String {
+    match seed {
+        Some(value) => format!("seed ({} chars)", value.chars().count()),
+        None => "—".to_string(),
+    }
+}
+
+fn summarize_module_health(outcomes: &[ModuleOutcomeRecord]) -> String {
+    if outcomes.is_empty() {
+        return "—".to_string();
+    }
+
+    let mut success = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+    let mut forced = 0;
+
+    for outcome in outcomes {
+        match outcome.status {
+            ModuleStatus::Success => success += 1,
+            ModuleStatus::Skipped => skipped += 1,
+            ModuleStatus::Failed => failed += 1,
+        }
+        if outcome.forced {
+            forced += 1;
+        }
+    }
+
+    let mut parts = Vec::new();
+    if failed > 0 {
+        parts.push(format!("{failed} fail"));
+    }
+    if success > 0 {
+        parts.push(format!("{success} ok"));
+    }
+    if skipped > 0 {
+        parts.push(format!("{skipped} skip"));
+    }
+    if forced > 0 {
+        parts.push(format!("{forced} forced"));
+    }
+
+    if parts.is_empty() {
+        "pending".to_string()
+    } else {
+        parts.join(" / ")
+    }
+}
+
 fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     let FeatureTeardownArgs {
         name,
@@ -338,8 +460,76 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_start_summary(summary: &StartSummary) {
-    println!("🚀 Feature workspace ready");
+fn print_start_summary(
+    summary: &StartSummary,
+    json_output: bool,
+    suppress_summary: bool,
+) -> Result<()> {
+    let prompt_bridge_enabled = env_flag("BRANCHBOX_ENABLE_PROMPT_BRIDGE");
+
+    if json_output {
+        let module_outcomes_json: Vec<_> = summary
+            .module_outcomes
+            .iter()
+            .map(|outcome| {
+                json!({
+                    "module": outcome.module,
+                    "status": outcome.status.to_string(),
+                    "duration_ms": outcome.duration_ms,
+                    "notes": outcome.notes,
+                    "forced": outcome.forced,
+                })
+            })
+            .collect();
+
+        let skipped_modules_json: Vec<_> = summary
+            .skipped_modules
+            .iter()
+            .map(|record| {
+                json!({
+                    "module": record.name,
+                    "reason": record.reason.description(),
+                })
+            })
+            .collect();
+
+        let adapter_json = summary.adapter.as_ref().map(|adapter| {
+            json!({
+                "name": adapter.name,
+                "service_url": adapter.service_url,
+                "warnings": adapter.warnings,
+            })
+        });
+
+        let tunnel_json = match summary.tunnel.as_ref() {
+            Some(tunnel) => Some(serde_json::to_value(tunnel)?),
+            None => None,
+        };
+
+        let payload = json!({
+            "work_feature": summary.work_feature,
+            "branch_name": summary.branch_name,
+            "worktree_path": summary.worktree_path.display().to_string(),
+            "mode": summary.mode.to_string(),
+            "prompt_seed": summary.prompt_seed.as_ref(),
+            "feature_url": summary.feature_url.as_ref(),
+            "compose_project_name": summary.compose_project_name.as_ref(),
+            "env_path": summary.env_path.as_ref().map(|path| path.display().to_string()),
+            "color": summary.color.as_ref(),
+            "module_outcomes": module_outcomes_json,
+            "skipped_modules": skipped_modules_json,
+            "warnings": &summary.warnings,
+            "adapter": adapter_json,
+            "tunnel": tunnel_json,
+            "prompt_bridge_enabled": prompt_bridge_enabled,
+            "generated_at": summary.generated_at.to_rfc3339(),
+        });
+
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!("🚀 Feature workspace ready ({})", summary.mode);
     println!("  Worktree: {}", summary.worktree_path.display());
     println!("  Branch: {}", summary.branch_name);
     if let Some(color) = summary.color.as_ref() {
@@ -364,29 +554,51 @@ fn print_start_summary(summary: &StartSummary) {
         }
     }
 
-    if !summary.module_reports.is_empty() {
-        println!();
-        println!("Modules:");
-        for report in &summary.module_reports {
-            let status = match (report.init_ok, report.setup_ok) {
-                (true, true) => "ok",
-                (true, false) => "partial",
-                _ => "failed",
-            };
-            println!("  - {} ({})", report.name, status);
-            for error in &report.errors {
-                println!("      • {}", error);
+    match summary.prompt_seed.as_ref() {
+        Some(seed) => {
+            let length = seed.chars().count();
+            if prompt_bridge_enabled {
+                println!("  Prompt seed stored (length: {length} chars)");
+            } else {
+                println!(
+                    "  Prompt seed stored locally (length: {length} chars; prompt bridge disabled)"
+                );
+            }
+        }
+        None => println!("  Prompt seed stored: no"),
+    }
+
+    if !suppress_summary {
+        if !summary.module_outcomes.is_empty() {
+            println!();
+            print_module_outcome_table(&summary.module_outcomes);
+        }
+
+        if !summary.skipped_modules.is_empty() {
+            println!();
+            println!("Skipped modules:");
+            for record in &summary.skipped_modules {
+                println!("  - {} ({})", record.name, record.reason.description());
+            }
+        }
+
+        if summary.mode == StartMode::Minimal && !summary.skipped_modules.is_empty() {
+            println!();
+            println!(
+                "Next: run `branchbox devcontainer sync` or targeted module commands when you're ready to fully provision."
+            );
+        }
+
+        if !summary.warnings.is_empty() {
+            println!();
+            println!("Warnings:");
+            for warning in &summary.warnings {
+                println!("  - {}", warning);
             }
         }
     }
 
-    if !summary.warnings.is_empty() {
-        println!();
-        println!("Warnings:");
-        for warning in &summary.warnings {
-            println!("  - {}", warning);
-        }
-    }
+    Ok(())
 }
 
 fn print_teardown_summary(summary: &TeardownSummary) {
@@ -429,5 +641,99 @@ fn print_teardown_summary(summary: &TeardownSummary) {
         for warning in &summary.warnings {
             println!("  - {}", warning);
         }
+    }
+}
+
+fn print_module_outcome_table(outcomes: &[ModuleOutcome]) {
+    let mut rows: Vec<(String, String, String, String)> = Vec::with_capacity(outcomes.len());
+    let mut name_w = "Module".len();
+    let mut status_w = "Status".len();
+    let mut duration_w = "Duration".len();
+    let mut notes_w = "Notes".len();
+
+    for outcome in outcomes {
+        let mut status = outcome.status.to_string();
+        if outcome.forced {
+            status.push('*');
+        }
+        let duration = if outcome.status == ModuleStatus::Skipped {
+            "—".to_string()
+        } else {
+            format_duration(outcome.duration_ms)
+        };
+        let notes = if outcome.notes.is_empty() {
+            String::new()
+        } else {
+            outcome.notes.join("; ")
+        };
+
+        name_w = name_w.max(outcome.module.len());
+        status_w = status_w.max(status.len());
+        duration_w = duration_w.max(duration.len());
+        notes_w = notes_w.max(notes.len());
+
+        rows.push((outcome.module.clone(), status, duration, notes));
+    }
+
+    let notes_w = notes_w.max(1);
+
+    let border = format!(
+        "+-{name}-+-{status}-+-{duration}-+-{notes}-+",
+        name = "-".repeat(name_w),
+        status = "-".repeat(status_w),
+        duration = "-".repeat(duration_w),
+        notes = "-".repeat(notes_w),
+    );
+    let header = format!(
+        "| {name:<name_w$} | {status:<status_w$} | {duration:<duration_w$} | {notes:<notes_w$} |",
+        name = "Module",
+        status = "Status",
+        duration = "Duration",
+        notes = "Notes",
+        name_w = name_w,
+        status_w = status_w,
+        duration_w = duration_w,
+        notes_w = notes_w,
+    );
+
+    println!("{border}");
+    println!("{header}");
+    println!("{border}");
+
+    for (name, status, duration, notes) in rows {
+        println!(
+            "| {name:<name_w$} | {status:<status_w$} | {duration:<duration_w$} | {notes:<notes_w$} |",
+            name = name,
+            status = status,
+            duration = duration,
+            notes = notes,
+            name_w = name_w,
+            status_w = status_w,
+            duration_w = duration_w,
+            notes_w = notes_w,
+        );
+    }
+
+    println!("{border}");
+    if outcomes.iter().any(|outcome| outcome.forced) {
+        println!("(*) Forced module executed due to policy requirements.");
+    }
+}
+
+fn format_duration(duration_ms: u64) -> String {
+    if duration_ms == 0 {
+        "0.00s".to_string()
+    } else {
+        format!("{:.2}s", duration_ms as f64 / 1000.0)
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
     }
 }

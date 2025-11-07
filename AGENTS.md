@@ -18,6 +18,8 @@ Unit tests live beside their modules under `#[cfg(test)]`; grow integration cove
 ## Commit & Pull Request Guidelines
 Recent history favors concise, imperative summaries (e.g., `Refactor CLI to 'branchbox' with grouped subcommands`). Continue that tone while adopting the Conventional Commit prefix expected in `CONTRIBUTING.md`, such as `feat(modules): add docker compose planner`. Before opening a PR, rebase on `main`, rerun fmt/clippy/tests/doc checks, and attach context: problem statement, scope, linked issues, and any relevant CLI transcripts or screenshots. Ensure the CI suite is green before requesting review.
 
+Prefer the GitHub CLI (`gh pr create --fill`) for opening PRs after pushing the branch so reviewers get the templated context and automation can rely on consistent metadata.
+
 ## Architecture Essentials
 
 ### Adapters vs Modules
@@ -25,6 +27,8 @@ Adapters provide stack-specific behavior (Rails vs Node.js vs Generic), detectin
 
 ### State Management
 The `FeatureStateStore` tracks worktrees in `{repo_root}/.branchbox/registry.json` with schema: `work_feature`, `branch_name`, `worktree_path`, `feature_url`, `status` (Active|Removed), `created_at`, `updated_at`. This JSON store will migrate to SQLite when the agent daemon is introduced.
+
+Future enhancement: when PRs are opened via `gh`, persist their number/URL back into the feature registry so the agent/control plane can display review status without re-querying GitHub.
 
 ### Specs Module Behavior
 During feature start, the specs module promotes `docs/features/backlog/{name}.md` to `docs/features/in-progress/{name}.md` (or creates a stub with front matter if missing). During teardown with `--complete-spec`, it moves from `in-progress/` to `completed/`.

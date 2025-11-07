@@ -74,6 +74,32 @@ This project includes a complete devcontainer setup that provides a consistent d
 - Open both the main sample and generated feature worktree in VS Code/Cursor to confirm devcontainer propagation, shared credential mounts, and module telemetry.
 - After testing, clean up with `branchbox feature teardown devcontainer-smoke --complete-spec` and simply delete `test/workspaces/local/` if you want a fresh slate.
 
+## Feature Start UX & Fast Path Modes
+
+- `branchbox feature start` ships with a muscle-memory alias: `branchbox feature new`. Both commands accept the same flags.
+- Minimal mode (`--minimal`, with hidden alias `--fast`) skips the devcontainer, compose, and specs modules for lightweight edits. It is gated behind `BRANCHBOX_ENABLE_FAST_MODE=1` during the preview.
+- `--prompt "seed text"` preserves up to 2,000 characters of context for the upcoming agent bridge. The CLI reports whether `BRANCHBOX_ENABLE_PROMPT_BRIDGE` is active and records the prompt length.
+- `--json` mirrors the entire summary (modules, warnings, prompt seed, timestamps) as structured JSON; pair it with `--no-summary` if you only want machine-readable output.
+
+```bash
+BRANCHBOX_ENABLE_FAST_MODE=1 \
+branchbox feature new backlog-quick-fix \
+  --minimal \
+  --prompt "Triage the specs table overflow" \
+  --json
+```
+
+### Start Summary Cheat Sheet
+
+- Text mode prints `🚀 Feature workspace ready (<mode>)`, worktree path, branch, workspace color, feature URL, compose project, `.env`, adapter info, and prompt storage status.
+- A table lists every module with status (`success`, `skipped`, `failed`), duration, notes, and a forced marker for policy-required runs.
+- Separate “Skipped modules” and “Warnings” sections provide reasoning and remediation; minimal runs end with a reminder to finish provisioning via `branchbox devcontainer sync`.
+
+### Listing Features
+
+- `branchbox feature list` now surfaces `Mode`, `Prompt`, and `Modules` columns so you can gauge module health at a glance (e.g., `3 ok / 1 skip`).
+- `branchbox feature list --json` returns the same data structure captured in `.branchbox/registry.json`, including `start_mode`, `prompt_seed`, and each module outcome, so dashboards and agents stay in sync without re-running `feature start`.
+
 ### Local Development (without devcontainer)
 
 **Prerequisites:**
