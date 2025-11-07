@@ -1855,7 +1855,7 @@ impl FeatureWorkflow {
             .unwrap_or("main");
 
         let mut relative_path = PathBuf::from("..");
-        relative_path.push(&main_name);
+        relative_path.push(main_name);
         relative_path.push(".git");
         relative_path.push("worktrees");
         relative_path.push(worktree_name);
@@ -3018,7 +3018,7 @@ mod tests {
         // Create uncommitted change to verify stash handling
         fs::write(repo_path.join("README.md"), "# Test Repo\nlocal change\n").unwrap();
 
-        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
         let summary = workflow
             .start(StartRequest {
                 name: Some("test-feature".to_string()),
@@ -3113,7 +3113,7 @@ mod tests {
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
-        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
         workflow
             .start(StartRequest {
                 name: Some("cleanup".to_string()),
@@ -3167,7 +3167,7 @@ mod tests {
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
-        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
         workflow
             .start(StartRequest {
@@ -3227,7 +3227,7 @@ mod tests {
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
-        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
         workflow
             .start(StartRequest {
                 name: Some("dirty".to_string()),

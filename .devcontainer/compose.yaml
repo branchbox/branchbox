@@ -12,7 +12,6 @@ services:
 
     volumes:
       - ..:/workspaces:cached
-      - ${BRANCHBOX_MAIN_REPO:-..}:/${BRANCHBOX_MAIN_NAME:-main}:cached
       - dind-data:/var/lib/docker
       - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
       - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude

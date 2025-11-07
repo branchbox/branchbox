@@ -375,7 +375,13 @@ impl DevcontainerModule {
                             if is_main_repo {
                                 updated |= Self::ensure_main_volumes(volumes);
                             } else {
-                                updated |= Self::ensure_feature_volumes(volumes, feature_dir);
+                                let main_repo = self.source_dir.parent().ok_or_else(|| {
+                                    Error::validation(
+                                        "Devcontainer source directory not initialized".to_string(),
+                                    )
+                                })?;
+                                updated |=
+                                    Self::ensure_feature_volumes(volumes, feature_dir, main_repo);
                             }
                             break;
                         }
@@ -430,7 +436,11 @@ impl DevcontainerModule {
         updated
     }
 
-    fn ensure_feature_volumes(volumes: &mut Vec<YamlValue>, feature_dir: &Path) -> bool {
+    fn ensure_feature_volumes(
+        volumes: &mut Vec<YamlValue>,
+        feature_dir: &Path,
+        main_repo: &Path,
+    ) -> bool {
         let feature_name = feature_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -458,12 +468,36 @@ impl DevcontainerModule {
             updated = true;
         }
 
-        let git_mount = "../../${BRANCHBOX_MAIN_NAME:-main}/.git:/workspaces/${BRANCHBOX_MAIN_NAME:-main}/.git:cached";
-        if !volumes
-            .iter()
-            .any(|entry| entry.as_str() == Some(git_mount))
-        {
-            volumes.insert(1, YamlValue::String(git_mount.to_string()));
+        let compose_dir = feature_dir.join(".devcontainer");
+        let main_git = main_repo.join(".git");
+        let relative_git = pathdiff::diff_paths(&main_git, &compose_dir).unwrap_or(main_git);
+        let mut host_path = relative_git.to_string_lossy().replace('\\', "/");
+        if host_path.is_empty() {
+            host_path = ".".to_string();
+        }
+        let main_name = main_repo
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("main");
+        let git_mount = format!("{host_path}:/workspaces/{main_name}/.git:cached");
+        let mut has_git_mount = false;
+        volumes.retain(|entry| {
+            if let Some(raw) = entry.as_str() {
+                if raw.contains("/.git:cached") {
+                    if !has_git_mount && raw == git_mount {
+                        has_git_mount = true;
+                        return true;
+                    }
+                    updated = true;
+                    return false;
+                }
+            }
+            true
+        });
+
+        if !has_git_mount {
+            let insert_idx = if volumes.is_empty() { 0 } else { 1 };
+            volumes.insert(insert_idx, YamlValue::String(git_mount));
             updated = true;
         }
 
@@ -740,9 +774,7 @@ mod tests {
         let feature_compose =
             std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
         assert!(feature_compose.contains("- ..:/workspaces/${WORK_FEATURE:-feature}:cached"));
-        assert!(feature_compose.contains(
-            "- ../../${BRANCHBOX_MAIN_NAME:-main}/.git:/workspaces/${BRANCHBOX_MAIN_NAME:-main}/.git:cached"
-        ));
+        assert!(feature_compose.contains("- ../../main/.git:/workspaces/main/.git:cached"));
     }
 
     #[test]
@@ -841,9 +873,7 @@ mod tests {
         let compose_after =
             std::fs::read_to_string(feature.join(".devcontainer/compose.yaml")).unwrap();
         assert!(compose_after.contains("- ..:/workspaces/${WORK_FEATURE:-feature}:cached"));
-        assert!(compose_after.contains(
-            "- ../../${BRANCHBOX_MAIN_NAME:-main}/.git:/workspaces/${BRANCHBOX_MAIN_NAME:-main}/.git:cached"
-        ));
+        assert!(compose_after.contains("- ../../main/.git:/workspaces/main/.git:cached"));
     }
 
     #[test]
