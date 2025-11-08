@@ -19,6 +19,9 @@ pub struct BranchBoxConfig {
 
     #[serde(default)]
     pub tunnel: TunnelSettings,
+
+    #[serde(default)]
+    pub editor: EditorSettings,
 }
 
 impl Default for BranchBoxConfig {
@@ -26,6 +29,7 @@ impl Default for BranchBoxConfig {
         Self {
             version: CONFIG_VERSION.to_string(),
             tunnel: TunnelSettings::default(),
+            editor: EditorSettings::default(),
         }
     }
 }
@@ -69,6 +73,26 @@ impl BranchBoxConfig {
 
 fn default_version() -> String {
     CONFIG_VERSION.to_string()
+}
+
+/// Editor preferences applied across devcontainers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct EditorSettings {
+    /// Preferred agent slug (`codex`, `claude`, etc.)
+    #[serde(default)]
+    pub default_agent: Option<String>,
+
+    /// Whether to spawn a terminal running the preferred agent on attach.
+    #[serde(default)]
+    pub auto_launch_agent_terminal: bool,
+
+    /// View identifier (`workbench.view.scm`, `workbench.view.extension.codex`, etc.) to focus.
+    #[serde(default)]
+    pub preferred_sidebar_view: Option<String>,
+
+    /// Hide the auxiliary/right sidebar if it was previously visible.
+    #[serde(default)]
+    pub hide_secondary_sidebar: bool,
 }
 
 /// Global tunnel settings for the project.
@@ -198,5 +222,11 @@ mod tests {
 
         let loaded = BranchBoxConfig::load(workspace).unwrap();
         assert_eq!(config, loaded);
+    }
+
+    #[test]
+    fn editor_settings_defaults_to_noop() {
+        let config = BranchBoxConfig::default();
+        assert_eq!(EditorSettings::default(), config.editor);
     }
 }
