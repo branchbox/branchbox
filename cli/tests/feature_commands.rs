@@ -374,9 +374,9 @@ fn feature_start_launches_default_agent_after_devcontainer() {
         "BRANCHBOX_DEFAULT_AGENT_CMD" => "true",
         "BRANCHBOX_DEFAULT_AGENT_NAME" => "test agent"
     )
-        .args(["feature", "start", work_feature])
-        .output()
-        .expect("run feature start with default agent");
+    .args(["feature", "start", work_feature])
+    .output()
+    .expect("run feature start with default agent");
 
     assert!(
         output.status.success(),
@@ -398,9 +398,9 @@ fn feature_start_launches_default_agent_after_devcontainer() {
         "BRANCHBOX_DEFAULT_AGENT_CMD" => "true",
         "BRANCHBOX_DEFAULT_AGENT_NAME" => "test agent"
     )
-        .args(["feature", "list", "--json"])
-        .output()
-        .expect("feature list --json with default agent cmd");
+    .args(["feature", "list", "--json"])
+    .output()
+    .expect("feature list --json with default agent cmd");
 
     assert!(list_output.status.success(), "feature list should succeed");
     let list: Value = serde_json::from_slice(&list_output.stdout).expect("parse feature list json");
@@ -434,9 +434,9 @@ fn feature_start_blocks_default_agent_when_devcontainer_fails() {
         "BRANCHBOX_DEFAULT_AGENT_CMD" => "true",
         "BRANCHBOX_DEFAULT_AGENT_NAME" => "test agent"
     )
-        .args(["feature", "start", "agent-blocked"])
-        .output()
-        .expect("run feature start with invalid devcontainer");
+    .args(["feature", "start", "agent-blocked"])
+    .output()
+    .expect("run feature start with invalid devcontainer");
 
     assert!(
         output.status.success(),
@@ -460,9 +460,9 @@ fn feature_start_json_mode_skips_default_agent_launch() {
         repo_path,
         "BRANCHBOX_DEFAULT_AGENT_CMD" => "false"
     )
-        .args(["feature", "start", "agent-json", "--json"])
-        .output()
-        .expect("run feature start --json with default agent cmd");
+    .args(["feature", "start", "agent-json", "--json"])
+    .output()
+    .expect("run feature start --json with default agent cmd");
 
     assert!(output.status.success(), "feature start should succeed");
 
@@ -483,15 +483,15 @@ fn feature_start_minimal_defers_default_agent_launch() {
         repo_path,
         "BRANCHBOX_DEFAULT_AGENT_CMD" => "true"
     )
-        .args([
-            "feature",
-            "start",
-            "agent-waits",
-            "--minimal",
-            "--default-prompt",
-        ])
-        .output()
-        .expect("run feature start minimal with default agent");
+    .args([
+        "feature",
+        "start",
+        "agent-waits",
+        "--minimal",
+        "--default-prompt",
+    ])
+    .output()
+    .expect("run feature start minimal with default agent");
 
     assert!(
         output.status.success(),
