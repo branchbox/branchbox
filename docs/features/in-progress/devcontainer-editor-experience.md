@@ -329,3 +329,50 @@ echo \"$desired_hash\" > \"$STATE_HASH_FILE\"
 
 - Surface a banner when `sync_status=failed` with CTA “Run `branchbox devcontainer sync`”.
 - Allow operators to push overrides via control plane UI that write to `.branchbox/config.json` (respecting precedence rules discussed above).
+
+## Agent Wiring Outline
+
+1. **Detect editor config change**: file watcher on `.branchbox/config.json` triggers `Job::DevcontainerSync` with `reason=EditorConfigChanged`.
+2. **Sync pipeline**:
+   - Run module sync (copy `.devcontainer/scripts` etc.).
+   - For each worktree, store `editor.last_sync_at`, `editor.sync_status`.
+3. **Attach hook**:
+   - Agent injects `BRANCHBOX_DEFAULT_AGENT`, `BRANCHBOX_EDITOR_PREFERENCES` env vars when launching VS Code/ Cursor tunnels.
+   - On success, agent reports `SyncOutcome::EditorLayout { status, duration_ms }`.
+4. **Failure path**:
+   - If layout script fails non-zero, mark `devcontainer_outdated=true`.
+   - Agent suggests remediation via CLI message referencing docs section ID (e.g., `docs/devcontainer-editor#troubleshooting`).
+
+## Data Flow Diagram (text)
+
+```
+.branchbox/config.json --(branchbox config editor)--> EditorSettings
+EditorSettings --(branchbox devcontainer sync)--> DevcontainerModule::setup
+DevcontainerModule::setup --(copy)--> .devcontainer/scripts/*
+.devcontainer/scripts/install-extensions.sh --(postCreate)--> ~/.vscode-server/extensions
+.devcontainer/scripts/prime-editor-layout.sh --(postAttach)--> Cursor layout
+prime-editor-layout.sh --(telemetry)--> OpenTelemetry exporter --> Control plane dashboards
+```
+
+## Work Breakdown Tickets
+
+1. **CLI tooling**
+   - `CLI-127` Implement `branchbox config editor` (commands + tests).
+   - `CLI-128` Extend `branchbox config view` output to include editor block.
+2. **Devcontainer plumbing**
+   - `DEV-201` Add layout + extension scripts, update `devcontainer.json`.
+   - `DEV-202` Add terminal profile template + docs.
+3. **Telemetry & docs**
+   - `OBS-070` Emit spans/metrics and hook into `branchbox log`.
+   - `DOC-055` Update `docs/DEVELOPMENT.md` with new workflow + troubleshooting.
+4. **Agent follow-up**
+   - `AGENT-044` Propagate editor config into feature registry metadata.
+   - `AGENT-045` Surface warnings in control plane API.
+
+## Acceptance Criteria
+
+- `branchbox config editor` creates/updates `.branchbox/config.json` without clobbering unrelated keys; includes automated tests covering both interactive (mocked) and flag-driven flows.
+- Running `devcontainer up` from a clean clone installs required extensions with no reload prompts, focuses the configured sidebar, closes the auxiliary pane, and launches the agent terminal when enabled.
+- `branchbox devcontainer sync --dry-run` reports that editor scripts would run across all worktrees (with per-worktree status output).
+- Telemetry spans for editor layout are emitted and visible via `branchbox logs --json | jq '.name=="module.devcontainer.editor_layout"'`.
+- Documentation includes a troubleshooting ladder referencing the scripts and commands introduced above.
