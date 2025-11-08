@@ -5,6 +5,7 @@ FROM mcr.microsoft.com/devcontainers/rust:latest
 USER root
 
 # Install additional tools for worktree development
+# clang and lld provide faster linking
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
     git \
@@ -15,6 +16,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    clang \
+    lld \
     && rm -rf /var/lib/apt/lists/*
 
 # Install useful Rust tools as root, then fix permissions
@@ -25,10 +28,17 @@ RUN cargo install cargo-watch cargo-edit cargo-expand \
     && chown -R vscode:rustlang /usr/local/cargo \
     && chmod -R g+w /usr/local/cargo
 
+# Install sccache for shared compilation cache
+RUN cargo install sccache \
+    && chown -R vscode:rustlang /usr/local/cargo \
+    && chmod -R g+w /usr/local/cargo
+
 # Switch back to vscode user
 USER vscode
 
-# Set up Rust environment
+# Set up Rust environment with sccache
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+    SCCACHE_CACHE_SIZE=15G

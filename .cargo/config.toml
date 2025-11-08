@@ -1,0 +1,15 @@
+[build]
+# Limit parallel jobs to reduce memory usage per build
+jobs = 2
+
+# Use lld for faster linking
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[profile.dev]
+# Reduce debug info to save memory and build time
+debug = 1
+
+# Uncomment to use separate target directories for concurrent worktrees
+# This prevents file lock contention but uses more disk space
+# [build]
+# target-dir = "target"
