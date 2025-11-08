@@ -104,3 +104,142 @@ work_feature: devcontainer-editor-experience
 - Should `default_agent` support per-user overrides via `${SHARED_CONFIG_DIR}/branchbox/config.local.json`, similar to how `.env` works today?
 - If users prefer VS Code instead of Cursor, do we need a per-editor flag to avoid launching Cursor-specific command IDs (or detect via `$TERM_PROGRAM` during `postAttachCommand`)?
 - How do we surface failures from `prime-editor-layout.sh` back to the CLI? Option: exit non-zero so `postAttachCommand` surfaces an inline toast, or log to `~/.branchbox/logs`.
+
+## Proposed CLI UX
+
+```
+$ branchbox config editor --default-agent codex --sidebar-view workbench.view.extension.codex --auto-launch-agent-terminal
+✔ Using config at /repo/.branchbox/config.json
+? Hide the auxiliary sidebar on attach? (y/N) › y
+? Launch terminal profile "BranchBox Agent" on attach? (Y/n) › Y
+? Preferred sidebar view (workbench.view.scm) › workbench.view.extension.codex
+Updated editor preferences:
+{
+  "default_agent": "codex",
+  "auto_launch_agent_terminal": true,
+  "preferred_sidebar_view": "workbench.view.extension.codex",
+  "hide_secondary_sidebar": true
+}
+```
+
+- Non-interactive mode should skip prompts and print a diff-style summary for scripts (`--quiet` suppresses all output except errors).
+- If `.branchbox/config.json` is missing, the command should seed `BranchBoxConfig::default()` before applying overrides.
+- Extend `branchbox config view --json` to include editor settings so operators can double-check effective values.
+
+## Script Pseudocode
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_PATH="${BRANCHBOX_CONFIG_PATH:-/workspaces/repo/.branchbox/config.json}"
+JQ=${JQ_BIN:-jq}
+CURSOR_BIN=${CURSOR_BIN:-cursor}
+
+editor_val() {
+  local key="$1"
+  "$JQ" -r --arg key "$key" '.editor[$key] // empty' "$CONFIG_PATH" 2>/dev/null || true
+}
+
+sidebar_cmd="$(editor_val preferred_sidebar_view)"
+sidebar_cmd="${sidebar_cmd:-workbench.view.scm}"
+"$CURSOR_BIN" --remote=dev-container --command "$sidebar_cmd"
+
+if [[ "$(editor_val hide_secondary_sidebar)" == "true" ]]; then
+  "$CURSOR_BIN" --remote=dev-container --command workbench.action.closeAuxiliaryBar
+fi
+
+if [[ "$(editor_val auto_launch_agent_terminal)" == "true" ]]; then
+  "$CURSOR_BIN" --remote=dev-container --command workbench.action.terminal.newWithProfile --command-argument 'BranchBox Agent'
+fi
+```
+
+- Guard the script with `if ! command -v cursor` to fail fast when the CLI is missing; emit actionable log.
+- On failure, write a JSON status blob to `/workspace/.branchbox/logs/editor-layout.log` for debugging.
+
+## Milestone Breakdown
+
+1. **Config plumbing (done)** – `EditorSettings` struct & defaults.
+2. **CLI helper** – shipping interactive + flag-driven UX, unit tests covering config persistence.
+3. **Devcontainer assets** – add layout + extension scripts, update `devcontainer.json`, test via `devcontainer up`.
+4. **Telemetry + docs** – wire spans, update `docs/DEVELOPMENT.md`, add troubleshooting appendix.
+5. **Agent integration** – once CLI pieces harden, have the agent trigger the scripts during `DevcontainerModule::setup`.
+
+## Validation Matrix
+
+| Scenario | Steps | Expected result |
+| --- | --- | --- |
+| Fresh repo, defaults | Run `branchbox init` with feature flag off | `.branchbox/config.json` contains only `version` + `tunnel`, no `editor` block |
+| Editor config via CLI | `branchbox config editor --default-agent codex --hide-secondary-sidebar` | Config file shows the overrides; rerun with `--default-agent claude` updates value |
+| Layout script happy path | Set `preferred_sidebar_view=workbench.view.extension.codex`, attach Cursor | Activity sidebar switches to Codex, auxiliary bar hidden, terminal opens |
+| Layout script missing config | Remove `.branchbox/config.json`, attach | Script logs warning and exits zero without running commands |
+| Extension preinstall | Delete `~/.vscode-server/extensions`, rebuild devcontainer | Required extensions present before first attach; no reload toast |
+| Telemetry capture | `branchbox devcontainer sync` with scripts enabled | `branchbox.log` includes `module.devcontainer.editor_layout` span with strategy + duration |
+| Failure handling | Force `cursor` CLI to fail (rename binary) | Script logs error, sets non-zero exit causing devcontainer toast, `devcontainer_outdated` flag set |
+
+## Risks & Mitigations
+
+- **Cursor-specific logic breaks VS Code users**: Detect `$TERM_PROGRAM` inside `postAttachCommand` (Cursor sets `TERM_PROGRAM=cursor`) and skip Cursor-only commands when absent.
+- **Scripts slow down attach times**: Cache computed config (hash + timestamp) and skip rerunning commands when preferences haven't changed since last attach.
+- **Per-user overrides stomped by sync**: Encourage operators to keep personal overrides in `${SHARED_CONFIG_DIR}`; doc a `BRANCHBOX_EDITOR_CONFIG_OVERRIDE` env var that points to a private path excluded from sync.
+- **Extension install flakiness**: Wrap installation loop with retries (`cursor --install-extension` can fail due to network). Store partial progress and continue on next `postCreateCommand`.
+- **Telemetry noise**: Rate-limit span emission to once per attach (ignore re-entrant postAttach triggers) and redact user-specific data (extension IDs are fine).
+
+## Outstanding Tasks
+
+- [ ] Define schema for `.branchbox/config.local.json` overrides and merge precedence rules.
+- [ ] Decide whether to store agent terminal command templates in config (`codex chat --agent {default}`) or hardcode script logic.
+- [ ] Add integration tests under `core/tests/devcontainer_module.rs` to simulate sync → attach pipeline.
+- [ ] Coordinate with docs team on a troubleshooting flowchart (where to look when the layout script fails).
+
+## Telemetry Schema Sketch
+
+```json
+{
+  "name": "module.devcontainer.editor_layout",
+  "attributes": {
+    "workspace_id": "UUID",
+    "worktree_path": "/repo/.worktrees/feature/foo",
+    "strategy": "copy",
+    "sidebar_view": "workbench.view.extension.codex",
+    "auto_launch_agent_terminal": true,
+    "hide_secondary_sidebar": true,
+    "default_agent": "codex",
+    "status": "success|failed|skipped",
+    "duration_ms": 1823,
+    "error_type": "command_failed",
+    "error_message": "cursor: command not found"
+  }
+}
+```
+
+- `status=skipped` when `.branchbox/config.json` omits editor preferences or feature flag disabled.
+- `error_type` should map to the error matrix (permission_denied, command_failed, parse_error).
+- Emit complementary metrics:
+  - Counter `devcontainer.editor_layout.sync_total{status,sidebar_view}`.
+  - Histogram `devcontainer.editor_layout.duration_ms`.
+
+## Troubleshooting Snippets
+
+```
+# 1. Verify config file
+cat .branchbox/config.json | jq '.editor'
+
+# 2. Dry-run layout script (outside postAttach)
+DEVCONTAINER=true .devcontainer/scripts/prime-editor-layout.sh --dry-run
+
+# 3. Watch logs
+tail -f ~/.branchbox/logs/editor-layout.log
+
+# 4. Check extension state
+ls ~/.vscode-server/extensions | grep codex
+```
+
+- Document common fixes (e.g., reinstall `cursor` CLI, reset workspace settings, wipe `~/.vscode-server/extensions`).
+
+## Future Enhancements
+
+- Allow per-feature overrides (spec files can declare `editor.default_agent` to auto-scope agents per backlog item).
+- Teach control plane UI to surface latest editor sync timestamp and highlight stale worktrees.
+- Add `branchbox devcontainer doctor` command that runs layout + extension checks and reports actionable diagnostics.
+- Explore supporting JetBrains Gateway by translating editor preferences into Gateway scripts (long-term).
