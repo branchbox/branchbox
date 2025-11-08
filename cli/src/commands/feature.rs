@@ -247,7 +247,9 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
     }
 
     if features.is_empty() {
-        if let Some(filter) = status.as_ref() {
+        if json {
+            println!("[]");
+        } else if let Some(filter) = status.as_ref() {
             println!(
                 "ℹ️  No features found with status '{}'.",
                 filter.to_ascii_lowercase()
@@ -276,16 +278,21 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         .collect();
 
     if json {
+        #[derive(Serialize)]
+        struct FeatureListEntry<'a> {
+            #[serde(flatten)]
+            feature: &'a FeatureMetadata,
+            #[serde(rename = "default_agent")]
+            agent: &'a AgentPlan,
+        }
+
         let payload: Vec<_> = entries
             .iter()
-            .map(|(feature, plan)| {
-                let mut value = serde_json::to_value(feature)?;
-                if let serde_json::Value::Object(ref mut map) = value {
-                    map.insert("default_agent".to_string(), serde_json::to_value(plan)?);
-                }
-                Ok(value)
+            .map(|(feature, plan)| FeatureListEntry {
+                feature,
+                agent: plan,
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
@@ -1237,20 +1244,21 @@ fn maybe_launch_default_agent(summary: &StartSummary, plan: &AgentPlan, json_out
     }
 }
 
+macro_rules! devcontainer_status {
+    ($outcomes:expr) => {
+        $outcomes
+            .iter()
+            .find(|outcome| outcome.module.eq_ignore_ascii_case("devcontainer"))
+            .map(|outcome| outcome.status)
+    };
+}
+
 fn devcontainer_status_from_summary(summary: &StartSummary) -> Option<ModuleStatus> {
-    summary
-        .module_outcomes
-        .iter()
-        .find(|outcome| outcome.module.eq_ignore_ascii_case("devcontainer"))
-        .map(|outcome| outcome.status)
+    devcontainer_status!(&summary.module_outcomes)
 }
 
 fn devcontainer_status_from_metadata(feature: &FeatureMetadata) -> Option<ModuleStatus> {
-    feature
-        .module_outcomes
-        .iter()
-        .find(|outcome| outcome.module.eq_ignore_ascii_case("devcontainer"))
-        .map(|outcome| outcome.status)
+    devcontainer_status!(&feature.module_outcomes)
 }
 
 fn launch_agent_process(command_line: &str, cwd: &Path) -> Result<()> {

@@ -142,8 +142,23 @@ jobs:
       - name: Report coverage
         run: |
           cargo llvm-cov report --json --summary-only > coverage-summary.json
-          coverage=$(jq '.summary.lines.percent' coverage-summary.json)
-          echo "::notice title=Code Coverage::Coverage: ${coverage}%"
+          coverage=$(jq -r '
+            if .summary? then .summary.lines.percent
+            elif .totals? then .totals.lines.percent
+            elif (.data // []) | length > 0 then
+              if .data[0].summary? then .data[0].summary.lines.percent
+              elif .data[0].totals? then .data[0].totals.lines.percent
+              else empty end
+            else
+              empty
+            end
+          ' coverage-summary.json)
+
+          if [ -z "$coverage" ] || [ "$coverage" = "null" ]; then
+            echo "::warning title=Code Coverage::Unable to determine coverage percentage from coverage-summary.json"
+          else
+            echo "::notice title=Code Coverage::Coverage: ${coverage}%"
+          fi
 
   integration_tests:
     name: Integration Tests
