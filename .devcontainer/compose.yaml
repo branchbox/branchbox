@@ -1,12 +1,5 @@
 name: ${DEVCONTAINER_NAME:-branchbox}
 
-# Shared Rust caches for all worktree containers
-x-rust-caches: &rust_caches
-  volumes:
-    - rust-cargo-registry:/usr/local/cargo/registry
-    - rust-cargo-git:/usr/local/cargo/git
-    - rust-sccache-cache:/home/vscode/.cache/sccache
-
 # Resource limits to prevent system freezes with multiple containers
 x-rust-limits: &rust_limits
   cpus: '2'                # Hard cap per container
@@ -21,14 +14,16 @@ services:
       dockerfile: .devcontainer/Dockerfile
     privileged: true
     container_name: ${DEVCONTAINER_NAME:-branchbox}
+    <<: *rust_limits
     volumes:
     - ../..:/workspaces:cached
     - dind-data:/var/lib/docker
     - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
     - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
     - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
-    <<: *rust_caches
-    <<: *rust_limits
+    - rust-cargo-registry:/usr/local/cargo/registry
+    - rust-cargo-git:/usr/local/cargo/git
+    - rust-sccache-cache:/home/vscode/.cache/sccache
     command: sleep infinity
     env_file:
     - ../.env
@@ -36,8 +31,6 @@ services:
     environment:
       DOCKER_CONTAINER: 'true'
       RUST_BACKTRACE: '1'
-      RUSTC_WRAPPER: /usr/local/cargo/bin/sccache
-      SCCACHE_CACHE_SIZE: '15G'
     healthcheck:
       test: ["CMD", "bash", "-lc", "cargo --version && rustc --version"]
       interval: 30s

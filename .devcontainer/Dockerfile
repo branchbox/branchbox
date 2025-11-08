@@ -20,16 +20,11 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     lld \
     && rm -rf /var/lib/apt/lists/*
 
-# Install useful Rust tools as root, then fix permissions
+# Install useful Rust tools and sccache as root, then fix permissions
 ARG MDBOOK_VERSION=0.4.40
-RUN cargo install cargo-watch cargo-edit cargo-expand \
+RUN cargo install cargo-watch cargo-edit cargo-expand sccache \
     && cargo install mdbook --locked --version ${MDBOOK_VERSION} \
     && cargo install cargo-release --locked \
-    && chown -R vscode:rustlang /usr/local/cargo \
-    && chmod -R g+w /usr/local/cargo
-
-# Install sccache for shared compilation cache
-RUN cargo install sccache \
     && chown -R vscode:rustlang /usr/local/cargo \
     && chmod -R g+w /usr/local/cargo
 

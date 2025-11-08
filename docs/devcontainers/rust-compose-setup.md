@@ -10,19 +10,26 @@ Prevent system freezes and container crashes when running multiple Rust devconta
 The `.devcontainer/compose.yaml` file includes:
 
 ```yaml
-# Shared Rust caches for all worktree containers
-x-rust-caches: &rust_caches
-  volumes:
-    - rust-cargo-registry:/usr/local/cargo/registry
-    - rust-cargo-git:/usr/local/cargo/git
-    - rust-sccache-cache:/home/vscode/.cache/sccache
-
 # Resource limits to prevent system freezes with multiple containers
 x-rust-limits: &rust_limits
   cpus: '2'                # Hard cap per container
   mem_limit: 6g
   memswap_limit: 8g
   pids_limit: 512
+
+services:
+  rust-dev:
+    <<: *rust_limits
+    volumes:
+      # ... existing volumes ...
+      - rust-cargo-registry:/usr/local/cargo/registry
+      - rust-cargo-git:/usr/local/cargo/git
+      - rust-sccache-cache:/home/vscode/.cache/sccache
+
+volumes:
+  rust-cargo-registry:
+  rust-cargo-git:
+  rust-sccache-cache:
 ```
 
 **✅ Why:**
@@ -59,8 +66,12 @@ RUN apt-get update && apt-get -y install --no-install-recommends \
     clang lld \
     && rm -rf /var/lib/apt/lists/*
 
-# Install sccache for shared compilation cache
-RUN cargo install sccache
+# Install useful Rust tools and sccache as root, then fix permissions
+RUN cargo install cargo-watch cargo-edit cargo-expand sccache \
+    && cargo install mdbook --locked \
+    && cargo install cargo-release --locked \
+    && chown -R vscode:rustlang /usr/local/cargo \
+    && chmod -R g+w /usr/local/cargo
 
 # Set up environment
 ENV RUSTC_WRAPPER=/usr/local/cargo/bin/sccache
@@ -70,6 +81,7 @@ ENV SCCACHE_CACHE_SIZE=15G
 **✅ Why:**
 - `lld` provides faster linking than the default linker
 - `sccache` caches compilation artifacts across containers
+- Combining tool installations reduces Docker image layers
 - Dramatically reduces rebuild times when switching between worktrees
 
 ---
@@ -104,13 +116,25 @@ To prevent simultaneous heavy compiles, use the `scripts/cargo-queued.sh` script
 
 ```bash
 #!/usr/bin/env bash
+# Serialize heavy Cargo builds to prevent resource contention
 # Usage: ./scripts/cargo-queued.sh build
+#        ./scripts/cargo-queued.sh test --all-features
 
 set -euo pipefail
+
 LOCK="${CARGO_QUEUE_LOCK:-/tmp/cargo-build.lock}"
+
+# Open lock file descriptor
 exec 9>"$LOCK"
-flock -w 900 9
-exec cargo "$@"
+
+# Acquire lock (wait up to 15 minutes)
+if flock -w 900 9; then
+    # Run cargo with all provided arguments
+    exec cargo "$@"
+else
+    echo "ERROR: Failed to acquire build lock after 15 minutes" >&2
+    exit 1
+fi
 ```
 
 **Usage:**
