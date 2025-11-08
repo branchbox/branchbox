@@ -212,11 +212,12 @@ impl Module for SpecsModule {
     }
 
     fn init(&mut self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
+        let _ = main_dir;
         // Set specs directory
         self.specs_dir = if let Ok(features_dir) = std::env::var("FEATURES_DIR") {
             PathBuf::from(features_dir)
         } else {
-            main_dir.join("docs/features")
+            feature_dir.join("docs/features")
         };
 
         self.work_feature = feature_dir
