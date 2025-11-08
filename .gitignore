@@ -21,6 +21,7 @@ Cargo.lock
 .env
 .env.local
 .devcontainer/.cloudflared.env
+.devcontainer/.branchbox.env
 
 # OS
 .DS_Store
@@ -56,3 +57,6 @@ test/workspaces/local/
 docs/build/
 docs/.docusaurus/
 docs/node_modules/
+
+.branchbox/registry.json
+.branchbox/secure/

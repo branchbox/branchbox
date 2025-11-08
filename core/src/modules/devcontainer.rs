@@ -293,19 +293,9 @@ impl DevcontainerModule {
         let config_contents = std::fs::read_to_string(&config_path)?;
         let mut config = parse_json_with_comments(&config_contents, &config_path)?;
 
-        let is_main_repo = feature_dir.join(".git").is_dir();
-
-        let (workspace_folder, workspace_mount) = if is_main_repo {
-            (
-                "/workspaces",
-                "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached",
-            )
-        } else {
-            (
-                "/workspaces/${localWorkspaceFolderBasename}",
-                "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
-            )
-        };
+        let workspace_folder = "/workspaces/${localWorkspaceFolderBasename}";
+        let workspace_mount =
+            "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached";
 
         match config.as_object_mut() {
             Some(map) => {
@@ -341,16 +331,8 @@ impl DevcontainerModule {
                     ))
                 })?;
 
-            let desired = if is_main_repo {
-                "..:/workspaces:cached"
-            } else {
-                "../..:/workspaces:cached"
-            };
-            let alternate = if is_main_repo {
-                "../..:/workspaces:cached"
-            } else {
-                "..:/workspaces:cached"
-            };
+            let desired = "../..:/workspaces:cached";
+            let alternate = "..:/workspaces:cached";
 
             let mut updated = false;
             if let Some(root) = compose.as_mapping_mut() {
@@ -824,14 +806,14 @@ mod tests {
 
         let config =
             std::fs::read_to_string(target.join(".devcontainer/devcontainer.json")).unwrap();
-        assert!(config.contains("\"/workspaces\""));
+        assert!(config.contains("/workspaces/${localWorkspaceFolderBasename}"));
         assert!(config.contains(
-            "source=${localWorkspaceFolder},target=/workspaces,type=bind,consistency=cached"
+            "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
         ));
 
         let compose = std::fs::read_to_string(target.join(".devcontainer/compose.yaml")).unwrap();
-        assert!(compose.contains("- ..:/workspaces:cached"));
-        assert!(!compose.contains("- ../..:/workspaces:cached"));
+        assert!(compose.contains("- ../..:/workspaces:cached"));
+        assert!(!compose.contains("- ..:/workspaces:cached"));
     }
 
     #[test]
