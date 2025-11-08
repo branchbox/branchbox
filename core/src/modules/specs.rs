@@ -22,7 +22,7 @@ pub enum SpecStatus {
 }
 
 impl SpecStatus {
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
             SpecStatus::Backlog => "backlog",
             SpecStatus::InProgress => "in-progress",
