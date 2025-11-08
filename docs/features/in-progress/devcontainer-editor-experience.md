@@ -58,3 +58,49 @@ work_feature: devcontainer-editor-experience
 - [ ] Author terminal profile scaffolding (`.vscode/settings.json`) so the profile runs `codex chat --agent <slug>` or `claude chat` automatically.
 - [ ] Ship `.devcontainer/scripts/install-extensions.sh` and update `postCreateCommand` to invoke it, validating that Cursor no longer asks for a reload on a clean container.
 - [ ] Document troubleshooting (how to reset layout, override default agent per-user, etc.) in `docs/DEVELOPMENT.md`.
+
+## Implementation Plan
+
+### Editor config helper
+
+- Add a `branchbox config editor` subcommand under `cli/src/commands/config.rs`. It should load the existing `BranchBoxConfig`, prompt for `default_agent`, `preferred_sidebar_view`, and `auto_launch_agent_terminal`, then persist the merged struct back to `.branchbox/config.json`.
+- Provide `--default-agent`, `--sidebar-view`, and `--auto-launch-agent-terminal` flags so CI or scripts can set values non-interactively.
+- Teach `branchbox init` to optionally call the helper (guarded by `BRANCHBOX_ENABLE_DEVCONTAINER_MODULE`) so greenfield repos capture preferences without running two commands.
+
+### Layout primer script
+
+- Create `.devcontainer/scripts/prime-editor-layout.sh` with jq + `cursor` CLI dependencies baked into the devcontainer image.
+- Script flow:
+  1. Read `.branchbox/config.json` (fall back to no-op if missing/malformed).
+  2. Derive the sidebar command (default `workbench.view.scm`).
+  3. Run `cursor --remote=devcontainer --command ...` to focus the view.
+  4. If `hide_secondary_sidebar` is true, call `workbench.action.closeAuxiliaryBar`.
+  5. For `auto_launch_agent_terminal`, dispatch `workbench.action.terminal.newWithProfile` targeting the `BranchBox Agent` profile.
+- Hook into `devcontainer.json → postAttachCommand` so it triggers only when an editor session starts.
+
+### Terminal profile scaffolding
+
+- Extend `.vscode/settings.json` (under `devcontainer.json/customizations.vscode.settings`) with:
+  - `terminal.integrated.profiles.linux.BranchBox Agent` that shells into `codex chat --agent <slug>` or `claude chat` depending on config/env.
+  - `terminal.integrated.defaultProfile.linux` conditionally set via `${branchbox:editor.autoLaunchAgentTerminal}` once VS Code exposes profile variables; until then, the layout script triggers the command explicitly.
+- Document how users can override the profile locally via `~/Library/Application Support/Cursor/User/settings.json` without fighting workspace defaults.
+
+### Extension preinstall script
+
+- Add `.devcontainer/scripts/install-extensions.sh` that parses the extension list from `devcontainer.json` (using `jq '.customizations.vscode.extensions[]'`) and runs `cursor --install-extension` for each entry.
+- Invoke the script from `postCreateCommand` right after dependency bootstrap so the remote server already hosts the extensions before the first UI attach.
+- Cache the installed marker (`/home/vscode/.cache/branchbox/extensions.hash`) to skip reinstallation when the extension list hasn't changed; include the hash in telemetry for debugging.
+
+### Telemetry & validation
+
+- Emit `module.devcontainer.editor_layout` spans from the layout script via `branchbox tracing emit ...` (or a lightweight Rust helper) with attributes for `sidebar_view`, `auto_launch_agent_terminal`, and exit status.
+- Update the validation runbook to include:
+  - `branchbox devcontainer sync --strategy copy --dry-run` to ensure `.devcontainer/scripts` propagate to worktrees.
+  - Manual attach test in Cursor verifying the sidebar focus + terminal spawn behavior.
+  - Clean devcontainer rebuild confirming the “Please reload” toast no longer appears.
+
+## Open Questions
+
+- Should `default_agent` support per-user overrides via `${SHARED_CONFIG_DIR}/branchbox/config.local.json`, similar to how `.env` works today?
+- If users prefer VS Code instead of Cursor, do we need a per-editor flag to avoid launching Cursor-specific command IDs (or detect via `$TERM_PROGRAM` during `postAttachCommand`)?
+- How do we surface failures from `prime-editor-layout.sh` back to the CLI? Option: exit non-zero so `postAttachCommand` surfaces an inline toast, or log to `~/.branchbox/logs`.
