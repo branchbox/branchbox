@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use clap::{Args, Subcommand};
+use serde::Serialize;
 use serde_json::json;
 use shell_words::split as split_command_line;
 use std::{
@@ -280,7 +281,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             .map(|(feature, plan)| {
                 let mut value = serde_json::to_value(feature)?;
                 if let serde_json::Value::Object(ref mut map) = value {
-                    map.insert("default_agent".to_string(), plan.to_json());
+                    map.insert("default_agent".to_string(), serde_json::to_value(plan)?);
                 }
                 Ok(value)
             })
@@ -560,6 +561,7 @@ fn print_start_summary(
             None => None,
         };
 
+        let default_agent_json = serde_json::to_value(&agent_plan)?;
         let payload = json!({
             "work_feature": summary.work_feature,
             "branch_name": summary.branch_name,
@@ -577,7 +579,7 @@ fn print_start_summary(
             "tunnel": tunnel_json,
             "prompt_bridge_enabled": prompt_bridge_enabled,
             "generated_at": summary.generated_at.to_rfc3339(),
-            "default_agent": agent_plan.to_json(),
+            "default_agent": default_agent_json,
         });
 
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -1084,7 +1086,8 @@ impl AgentLaunchConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum AgentPlanStatus {
     Ready,
     Waiting,
@@ -1109,7 +1112,7 @@ impl fmt::Display for AgentPlanStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct AgentPlan {
     status: AgentPlanStatus,
     label: Option<String>,
@@ -1170,16 +1173,6 @@ impl AgentPlan {
             detail: detail.into(),
             followup: Some(followup.into()),
         }
-    }
-
-    fn to_json(&self) -> serde_json::Value {
-        json!({
-            "status": self.status.as_str(),
-            "label": self.label,
-            "command": self.command,
-            "detail": self.detail,
-            "followup": self.followup,
-        })
     }
 }
 
