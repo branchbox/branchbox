@@ -243,3 +243,89 @@ ls ~/.vscode-server/extensions | grep codex
 - Teach control plane UI to surface latest editor sync timestamp and highlight stale worktrees.
 - Add `branchbox devcontainer doctor` command that runs layout + extension checks and reports actionable diagnostics.
 - Explore supporting JetBrains Gateway by translating editor preferences into Gateway scripts (long-term).
+
+## Devcontainer JSON changes (draft)
+
+```jsonc
+{
+  "name": "BranchBox Devcontainer",
+  "postCreateCommand": ".devcontainer/scripts/install-extensions.sh && just bootstrap",
+  "postAttachCommand": [
+    "if [ -f .devcontainer/scripts/prime-editor-layout.sh ]; then .devcontainer/scripts/prime-editor-layout.sh; fi"
+  ],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.profiles.linux": {
+          "BranchBox Agent": {
+            "path": "/bin/bash",
+            "args": [
+              "-lc",
+              "BRANCHBOX_DEFAULT_AGENT=${BRANCHBOX_DEFAULT_AGENT:-codex} codex chat --agent ${BRANCHBOX_DEFAULT_AGENT:-codex}"
+            ]
+          }
+        },
+        "terminal.integrated.defaultProfile.linux": "BranchBox Agent"
+      },
+      "extensions": [
+        "github.copilot-chat",
+        "codex.codex",
+        "ms-vscode.git"
+      ]
+    }
+  }
+}
+```
+
+- `BRANCHBOX_DEFAULT_AGENT` should be injected via `.devcontainer/docker-compose` env to keep layout script + terminal profile aligned.
+- `postAttachCommand` must remain idempotent; wrap in `bash -lc` to ensure env vars resolve.
+- Consider gating the terminal profile override behind config so vanilla users keep their previous default.
+
+## Sample `.devcontainer/scripts/install-extensions.sh`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+EXTENSIONS_JSON=".devcontainer/devcontainer.json"
+STATE_HASH_FILE="${HOME}/.cache/branchbox/extensions.hash"
+INSTALLER="${CURSOR_BIN:-cursor}"
+
+desired_hash="$(jq -r '.customizations.vscode.extensions | sort | join(\"\\n\")' \"$EXTENSIONS_JSON\" | sha256sum | cut -d' ' -f1)"
+
+if [[ -f \"$STATE_HASH_FILE\" ]] && [[ \"$(cat \"$STATE_HASH_FILE\")\" == \"$desired_hash\" ]]; then
+  echo "Extensions up-to-date; skipping install."
+  exit 0
+fi
+
+jq -r '.customizations.vscode.extensions[]' \"$EXTENSIONS_JSON\" | while read -r ext; do
+  echo \"Installing $ext\"
+  \"$INSTALLER\" --install-extension \"$ext\" --force || {
+    echo \"Failed to install $ext\" >&2
+    exit 1
+  }
+done
+
+echo \"$desired_hash\" > \"$STATE_HASH_FILE\"
+```
+
+- Add exponential backoff around the install loop if network hiccups become frequent.
+- Ensure script runs as `vscode` user so extensions land in the right homedir.
+
+## Control Plane Integration Ideas
+
+- Extend `/v1/worktrees/:id` payload with:
+
+```json
+{
+  "editor": {
+    "last_sync_at": "2025-11-10T03:22:12Z",
+    "sync_status": "success|failed|stale",
+    "default_agent": "codex",
+    "preferred_sidebar_view": "workbench.view.extension.codex"
+  }
+}
+```
+
+- Surface a banner when `sync_status=failed` with CTA “Run `branchbox devcontainer sync`”.
+- Allow operators to push overrides via control plane UI that write to `.branchbox/config.json` (respecting precedence rules discussed above).
