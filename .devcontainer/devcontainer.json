@@ -43,7 +43,7 @@
   ],
   "name": "Worktree Manager",
   "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version'",
-  "postStartCommand": "bash .devcontainer/scripts/ensure-gitdir.sh",
+  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh'",
   "runArgs": [
     "--ipc=host",
     "--init"

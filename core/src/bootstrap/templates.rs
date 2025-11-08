@@ -52,3 +52,47 @@ pub fn env_sample(stack: Stack) -> Result<String> {
 
     Ok(template.to_string())
 }
+
+/// Generate the placeholder BranchBox env overrides
+pub fn branchbox_env() -> Result<String> {
+    Ok(include_str!("templates/branchbox.env").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compose_template_includes_workspace_mount_and_shared_configs() {
+        let compose = compose_yaml(Stack::Rust).expect("rust compose template");
+        assert!(
+            compose.contains("..:/workspaces:cached"),
+            "compose template missing workspace bind: {compose}"
+        );
+        for shared in [
+            "${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex",
+            "${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude",
+            "${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh",
+        ] {
+            assert!(
+                compose.contains(shared),
+                "compose template missing shared config volume {shared}: {compose}"
+            );
+        }
+    }
+
+    #[test]
+    fn branchbox_env_placeholder_has_expected_defaults() {
+        let env = branchbox_env().expect("branchbox env template");
+        for needle in [
+            "WORK_FEATURE=main",
+            "BRANCHBOX_MAIN_NAME=main",
+            "GIT_BRANCH=main",
+        ] {
+            assert!(
+                env.contains(needle),
+                "branchbox.env missing {needle}: {env}"
+            );
+        }
+    }
+}

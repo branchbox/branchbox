@@ -159,6 +159,16 @@ impl Bootstrap {
             tracing::info!("Skipped (already exists): {}", env_sample_path.display());
         }
 
+        // Generate the BranchBox env overrides placeholder (lives under .devcontainer)
+        let branchbox_env = self.generate_branchbox_env()?;
+        let branchbox_env_path = devcontainer_dir.join(".branchbox.env");
+        if !branchbox_env_path.exists() {
+            fs::write(&branchbox_env_path, branchbox_env)?;
+            tracing::info!("Created: {}", branchbox_env_path.display());
+        } else {
+            tracing::info!("Skipped (already exists): {}", branchbox_env_path.display());
+        }
+
         tracing::info!("✓ Bootstrap complete for {} stack", stack.as_str());
         tracing::info!("  Next steps:");
         tracing::info!("  1. Open project in VS Code/Cursor");
@@ -186,6 +196,11 @@ impl Bootstrap {
     /// Generate .env.sample
     fn generate_env_sample(&self, stack: Stack) -> Result<String> {
         templates::env_sample(stack)
+    }
+
+    /// Generate .branchbox.env placeholder
+    fn generate_branchbox_env(&self) -> Result<String> {
+        templates::branchbox_env()
     }
 }
 
@@ -248,6 +263,10 @@ mod tests {
             .exists());
         assert!(temp_dir.path().join(".devcontainer/compose.yaml").exists());
         assert!(temp_dir.path().join(".devcontainer/Dockerfile").exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.branchbox.env")
+            .exists());
         assert!(temp_dir.path().join(".env.sample").exists());
 
         // Check that files have content
@@ -262,6 +281,10 @@ mod tests {
         let dockerfile =
             fs::read_to_string(temp_dir.path().join(".devcontainer/Dockerfile")).unwrap();
         assert!(dockerfile.contains("rust"));
+
+        let branchbox_env =
+            fs::read_to_string(temp_dir.path().join(".devcontainer/.branchbox.env")).unwrap();
+        assert!(branchbox_env.contains("WORK_FEATURE=main"));
     }
 
     #[test]
@@ -305,6 +328,14 @@ mod tests {
             assert!(
                 temp_dir.path().join(".devcontainer/Dockerfile").exists(),
                 "{} stack should create Dockerfile",
+                stack.as_str()
+            );
+            assert!(
+                temp_dir
+                    .path()
+                    .join(".devcontainer/.branchbox.env")
+                    .exists(),
+                "{} stack should create .branchbox.env",
                 stack.as_str()
             );
         }

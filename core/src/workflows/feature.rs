@@ -977,6 +977,14 @@ impl FeatureWorkflow {
         Ok(parent.join(work_feature))
     }
 
+    fn main_worktree_name(&self) -> String {
+        self.repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "main".to_string())
+    }
+
     fn resolve_app_slug(&self, env_path: &Path) -> Result<String> {
         if let Ok(vars) = validation::parse_env_file(env_path) {
             if let Some(raw) = vars
@@ -1052,6 +1060,7 @@ impl FeatureWorkflow {
 
         let mut feature_url = None;
         let mut compose_project_name = None;
+        let mut devcontainer_name = None;
 
         let app_slug = self.resolve_app_slug(&source_env)?;
         std::env::set_var("BASE_PREFIX", &app_slug);
@@ -1075,7 +1084,8 @@ impl FeatureWorkflow {
                 writeln!(file, "GIT_BRANCH={}", branch_name)?;
 
                 feature_url = Some(url);
-                compose_project_name = Some(compose_name);
+                compose_project_name = Some(compose_name.clone());
+                devcontainer_name = Some(compose_name);
             }
             Err(err) => {
                 tracing::warn!(
@@ -1087,6 +1097,17 @@ impl FeatureWorkflow {
         }
 
         self.link_env_into_devcontainer(worktree_path)?;
+
+        let main_name = self.main_worktree_name();
+        self.write_branchbox_env(
+            worktree_path,
+            work_feature,
+            branch_name,
+            feature_url.as_deref(),
+            compose_project_name.as_deref(),
+            devcontainer_name.as_deref(),
+            &main_name,
+        )?;
 
         Ok(EnvOutcome {
             env_path: Some(dest_env),
@@ -1268,6 +1289,45 @@ impl FeatureWorkflow {
                 tracing::warn!("Failed to create symlink for devcontainer .env: {}", err);
                 fs::copy(worktree_path.join(".env"), &link_path)?;
             }
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_branchbox_env(
+        &self,
+        worktree_path: &Path,
+        work_feature: &str,
+        branch_name: &str,
+        feature_url: Option<&str>,
+        compose_project_name: Option<&str>,
+        devcontainer_name: Option<&str>,
+        main_name: &str,
+    ) -> Result<()> {
+        let dev_dir = worktree_path.join(".devcontainer");
+        if !dev_dir.exists() {
+            fs::create_dir_all(&dev_dir)?;
+        }
+
+        let managed_env = dev_dir.join(".branchbox.env");
+        let mut file = File::create(&managed_env)?;
+        writeln!(
+            file,
+            "# BranchBox-managed overrides (auto-generated, do not edit)"
+        )?;
+        writeln!(file, "WORK_FEATURE={}", work_feature)?;
+        writeln!(file, "BRANCHBOX_MAIN_NAME={}", main_name)?;
+        writeln!(file, "GIT_BRANCH={}", branch_name)?;
+
+        if let Some(url) = feature_url {
+            writeln!(file, "APP_URL={}", url)?;
+        }
+        if let Some(compose) = compose_project_name {
+            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose)?;
+        }
+        if let Some(devcontainer) = devcontainer_name {
+            writeln!(file, "DEVCONTAINER_NAME={}", devcontainer)?;
         }
 
         Ok(())
@@ -2818,11 +2878,14 @@ fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use serde_yaml::Value as YamlValue;
     use std::fs;
+    use std::path::Path;
     use std::process::Command;
     use std::thread;
     use std::time::Duration;
     use tempfile::TempDir;
+    use walkdir::WalkDir;
 
     #[test]
     fn test_build_branch_name_with_default_prefix() {
@@ -3247,11 +3310,36 @@ mod tests {
         temp_dir
     }
 
+    fn copy_repo_devcontainer(repo_path: &Path) {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("core crate has repo root");
+        let source = repo_root.join(".devcontainer");
+        let dest = repo_path.join(".devcontainer");
+        for entry in WalkDir::new(&source) {
+            let entry = entry.unwrap();
+            let rel = entry.path().strip_prefix(&source).unwrap();
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let target = dest.join(rel);
+            if entry.file_type().is_dir() {
+                fs::create_dir_all(&target).unwrap();
+            } else {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn feature_start_creates_worktree_and_env() {
         let temp = setup_test_repo();
         let repo_path = temp.path();
         fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
@@ -3277,6 +3365,24 @@ mod tests {
         let env_content = fs::read_to_string(&env_path).unwrap();
         assert!(env_content.contains("WORK_FEATURE=test-feature"));
         assert!(env_content.contains("APP_URL=dev-test-feature.example.com"));
+
+        let managed_env_path = summary.worktree_path.join(".devcontainer/.branchbox.env");
+        assert!(managed_env_path.exists());
+        let managed_env = fs::read_to_string(&managed_env_path).unwrap();
+        assert!(managed_env.contains("WORK_FEATURE=test-feature"));
+        assert!(managed_env.contains(&format!("GIT_BRANCH={}", summary.branch_name)));
+        let main_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("main");
+        assert!(managed_env.contains(&format!("BRANCHBOX_MAIN_NAME={}", main_name)));
+        if let Some(compose) = summary.compose_project_name.as_deref() {
+            assert!(managed_env.contains(&format!("COMPOSE_PROJECT_NAME={}", compose)));
+            assert!(managed_env.contains(&format!("DEVCONTAINER_NAME={}", compose)));
+        }
+        if let Some(url) = summary.feature_url.as_deref() {
+            assert!(managed_env.contains(&format!("APP_URL={}", url)));
+        }
         assert_eq!(
             summary.feature_url.as_deref(),
             Some("dev-test-feature.example.com")
@@ -3292,6 +3398,53 @@ mod tests {
                 .any(|warn| warn.contains("Tunnel requires manual setup")),
             "expected manual tunnel warning, got {:?}",
             summary.warnings
+        );
+
+        // The generated devcontainer compose file must keep the canonical workspace mount and shared config volumes.
+        let compose_path = summary.worktree_path.join(".devcontainer/compose.yaml");
+        let compose_contents = fs::read_to_string(&compose_path).unwrap();
+        let compose_yaml: YamlValue = serde_yaml::from_str(&compose_contents).unwrap();
+        let volume_entries = compose_yaml
+            .get("services")
+            .and_then(|services| services.get("rust-dev"))
+            .and_then(|service| service.get("volumes"))
+            .and_then(|volumes| volumes.as_sequence())
+            .expect("rust-dev volumes list present");
+        let volumes: Vec<&str> = volume_entries
+            .iter()
+            .filter_map(|entry| entry.as_str())
+            .collect();
+        assert!(
+            volumes.contains(&"../..:/workspaces:cached"),
+            "compose.yaml missing canonical /workspaces bind: {:?}",
+            volumes
+        );
+        for shared in [
+            "${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex",
+            "${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude",
+            "${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh",
+        ] {
+            assert!(
+                volumes.contains(&shared),
+                "compose.yaml missing shared config volume {shared}: {:?}",
+                volumes
+            );
+        }
+
+        // The devcontainer.json must continue to cd into the workspace before running helper scripts.
+        let devcontainer_json_path = summary
+            .worktree_path
+            .join(".devcontainer/devcontainer.json");
+        let devcontainer_json: Value =
+            serde_json::from_str(&fs::read_to_string(&devcontainer_json_path).unwrap()).unwrap();
+        assert_eq!(
+            devcontainer_json
+                .get("postStartCommand")
+                .and_then(|value| value.as_str()),
+            Some(
+                "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh'"
+            ),
+            "devcontainer.json missing canonical postStartCommand"
         );
 
         // Stashed README changes should be applied to the new worktree only
