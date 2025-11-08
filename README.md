@@ -77,20 +77,21 @@ branchbox feature start "Add OAuth Integration"
 
 ### Fast Path & Prompt Seeds
 
-Need a lightweight worktree to spike an idea? Use the new alias and minimal mode preview:
+Need a lightweight worktree to spike an idea? Use the `feature new` alias plus minimal mode:
 
 ```bash
-BRANCHBOX_ENABLE_FAST_MODE=1 \
 branchbox feature new backlog-quick-fix \
   --minimal \
-  --prompt "Triage the specs table overflow" \
+  --default-prompt \
   --json
 ```
 
 Highlights:
 - Minimal mode skips the devcontainer, compose, and specs modules (you can still skip others via `--skip-module`). The CLI prints a reminder to run `branchbox devcontainer sync` when you want full provisioning.
+- `--default-prompt` drops in a BranchBox-authored seed for your default coding agent so you can stay hands-free (`--prompt "<custom text>"` still works when you want to override it).
 - Prompt seeds (up to 2,000 characters) are stored in the registry so the forthcoming agent bridge can resume context. The summary reports whether `BRANCHBOX_ENABLE_PROMPT_BRIDGE` is active.
-- `--json` mirrors the on-screen summary (module table, skipped modules, warnings, prompt metadata) so automation can ingest it directly. Add `--no-summary` for machine-only output.
+- Set `BRANCHBOX_DEFAULT_AGENT_CMD="cursor --workspace ." BRANCHBOX_DEFAULT_AGENT_NAME=cursor` (or any command) to auto-launch your preferred agent once the devcontainer module finishes. The checklist row explains whether it will run immediately or wait for `branchbox devcontainer sync`.
+- `--json` mirrors the richer on-screen summary (the checklist, module table, skipped modules, warnings, prompt metadata) and now includes a `default_agent` block so automation knows whether an agent will launch (`ready`, `waiting`, `blocked`, `disabled`). Add `--no-summary` for machine-only output.
 
 ### Working on Your Feature
 
