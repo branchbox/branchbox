@@ -1219,15 +1219,15 @@ impl FeatureWorkflow {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut dirty_entries = Vec::new();
         for line in stdout.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+            if line.len() <= 3 {
                 continue;
             }
-            let entry = if trimmed.len() > 3 {
-                trimmed[3..].trim()
-            } else {
-                trimmed
-            };
+
+            // The porcelain format always reserves the first three bytes for the staged/unstaged
+            // markers (`XY `). Slice directly to avoid trimming away the leading space and throwing
+            // off indexing for short filenames.
+            let entry = &line[3..];
+
             for candidate in entry.split(" -> ").map(|part| part.trim()) {
                 if candidate.is_empty() {
                     continue;
