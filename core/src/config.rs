@@ -227,9 +227,6 @@ mod tests {
     #[test]
     fn editor_settings_defaults_to_noop() {
         let config = BranchBoxConfig::default();
-        assert!(config.editor.default_agent.is_none());
-        assert!(config.editor.preferred_sidebar_view.is_none());
-        assert!(!config.editor.auto_launch_agent_terminal);
-        assert!(!config.editor.hide_secondary_sidebar);
+        assert_eq!(EditorSettings::default(), config.editor);
     }
 }
