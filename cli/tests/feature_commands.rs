@@ -82,8 +82,8 @@ fn feature_start_list_teardown_end_to_end() {
         "expected worktree directory to be created"
     );
 
-    // Spec stub should be created under docs/features/in-progress
-    let spec_path = repo_path
+    // Spec stub should be created inside the feature worktree under docs/features/in-progress
+    let spec_path = worktree_path
         .join("docs")
         .join("features")
         .join("in-progress")
