@@ -1994,7 +1994,7 @@ impl FeatureWorkflow {
         ];
 
         let spec_path = spec_path.unwrap();
-        if let Err(err) = update_spec_frontmatter(&spec_path, &updates) {
+        if let Err(err) = update_spec_frontmatter(&spec_path, &updates, &[]) {
             warnings.push(format!(
                 "Failed to update feature spec frontmatter '{}': {}",
                 spec_path.display(),
@@ -2087,7 +2087,7 @@ impl FeatureWorkflow {
             ];
             updates.push(("completed".to_string(), Utc::now().date_naive().to_string()));
 
-            if let Err(err) = update_spec_frontmatter(&target, &updates) {
+            if let Err(err) = update_spec_frontmatter(&target, &updates, &[]) {
                 warnings.push(format!(
                     "Failed to update completed spec frontmatter '{}': {}",
                     target.display(),
@@ -2100,16 +2100,16 @@ impl FeatureWorkflow {
             };
 
             let features_dir = self.repo_root.join("docs/features");
-            let in_progress_dir = features_dir.join(SpecStatus::InProgress.as_str());
-            if let Err(err) = fs::create_dir_all(&in_progress_dir) {
+            let backlog_dir = features_dir.join(SpecStatus::Backlog.as_str());
+            if let Err(err) = fs::create_dir_all(&backlog_dir) {
                 warnings.push(format!(
-                    "Failed to prepare in-progress specs directory: {}",
+                    "Failed to prepare backlog specs directory: {}",
                     err
                 ));
                 return;
             }
 
-            let target = in_progress_dir.join(format!("{}.md", work_feature));
+            let target = backlog_dir.join(format!("{}.md", work_feature));
 
             if source_spec != target {
                 let preserve_source = matches!(status, SpecStatus::Completed);
@@ -2126,11 +2126,8 @@ impl FeatureWorkflow {
 
             if let Err(err) = update_spec_frontmatter(
                 &target,
-                &[
-                    ("worktree".to_string(), worktree_path.display().to_string()),
-                    ("branch".to_string(), branch_name.to_string()),
-                    ("status".to_string(), "in-progress".to_string()),
-                ],
+                &[("status".to_string(), "backlog".to_string())],
+                &["worktree", "branch", "completed"],
             ) {
                 warnings.push(format!(
                     "Failed to refresh spec frontmatter '{}': {}",
@@ -2355,7 +2352,11 @@ fn feature_title_from_work_feature(work_feature: &str) -> String {
     }
 }
 
-fn update_spec_frontmatter(path: &Path, updates: &[(String, String)]) -> Result<()> {
+fn update_spec_frontmatter(
+    path: &Path,
+    updates: &[(String, String)],
+    removals: &[&str],
+) -> Result<()> {
     let raw = fs::read_to_string(path)?;
     let trimmed = raw.trim_start();
 
@@ -2382,6 +2383,10 @@ fn update_spec_frontmatter(path: &Path, updates: &[(String, String)]) -> Result<
                 entries.insert(key.trim().to_string(), value.trim().to_string());
             }
         }
+    }
+
+    for key in removals {
+        entries.remove(*key);
     }
 
     for (key, value) in updates {
@@ -3144,7 +3149,7 @@ mod tests {
             ("status".to_string(), "in-progress".to_string()),
             ("branch".to_string(), "feature/test".to_string()),
         ];
-        update_spec_frontmatter(&spec_path, &updates).unwrap();
+        update_spec_frontmatter(&spec_path, &updates, &[]).unwrap();
 
         let content = fs::read_to_string(&spec_path).unwrap();
         assert!(content.starts_with("---\n"));
@@ -3164,7 +3169,7 @@ mod tests {
         .unwrap();
 
         let updates = vec![("status".to_string(), "in-progress".to_string())];
-        update_spec_frontmatter(&spec_path, &updates).unwrap();
+        update_spec_frontmatter(&spec_path, &updates, &[]).unwrap();
 
         let content = fs::read_to_string(&spec_path).unwrap();
         assert!(content.contains("status: in-progress"));
@@ -3706,6 +3711,17 @@ mod tests {
         let contents = fs::read_to_string(&worktree_spec).unwrap();
         assert!(contents.contains("status: in-progress"));
         assert!(contents.contains("branch: feature/backlog-spec"));
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: summary.work_feature,
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
     }
 
     #[test]
@@ -3955,11 +3971,12 @@ mod tests {
             })
             .unwrap();
 
-        let repo_in_progress = repo_path.join("docs/features/in-progress/rehydrate.md");
-        assert!(repo_in_progress.exists());
-        let spec_body = fs::read_to_string(repo_in_progress).unwrap();
-        assert!(spec_body.contains("status: in-progress"));
-        assert!(spec_body.contains("branch: feature/rehydrate"));
+        let repo_backlog = repo_path.join("docs/features/backlog/rehydrate.md");
+        assert!(repo_backlog.exists());
+        let spec_body = fs::read_to_string(repo_backlog).unwrap();
+        assert!(spec_body.contains("status: backlog"));
+        assert!(!spec_body.contains("branch:"));
+        assert!(!spec_body.contains("worktree:"));
     }
 
     #[test]
