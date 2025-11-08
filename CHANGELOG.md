@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 -
 
+## [0.2.2] - 2025-11-08
+
+### Added
+- Seed `.devcontainer/.branchbox.env` from bootstrap so new repositories ship a template for per-worktree overrides and agent-driven env injection *(bootstrap)*
+
+### Changed
+- `branchbox feature start` now copies and customizes `.branchbox.env` for every worktree, keeping secrets isolated and ready for devcontainer sync *(workflows)*
+
+### Bug Fixes
+- Align devcontainer workspace/git mounts across strategies and skip syncing env overlays to avoid clobbering per-worktree state *(modules/devcontainer)*
+- Ensure release automation keeps Cloudflared tunnel jobs enabled by default *(workflows)*
+
+### Documentation
+- Rebuilt the documentation site on Docusaurus with refreshed architecture, getting started, and reference sections *(docs)*
+
+### Testing
+- Added regression coverage for Docker/devcontainer sync paths, including per-workflow env propagation *(tests)*
+
 ## [0.2.1] - 2025-11-03
 
 ### Bug Fixes

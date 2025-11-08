@@ -84,6 +84,12 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
 
    # Documentation
    cargo doc --no-deps --all-features
+
+   # Documentation site (Docusaurus)
+   cd docs
+   npm install
+   npm run build
+   cd ..
    ```
 
 3. **Update CHANGELOG.md (optional):**
@@ -341,6 +347,12 @@ Scoop support is planned for a future milestone. When implemented, it will follo
 - Watch GitHub Issues for bug reports
 - Monitor download metrics
 - Check for platform-specific problems
+
+### 5. Verify Documentation Deployment
+
+- Confirm the `docs-deploy` workflow finished successfully (`gh run list --workflow docs-deploy`)
+- Visit https://branchbox.github.io/branchbox/ (or the preview environment) to ensure the Docusaurus site reflects the new release notes and CLI reference
+- Regenerate `docs/docs/reference/cli.md` (capture `branchbox --help` output) if CLI help text changed and include it in the release PR before tagging
 
 ## Troubleshooting
 
