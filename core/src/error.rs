@@ -37,6 +37,15 @@ pub enum Error {
     #[error("Worktree not found: {0}")]
     WorktreeNotFound(String),
 
+    /// Worktree contains uncommitted module-managed changes
+    #[error("Worktree has module-managed changes: {worktree:?} (dirty entries: {files:?})")]
+    WorktreeDirty {
+        /// Path to the worktree that is dirty
+        worktree: PathBuf,
+        /// File paths with module-managed changes that triggered the block
+        files: Vec<String>,
+    },
+
     /// Branch already exists
     #[error("Branch already exists: {0}")]
     BranchExists(String),

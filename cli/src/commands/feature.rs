@@ -1,11 +1,15 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::{Args, Subcommand};
+use dialoguer::{console::Term, theme::ColorfulTheme, Confirm};
 use serde_json::json;
 use std::{env, path::PathBuf};
-use worktree_core::workflows::feature::{
-    FeatureMetadata, FeatureStatus, FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord,
-    ModuleStatus, StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+use worktree_core::{
+    workflows::feature::{
+        FeatureMetadata, FeatureStatus, FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord,
+        ModuleStatus, StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+    },
+    Error as CoreError,
 };
 
 #[derive(Subcommand)]
@@ -445,7 +449,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
-    let request = TeardownRequest {
+    let mut request = TeardownRequest {
         work_feature: name,
         branch_prefix,
         delete_branch,
@@ -454,7 +458,41 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         telemetry,
     };
 
-    let summary = workflow.teardown(request)?;
+    let summary = match workflow.teardown(request.clone()) {
+        Ok(summary) => summary,
+        Err(CoreError::WorktreeDirty { worktree, files }) => {
+            println!(
+                "⚠️  Detected devcontainer/compose changes inside {}:",
+                worktree.display()
+            );
+            for entry in &files {
+                println!("    • {}", entry);
+            }
+            println!("    (BranchBox refuses to delete dirty module files without --force)");
+
+            if !Term::stdout().is_term() {
+                anyhow::bail!(
+                    "Devcontainer/compose changes detected; rerun this command with --force to proceed."
+                );
+            }
+
+            let proceed = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt(
+                    "Continue teardown with --force? This will discard local module changes.",
+                )
+                .default(false)
+                .interact()?;
+
+            if !proceed {
+                anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
+            }
+
+            request.force_remove = true;
+            workflow.teardown(request)?
+        }
+        Err(err) => return Err(err.into()),
+    };
+
     print_teardown_summary(&summary);
 
     Ok(())
