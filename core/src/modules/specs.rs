@@ -22,7 +22,7 @@ pub enum SpecStatus {
 }
 
 impl SpecStatus {
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
             SpecStatus::Backlog => "backlog",
             SpecStatus::InProgress => "in-progress",
@@ -211,12 +211,12 @@ impl Module for SpecsModule {
         true
     }
 
-    fn init(&mut self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
+    fn init(&mut self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
         // Set specs directory
         self.specs_dir = if let Ok(features_dir) = std::env::var("FEATURES_DIR") {
             PathBuf::from(features_dir)
         } else {
-            main_dir.join("docs/features")
+            feature_dir.join("docs/features")
         };
 
         self.work_feature = feature_dir
@@ -453,7 +453,7 @@ mod tests {
         let feature_dir = main_dir.path().join("feature-awesome");
         std::fs::create_dir(&feature_dir).unwrap();
 
-        let specs_dir = main_dir.path().join("docs/features");
+        let specs_dir = feature_dir.join("docs/features");
         std::fs::create_dir_all(specs_dir.join("backlog")).unwrap();
         std::fs::create_dir_all(specs_dir.join("in-progress")).unwrap();
         std::fs::create_dir_all(specs_dir.join("completed")).unwrap();
@@ -477,7 +477,7 @@ mod tests {
         let feature_dir = main_dir.path().join("feature-bright");
         std::fs::create_dir(&feature_dir).unwrap();
 
-        let specs_dir = main_dir.path().join("docs/features");
+        let specs_dir = feature_dir.join("docs/features");
         std::fs::create_dir_all(specs_dir.join("backlog")).unwrap();
         std::fs::create_dir_all(specs_dir.join("in-progress")).unwrap();
         std::fs::create_dir_all(specs_dir.join("completed")).unwrap();
@@ -499,7 +499,7 @@ mod tests {
         let feature_dir = main_dir.path().join("feature-complete");
         std::fs::create_dir(&feature_dir).unwrap();
 
-        let specs_dir = main_dir.path().join("docs/features");
+        let specs_dir = feature_dir.join("docs/features");
         std::fs::create_dir_all(specs_dir.join("in-progress")).unwrap();
         std::fs::create_dir_all(specs_dir.join("completed")).unwrap();
 

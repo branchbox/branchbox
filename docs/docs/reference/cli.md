@@ -143,25 +143,34 @@ Options:
       --reuse                          Allow reusing an existing worktree directory
       --telemetry                      Emit verbose telemetry (e.g. Cloudflare operations)
       --skip-module <MODULE>           Skip specific modules during setup (can be specified multiple times) Available modules: compose, database, tunnel, specs
-      --minimal                        Start feature workflow in minimal mode (skips devcontainer/compose/specs) — gated by BRANCHBOX_ENABLE_FAST_MODE
+      --minimal                        Start feature workflow in minimal mode (skips devcontainer/compose/specs)
       --fast                           Hidden alias for --minimal
       --prompt <PROMPT>                Provide a prompt seed (trimmed to 2,000 characters) for future agent hand-off
+      --default-prompt                 Pre-fill the built-in minimal-mode prompt (requires --minimal/--fast and conflicts with --prompt)
       --json                           Emit a JSON summary instead of human-readable output
       --no-summary                     Suppress the text summary (ignored when --json is set)
   -h, --help                           Print help
 ```
 
-Minimal/fast mode skips heavyweight modules (`devcontainer`, `compose`, `specs`) and prints a reminder to finish provisioning later. Policy-enforced modules listed in `BRANCHBOX_POLICY_ENFORCED_MODULES` always run even when skipped elsewhere. Use `--prompt` to capture a seed hand-off for the forthcoming agent bridge; the CLI truncates it at 2,000 characters and records its length in the summary. Combine `--json` with `--no-summary` for automation-friendly output.
+Minimal/fast mode skips heavyweight modules (`devcontainer`, `compose`, `specs`) and prints a reminder to finish provisioning later. Policy-enforced modules listed in `BRANCHBOX_POLICY_ENFORCED_MODULES` always run even when skipped elsewhere. Use `--prompt` (or the shortcut `--default-prompt` in minimal mode) to capture a seed hand-off for the forthcoming agent bridge; the CLI truncates it at 2,000 characters and records its length in the summary. Combine `--json` with `--no-summary` for automation-friendly output.
 
 ### Feature Start Summary
 
 Every `feature start` (and `feature new`) run ends with:
-- A headline summarizing the mode (`full` or `minimal`), worktree path, branch, workspace color, feature URL, compose project, and `.env` path.
-- Adapter information (name + service URL) plus prompt-seed status with awareness of `BRANCHBOX_ENABLE_PROMPT_BRIDGE`.
+- A headline plus a three-column checklist (`Step`, `Result`, `Details`) that surfaces the worktree path, branch, workspace color, adapter/service URL, feature URL, compose project, `.env`, prompt status, module health, skipped modules, and the default-agent plan.
+- Adapter warnings continue to print below the checklist when present, and prompt rows reflect whether `BRANCHBOX_ENABLE_PROMPT_BRIDGE` is active.
 - A tabular breakdown of all modules with status (`success`, `skipped`, `failed`), duration, notes, and forced markers for policy-required modules.
 - Explicit “Skipped modules” and “Warnings” sections, along with next steps for minimal starts (`branchbox devcontainer sync`, etc.).
 
 Pass `--json` to receive the same data as structured JSON (including `module_outcomes`, `skipped_modules`, and telemetry flags) and parse it inside automation such as the forthcoming agent daemon or control plane.
+- The JSON payload includes a `default_agent` object (`status`, `label`, `command`, `detail`, `followup`) so automation can tell whether a CLI run will launch an agent, has to wait for devcontainer sync, or is blocked entirely.
+
+### Auto-launching a default coding agent
+
+- Set `BRANCHBOX_DEFAULT_AGENT_CMD` to the exact command you want BranchBox to run once the devcontainer module completes (for example, `cursor --workspace .` or `claude-code --agent branchbox`).
+- Optionally set `BRANCHBOX_DEFAULT_AGENT_NAME` to control how the checklist row and log message refer to that command.
+- The checklist explains whether the command will run immediately (`✅ ready`), is waiting for `branchbox devcontainer sync` (`… waiting`), or is blocked because the devcontainer module failed (`⚠️ blocked`).
+- Text-mode runs launch the command after summaries finish printing; JSON-only runs skip auto-launch to keep output consumable while still surfacing the plan via the `default_agent` JSON section.
 
 ## branchbox feature list
 

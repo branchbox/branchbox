@@ -77,22 +77,23 @@ This project includes a complete devcontainer setup that provides a consistent d
 ## Feature Start UX & Fast Path Modes
 
 - `branchbox feature start` ships with a muscle-memory alias: `branchbox feature new`. Both commands accept the same flags.
-- Minimal mode (`--minimal`, with hidden alias `--fast`) skips the devcontainer, compose, and specs modules for lightweight edits. It is gated behind `BRANCHBOX_ENABLE_FAST_MODE=1` during the preview.
-- `--prompt "seed text"` preserves up to 2,000 characters of context for the upcoming agent bridge. The CLI reports whether `BRANCHBOX_ENABLE_PROMPT_BRIDGE` is active and records the prompt length.
-- `--json` mirrors the entire summary (modules, warnings, prompt seed, timestamps) as structured JSON; pair it with `--no-summary` if you only want machine-readable output.
+- Minimal mode (`--minimal`, with hidden alias `--fast`) skips the devcontainer, compose, and specs modules for lightweight edits—no preview flag required.
+- `--default-prompt` drops in the built-in BranchBox seed for minimal starts so agents have immediate context. Use `--prompt "seed text"` when you want to provide your own (still capped at 2,000 characters and annotated with the prompt-bridge flag).
+- `--json` mirrors the entire summary (checklist, module table, warnings, prompt seed, timestamps) as structured JSON; pair it with `--no-summary` if you only want machine-readable output.
 
 ```bash
-BRANCHBOX_ENABLE_FAST_MODE=1 \
 branchbox feature new backlog-quick-fix \
   --minimal \
-  --prompt "Triage the specs table overflow" \
+  --default-prompt \
   --json
 ```
 
+- Set `BRANCHBOX_DEFAULT_AGENT_CMD` (optionally with `BRANCHBOX_DEFAULT_AGENT_NAME`) to auto-launch your preferred coding agent after the devcontainer module finishes. Minimal starts record that state in the checklist so you know whether it will run immediately or is waiting for `branchbox devcontainer sync`.
+
 ### Start Summary Cheat Sheet
 
-- Text mode prints `🚀 Feature workspace ready (<mode>)`, worktree path, branch, workspace color, feature URL, compose project, `.env`, adapter info, and prompt storage status.
-- A table lists every module with status (`success`, `skipped`, `failed`), duration, notes, and a forced marker for policy-required runs.
+- Text mode now prints `🚀 Feature workspace ready (<mode>)` followed by a checklist table (`Step`, `Result`, `Details`) that calls out the worktree, branch, adapter, URLs, `.env`, prompt seed, module health, skipped modules, and default agent plan.
+- A dedicated module table still lists every module with status (`success`, `skipped`, `failed`), duration, notes, and a forced marker for policy-required runs.
 - Separate “Skipped modules” and “Warnings” sections provide reasoning and remediation; minimal runs end with a reminder to finish provisioning via `branchbox devcontainer sync`.
 
 ### Listing Features

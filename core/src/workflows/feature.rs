@@ -2,7 +2,7 @@ use crate::{
     adapters,
     config::BranchBoxConfig,
     git::GitWorktree,
-    modules::{self, ModuleHandle},
+    modules::{self, ModuleHandle, SpecStatus},
     naming,
     tunnel::{
         cloudflared::CloudflaredProvider, ProvisioningIntent, ProvisioningOutcome,
@@ -1909,21 +1909,94 @@ impl FeatureWorkflow {
         (reports, warnings)
     }
 
-    fn determine_feature_spec(&self, work_feature: &str) -> Result<Option<PathBuf>> {
-        let features_dir = self.repo_root.join("docs/features");
+    fn determine_feature_spec(
+        &self,
+        base_dir: &Path,
+        work_feature: &str,
+    ) -> Result<Option<(PathBuf, SpecStatus)>> {
+        let features_dir = base_dir.join("docs/features");
         if !features_dir.exists() {
             return Ok(None);
         }
 
         let spec_name = format!("{}.md", work_feature);
-        for group in ["in-progress", "backlog", "completed"] {
-            let candidate = features_dir.join(group).join(&spec_name);
+        for status in [
+            SpecStatus::InProgress,
+            SpecStatus::Backlog,
+            SpecStatus::Completed,
+        ] {
+            let candidate = features_dir.join(status.as_str()).join(&spec_name);
             if candidate.exists() {
-                return Ok(Some(candidate));
+                return Ok(Some((candidate, status)));
             }
         }
 
         Ok(None)
+    }
+
+    fn transfer_spec(
+        &self,
+        source: &Path,
+        destination: &Path,
+        warnings: &mut Vec<String>,
+        context: &str,
+        preserve_source: bool,
+    ) -> bool {
+        if let Some(parent) = destination.parent() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                warnings.push(format!(
+                    "Failed to prepare directory '{}' for {}: {}",
+                    parent.display(),
+                    context,
+                    err
+                ));
+                return false;
+            }
+        }
+
+        if !preserve_source {
+            match fs::rename(source, destination) {
+                Ok(_) => return true,
+                Err(rename_err) => match fs::copy(source, destination) {
+                    Ok(_) => {
+                        if let Err(remove_err) = fs::remove_file(source) {
+                            warnings.push(format!(
+                                "Copied {} but failed to delete source '{}': {}",
+                                context,
+                                source.display(),
+                                remove_err
+                            ));
+                        }
+                        return true;
+                    }
+                    Err(copy_err) => {
+                        warnings.push(format!(
+                                "Failed to move {} from '{}' to '{}' (rename error: {}, copy error: {})",
+                                context,
+                                source.display(),
+                                destination.display(),
+                                rename_err,
+                                copy_err
+                            ));
+                        return false;
+                    }
+                },
+            }
+        }
+
+        match fs::copy(source, destination) {
+            Ok(_) => true,
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to copy {} from '{}' to '{}': {}",
+                    context,
+                    source.display(),
+                    destination.display(),
+                    err
+                ));
+                false
+            }
+        }
     }
 
     fn ensure_spec_for_start(
@@ -1933,7 +2006,7 @@ impl FeatureWorkflow {
         branch_name: &str,
         warnings: &mut Vec<String>,
     ) -> Option<PathBuf> {
-        let features_dir = self.repo_root.join("docs/features");
+        let features_dir = worktree_path.join("docs/features");
         if let Err(err) = fs::create_dir_all(features_dir.join("in-progress")) {
             warnings.push(format!("Failed to ensure specs directory exists: {}", err));
             return None;
@@ -1942,41 +2015,82 @@ impl FeatureWorkflow {
         let spec_name = format!("{}.md", work_feature);
         let in_progress = features_dir.join("in-progress").join(&spec_name);
 
-        match self.determine_feature_spec(work_feature) {
-            Ok(Some(existing)) if existing != in_progress => {
-                if let Err(err) = fs::rename(&existing, &in_progress) {
-                    warnings.push(format!(
-                        "Failed to move spec '{}' to in-progress: {}",
-                        existing.display(),
-                        err
-                    ));
-                    return Some(existing);
-                }
+        let worktree_spec = match self.determine_feature_spec(worktree_path, work_feature) {
+            Ok(spec) => spec,
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to inspect existing feature spec in worktree for '{}': {}",
+                    work_feature, err
+                ));
+                None
             }
-            Ok(None) => {
-                let content = format!(
-                    "---\nworktree: {}\nbranch: {}\nwork_feature: {}\nstatus: in-progress\ncreated: {}\n---\n\n# {}\n\n## Overview\n\nTODO: Describe the feature scope.\n",
-                    worktree_path.display(),
-                    branch_name,
-                    work_feature,
-                    Utc::now().date_naive(),
-                    feature_title_from_work_feature(work_feature)
-                );
+        };
 
-                if let Err(err) = fs::write(&in_progress, content) {
-                    warnings.push(format!(
-                        "Failed to create feature spec '{}': {}",
-                        in_progress.display(),
-                        err
-                    ));
-                    return None;
-                }
+        let repo_spec = match self.determine_feature_spec(&self.repo_root, work_feature) {
+            Ok(spec) => spec,
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to inspect repository feature spec for '{}': {}",
+                    work_feature, err
+                ));
+                None
             }
-            Ok(_) => {}
-            Err(err) => warnings.push(format!(
-                "Failed to inspect existing feature spec for '{}': {}",
-                work_feature, err
-            )),
+        };
+
+        let mut spec_path: Option<PathBuf> = None;
+
+        if let Some((existing, status)) = worktree_spec {
+            if matches!(status, SpecStatus::Backlog) && existing != in_progress {
+                if self.transfer_spec(
+                    &existing,
+                    &in_progress,
+                    warnings,
+                    "feature spec inside worktree",
+                    false,
+                ) {
+                    spec_path = Some(in_progress.clone());
+                } else {
+                    spec_path = Some(existing);
+                }
+            } else {
+                spec_path = Some(existing);
+            }
+        } else if let Some((source, status)) = repo_spec {
+            let preserve_source = matches!(status, SpecStatus::Completed);
+            let transferred = self.transfer_spec(
+                &source,
+                &in_progress,
+                warnings,
+                "feature spec into worktree",
+                preserve_source,
+            );
+
+            if transferred || in_progress.exists() {
+                spec_path = Some(in_progress.clone());
+            } else if preserve_source {
+                spec_path = Some(source);
+            }
+        }
+
+        if spec_path.is_none() {
+            let content = format!(
+                "---\nworktree: {}\nbranch: {}\nwork_feature: {}\nstatus: in-progress\ncreated: {}\n---\n\n# {}\n\n## Overview\n\nTODO: Describe the feature scope.\n",
+                worktree_path.display(),
+                branch_name,
+                work_feature,
+                Utc::now().date_naive(),
+                feature_title_from_work_feature(work_feature)
+            );
+
+            if let Err(err) = fs::write(&in_progress, content) {
+                warnings.push(format!(
+                    "Failed to create feature spec '{}': {}",
+                    in_progress.display(),
+                    err
+                ));
+                return None;
+            }
+            spec_path = Some(in_progress.clone());
         }
 
         let updates = vec![
@@ -1986,15 +2100,16 @@ impl FeatureWorkflow {
             ("status".to_string(), "in-progress".to_string()),
         ];
 
-        if let Err(err) = update_spec_frontmatter(&in_progress, &updates) {
+        let spec_path = spec_path.unwrap();
+        if let Err(err) = update_spec_frontmatter(&spec_path, &updates, &[]) {
             warnings.push(format!(
                 "Failed to update feature spec frontmatter '{}': {}",
-                in_progress.display(),
+                spec_path.display(),
                 err
             ));
         }
 
-        Some(in_progress)
+        Some(spec_path)
     }
 
     fn handle_spec_on_teardown(
@@ -2005,29 +2120,38 @@ impl FeatureWorkflow {
         mark_complete: bool,
         warnings: &mut Vec<String>,
     ) {
-        let Ok(existing) = self.determine_feature_spec(work_feature) else {
-            if mark_complete {
+        let worktree_spec = match self.determine_feature_spec(worktree_path, work_feature) {
+            Ok(spec) => spec,
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to inspect worktree spec for '{}': {}",
+                    work_feature, err
+                ));
+                None
+            }
+        };
+        let repo_spec = match self.determine_feature_spec(&self.repo_root, work_feature) {
+            Ok(spec) => spec,
+            Err(err) => {
+                warnings.push(format!(
+                    "Failed to inspect repository spec for '{}': {}",
+                    work_feature, err
+                ));
+                None
+            }
+        };
+
+        if mark_complete {
+            let Some((source_spec, _)) = worktree_spec.as_ref().or(repo_spec.as_ref()) else {
                 warnings.push(format!(
                     "Unable to locate feature spec '{}' during teardown",
                     work_feature
                 ));
-            }
-            return;
-        };
+                return;
+            };
 
-        let Some(mut spec_path) = existing else {
-            if mark_complete {
-                warnings.push(format!(
-                    "Feature spec '{}' not found in docs/features",
-                    work_feature
-                ));
-            }
-            return;
-        };
-
-        if mark_complete {
             let features_dir = self.repo_root.join("docs/features");
-            let completed_dir = features_dir.join("completed");
+            let completed_dir = features_dir.join(SpecStatus::Completed.as_str());
             if let Err(err) = fs::create_dir_all(&completed_dir) {
                 warnings.push(format!(
                     "Failed to prepare completed specs directory: {}",
@@ -2037,40 +2161,87 @@ impl FeatureWorkflow {
             }
 
             let target = completed_dir.join(format!("{}.md", work_feature));
-            if spec_path != target {
-                if let Err(err) = fs::rename(&spec_path, &target) {
-                    warnings.push(format!("Failed to move feature spec to completed: {}", err));
-                    return;
+            if !self.transfer_spec(
+                source_spec,
+                &target,
+                warnings,
+                "feature spec to completed",
+                false,
+            ) {
+                return;
+            }
+
+            for status_dir in [SpecStatus::Backlog, SpecStatus::InProgress] {
+                let candidate = features_dir
+                    .join(status_dir.as_str())
+                    .join(format!("{}.md", work_feature));
+                if candidate.exists() && candidate != target {
+                    if let Err(err) = fs::remove_file(&candidate) {
+                        warnings.push(format!(
+                            "Failed to remove '{}' spec at {}: {}",
+                            status_dir.as_str(),
+                            candidate.display(),
+                            err
+                        ));
+                    }
                 }
-                spec_path = target;
             }
 
             let mut updates = vec![
                 ("status".to_string(), "completed".to_string()),
                 ("branch".to_string(), branch_name.to_string()),
+                ("worktree".to_string(), worktree_path.display().to_string()),
             ];
             updates.push(("completed".to_string(), Utc::now().date_naive().to_string()));
 
-            if let Err(err) = update_spec_frontmatter(&spec_path, &updates) {
+            if let Err(err) = update_spec_frontmatter(&target, &updates, &[]) {
                 warnings.push(format!(
                     "Failed to update completed spec frontmatter '{}': {}",
-                    spec_path.display(),
+                    target.display(),
                     err
                 ));
             }
-        } else if let Err(err) = update_spec_frontmatter(
-            &spec_path,
-            &[
-                ("worktree".to_string(), worktree_path.display().to_string()),
-                ("branch".to_string(), branch_name.to_string()),
-                ("status".to_string(), "in-progress".to_string()),
-            ],
-        ) {
-            warnings.push(format!(
-                "Failed to refresh spec frontmatter '{}': {}",
-                spec_path.display(),
-                err
-            ));
+        } else {
+            let Some((source_spec, status)) = worktree_spec.or(repo_spec) else {
+                return;
+            };
+
+            let features_dir = self.repo_root.join("docs/features");
+            let backlog_dir = features_dir.join(SpecStatus::Backlog.as_str());
+            if let Err(err) = fs::create_dir_all(&backlog_dir) {
+                warnings.push(format!(
+                    "Failed to prepare backlog specs directory: {}",
+                    err
+                ));
+                return;
+            }
+
+            let target = backlog_dir.join(format!("{}.md", work_feature));
+
+            if source_spec != target {
+                let preserve_source = matches!(status, SpecStatus::Completed);
+                if !self.transfer_spec(
+                    &source_spec,
+                    &target,
+                    warnings,
+                    "feature spec back to repository",
+                    preserve_source,
+                ) {
+                    return;
+                }
+            }
+
+            if let Err(err) = update_spec_frontmatter(
+                &target,
+                &[("status".to_string(), "backlog".to_string())],
+                &["worktree", "branch", "completed"],
+            ) {
+                warnings.push(format!(
+                    "Failed to refresh spec frontmatter '{}': {}",
+                    target.display(),
+                    err
+                ));
+            }
         }
     }
 
@@ -2288,7 +2459,11 @@ fn feature_title_from_work_feature(work_feature: &str) -> String {
     }
 }
 
-fn update_spec_frontmatter(path: &Path, updates: &[(String, String)]) -> Result<()> {
+fn update_spec_frontmatter(
+    path: &Path,
+    updates: &[(String, String)],
+    removals: &[&str],
+) -> Result<()> {
     let raw = fs::read_to_string(path)?;
     let trimmed = raw.trim_start();
 
@@ -2315,6 +2490,10 @@ fn update_spec_frontmatter(path: &Path, updates: &[(String, String)]) -> Result<
                 entries.insert(key.trim().to_string(), value.trim().to_string());
             }
         }
+    }
+
+    for key in removals {
+        entries.remove(*key);
     }
 
     for (key, value) in updates {
@@ -3077,7 +3256,7 @@ mod tests {
             ("status".to_string(), "in-progress".to_string()),
             ("branch".to_string(), "feature/test".to_string()),
         ];
-        update_spec_frontmatter(&spec_path, &updates).unwrap();
+        update_spec_frontmatter(&spec_path, &updates, &[]).unwrap();
 
         let content = fs::read_to_string(&spec_path).unwrap();
         assert!(content.starts_with("---\n"));
@@ -3097,7 +3276,7 @@ mod tests {
         .unwrap();
 
         let updates = vec![("status".to_string(), "in-progress".to_string())];
-        update_spec_frontmatter(&spec_path, &updates).unwrap();
+        update_spec_frontmatter(&spec_path, &updates, &[]).unwrap();
 
         let content = fs::read_to_string(&spec_path).unwrap();
         assert!(content.contains("status: in-progress"));
@@ -3585,12 +3764,17 @@ mod tests {
         let main_readme = fs::read_to_string(repo_path.join("README.md")).unwrap();
         assert_eq!(main_readme, "# Test Repo\n");
 
-        let spec_path = repo_path.join("docs/features/in-progress/test-feature.md");
+        let spec_path = summary
+            .worktree_path
+            .join("docs/features/in-progress/test-feature.md");
         assert!(spec_path.exists());
         let spec_content = fs::read_to_string(&spec_path).unwrap();
         assert!(spec_content.contains("status: in-progress"));
         assert!(spec_content.contains("branch: feature/test-feature"));
         assert!(spec_content.contains("worktree:"));
+        assert!(!repo_path
+            .join("docs/features/in-progress/test-feature.md")
+            .exists());
 
         let stash_list = Command::new("git")
             .args(["stash", "list"])
@@ -3625,6 +3809,51 @@ mod tests {
             })
             .unwrap();
         assert!(teardown_summary.adapter_cleanup_warnings.is_empty());
+    }
+
+    #[test]
+    fn feature_start_moves_backlog_spec_into_worktree() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        copy_repo_devcontainer(repo_path);
+
+        let backlog_dir = repo_path.join("docs/features/backlog");
+        fs::create_dir_all(&backlog_dir).unwrap();
+        fs::write(
+            backlog_dir.join("backlog-spec.md"),
+            "---\nstatus: backlog\ntitle: Backlog Spec\n---\n\n# Backlog Spec\n",
+        )
+        .unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("backlog-spec".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let worktree_spec = summary
+            .worktree_path
+            .join("docs/features/in-progress/backlog-spec.md");
+        assert!(worktree_spec.exists());
+        assert!(!backlog_dir.join("backlog-spec.md").exists());
+
+        let contents = fs::read_to_string(&worktree_spec).unwrap();
+        assert!(contents.contains("status: in-progress"));
+        assert!(contents.contains("branch: feature/backlog-spec"));
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: summary.work_feature,
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
     }
 
     #[test]
@@ -3928,8 +4157,13 @@ mod tests {
             })
             .unwrap();
 
-        let in_progress_spec = repo_path.join("docs/features/in-progress/complete-me.md");
+        let in_progress_spec = summary
+            .worktree_path
+            .join("docs/features/in-progress/complete-me.md");
         assert!(in_progress_spec.exists());
+        assert!(!repo_path
+            .join("docs/features/in-progress/complete-me.md")
+            .exists());
 
         workflow
             .teardown(TeardownRequest {
@@ -3948,6 +4182,56 @@ mod tests {
         let spec_body = fs::read_to_string(completed_spec).unwrap();
         assert!(spec_body.contains("status: completed"));
         assert!(spec_body.contains("completed:"));
+    }
+
+    #[test]
+    fn feature_teardown_returns_spec_to_main_when_not_completed() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let backlog_dir = repo_path.join("docs/features/backlog");
+        fs::create_dir_all(&backlog_dir).unwrap();
+        fs::write(
+            backlog_dir.join("rehydrate.md"),
+            "---\nstatus: backlog\n---\n\n# Rehydrate\n",
+        )
+        .unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("rehydrate".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let worktree_spec = summary
+            .worktree_path
+            .join("docs/features/in-progress/rehydrate.md");
+        assert!(worktree_spec.exists());
+        assert!(!backlog_dir.join("rehydrate.md").exists());
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: summary.work_feature.clone(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+
+        let repo_backlog = repo_path.join("docs/features/backlog/rehydrate.md");
+        assert!(repo_backlog.exists());
+        let spec_body = fs::read_to_string(repo_backlog).unwrap();
+        assert!(spec_body.contains("status: backlog"));
+        assert!(!spec_body.contains("branch:"));
+        assert!(!spec_body.contains("worktree:"));
     }
 
     #[test]

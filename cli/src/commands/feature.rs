@@ -1,16 +1,25 @@
-use anyhow::Result;
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use clap::{Args, Subcommand};
 use dialoguer::{console::Term, theme::ColorfulTheme, Confirm};
+use serde::Serialize;
 use serde_json::json;
-use std::{env, path::PathBuf};
+use shell_words::split as split_command_line;
+use std::{
+    env, fmt,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use worktree_core::{
     workflows::feature::{
-        FeatureMetadata, FeatureStatus, FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord,
-        ModuleStatus, StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+        FeatureMetadata, FeatureStatus, FeatureTunnelStatus, FeatureWorkflow, ModuleOutcome,
+        ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus, StartMode, StartRequest, StartSummary,
+        TeardownRequest, TeardownSummary,
     },
     Error as CoreError,
 };
+
+const DEFAULT_MINIMAL_PROMPT: &str = "You are the default BranchBox coding agent operating in minimal mode. Devcontainer, compose, and specs modules were skipped to keep setup lightweight—focus on quick tweaks or documentation updates, and run `branchbox devcontainer sync` later if full provisioning becomes necessary.";
 
 #[derive(Subcommand)]
 pub enum FeatureCommands {
@@ -70,6 +79,10 @@ pub struct FeatureStartArgs {
     /// Provide an optional prompt seed for automation/agent hand-off
     #[arg(long)]
     pub prompt: Option<String>,
+
+    /// Use the default minimal-mode prompt shortcut (only valid with --minimal/--fast)
+    #[arg(long = "default-prompt", conflicts_with = "prompt")]
+    pub default_prompt: bool,
 
     /// Emit JSON summary payload instead of human-readable text
     #[arg(long)]
@@ -150,22 +163,19 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         minimal,
         fast,
         prompt,
+        default_prompt,
         json,
         no_summary,
     } = args;
 
-    let mut mode = if minimal || fast {
+    let mode = if minimal || fast {
         StartMode::Minimal
     } else {
         StartMode::Full
     };
 
-    let fast_mode_enabled = env_flag("BRANCHBOX_ENABLE_FAST_MODE");
-    if mode == StartMode::Minimal && !fast_mode_enabled {
-        println!(
-            "⚠️  Minimal mode disabled. Set BRANCHBOX_ENABLE_FAST_MODE=1 to enable the preview; running full mode instead."
-        );
-        mode = StartMode::Full;
+    if default_prompt && mode != StartMode::Minimal {
+        bail!("--default-prompt can only be used with --minimal or --fast");
     }
 
     const PROMPT_MAX_CHARS: usize = 2000;
@@ -179,6 +189,10 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
             println!("⚠️  Prompt truncated to {PROMPT_MAX_CHARS} characters before storage.");
             *seed = truncated;
         }
+    }
+
+    if default_prompt && prompt_seed.is_none() {
+        prompt_seed = Some(DEFAULT_MINIMAL_PROMPT.to_string());
     }
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
@@ -236,14 +250,10 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         return Ok(());
     }
 
-    if json {
-        let payload = serde_json::to_string_pretty(&features)?;
-        println!("{}", payload);
-        return Ok(());
-    }
-
     if features.is_empty() {
-        if let Some(filter) = status.as_ref() {
+        if json {
+            println!("[]");
+        } else if let Some(filter) = status.as_ref() {
             println!(
                 "ℹ️  No features found with status '{}'.",
                 filter.to_ascii_lowercase()
@@ -258,7 +268,40 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         return Ok(());
     }
 
-    let showing_count = features.len();
+    let agent_config = AgentLaunchConfig::from_env();
+    let agent_config_ref = agent_config.as_ref();
+    let entries: Vec<(FeatureMetadata, AgentPlan)> = features
+        .into_iter()
+        .map(|feature| {
+            let plan = determine_agent_plan(
+                devcontainer_status_from_metadata(&feature),
+                agent_config_ref,
+            );
+            (feature, plan)
+        })
+        .collect();
+
+    if json {
+        #[derive(Serialize)]
+        struct FeatureListEntry<'a> {
+            #[serde(flatten)]
+            feature: &'a FeatureMetadata,
+            #[serde(rename = "default_agent")]
+            agent: &'a AgentPlan,
+        }
+
+        let payload: Vec<_> = entries
+            .iter()
+            .map(|(feature, plan)| FeatureListEntry {
+                feature,
+                agent: plan,
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    let showing_count = entries.len();
     println!(
         "📚 Feature registry — {} active · {} removed (showing {}/{})",
         active_count, removed_count, showing_count, total_count
@@ -274,6 +317,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         "URL",
         "Tunnel",
         "Devcontainer",
+        "Agent",
         "PR",
         "Color",
         "Updated",
@@ -285,11 +329,12 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             .to_string()
     };
 
-    let mut rows: Vec<Vec<String>> = Vec::with_capacity(features.len());
-    for feature in features {
-        let url = feature_url_for_list(&feature);
-        let tunnel = tunnel_summary_for_list(&feature);
-        let devcontainer = devcontainer_status_for_list(&feature);
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(entries.len());
+    for (feature, agent_plan) in &entries {
+        let url = feature_url_for_list(feature);
+        let tunnel = tunnel_summary_for_list(feature);
+        let devcontainer = devcontainer_status_for_list(feature);
+        let agent = summarize_agent_plan(agent_plan);
         let pr = feature
             .pr_number
             .map(|number| format!("#{number}"))
@@ -309,6 +354,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             url,
             tunnel,
             devcontainer,
+            agent,
             pr,
             color,
             updated,
@@ -435,6 +481,17 @@ fn summarize_module_health(outcomes: &[ModuleOutcomeRecord]) -> String {
     }
 }
 
+fn summarize_agent_plan(plan: &AgentPlan) -> String {
+    match plan.status {
+        AgentPlanStatus::Ready => plan
+            .label
+            .as_deref()
+            .map(|label| format!("ready ({label})"))
+            .unwrap_or_else(|| "ready".to_string()),
+        _ => plan.status.to_string(),
+    }
+}
+
 fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     let FeatureTeardownArgs {
         name,
@@ -504,6 +561,11 @@ fn print_start_summary(
     suppress_summary: bool,
 ) -> Result<()> {
     let prompt_bridge_enabled = env_flag("BRANCHBOX_ENABLE_PROMPT_BRIDGE");
+    let agent_config = AgentLaunchConfig::from_env();
+    let agent_plan = determine_agent_plan(
+        devcontainer_status_from_summary(summary),
+        agent_config.as_ref(),
+    );
 
     if json_output {
         let module_outcomes_json: Vec<_> = summary
@@ -544,6 +606,7 @@ fn print_start_summary(
             None => None,
         };
 
+        let default_agent_json = serde_json::to_value(&agent_plan)?;
         let payload = json!({
             "work_feature": summary.work_feature,
             "branch_name": summary.branch_name,
@@ -561,6 +624,7 @@ fn print_start_summary(
             "tunnel": tunnel_json,
             "prompt_bridge_enabled": prompt_bridge_enabled,
             "generated_at": summary.generated_at.to_rfc3339(),
+            "default_agent": default_agent_json,
         });
 
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -568,42 +632,18 @@ fn print_start_summary(
     }
 
     println!("🚀 Feature workspace ready ({})", summary.mode);
-    println!("  Worktree: {}", summary.worktree_path.display());
-    println!("  Branch: {}", summary.branch_name);
-    if let Some(color) = summary.color.as_ref() {
-        println!("  Workspace color: {}", color);
-    }
-    if let Some(url) = summary.feature_url.as_ref() {
-        println!("  Feature URL: https://{}", url);
-    }
-    if let Some(compose) = summary.compose_project_name.as_ref() {
-        println!("  Compose project: {}", compose);
-    }
-    if let Some(env_path) = summary.env_path.as_ref() {
-        println!("  .env copied to: {}", env_path.display());
-    }
-    if let Some(adapter) = summary.adapter.as_ref() {
-        println!("  Adapter: {}", adapter.name);
-        println!("  Service URL: {}", adapter.service_url);
-        if !adapter.warnings.is_empty() {
-            for warning in &adapter.warnings {
-                println!("      ⚠ {}", warning);
-            }
-        }
-    }
+    println!("  Feature: {}", summary.work_feature);
+    println!();
+    print_start_checklist(summary, prompt_bridge_enabled, &agent_plan);
 
-    match summary.prompt_seed.as_ref() {
-        Some(seed) => {
-            let length = seed.chars().count();
-            if prompt_bridge_enabled {
-                println!("  Prompt seed stored (length: {length} chars)");
-            } else {
-                println!(
-                    "  Prompt seed stored locally (length: {length} chars; prompt bridge disabled)"
-                );
+    if let Some(adapter) = summary.adapter.as_ref() {
+        if !adapter.warnings.is_empty() {
+            println!();
+            println!("Adapter warnings:");
+            for warning in &adapter.warnings {
+                println!("  ⚠ {}", warning);
             }
         }
-        None => println!("  Prompt seed stored: no"),
     }
 
     if !suppress_summary {
@@ -636,7 +676,282 @@ fn print_start_summary(
         }
     }
 
+    maybe_launch_default_agent(summary, &agent_plan, json_output);
+
     Ok(())
+}
+
+fn print_start_checklist(
+    summary: &StartSummary,
+    prompt_bridge_enabled: bool,
+    agent_plan: &AgentPlan,
+) {
+    let mut rows = Vec::new();
+
+    rows.push(ChecklistRow::new(
+        "Worktree",
+        "✅",
+        "ready",
+        summary.worktree_path.display().to_string(),
+    ));
+    rows.push(ChecklistRow::new(
+        "Branch",
+        "✅",
+        "ready",
+        summary.branch_name.clone(),
+    ));
+
+    if let Some(color) = summary.color.as_ref() {
+        rows.push(ChecklistRow::new(
+            "Workspace color",
+            "✅",
+            "applied",
+            color.clone(),
+        ));
+    }
+
+    rows.push(build_adapter_row(summary));
+    rows.push(build_feature_url_row(summary));
+    rows.push(build_compose_row(summary));
+    rows.push(build_env_row(summary));
+    rows.push(build_prompt_row(summary, prompt_bridge_enabled));
+    rows.push(build_tunnel_row(summary));
+    rows.push(build_modules_row(summary));
+
+    if let Some(skipped) = build_skipped_modules_detail(&summary.skipped_modules) {
+        rows.push(ChecklistRow::new(
+            "Skipped modules",
+            "⏭",
+            "recorded",
+            skipped,
+        ));
+    }
+
+    rows.push(build_agent_row(agent_plan));
+
+    render_checklist(&rows);
+}
+
+fn build_adapter_row(summary: &StartSummary) -> ChecklistRow {
+    match summary.adapter.as_ref() {
+        Some(adapter) => {
+            let mut details = adapter.name.clone();
+            if !adapter.service_url.is_empty() {
+                details.push_str(&format!(" · {}", adapter.service_url));
+            }
+            ChecklistRow::new("Adapter", "✅", "detected", details)
+        }
+        None => ChecklistRow::new(
+            "Adapter",
+            "ℹ️",
+            "generic",
+            "No stack-specific adapter detected; using generic workflow",
+        ),
+    }
+}
+
+fn build_feature_url_row(summary: &StartSummary) -> ChecklistRow {
+    match summary.feature_url.as_ref() {
+        Some(url) => ChecklistRow::new("Feature URL", "✅", "ready", format!("https://{}", url)),
+        None => ChecklistRow::new(
+            "Feature URL",
+            "…",
+            "not set",
+            "Populate APP_URL in the main .env to pre-seed feature URLs",
+        ),
+    }
+}
+
+fn build_compose_row(summary: &StartSummary) -> ChecklistRow {
+    match summary.compose_project_name.as_ref() {
+        Some(name) => ChecklistRow::new("Compose project", "✅", "isolated", name.clone()),
+        None => ChecklistRow::new(
+            "Compose project",
+            "ℹ️",
+            "default",
+            "Compose isolation not required for this stack",
+        ),
+    }
+}
+
+fn build_env_row(summary: &StartSummary) -> ChecklistRow {
+    match summary.env_path.as_ref() {
+        Some(path) => ChecklistRow::new(".env", "✅", "copied", path.display().to_string()),
+        None => ChecklistRow::new(
+            ".env",
+            "⚠️",
+            "missing",
+            "Source .env not found; workspace kept untouched",
+        ),
+    }
+}
+
+fn build_prompt_row(summary: &StartSummary, prompt_bridge_enabled: bool) -> ChecklistRow {
+    match summary.prompt_seed.as_ref() {
+        Some(seed) => {
+            let len = seed.chars().count();
+            let bridge = if prompt_bridge_enabled {
+                "bridge enabled"
+            } else {
+                "bridge disabled"
+            };
+            ChecklistRow::new(
+                "Prompt seed",
+                "✅",
+                "stored",
+                format!("{len} chars ({bridge})"),
+            )
+        }
+        None => ChecklistRow::new(
+            "Prompt seed",
+            "…",
+            "not set",
+            "Add --prompt or --default-prompt to capture agent context",
+        ),
+    }
+}
+
+fn build_tunnel_row(summary: &StartSummary) -> ChecklistRow {
+    match summary.tunnel.as_ref() {
+        Some(state) => {
+            let mut detail = state.provider.clone();
+            if let Some(host) = state.hostname.as_ref() {
+                detail = format!("{detail} ({host})");
+            }
+            match state.status {
+                FeatureTunnelStatus::Active => ChecklistRow::new("Tunnel", "✅", "online", detail),
+                FeatureTunnelStatus::Pending => ChecklistRow::new("Tunnel", "…", "pending", detail),
+                FeatureTunnelStatus::Manual => ChecklistRow::new("Tunnel", "⚠️", "manual", detail),
+                FeatureTunnelStatus::Disabled => {
+                    ChecklistRow::new("Tunnel", "⏭", "disabled", detail)
+                }
+            }
+        }
+        None => ChecklistRow::new(
+            "Tunnel",
+            "ℹ️",
+            "not configured",
+            "Enable the tunnel module to sync review links",
+        ),
+    }
+}
+
+fn build_modules_row(summary: &StartSummary) -> ChecklistRow {
+    if summary.module_outcomes.is_empty() {
+        return ChecklistRow::new("Modules", "…", "pending", "Module detection pending");
+    }
+
+    let mut success = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+
+    for outcome in &summary.module_outcomes {
+        match outcome.status {
+            ModuleStatus::Success => success += 1,
+            ModuleStatus::Skipped => skipped += 1,
+            ModuleStatus::Failed => failed += 1,
+        }
+    }
+
+    let mut parts = Vec::new();
+    if success > 0 {
+        parts.push(format!("{success} ok"));
+    }
+    if skipped > 0 {
+        parts.push(format!("{skipped} skip"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} fail"));
+    }
+
+    let detail = if parts.is_empty() {
+        "No modules detected".to_string()
+    } else {
+        parts.join(" / ")
+    };
+
+    if failed > 0 {
+        ChecklistRow::new("Modules", "❌", "failed", detail)
+    } else if success == 0 && skipped > 0 {
+        ChecklistRow::new("Modules", "⏭", "skipped", detail)
+    } else if skipped > 0 {
+        ChecklistRow::new("Modules", "⚠️", "partial", detail)
+    } else {
+        ChecklistRow::new("Modules", "✅", "ready", detail)
+    }
+}
+
+fn build_skipped_modules_detail(records: &[ModuleSkipRecord]) -> Option<String> {
+    if records.is_empty() {
+        return None;
+    }
+
+    let descriptions: Vec<String> = records
+        .iter()
+        .map(|record| format!("{} ({})", record.name, record.reason.description()))
+        .collect();
+
+    Some(descriptions.join(", "))
+}
+
+fn build_agent_row(plan: &AgentPlan) -> ChecklistRow {
+    let (icon, label) = match plan.status {
+        AgentPlanStatus::Disabled => ("⏭", "disabled"),
+        AgentPlanStatus::Waiting => ("…", "waiting"),
+        AgentPlanStatus::Blocked => ("⚠️", "blocked"),
+        AgentPlanStatus::Ready => ("✅", "ready"),
+    };
+
+    ChecklistRow::new("Default agent", icon, label, plan.detail.clone())
+}
+
+fn render_checklist(rows: &[ChecklistRow]) {
+    if rows.is_empty() {
+        return;
+    }
+
+    let mut step_w = "Step".len();
+    let mut result_w = "Result".len();
+    let mut detail_w = "Details".len();
+
+    for row in rows {
+        step_w = step_w.max(row.step.len());
+        result_w = result_w.max(row.result.len());
+        detail_w = detail_w.max(row.details.len());
+    }
+
+    let border = format!(
+        "+-{step}-+-{result}-+-{detail}-+",
+        step = "-".repeat(step_w),
+        result = "-".repeat(result_w),
+        detail = "-".repeat(detail_w),
+    );
+
+    println!("{border}");
+    println!(
+        "| {step:<step_w$} | {result:<result_w$} | {detail:<detail_w$} |",
+        step = "Step",
+        result = "Result",
+        detail = "Details",
+        step_w = step_w,
+        result_w = result_w,
+        detail_w = detail_w,
+    );
+    println!("{border}");
+
+    for row in rows {
+        println!(
+            "| {step:<step_w$} | {result:<result_w$} | {detail:<detail_w$} |",
+            step = row.step,
+            result = row.result,
+            detail = row.details,
+            step_w = step_w,
+            result_w = result_w,
+            detail_w = detail_w,
+        );
+    }
+
+    println!("{border}");
 }
 
 fn print_teardown_summary(summary: &TeardownSummary) {
@@ -755,6 +1070,257 @@ fn print_module_outcome_table(outcomes: &[ModuleOutcome]) {
     println!("{border}");
     if outcomes.iter().any(|outcome| outcome.forced) {
         println!("(*) Forced module executed due to policy requirements.");
+    }
+}
+
+#[derive(Debug)]
+struct ChecklistRow {
+    step: String,
+    result: String,
+    details: String,
+}
+
+impl ChecklistRow {
+    fn new(
+        step: impl Into<String>,
+        icon: &str,
+        label: impl Into<String>,
+        details: impl Into<String>,
+    ) -> Self {
+        let label = label.into();
+        let result = if label.is_empty() {
+            icon.to_string()
+        } else {
+            format!("{icon} {label}")
+        };
+
+        Self {
+            step: step.into(),
+            result,
+            details: details.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AgentLaunchConfig {
+    command: String,
+    label: Option<String>,
+}
+
+impl AgentLaunchConfig {
+    fn from_env() -> Option<Self> {
+        let command = env::var("BRANCHBOX_DEFAULT_AGENT_CMD")
+            .ok()?
+            .trim()
+            .to_string();
+        if command.is_empty() {
+            return None;
+        }
+
+        let label = env::var("BRANCHBOX_DEFAULT_AGENT_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        Some(Self { command, label })
+    }
+
+    fn display_label(&self) -> &str {
+        self.label.as_deref().unwrap_or("default coding agent")
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentPlanStatus {
+    Ready,
+    Waiting,
+    Blocked,
+    Disabled,
+}
+
+impl AgentPlanStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            AgentPlanStatus::Ready => "ready",
+            AgentPlanStatus::Waiting => "waiting",
+            AgentPlanStatus::Blocked => "blocked",
+            AgentPlanStatus::Disabled => "disabled",
+        }
+    }
+}
+
+impl fmt::Display for AgentPlanStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AgentPlan {
+    status: AgentPlanStatus,
+    label: Option<String>,
+    command: Option<String>,
+    detail: String,
+    followup: Option<String>,
+}
+
+impl AgentPlan {
+    fn disabled() -> Self {
+        Self {
+            status: AgentPlanStatus::Disabled,
+            label: None,
+            command: None,
+            detail: "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent"
+                .to_string(),
+            followup: None,
+        }
+    }
+
+    fn ready(config: &AgentLaunchConfig) -> Self {
+        Self {
+            status: AgentPlanStatus::Ready,
+            label: Some(config.display_label().to_string()),
+            command: Some(config.command.clone()),
+            detail: format!(
+                "Will launch {} via `{}`",
+                config.display_label(),
+                config.command
+            ),
+            followup: None,
+        }
+    }
+
+    fn waiting(
+        detail: impl Into<String>,
+        followup: impl Into<String>,
+        config: &AgentLaunchConfig,
+    ) -> Self {
+        Self {
+            status: AgentPlanStatus::Waiting,
+            label: Some(config.display_label().to_string()),
+            command: Some(config.command.clone()),
+            detail: detail.into(),
+            followup: Some(followup.into()),
+        }
+    }
+
+    fn blocked(
+        detail: impl Into<String>,
+        followup: impl Into<String>,
+        config: &AgentLaunchConfig,
+    ) -> Self {
+        Self {
+            status: AgentPlanStatus::Blocked,
+            label: Some(config.display_label().to_string()),
+            command: Some(config.command.clone()),
+            detail: detail.into(),
+            followup: Some(followup.into()),
+        }
+    }
+}
+
+fn determine_agent_plan(
+    dev_status: Option<ModuleStatus>,
+    config: Option<&AgentLaunchConfig>,
+) -> AgentPlan {
+    let Some(config) = config else {
+        return AgentPlan::disabled();
+    };
+
+    match dev_status {
+        Some(ModuleStatus::Success) => AgentPlan::ready(config),
+        Some(ModuleStatus::Failed) => AgentPlan::blocked(
+            "Devcontainer failed; fix provisioning before auto-launching",
+            "⚠️  Skipping default coding agent launch because the devcontainer module failed.",
+            config,
+        ),
+        Some(ModuleStatus::Skipped) => AgentPlan::waiting(
+            "Devcontainer skipped (minimal mode); run `branchbox devcontainer sync` first",
+            "ℹ️  Default coding agent launch skipped (devcontainer not provisioned yet). Run `branchbox devcontainer sync` first.",
+            config,
+        ),
+        None => AgentPlan::waiting(
+            "Devcontainer module not detected; launch deferred",
+            "ℹ️  Default coding agent launch skipped (devcontainer module not detected).",
+            config,
+        ),
+    }
+}
+
+fn maybe_launch_default_agent(summary: &StartSummary, plan: &AgentPlan, json_output: bool) {
+    if json_output {
+        return;
+    }
+
+    match plan.status {
+        AgentPlanStatus::Ready => {
+            let Some(command) = plan.command.as_ref() else {
+                return;
+            };
+            let label = plan.label.as_deref().unwrap_or("default coding agent");
+            println!();
+            println!(
+                "🤖 Launching {} via `{}` (cwd: {})",
+                label,
+                command,
+                summary.worktree_path.display()
+            );
+            match launch_agent_process(command, &summary.worktree_path) {
+                Ok(()) => println!("✅ Agent session completed successfully."),
+                Err(err) => println!("⚠️  Default coding agent command failed: {err}"),
+            }
+        }
+        AgentPlanStatus::Waiting | AgentPlanStatus::Blocked => {
+            if let Some(message) = plan.followup.as_ref() {
+                println!();
+                println!("{message}");
+            }
+        }
+        AgentPlanStatus::Disabled => {}
+    }
+}
+
+macro_rules! devcontainer_status {
+    ($outcomes:expr) => {
+        $outcomes
+            .iter()
+            .find(|outcome| outcome.module.eq_ignore_ascii_case("devcontainer"))
+            .map(|outcome| outcome.status)
+    };
+}
+
+fn devcontainer_status_from_summary(summary: &StartSummary) -> Option<ModuleStatus> {
+    devcontainer_status!(&summary.module_outcomes)
+}
+
+fn devcontainer_status_from_metadata(feature: &FeatureMetadata) -> Option<ModuleStatus> {
+    devcontainer_status!(&feature.module_outcomes)
+}
+
+fn launch_agent_process(command_line: &str, cwd: &Path) -> Result<()> {
+    let parts = split_command_line(command_line)
+        .map_err(|err| anyhow!("failed to parse BRANCHBOX_DEFAULT_AGENT_CMD: {}", err))?;
+
+    if parts.is_empty() {
+        bail!("BRANCHBOX_DEFAULT_AGENT_CMD must include an executable name");
+    }
+
+    let mut command = Command::new(&parts[0]);
+    if parts.len() > 1 {
+        command.args(&parts[1..]);
+    }
+    command.current_dir(cwd);
+
+    let status = command
+        .status()
+        .with_context(|| format!("failed to launch {}", parts[0]))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("command exited with status {}", status))
     }
 }
 
