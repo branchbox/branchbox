@@ -213,6 +213,8 @@ pub struct TeardownRequest {
     pub branch_prefix: Option<String>,
     pub delete_branch: bool,
     pub force_remove: bool,
+    /// Override module dirty checks even if --force was not provided.
+    pub force_remove_modules: bool,
     pub complete_spec: bool,
     pub telemetry: bool,
 }
@@ -622,6 +624,7 @@ impl FeatureWorkflow {
             branch_prefix,
             delete_branch,
             force_remove,
+            force_remove_modules,
             complete_spec,
             telemetry,
         } = request;
@@ -637,7 +640,8 @@ impl FeatureWorkflow {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
         }
 
-        if worktree_exists && !force_remove {
+        let skip_dirty_validation = force_remove || force_remove_modules;
+        if worktree_exists && !skip_dirty_validation {
             let dirty_entries = self.detect_module_dirty_changes(&worktree_path)?;
             if !dirty_entries.is_empty() {
                 return Err(Error::WorktreeDirty {
@@ -3804,6 +3808,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3850,6 +3855,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3881,6 +3887,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3946,6 +3953,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3964,6 +3972,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -4002,6 +4011,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: false,
+                force_remove_modules: false,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -4049,6 +4059,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: false,
+                force_remove_modules: false,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -4072,6 +4083,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -4105,6 +4117,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -4171,6 +4184,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: true,
                 telemetry: false,
             })
@@ -4221,6 +4235,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })

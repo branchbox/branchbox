@@ -511,6 +511,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         branch_prefix,
         delete_branch,
         force_remove: force,
+        force_remove_modules: force,
         complete_spec,
         telemetry,
     };
@@ -544,7 +545,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
                 anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
             }
 
-            request.force_remove = true;
+            request.force_remove_modules = true;
             workflow.teardown(request)?
         }
         Err(err) => return Err(err.into()),
