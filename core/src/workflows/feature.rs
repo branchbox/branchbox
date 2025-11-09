@@ -3403,8 +3403,13 @@ mod tests {
             .unwrap();
 
         fs::write(repo_path.join("README.md"), "# Test Repo\n").unwrap();
+        fs::write(
+            repo_path.join(".gitignore"),
+            ".env\n.devcontainer/.branchbox.env\n.devcontainer/.cloudflared.env\n",
+        )
+        .unwrap();
         Command::new("git")
-            .args(["add", "README.md"])
+            .args(["add", "README.md", ".gitignore"])
             .current_dir(repo_path)
             .output()
             .unwrap();
@@ -3438,6 +3443,26 @@ mod tests {
                 }
                 fs::copy(entry.path(), &target).unwrap();
             }
+        }
+
+        Command::new("git")
+            .args(["add", ".devcontainer"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let diff_status = Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+
+        if !diff_status.success() {
+            Command::new("git")
+                .args(["commit", "-m", "Add devcontainer scaffolding"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap();
         }
     }
 
@@ -3721,10 +3746,15 @@ mod tests {
         let temp = setup_test_repo();
         let repo_path = temp.path();
         fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let worktree_path = repo_path.parent().unwrap().join("dirty");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
         workflow
             .start(StartRequest {
                 name: Some("dirty".to_string()),
@@ -3732,7 +3762,6 @@ mod tests {
             })
             .unwrap();
 
-        let worktree_path = repo_path.parent().unwrap().join("dirty");
         assert!(worktree_path.exists());
 
         // Introduce an untracked change so the git removal path falls back to manual cleanup.
