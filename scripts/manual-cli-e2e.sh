@@ -391,6 +391,22 @@ else
 fi
 
 if [[ "$PRETEND" == "0" ]]; then
+  SYNC_MARKER="// e2e-sync-check"
+  if ! grep -q "$SYNC_MARKER" "$MAIN_DEVCONTAINER_JSON"; then
+    printf "  %s\n" "$SYNC_MARKER" >>"$MAIN_DEVCONTAINER_JSON"
+  fi
+  if ! (cd "$MAIN_DIR" && "$BRANCHBOX_BIN" devcontainer sync --strategy copy >/dev/null); then
+    record_bug "branchbox devcontainer sync --strategy copy failed"
+  else
+    if ! grep -q "$SYNC_MARKER" "$FEATURE_DEVCONTAINER_JSON"; then
+      record_bug "devcontainer sync --strategy copy did not propagate changes to feature worktree"
+    fi
+  fi
+else
+  pretend_step "Would mutate main devcontainer and run branchbox devcontainer sync --strategy copy"
+fi
+
+if [[ "$PRETEND" == "0" ]]; then
   log "Running devcontainer sync dry-runs"
   if ! (cd "$MAIN_DIR" && "$BRANCHBOX_BIN" devcontainer sync --dry-run --strategy copy >/dev/null); then
     record_bug "branchbox devcontainer sync --dry-run --strategy copy failed"
