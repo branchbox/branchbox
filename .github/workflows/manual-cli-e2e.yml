@@ -11,9 +11,13 @@ env:
 
 jobs:
   manual_cli_e2e:
-    name: Manual CLI Harness
+    name: Manual CLI Harness (${{ matrix.stack }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [rust, generic]
     steps:
       - uses: actions/checkout@v4
 
@@ -32,5 +36,5 @@ jobs:
       - name: Run manual CLI harness
         env:
           BRANCHBOX_SKIP_HOST_VALIDATION: 1
+          STACK: ${{ matrix.stack }}
         run: scripts/manual-cli-e2e.sh
-

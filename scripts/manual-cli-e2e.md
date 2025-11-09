@@ -13,7 +13,12 @@
 ./scripts/manual-cli-e2e.sh
 ./scripts/manual-cli-e2e.sh --mode verbose
 ./scripts/manual-cli-e2e.sh --mode pretend
+
+# Target a specific stack (default: rust)
+STACK=generic ./scripts/manual-cli-e2e.sh --mode verbose --stack generic
 ```
+
+Supported stacks today: `rust` (default) and `generic`. Pass `--stack <stack>` or set `STACK=<stack>` to override; CI runs both stacks in parallel so template regressions surface quickly.
 
 ## Coverage Matrix
 

@@ -5,16 +5,20 @@ set -euo pipefail
 MODE="regular"
 SCRIPT_VERBOSE=0
 PRETEND=0
+STACK="rust"
 
 usage() {
   cat <<'USAGE'
-Usage: manual-cli-e2e.sh [--mode regular|verbose|pretend]
-       manual-cli-e2e.sh [--verbose] [--pretend]
+Usage: manual-cli-e2e.sh [--mode regular|verbose|pretend] [--stack rust|generic]
+       manual-cli-e2e.sh [--verbose] [--pretend] [--stack <stack>]
 
 Modes:
   regular   Default; runs the full workflow with real containers.
   verbose   Same as regular but with shell tracing and extra BranchBox logs.
   pretend   Dry-run. Logs each step without invoking BranchBox or Docker.
+Stacks:
+  rust      Seeds a Cargo binary and exercises the Rust devcontainer template.
+  generic   Seeds a minimal README project and exercises the generic stack template.
 USAGE
 }
 
@@ -32,6 +36,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     -p|--pretend|--dry-run)
       MODE="pretend"
+      ;;
+    -s|--stack)
+      shift
+      STACK="${1:-}"
+      ;;
+    --stack=*)
+      STACK="${1#*=}"
       ;;
     -h|--help)
       usage
@@ -58,14 +69,23 @@ case "$MODE" in
     ;;
 esac
 
+STACK="${STACK,,}"
+case "$STACK" in
+  rust|generic) ;;
+  *)
+    echo "Unsupported stack: $STACK (supported: rust, generic)" >&2
+    exit 1
+    ;;
+esac
+
 if [[ "$SCRIPT_VERBOSE" == "1" ]]; then
   set -x
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCHBOX_BIN="${BRANCHBOX_BIN:-"$REPO_ROOT/target/debug/branchbox"}"
-PROJECT_NAME="${PROJECT_NAME:-cli-e2e-sample}"
-FEATURE_NAME="${FEATURE_NAME:-cli-e2e-smoke}"
+PROJECT_NAME="${PROJECT_NAME:-cli-e2e-${STACK}-sample}"
+FEATURE_NAME="${FEATURE_NAME:-cli-e2e-${STACK}-smoke}"
 SECONDARY_FEATURE_NAME="${SECONDARY_FEATURE_NAME:-${FEATURE_NAME}-tunnel}"
 FALLBACK_FEATURE_NAME="${FALLBACK_FEATURE_NAME:-${SECONDARY_FEATURE_NAME}-fallback}"
 CLOUDFLARE_ACCOUNT_ID_VALUE="${CLOUDFLARE_ACCOUNT_ID_VALUE:-cli-e2e-account}"
@@ -78,7 +98,7 @@ TARGET_PARENT="$TMP_ROOT/workspaces"
 SOURCE_DIR="$SOURCE_PARENT/$PROJECT_NAME"
 EXPECTED_CONTAINER="$TARGET_PARENT/$PROJECT_NAME"
 LOG_DIR="$TMP_ROOT/logs"
-mkdir -p "$SOURCE_DIR/src" "$LOG_DIR"
+mkdir -p "$LOG_DIR"
 
 BUGS=()
 COMPOSE_STACKS=()
@@ -118,6 +138,41 @@ function fatal() {
   record_bug "$1"
   report_results
   exit 1
+}
+
+function seed_sample_project() {
+  log "Seeding disposable $STACK repository at $SOURCE_DIR"
+  rm -rf "$SOURCE_DIR"
+  mkdir -p "$SOURCE_DIR"
+  case "$STACK" in
+    rust)
+      mkdir -p "$SOURCE_DIR/src"
+      cat >"$SOURCE_DIR/Cargo.toml" <<'EOF_CARGO'
+[package]
+name = "cli-e2e-sample"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+EOF_CARGO
+
+      cat >"$SOURCE_DIR/src/main.rs" <<'EOF_MAIN'
+fn main() {
+    println!("BranchBox CLI e2e smoke test");
+}
+EOF_MAIN
+      ;;
+    generic)
+      cat >"$SOURCE_DIR/README.md" <<'EOF_GENERIC'
+# BranchBox CLI E2E Sample (Generic)
+
+This is a minimal project used by `scripts/manual-cli-e2e.sh` to exercise the generic stack.
+EOF_GENERIC
+      ;;
+    *)
+      fatal "Stack '$STACK' not supported by manual harness seeding"
+      ;;
+  esac
 }
 
 function require_cmd() {
@@ -269,7 +324,7 @@ if [[ "$PRETEND" == "0" ]]; then
   require_cmd docker
 fi
 
-log "Running manual CLI e2e in '$MODE' mode"
+log "Running manual CLI e2e in '$MODE' mode (stack: $STACK)"
 
 log "Building branchbox CLI"
 if [[ "$PRETEND" == "1" ]]; then
@@ -283,21 +338,7 @@ export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-branchbox-tester@example.com}"
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 
-log "Seeding disposable Rust repository at $SOURCE_DIR"
-cat >"$SOURCE_DIR/Cargo.toml" <<'EOF_CARGO'
-[package]
-name = "cli-e2e-sample"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-EOF_CARGO
-
-cat >"$SOURCE_DIR/src/main.rs" <<'EOF_MAIN'
-fn main() {
-    println!("BranchBox CLI e2e smoke test");
-}
-EOF_MAIN
+seed_sample_project
 
 (cd "$SOURCE_DIR" && git init -b main >/dev/null)
 (cd "$SOURCE_DIR" && git add . >/dev/null && git commit -m "Seed sample project" >/dev/null)
@@ -305,9 +346,9 @@ EOF_MAIN
 log "Running branchbox init (forcing reorganize + parent structure)"
 INIT_LOG="$LOG_DIR/init.log"
 if [[ "$PRETEND" == "1" ]]; then
-  pretend_step "BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR=$TARGET_PARENT $BRANCHBOX_BIN init --stack rust --reorganize --use-parent-structure -y"
+  pretend_step "BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR=$TARGET_PARENT $BRANCHBOX_BIN init --stack $STACK --reorganize --use-parent-structure -y"
 else
-  if ! (cd "$SOURCE_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR="$TARGET_PARENT" "$BRANCHBOX_BIN" init --stack rust --reorganize --use-parent-structure -y) | tee "$INIT_LOG"; then
+  if ! (cd "$SOURCE_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR="$TARGET_PARENT" "$BRANCHBOX_BIN" init --stack "$STACK" --reorganize --use-parent-structure -y) | tee "$INIT_LOG"; then
     fatal "branchbox init failed (see $INIT_LOG)"
   fi
 fi
