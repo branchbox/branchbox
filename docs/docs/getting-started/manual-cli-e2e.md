@@ -63,6 +63,7 @@ The repository ships `scripts/manual-cli-e2e.sh`, which runs the entire flow abo
 - Injects JSONC comments into `devcontainer.json` to confirm BranchBox accepts commented configs before syncing.
 - Exercises `branchbox devcontainer sync --dry-run` with `copy` and `symlink` strategies so downstream tooling can rely on the command.
 - Seeds a backlog spec under `docs/features/backlog/` and verifies the specs module promotes it to `in-progress/` on start and `completed/` on teardown via `FEATURES_DIR`.
+- Captures `branchbox feature list --json` (while active) and `--json --all` (after teardown) to ensure the richer registry metadata matches reality.
 - Records every failed expectation and exits non-zero with a summary of bugs.
 
 Usage:

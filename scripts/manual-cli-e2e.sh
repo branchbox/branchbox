@@ -406,6 +406,19 @@ else
   pretend_step "Would verify spec moved to in-progress"
 fi
 
+if [[ "$PRETEND" == "0" ]]; then
+  ACTIVE_LIST_JSON="$LOG_DIR/feature-list-active.json"
+  if (cd "$MAIN_DIR" && "$BRANCHBOX_BIN" feature list --json >"$ACTIVE_LIST_JSON"); then
+    if ! jq -e --arg feature "$FEATURE_NAME" '.[] | select(.work_feature == $feature and ((.status // "") | ascii_downcase) == "active")' "$ACTIVE_LIST_JSON" >/dev/null; then
+      record_bug "feature list --json missing active entry for $FEATURE_NAME"
+    fi
+  else
+    record_bug "branchbox feature list --json failed (see $ACTIVE_LIST_JSON)"
+  fi
+else
+  pretend_step "Would run feature list --json to verify active state"
+fi
+
 log "Tearing down feature '$FEATURE_NAME'"
 TEARDOWN_LOG="$LOG_DIR/feature-teardown.log"
 if [[ "$PRETEND" == "1" ]]; then
@@ -441,8 +454,18 @@ if [[ "$PRETEND" == "0" ]]; then
   SPEC_COMPLETED="$FEATURES_DIR_PATH/completed/$FEATURE_NAME.md"
   assert_file_exists "$SPEC_COMPLETED"
   assert_file_contains "$SPEC_COMPLETED" "status: completed"
+
+  REMOVED_LIST_JSON="$LOG_DIR/feature-list-removed.json"
+  if (cd "$MAIN_DIR" && "$BRANCHBOX_BIN" feature list --json --all >"$REMOVED_LIST_JSON"); then
+    if ! jq -e --arg feature "$FEATURE_NAME" '.[] | select(.work_feature == $feature and ((.status // "") | ascii_downcase) == "removed")' "$REMOVED_LIST_JSON" >/dev/null; then
+      record_bug "feature list --json --all missing removed entry for $FEATURE_NAME"
+    fi
+  else
+    record_bug "branchbox feature list --json --all failed (see $REMOVED_LIST_JSON)"
+  fi
 else
   pretend_step "Would verify feature cleanup and registry removal"
+  pretend_step "Would run feature list --json (--all) to confirm removal state"
 fi
 
 report_results
