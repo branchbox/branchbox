@@ -157,6 +157,13 @@ function assert_file_contains() {
   fi
 }
 
+function assert_file_not_exists() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    record_bug "Expected file to be absent but found: $path"
+  fi
+}
+
 require_cmd bash
 require_cmd git
 require_cmd cargo
@@ -264,6 +271,21 @@ else
   pretend_step "Would ensure .env is present"
 fi
 
+FEATURES_DIR_PATH="$MAIN_DIR/docs/features"
+if [[ "$PRETEND" == "0" ]]; then
+  mkdir -p "$FEATURES_DIR_PATH/backlog"
+  cat >"$FEATURES_DIR_PATH/backlog/$FEATURE_NAME.md" <<EOF
+---
+status: backlog
+title: CLI E2E Spec
+---
+
+# Placeholder
+EOF
+else
+  pretend_step "Would seed backlog spec at $FEATURES_DIR_PATH/backlog/$FEATURE_NAME.md"
+fi
+
 if [[ "$PRETEND" == "0" ]]; then
   INIT_CHANGES="$(git -C "$MAIN_DIR" status --porcelain 2>/dev/null || true)"
   if [[ -n "$INIT_CHANGES" ]]; then
@@ -309,9 +331,9 @@ START_LOG="$LOG_DIR/feature-start.log"
 
 log "Starting feature '$FEATURE_NAME'"
 if [[ "$PRETEND" == "1" ]]; then
-  pretend_step "BRANCHBOX_SKIP_HOST_VALIDATION=1 $BRANCHBOX_BIN feature start $FEATURE_NAME"
+  pretend_step "FEATURES_DIR=$FEATURES_DIR_PATH BRANCHBOX_SKIP_HOST_VALIDATION=1 $BRANCHBOX_BIN feature start $FEATURE_NAME"
 else
-  if ! (cd "$MAIN_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature start "$FEATURE_NAME") | tee "$START_LOG"; then
+  if ! (cd "$MAIN_DIR" && FEATURES_DIR="$FEATURES_DIR_PATH" BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature start "$FEATURE_NAME") | tee "$START_LOG"; then
     fatal "branchbox feature start failed (see $START_LOG)"
   fi
 fi
@@ -374,18 +396,28 @@ else
   pretend_step "Would run devcontainer sync dry-runs"
 fi
 
+if [[ "$PRETEND" == "0" ]]; then
+  SPEC_BACKLOG="$FEATURES_DIR_PATH/backlog/$FEATURE_NAME.md"
+  SPEC_INPROGRESS="$FEATURES_DIR_PATH/in-progress/$FEATURE_NAME.md"
+  assert_file_not_exists "$SPEC_BACKLOG"
+  assert_file_exists "$SPEC_INPROGRESS"
+  assert_file_contains "$SPEC_INPROGRESS" "status: in-progress"
+else
+  pretend_step "Would verify spec moved to in-progress"
+fi
+
 log "Tearing down feature '$FEATURE_NAME'"
 TEARDOWN_LOG="$LOG_DIR/feature-teardown.log"
 if [[ "$PRETEND" == "1" ]]; then
-  pretend_step "BRANCHBOX_SKIP_HOST_VALIDATION=1 $BRANCHBOX_BIN feature teardown $FEATURE_NAME --delete-branch --complete-spec"
+  pretend_step "FEATURES_DIR=$FEATURES_DIR_PATH BRANCHBOX_SKIP_HOST_VALIDATION=1 $BRANCHBOX_BIN feature teardown $FEATURE_NAME --delete-branch --complete-spec"
 else
   TEARDOWN_OK=1
-  if (cd "$MAIN_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature teardown "$FEATURE_NAME" --delete-branch --complete-spec) | tee "$TEARDOWN_LOG"; then
+  if (cd "$MAIN_DIR" && FEATURES_DIR="$FEATURES_DIR_PATH" BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature teardown "$FEATURE_NAME" --delete-branch --complete-spec) | tee "$TEARDOWN_LOG"; then
     TEARDOWN_OK=0
   fi
   if [[ $TEARDOWN_OK -ne 0 ]]; then
     log "Initial feature teardown failed; retrying with --force (see $TEARDOWN_LOG)"
-    if ! (cd "$MAIN_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature teardown "$FEATURE_NAME" --delete-branch --complete-spec --force >>"$TEARDOWN_LOG" 2>&1); then
+    if ! (cd "$MAIN_DIR" && FEATURES_DIR="$FEATURES_DIR_PATH" BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature teardown "$FEATURE_NAME" --delete-branch --complete-spec --force >>"$TEARDOWN_LOG" 2>&1); then
       fatal "forced feature teardown also failed (see $TEARDOWN_LOG)"
     fi
   fi
@@ -405,6 +437,10 @@ if [[ "$PRETEND" == "0" ]]; then
       record_bug "registry entry for $FEATURE_NAME not marked removed"
     fi
   fi
+
+  SPEC_COMPLETED="$FEATURES_DIR_PATH/completed/$FEATURE_NAME.md"
+  assert_file_exists "$SPEC_COMPLETED"
+  assert_file_contains "$SPEC_COMPLETED" "status: completed"
 else
   pretend_step "Would verify feature cleanup and registry removal"
 fi
