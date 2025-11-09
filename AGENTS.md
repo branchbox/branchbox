@@ -16,7 +16,7 @@ Rust files follow `rustfmt` defaults (4-space indentation, 100-column soft limit
 Unit tests live beside their modules under `#[cfg(test)]`; grow integration coverage in a `core/tests/` harness when cross-cutting behaviour warrants it. Run `cargo nextest run --all-features --no-fail-fast` for the default gate, `cargo test --doc` to validate examples, and `cargo nextest run --all-features --run-ignored ignored-only` when you need parity with CI’s integration configuration. CI enforces 90% line coverage via `cargo llvm-cov`, so periodically run `cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info` to catch regressions.
 
 ### Manual CLI regression requirement
-Before any PR is marked ready or a release branch is cut, run the CLI smoke harness in all supported modes to cover `branchbox init`, devcontainer sync, feature start, and teardown end-to-end:
+Before any PR is marked ready or a release branch is cut, run the CLI smoke harness in all supported modes to cover `branchbox init`, multi-feature devcontainer sync, tunnel module permutations (manual fallback, Cloudflared, credential-loss), and teardown end-to-end:
 
 ```bash
 ./scripts/manual-cli-e2e.sh
@@ -24,7 +24,7 @@ Before any PR is marked ready or a release branch is cut, run the CLI smoke harn
 ./scripts/manual-cli-e2e.sh --mode pretend
 ```
 
-Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
+The harness intentionally edits the feature devcontainer before teardown to exercise the dirty-worktree guard, so an initial `feature teardown` failure followed by the scripted `--force` retry is expected. Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
 
 ### Compatibility & template hygiene
 - When touching JSON/state schemas (e.g., `.branchbox/registry.json`), add backward-compatible deserializers or migrations before landing the change. Existing workspaces must continue working without manual edits.
