@@ -66,7 +66,7 @@ mod tests {
     fn compose_template_includes_workspace_mount_and_shared_configs() {
         let compose = compose_yaml(Stack::Rust).expect("rust compose template");
         assert!(
-            compose.contains("..:/workspaces:cached"),
+            compose.contains("../..:/workspaces:cached"),
             "compose template missing workspace bind: {compose}"
         );
         for shared in [

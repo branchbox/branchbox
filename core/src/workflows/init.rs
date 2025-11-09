@@ -729,7 +729,7 @@ impl InitWorkflow {
     ) -> Result<PathBuf> {
         let main_dir = container_path.join("main");
 
-        if current_path == &main_dir {
+        if current_path == main_dir {
             println!("✓ Already using parent structure");
             return Ok(main_dir);
         }

@@ -26,6 +26,10 @@ Before any PR is marked ready or a release branch is cut, run the CLI smoke harn
 
 Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
 
+### Compatibility & template hygiene
+- When touching JSON/state schemas (e.g., `.branchbox/registry.json`), add backward-compatible deserializers or migrations before landing the change. Existing workspaces must continue working without manual edits.
+- When editing code-generated assets (devcontainer or compose templates), re-run `cargo test` to catch expectation drift (the template tests in `core/src/bootstrap/templates.rs` enforce current bind mounts and shared volume paths).
+
 ## Commit & Pull Request Guidelines
 Recent history favors concise, imperative summaries (e.g., `Refactor CLI to 'branchbox' with grouped subcommands`). Continue that tone while adopting the Conventional Commit prefix expected in `CONTRIBUTING.md`, such as `feat(modules): add docker compose planner`. Before opening a PR, rebase on `main`, rerun fmt/clippy/tests/doc checks, and attach context: problem statement, scope, linked issues, and any relevant CLI transcripts or screenshots. Ensure the CI suite is green before requesting review.
 

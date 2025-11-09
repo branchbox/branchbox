@@ -2847,6 +2847,7 @@ pub struct FeatureMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FeatureRegistry {
+    #[serde(deserialize_with = "deserialize_registry_version")]
     version: String,
     features: Vec<FeatureMetadata>,
 }
@@ -3042,6 +3043,23 @@ impl FeatureStateStore {
 }
 
 const STATE_VERSION: &str = "1";
+
+fn deserialize_registry_version<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum VersionHelper {
+        String(String),
+        Number(u32),
+    }
+
+    match VersionHelper::deserialize(deserializer)? {
+        VersionHelper::String(value) => Ok(value),
+        VersionHelper::Number(value) => Ok(value.to_string()),
+    }
+}
 
 /// Generate a deterministic color from a feature name for visual differentiation.
 ///
