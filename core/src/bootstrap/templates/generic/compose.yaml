@@ -1,29 +1,20 @@
-name: "${DEVCONTAINER_NAME:-dev-project}"
-
+name: ${DEVCONTAINER_NAME:-dev}
 services:
   dev:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
-
     privileged: true
-
-    container_name: ${DEVCONTAINER_NAME:-dev-project}
-
+    container_name: ${DEVCONTAINER_NAME:-dev}
     volumes:
-      - ..:/workspaces:cached
+      - ../..:/workspaces:cached
       - dind-data:/var/lib/docker
       - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
       - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
       - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
-
     command: sleep infinity
-
     env_file:
       - ../.env
-
-    # Tool configs use SHARED_CONFIG_DIR (default: ../.., parent dir) to share across worktrees
-    # Override in .env for non-worktree setups: SHARED_CONFIG_DIR=..
-
+      - .branchbox.env
 volumes:
-  dind-data:
+  dind-data: null

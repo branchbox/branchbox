@@ -1,5 +1,4 @@
-ARG RUST_VERSION="1.75"
-FROM mcr.microsoft.com/devcontainers/rust:${RUST_VERSION}
+FROM mcr.microsoft.com/devcontainers/rust:latest
 
 USER root
 

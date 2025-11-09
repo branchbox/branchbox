@@ -2847,14 +2847,15 @@ pub struct FeatureMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FeatureRegistry {
-    version: u32,
+    #[serde(deserialize_with = "deserialize_registry_version")]
+    version: String,
     features: Vec<FeatureMetadata>,
 }
 
 impl Default for FeatureRegistry {
     fn default() -> Self {
         Self {
-            version: STATE_VERSION,
+            version: STATE_VERSION.to_string(),
             features: Vec::new(),
         }
     }
@@ -2863,12 +2864,15 @@ impl Default for FeatureRegistry {
 #[derive(Debug)]
 struct FeatureStateStore {
     path: PathBuf,
+    legacy_path: PathBuf,
 }
 
 impl FeatureStateStore {
     fn new(repo_root: &Path) -> Self {
-        let path = repo_root.join(".branchbox").join("feature.json");
-        Self { path }
+        let branchbox_dir = repo_root.join(".branchbox");
+        let path = branchbox_dir.join("registry.json");
+        let legacy_path = branchbox_dir.join("feature.json");
+        Self { path, legacy_path }
     }
 
     fn record_start(&self, mut metadata: FeatureMetadata) -> Result<()> {
@@ -3000,17 +3004,15 @@ impl FeatureStateStore {
     }
 
     fn load_registry(&self) -> Result<FeatureRegistry> {
-        if !self.path.exists() {
-            return Ok(FeatureRegistry::default());
+        if self.path.exists() {
+            return self.read_registry_from(&self.path);
         }
 
-        let data = fs::read_to_string(&self.path)?;
-        if data.trim().is_empty() {
-            return Ok(FeatureRegistry::default());
+        if self.legacy_path.exists() {
+            return self.read_registry_from(&self.legacy_path);
         }
 
-        serde_json::from_str(&data)
-            .map_err(|err| Error::config(format!("Failed to parse feature registry: {}", err)))
+        Ok(FeatureRegistry::default())
     }
 
     fn save_registry(&self, registry: &FeatureRegistry) -> Result<()> {
@@ -3023,11 +3025,41 @@ impl FeatureStateStore {
         })?;
 
         fs::write(&self.path, serialized)?;
+        if self.legacy_path.exists() && self.legacy_path != self.path {
+            let _ = fs::remove_file(&self.legacy_path);
+        }
         Ok(())
+    }
+
+    fn read_registry_from(&self, path: &Path) -> Result<FeatureRegistry> {
+        let data = fs::read_to_string(path)?;
+        if data.trim().is_empty() {
+            return Ok(FeatureRegistry::default());
+        }
+
+        serde_json::from_str(&data)
+            .map_err(|err| Error::config(format!("Failed to parse feature registry: {}", err)))
     }
 }
 
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: &str = "1";
+
+fn deserialize_registry_version<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum VersionHelper {
+        String(String),
+        Number(u32),
+    }
+
+    match VersionHelper::deserialize(deserializer)? {
+        VersionHelper::String(value) => Ok(value),
+        VersionHelper::Number(value) => Ok(value.to_string()),
+    }
+}
 
 /// Generate a deterministic color from a feature name for visual differentiation.
 ///
@@ -3795,7 +3827,7 @@ mod tests {
             .trim()
             .is_empty());
 
-        let registry_path = repo_path.join(".branchbox/feature.json");
+        let registry_path = repo_path.join(".branchbox/registry.json");
         assert!(registry_path.exists());
         let registry_data = fs::read_to_string(&registry_path).unwrap();
         let registry: Value = serde_json::from_str(&registry_data).unwrap();
@@ -3911,7 +3943,7 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
 
-        let registry_path = repo_path.join(".branchbox/feature.json");
+        let registry_path = repo_path.join(".branchbox/registry.json");
         let registry_data = fs::read_to_string(&registry_path).unwrap();
         let registry: Value = serde_json::from_str(&registry_data).unwrap();
         let entry = registry["features"]
@@ -4148,7 +4180,7 @@ mod tests {
             "expected feature branch to be deleted"
         );
 
-        let registry_path = repo_path.join(".branchbox/feature.json");
+        let registry_path = repo_path.join(".branchbox/registry.json");
         let registry_data = fs::read_to_string(&registry_path).unwrap();
         let registry: Value = serde_json::from_str(&registry_data).unwrap();
         let entry = registry["features"]

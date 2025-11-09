@@ -59,7 +59,7 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 - **CLI Surface (`cli/src/commands/feature.rs`)** routes `feature start/teardown/list` into a thin orchestration layer, handling argument parsing (`--base`, `--yes`, `--skip-*`) and streaming progress events to the terminal.
 - **Workflow Coordinator (`core/src/workflows/feature.rs`)** owns the high-level state machine: git discovery, branch creation, worktree operations, module/adapter dispatch, and failure unwinding. This layer composes existing `GitWorktree` helpers plus new `PromptService` abstractions.
 - **Module & Adapter Registry** exposes dynamic lookup via typed registries (e.g., `ModuleRegistry::resolve("cloudflare_tunnel")`) backed by `serde`-driven config. Modules implement trait-based start/teardown hooks with shared context objects for environment mutations.
-- **State & Config Store** persists feature metadata (spec path, base branch, module decisions) in `.branchbox/feature.json`, enabling resume/retry flows and future analytics. Store is versioned to allow migrations.
+- **State & Config Store** persists feature metadata (spec path, base branch, module decisions) in `.branchbox/registry.json`, enabling resume/retry flows and future analytics. Store is versioned to allow migrations.
 - **I/O Abstractions** introduce `TerminalUi` (for colored output, spinners, prompts) and `NonInteractiveUi` (for automation). Both share a `LogEvent` enum so the CLI/UI layer can decide presentation (TTY, JSON, gRPC).
 - **Error & Recovery Strategy** centralizes retryable vs fatal errors, ensuring partial worktrees are cleaned or instructions surfaced to users for manual fixes.
 
@@ -67,7 +67,7 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 
 1. **Milestone 0 — Foundations (Week 1)** ✅ *Completed 2025-10-31*
    - ✅ Scaffold CLI command module (`branchbox feature`) and feature workflow coordinator with initial handlers.
-   - ✅ Port existing git helpers; implement feature metadata persistence (`.branchbox/feature.json`) and validation.
+  - ✅ Port existing git helpers; implement feature metadata persistence (`.branchbox/registry.json`) and validation.
    - ✅ Create doc-driven test fixtures for simple start/teardown happy paths (`workflows::feature` unit tests).
 2. **Milestone 1 — Core Workflow Parity (Weeks 2-3)**
    - Implement branching/worktree creation, stash capture/restore, spec lifecycle, `.env` split generation.
@@ -124,7 +124,7 @@ Migrate the Bash-based feature lifecycle in `lib/` (`feature-start`, `feature-te
 
 ## Progress Log
 
-- **2025-10-31**: Created `feat/rust-workflow-m0`, added `branchbox feature start/teardown` commands backed by new Rust workflow coordinator. Metadata now persisted in `.branchbox/feature.json` with `FeatureStatus` tracking. Added CI-friendly host validation override and refreshed naming heuristics to support metadata serialization.
+- **2025-10-31**: Created `feat/rust-workflow-m0`, added `branchbox feature start/teardown` commands backed by new Rust workflow coordinator. Metadata now persisted in `.branchbox/registry.json` with `FeatureStatus` tracking. Added CI-friendly host validation override and refreshed naming heuristics to support metadata serialization.
 - **2025-10-31**: Introduced `branchbox feature list` for registry introspection, including status filtering and local-time formatting. Added workflow API to enumerate feature metadata and expanded test coverage for listing semantics.
 - **2025-10-31**: Added CLI integration test harness using `assert_cmd` to exercise `feature start/list/teardown` end-to-end. Manually verified workflow in a temporary git repository to confirm CLI ergonomics.
 - **2025-10-31**: Ported spec lifecycle bootstrap: backlog specs are auto-discovered, moved to `in-progress`, frontmatter is refreshed during `feature start`, fresh specs are auto-generated when none exist, and `branchbox feature teardown --complete-spec` now moves specs to `completed`. Added unit and integration coverage for the new path.
