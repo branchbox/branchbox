@@ -339,6 +339,12 @@ else
 fi
 
 if [[ "$PRETEND" == "0" ]]; then
+  assert_file_contains "$START_LOG" "Tunnel          | ⏭ disabled"
+else
+  pretend_step "Would verify tunnel module emitted manual setup warning"
+fi
+
+if [[ "$PRETEND" == "0" ]]; then
   if [[ ! -d "$FEATURE_DIR" ]]; then
     record_bug "feature worktree directory missing at $FEATURE_DIR"
   fi
@@ -463,6 +469,9 @@ if [[ "$PRETEND" == "0" ]]; then
   else
     record_bug "branchbox feature list --json --all failed (see $REMOVED_LIST_JSON)"
   fi
+
+  assert_file_contains "$TEARDOWN_LOG" "Detected devcontainer/compose changes"
+  assert_file_contains "$TEARDOWN_LOG" "Tunnel descriptor missing"
 else
   pretend_step "Would verify feature cleanup and registry removal"
   pretend_step "Would run feature list --json (--all) to confirm removal state"
