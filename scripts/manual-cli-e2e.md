@@ -20,6 +20,21 @@ STACK=generic ./scripts/manual-cli-e2e.sh --mode verbose --stack generic
 
 Supported stacks today: `rust` (default), `generic`, `rails`, and `node`. Pass `--stack <stack>` or set `STACK=<stack>` to override; CI runs a matrix so template regressions surface quickly.
 
+## Release-blocking matrix
+
+Before cutting a tag, run the harness across every mode and stack:
+
+```bash
+./scripts/manual-cli-e2e.sh
+./scripts/manual-cli-e2e.sh --mode verbose
+./scripts/manual-cli-e2e.sh --mode pretend
+STACK=generic ./scripts/manual-cli-e2e.sh
+STACK=rails ./scripts/manual-cli-e2e.sh
+STACK=node ./scripts/manual-cli-e2e.sh
+```
+
+Document pass/fail status in the release PR. If you change or add an adapter, extend the matrix with `STACK=<stack>` for that target until CI covers it.
+
 ## Coverage Matrix
 
 1. **Init & bootstrap** – seeds a sample Rust repo, runs `branchbox init`, records generated artifacts in git, and boots the root devcontainer.

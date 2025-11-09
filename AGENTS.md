@@ -31,6 +31,13 @@ STACK=node ./scripts/manual-cli-e2e.sh
 The harness intentionally edits the feature devcontainer before teardown to exercise the dirty-worktree guard, so an initial `feature teardown` failure followed by the scripted `--force` retry is expected. Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
 CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch another stack locally, mirror that by passing `--stack <stack>` when running the script.
 
+### Release workflow
+- Follow `RELEASING.md` verbatim. The short version: ensure `main` is up to date, run fmt/clippy/tests/docs, then execute the six manual CLI harness permutations listed above (regular/verbose/pretend × rust/generic/rails/node). Releases are blocked until every combination passes locally.
+- Update `CHANGELOG.md` with highlights, refresh `README.md` + `docs/docs/**` (especially the manual CLI E2E and CLI reference pages), and capture any new expectations here in `AGENTS.md` before tagging. Regenerate `docs/docs/reference/cli.md` by pasting `branchbox --help` output whenever flags change.
+- Keep `docs/docs/getting-started/manual-cli-e2e.md` and `scripts/manual-cli-e2e.md` synchronized with the actual harness steps—future contributors should be able to trace every required validation from those docs.
+- Run `cargo release --workspace --dry-run` before `--execute` so you can catch version bumps or git state issues early. Push with `git push --follow-tags` and monitor the release workflow with `gh run watch`.
+- After tagging, confirm the docs build (`cd docs && npm run build`), the GitHub Pages deployment, and downstream taps (Homebrew) before announcing the release.
+
 ### Compatibility & template hygiene
 - When touching JSON/state schemas (e.g., `.branchbox/registry.json`), add backward-compatible deserializers or migrations before landing the change. Existing workspaces must continue working without manual edits.
 - When editing code-generated assets (devcontainer or compose templates), re-run `cargo test` to catch expectation drift (the template tests in `core/src/bootstrap/templates.rs` enforce current bind mounts and shared volume paths).

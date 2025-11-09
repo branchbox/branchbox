@@ -82,3 +82,18 @@ Usage:
 `--mode verbose` enables shell tracing and passes verbose flags to BranchBox commands so you can watch every git/module operation. `--mode pretend` is a safe dry-run that logs each action without invoking BranchBox or Docker while still performing lightweight repo scaffolding under `/tmp`. Combine any mode with `KEEP_E2E_TMP=1` to preserve the temporary workspace for manual inspection.
 
 Run the script locally before publishing releases (or wire it into CI once Docker is available). When it fails, use the manual checklist above to dig into the exact stage and file detailed bug reports.
+
+## Release-blocking matrix
+
+Every release candidate must pass the harness in all modes and stacks listed below. This matrix mirrors the requirements in `AGENTS.md` and `RELEASING.md`—document the results in your release notes so reviewers know the workflow was exercised end-to-end.
+
+```bash
+./scripts/manual-cli-e2e.sh
+./scripts/manual-cli-e2e.sh --mode verbose
+./scripts/manual-cli-e2e.sh --mode pretend
+STACK=generic ./scripts/manual-cli-e2e.sh
+STACK=rails ./scripts/manual-cli-e2e.sh
+STACK=node ./scripts/manual-cli-e2e.sh
+```
+
+If you touch a different adapter or stack, repeat with `STACK=<stack>` for that target as well. Use `KEEP_E2E_TMP=1` when you need to preserve the temporary workspace for debugging and summarize any deviations in the release PR before attempting `cargo release`.

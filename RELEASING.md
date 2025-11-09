@@ -92,7 +92,26 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
    cd ..
    ```
 
-3. **Update CHANGELOG.md (optional):**
+3. **Run the manual CLI smoke harness (release-blocking):**
+   ```bash
+   ./scripts/manual-cli-e2e.sh
+   ./scripts/manual-cli-e2e.sh --mode verbose
+   ./scripts/manual-cli-e2e.sh --mode pretend
+   STACK=generic ./scripts/manual-cli-e2e.sh
+   STACK=rails ./scripts/manual-cli-e2e.sh
+   STACK=node ./scripts/manual-cli-e2e.sh
+   ```
+
+   Each run seeds a disposable repo, exercises init → multi-feature sync → tunnel permutations, and enforces the dirty teardown guard. See `docs/docs/getting-started/manual-cli-e2e.md` for troubleshooting tips. All six combinations must succeed before tagging.
+
+4. **Update release notes and docs:**
+   - Edit `CHANGELOG.md` to capture highlights for the version you’re publishing.
+   - Refresh `AGENTS.md` and `RELEASING.md` with any new expectations so future agents don’t rediscover the process.
+   - Update end-user docs (`README.md`, `docs/docs/**`) — especially the CLI reference and manual CLI E2E guide — to mirror new behavior.
+   - If CLI flags changed, regenerate `docs/docs/reference/cli.md` using `branchbox --help` and the relevant subcommands.
+   - Record any new manual steps or scripts inside `docs/docs/getting-started/manual-cli-e2e.md` plus `scripts/manual-cli-e2e.md`.
+
+5. **Changelog preview (optional):**
    ```bash
    # Generate changelog preview for unreleased changes
    git-cliff --unreleased
@@ -425,7 +444,8 @@ Use this checklist for each release:
 
 - [ ] Checkout main branch and pull latest changes
 - [ ] Run all quality checks (fmt, clippy, tests, docs)
-- [ ] Update CHANGELOG.md if needed
+- [ ] Run `scripts/manual-cli-e2e.sh` in regular/verbose/pretend modes for rust, generic, rails, and node stacks
+- [ ] Update `CHANGELOG.md`, docs (`README.md`, `docs/docs/**`), and `AGENTS.md` to reflect release scope
 - [ ] Run dry-run: `cargo release --workspace --dry-run`
 - [ ] Execute release: `cargo release --workspace --execute`
 - [ ] Push tags: `git push --follow-tags`
