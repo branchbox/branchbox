@@ -1232,12 +1232,13 @@ impl FeatureWorkflow {
             // off indexing for short filenames.
             let entry = &line[3..];
 
-            for candidate in entry.split(" -> ").map(|part| part.trim()) {
-                if candidate.is_empty() {
+            for candidate in entry.split(" -> ") {
+                let unquoted = candidate.trim().trim_matches('"');
+                if unquoted.is_empty() {
                     continue;
                 }
-                if Self::is_module_managed_path(candidate) {
-                    dirty_entries.push(candidate.to_string());
+                if Self::is_module_managed_path(unquoted) {
+                    dirty_entries.push(unquoted.to_string());
                     break;
                 }
             }
@@ -1247,6 +1248,8 @@ impl FeatureWorkflow {
     }
 
     fn is_module_managed_path(path: &str) -> bool {
+        use std::ffi::OsStr;
+
         const MODULE_PREFIXES: [&str; 2] = [".devcontainer", "compose"];
         if MODULE_PREFIXES
             .iter()
@@ -1261,9 +1264,12 @@ impl FeatureWorkflow {
             "docker-compose.yml",
             "docker-compose.yaml",
         ];
-        MODULE_FILES
-            .iter()
-            .any(|file| path == *file || path.ends_with(&format!("/{}", file)))
+
+        if let Some(name) = Path::new(path).file_name().and_then(OsStr::to_str) {
+            return MODULE_FILES.contains(&name);
+        }
+
+        false
     }
 
     fn path_matches_prefix(path: &str, prefix: &str) -> bool {

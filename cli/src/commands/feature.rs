@@ -518,42 +518,59 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
 
     let summary = match workflow.teardown(request.clone()) {
         Ok(summary) => summary,
-        Err(CoreError::WorktreeDirty { worktree, files }) => {
-            println!(
-                "⚠️  Detected devcontainer/compose changes inside {}:",
-                worktree.display()
-            );
-            for entry in &files {
-                println!("    • {}", entry);
-            }
-            println!("    (BranchBox refuses to delete dirty module files without --force)");
-
-            if !Term::stdout().is_term() {
-                anyhow::bail!(
-                    "Devcontainer/compose changes detected; rerun this command with --force to proceed."
-                );
-            }
-
-            let proceed = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt(
-                    "Continue teardown with --force? This will discard local module changes.",
-                )
-                .default(false)
-                .interact()?;
-
-            if !proceed {
-                anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
-            }
-
-            request.force_remove_modules = true;
-            workflow.teardown(request)?
-        }
-        Err(err) => return Err(err.into()),
+        Err(err) => handle_teardown_error(err, &workflow, &mut request)?,
     };
 
     print_teardown_summary(&summary);
 
     Ok(())
+}
+
+fn handle_teardown_error(
+    err: CoreError,
+    workflow: &FeatureWorkflow,
+    request: &mut TeardownRequest,
+) -> Result<TeardownSummary> {
+    match err {
+        CoreError::WorktreeDirty { worktree, files } => {
+            handle_dirty_worktree(workflow, request, &worktree, &files)
+        }
+        other => Err(other.into()),
+    }
+}
+
+fn handle_dirty_worktree(
+    workflow: &FeatureWorkflow,
+    request: &mut TeardownRequest,
+    worktree: &Path,
+    files: &[String],
+) -> Result<TeardownSummary> {
+    println!(
+        "⚠️  Detected devcontainer/compose changes inside {}:",
+        worktree.display()
+    );
+    for entry in files {
+        println!("    • {}", entry);
+    }
+    println!("    (BranchBox refuses to delete dirty module files without --force)");
+
+    if !Term::stdout().is_term() {
+        anyhow::bail!(
+            "Devcontainer/compose changes detected; rerun this command with --force to proceed."
+        );
+    }
+
+    let proceed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Continue teardown with --force? This will discard local module changes.")
+        .default(false)
+        .interact()?;
+
+    if !proceed {
+        anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
+    }
+
+    request.force_remove_modules = true;
+    Ok(workflow.teardown(request.clone())?)
 }
 
 fn print_start_summary(
