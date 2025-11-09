@@ -59,6 +59,9 @@ The repository ships `scripts/manual-cli-e2e.sh`, which runs the entire flow abo
 - Seeds a throwaway git repo under `$(mktemp)` and forces `branchbox init` to reorganize into a sibling temp directory.
 - Brings main + feature devcontainers up via `docker compose`, confirming git works inside both containers.
 - Starts a feature, validates registry/git state, then tears it down with `--delete-branch --complete-spec`.
+- Ensures `.devcontainer/.branchbox.env` exists in both the main worktree and its feature copy so per-worktree overrides stay intact.
+- Injects JSONC comments into `devcontainer.json` to confirm BranchBox accepts commented configs before syncing.
+- Exercises `branchbox devcontainer sync --dry-run` with `copy` and `symlink` strategies so downstream tooling can rely on the command.
 - Records every failed expectation and exits non-zero with a summary of bugs.
 
 Usage:

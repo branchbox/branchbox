@@ -138,6 +138,25 @@ function report_results() {
   fi
 }
 
+function assert_file_exists() {
+  local path="$1"
+  if [[ ! -f "$path" ]]; then
+    record_bug "Expected file missing: $path"
+  fi
+}
+
+function assert_file_contains() {
+  local path="$1"
+  local needle="$2"
+  if [[ ! -f "$path" ]]; then
+    record_bug "Expected file missing for content check: $path"
+    return
+  fi
+  if ! grep -q "$needle" "$path"; then
+    record_bug "File $path missing expected content: $needle"
+  fi
+}
+
 require_cmd bash
 require_cmd git
 require_cmd cargo
@@ -260,6 +279,15 @@ MAIN_COMPOSE="$MAIN_DIR/.devcontainer/compose.yaml"
 MAIN_DEVCONTAINER_JSON="$MAIN_DIR/.devcontainer/devcontainer.json"
 
 if [[ "$PRETEND" == "0" && -f "$MAIN_COMPOSE" && -f "$MAIN_DEVCONTAINER_JSON" ]]; then
+  if ! grep -q "e2e-jsonc-comment" "$MAIN_DEVCONTAINER_JSON"; then
+    tmp_jsonc="$(mktemp)"
+    {
+      head -n 1 "$MAIN_DEVCONTAINER_JSON"
+      echo '  // e2e-jsonc-comment ensures JSONC parsing is honored'
+      tail -n +2 "$MAIN_DEVCONTAINER_JSON"
+    } >"$tmp_jsonc"
+    mv "$tmp_jsonc" "$MAIN_DEVCONTAINER_JSON"
+  fi
   SERVICE_NAME="$(jq -r '.service // "rust-dev"' "$MAIN_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
   log "Booting main devcontainer service '$SERVICE_NAME'"
   if docker compose -f "$MAIN_COMPOSE" --project-directory "$(dirname "$MAIN_COMPOSE")" up -d --build >/dev/null; then
@@ -327,6 +355,25 @@ else
   pretend_step "Would build and verify feature devcontainer"
 fi
 
+if [[ "$PRETEND" == "0" ]]; then
+  assert_file_exists "$MAIN_DIR/.devcontainer/.branchbox.env"
+  assert_file_exists "$FEATURE_DIR/.devcontainer/.branchbox.env"
+else
+  pretend_step "Would verify .branchbox.env overlays"
+fi
+
+if [[ "$PRETEND" == "0" ]]; then
+  log "Running devcontainer sync dry-runs"
+  if ! (cd "$MAIN_DIR" && "$BRANCHBOX_BIN" devcontainer sync --dry-run --strategy copy >/dev/null); then
+    record_bug "branchbox devcontainer sync --dry-run --strategy copy failed"
+  fi
+  if ! (cd "$MAIN_DIR" && "$BRANCHBOX_BIN" devcontainer sync --dry-run --strategy symlink >/dev/null); then
+    record_bug "branchbox devcontainer sync --dry-run --strategy symlink failed"
+  fi
+else
+  pretend_step "Would run devcontainer sync dry-runs"
+fi
+
 log "Tearing down feature '$FEATURE_NAME'"
 TEARDOWN_LOG="$LOG_DIR/feature-teardown.log"
 if [[ "$PRETEND" == "1" ]]; then
@@ -337,8 +384,7 @@ else
     TEARDOWN_OK=0
   fi
   if [[ $TEARDOWN_OK -ne 0 ]]; then
-    record_bug "branchbox feature teardown failed (see $TEARDOWN_LOG)"
-    log "Retrying teardown with --force to clean up workspace"
+    log "Initial feature teardown failed; retrying with --force (see $TEARDOWN_LOG)"
     if ! (cd "$MAIN_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature teardown "$FEATURE_NAME" --delete-branch --complete-spec --force >>"$TEARDOWN_LOG" 2>&1); then
       fatal "forced feature teardown also failed (see $TEARDOWN_LOG)"
     fi
