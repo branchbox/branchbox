@@ -228,7 +228,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        stack: [rust, generic]
+        stack: [rust, generic, rails, node]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain

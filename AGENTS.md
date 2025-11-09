@@ -22,12 +22,14 @@ Before any PR is marked ready or a release branch is cut, run the CLI smoke harn
 ./scripts/manual-cli-e2e.sh
 ./scripts/manual-cli-e2e.sh --mode verbose
 ./scripts/manual-cli-e2e.sh --mode pretend
-# Target other stacks (e.g., generic)
+# Target other stacks (e.g., generic, rails, node)
 STACK=generic ./scripts/manual-cli-e2e.sh
+STACK=rails ./scripts/manual-cli-e2e.sh
+STACK=node ./scripts/manual-cli-e2e.sh
 ```
 
 The harness intentionally edits the feature devcontainer before teardown to exercise the dirty-worktree guard, so an initial `feature teardown` failure followed by the scripted `--force` retry is expected. Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
-CI runs the harness for both `rust` and `generic` stacks; if you touch another stack locally, mirror that by passing `--stack <stack>` when running the script.
+CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch another stack locally, mirror that by passing `--stack <stack>` when running the script.
 
 ### Compatibility & template hygiene
 - When touching JSON/state schemas (e.g., `.branchbox/registry.json`), add backward-compatible deserializers or migrations before landing the change. Existing workspaces must continue working without manual edits.

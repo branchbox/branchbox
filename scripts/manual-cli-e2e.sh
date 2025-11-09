@@ -9,7 +9,7 @@ STACK="rust"
 
 usage() {
   cat <<'USAGE'
-Usage: manual-cli-e2e.sh [--mode regular|verbose|pretend] [--stack rust|generic]
+Usage: manual-cli-e2e.sh [--mode regular|verbose|pretend] [--stack rust|generic|rails|node]
        manual-cli-e2e.sh [--verbose] [--pretend] [--stack <stack>]
 
 Modes:
@@ -19,6 +19,8 @@ Modes:
 Stacks:
   rust      Seeds a Cargo binary and exercises the Rust devcontainer template.
   generic   Seeds a minimal README project and exercises the generic stack template.
+  rails     Seeds a bare Rails skeleton (Gemfile + minimal files) for the Rails template.
+  node      Seeds a simple Node.js package.json/index.js for the Node template.
 USAGE
 }
 
@@ -71,9 +73,9 @@ esac
 
 STACK="${STACK,,}"
 case "$STACK" in
-  rust|generic) ;;
+  rust|generic|rails|node) ;;
   *)
-    echo "Unsupported stack: $STACK (supported: rust, generic)" >&2
+    echo "Unsupported stack: $STACK (supported: rust, generic, rails, node)" >&2
     exit 1
     ;;
 esac
@@ -168,6 +170,31 @@ EOF_MAIN
 
 This is a minimal project used by `scripts/manual-cli-e2e.sh` to exercise the generic stack.
 EOF_GENERIC
+      ;;
+    rails)
+      cat >"$SOURCE_DIR/Gemfile" <<'EOF_GEM'
+source "https://rubygems.org"
+
+gem "rails", "~> 7.1.0"
+EOF_GEM
+      cat >"$SOURCE_DIR/README.md" <<'EOF_RAILS'
+# BranchBox CLI E2E Sample (Rails)
+
+Placeholder Rails project for manual CLI harness coverage.
+EOF_RAILS
+      ;;
+    node)
+      cat >"$SOURCE_DIR/package.json" <<'EOF_NODE'
+{
+  "name": "cli-e2e-sample",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT"
+}
+EOF_NODE
+      cat >"$SOURCE_DIR/index.js" <<'EOF_INDEX'
+console.log("BranchBox CLI e2e smoke test (Node)");
+EOF_INDEX
       ;;
     *)
       fatal "Stack '$STACK' not supported by manual harness seeding"

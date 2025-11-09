@@ -18,7 +18,7 @@
 STACK=generic ./scripts/manual-cli-e2e.sh --mode verbose --stack generic
 ```
 
-Supported stacks today: `rust` (default) and `generic`. Pass `--stack <stack>` or set `STACK=<stack>` to override; CI runs both stacks in parallel so template regressions surface quickly.
+Supported stacks today: `rust` (default), `generic`, `rails`, and `node`. Pass `--stack <stack>` or set `STACK=<stack>` to override; CI runs a matrix so template regressions surface quickly.
 
 ## Coverage Matrix
 
