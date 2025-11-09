@@ -45,6 +45,7 @@ use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Initialization workflow orchestrator
 ///
@@ -672,6 +673,10 @@ impl InitWorkflow {
             projects_dir.join(repo_name)
         };
 
+        if self.options.use_parent_structure {
+            return self.reorganize_with_parent_structure(&current_path, &target_path);
+        }
+
         // Don't move if already in target location
         if current_path == target_path {
             println!("✓ Already in target location");
@@ -715,6 +720,117 @@ impl InitWorkflow {
         println!("✓ Moved to {}", target_path.display());
 
         Ok(target_path)
+    }
+
+    fn reorganize_with_parent_structure(
+        &self,
+        current_path: &Path,
+        container_path: &Path,
+    ) -> Result<PathBuf> {
+        let main_dir = container_path.join("main");
+
+        if current_path == &main_dir {
+            println!("✓ Already using parent structure");
+            return Ok(main_dir);
+        }
+
+        if main_dir.exists() {
+            println!("✓ Parent structure already in place");
+            return Ok(main_dir);
+        }
+
+        if self.options.dry_run {
+            println!("[DRY RUN] Would reorganize into parent structure:");
+            println!("  Container: {}", container_path.display());
+            println!("  Main worktree: {}", main_dir.display());
+            return Ok(main_dir);
+        }
+
+        if !self.options.non_interactive {
+            println!("  Container: {}", container_path.display());
+            println!("  Main worktree: {}", main_dir.display());
+            println!();
+            println!("Continue? (y/N)");
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Reorganization cancelled. Continuing with current location.");
+                return Ok(current_path.to_path_buf());
+            }
+        }
+
+        if current_path == container_path {
+            self.reorganize_in_place(current_path, &main_dir)?;
+        } else {
+            self.move_into_container(current_path, container_path, &main_dir)?;
+        }
+
+        println!("✓ Reorganized into {}", main_dir.display());
+        Ok(main_dir)
+    }
+
+    fn reorganize_in_place(&self, current_path: &Path, main_dir: &Path) -> Result<()> {
+        let temp_path = self.make_temp_sibling(current_path)?;
+        fs::rename(current_path, &temp_path)
+            .map_err(|e| Error::validation(format!("Failed to move repository: {}", e)))?;
+
+        fs::create_dir_all(current_path)?;
+        if main_dir.exists() {
+            return Err(Error::validation(format!(
+                "Destination '{}' already exists",
+                main_dir.display()
+            )));
+        }
+
+        fs::rename(&temp_path, main_dir)
+            .map_err(|e| Error::validation(format!("Failed to move repository: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn move_into_container(
+        &self,
+        current_path: &Path,
+        container_path: &Path,
+        main_dir: &Path,
+    ) -> Result<()> {
+        if container_path.exists() && container_path.read_dir()?.next().is_some() {
+            return Err(Error::validation(format!(
+                "Target directory '{}' already exists and is not empty",
+                container_path.display()
+            )));
+        }
+
+        if let Some(parent) = container_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::create_dir_all(container_path)?;
+
+        if main_dir.exists() {
+            return Err(Error::validation(format!(
+                "Destination '{}' already exists",
+                main_dir.display()
+            )));
+        }
+
+        fs::rename(current_path, main_dir)
+            .map_err(|e| Error::validation(format!("Failed to move repository: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn make_temp_sibling(&self, path: &Path) -> Result<PathBuf> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| Error::validation("Cannot reorganize filesystem root".to_string()))?;
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let name = format!(".branchbox-temp-{}", millis);
+        Ok(parent.join(name))
     }
 
     /// Detect stack or use forced stack
@@ -973,6 +1089,7 @@ impl InitWorkflow {
         let entries = vec![
             ".branchbox/registry.json",
             ".branchbox/secure/",
+            ".devcontainer/.branchbox.env",
             ".env",
             ".env.local",
         ];
