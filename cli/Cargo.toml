@@ -21,6 +21,7 @@ tracing-subscriber.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 shell-words = "1.1"
+dialoguer = "0.11"
 
 [dev-dependencies]
 tempfile.workspace = true

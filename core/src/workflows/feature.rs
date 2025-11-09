@@ -207,12 +207,14 @@ struct StashState {
 }
 
 /// Parameters for tearing down a feature worktree.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TeardownRequest {
     pub work_feature: String,
     pub branch_prefix: Option<String>,
     pub delete_branch: bool,
     pub force_remove: bool,
+    /// Override module dirty checks even if --force was not provided.
+    pub force_remove_modules: bool,
     pub complete_spec: bool,
     pub telemetry: bool,
 }
@@ -622,6 +624,7 @@ impl FeatureWorkflow {
             branch_prefix,
             delete_branch,
             force_remove,
+            force_remove_modules,
             complete_spec,
             telemetry,
         } = request;
@@ -632,8 +635,20 @@ impl FeatureWorkflow {
 
         let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
-        if !worktree_path.exists() {
+        let worktree_exists = worktree_path.exists();
+        if !worktree_exists && !force_remove {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
+        }
+
+        let skip_dirty_validation = force_remove || force_remove_modules;
+        if worktree_exists && !skip_dirty_validation {
+            let dirty_entries = self.detect_module_dirty_changes(&worktree_path)?;
+            if !dirty_entries.is_empty() {
+                return Err(Error::WorktreeDirty {
+                    worktree: worktree_path.clone(),
+                    files: dirty_entries,
+                });
+            }
         }
 
         if telemetry {
@@ -669,12 +684,22 @@ impl FeatureWorkflow {
             handles,
             warnings: dependency_warnings,
         } = modules::detect_modules(&self.repo_root, &skip_modules);
-        let (module_reports, module_warnings) = self.run_module_teardown(handles, &worktree_path);
+        let (module_reports, module_warnings) = if worktree_exists {
+            self.run_module_teardown(handles, &worktree_path)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings);
         }
         if !module_warnings.is_empty() {
             warnings.extend(module_warnings.clone());
+        }
+        if !worktree_exists {
+            warnings.push(format!(
+                "Worktree directory '{}' missing; skipping module teardown",
+                worktree_path.display()
+            ));
         }
         self.handle_spec_on_teardown(
             &work_feature,
@@ -696,29 +721,43 @@ impl FeatureWorkflow {
         }
 
         let mut worktree_removed = false;
-        match self.git.remove(&worktree_path, force_remove) {
-            Ok(_) => {
-                worktree_removed = true;
-            }
-            Err(err) => {
-                warnings.push(format!("Failed to remove worktree: {}", err));
-                if worktree_path.exists() {
-                    match fs::remove_dir_all(&worktree_path) {
-                        Ok(_) => {
-                            worktree_removed = true;
-                            warnings.push(
-                                "Worktree directory removed manually after git removal failed"
-                                    .to_string(),
-                            );
-                        }
-                        Err(fs_err) => {
-                            warnings.push(format!(
-                                "Failed to remove worktree directory manually: {}",
-                                fs_err
-                            ));
+        if worktree_exists {
+            match self.git.remove(&worktree_path, force_remove) {
+                Ok(_) => {
+                    worktree_removed = true;
+                }
+                Err(err) => {
+                    warnings.push(format!("Failed to remove worktree: {}", err));
+                    if worktree_path.exists() {
+                        match fs::remove_dir_all(&worktree_path) {
+                            Ok(_) => {
+                                worktree_removed = true;
+                                warnings.push(
+                                    "Worktree directory removed manually after git removal failed"
+                                        .to_string(),
+                                );
+                            }
+                            Err(fs_err) => {
+                                warnings.push(format!(
+                                    "Failed to remove worktree directory manually: {}",
+                                    fs_err
+                                ));
+                            }
                         }
                     }
                 }
+            }
+        } else {
+            warnings.push(format!(
+                "Worktree directory '{}' already removed; skipping git worktree cleanup",
+                worktree_path.display()
+            ));
+        }
+
+        if worktree_removed || !worktree_exists {
+            if let Err(err) = self.git.prune() {
+                tracing::warn!("Failed to prune stale worktrees: {}", err);
+                warnings.push(format!("Failed to prune stale git worktrees: {}", err));
             }
         }
 
@@ -734,13 +773,6 @@ impl FeatureWorkflow {
                         branch_name, err
                     ));
                 }
-            }
-        }
-
-        if worktree_removed {
-            if let Err(err) = self.git.prune() {
-                tracing::warn!("Failed to prune stale worktrees: {}", err);
-                warnings.push(format!("Failed to prune stale git worktrees: {}", err));
             }
         }
 
@@ -1162,6 +1194,91 @@ impl FeatureWorkflow {
                 Some(format!("Failed to detect adapter for cleanup: {}", err)),
             ),
         }
+    }
+
+    fn detect_module_dirty_changes(&self, worktree_path: &Path) -> Result<Vec<String>> {
+        if !worktree_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|err| {
+                Error::git(format!(
+                    "Failed to inspect worktree changes before teardown: {}",
+                    err
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::git(format!(
+                "git status failed while checking for module changes: {}",
+                stderr.trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut dirty_entries = Vec::new();
+        for line in stdout.lines() {
+            if line.len() <= 3 {
+                continue;
+            }
+
+            // The porcelain format always reserves the first three bytes for the staged/unstaged
+            // markers (`XY `). Slice directly to avoid trimming away the leading space and throwing
+            // off indexing for short filenames.
+            let entry = &line[3..];
+
+            for candidate in entry.split(" -> ") {
+                let unquoted = candidate.trim().trim_matches('"');
+                if unquoted.is_empty() {
+                    continue;
+                }
+                if Self::is_module_managed_path(unquoted) {
+                    dirty_entries.push(unquoted.to_string());
+                    break;
+                }
+            }
+        }
+
+        Ok(dirty_entries)
+    }
+
+    fn is_module_managed_path(path: &str) -> bool {
+        use std::ffi::OsStr;
+
+        const MODULE_PREFIXES: [&str; 2] = [".devcontainer", "compose"];
+        if MODULE_PREFIXES
+            .iter()
+            .any(|prefix| Self::path_matches_prefix(path, prefix))
+        {
+            return true;
+        }
+
+        const MODULE_FILES: [&str; 4] = [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+        ];
+
+        if let Some(name) = Path::new(path).file_name().and_then(OsStr::to_str) {
+            return MODULE_FILES.contains(&name);
+        }
+
+        false
+    }
+
+    fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+        if path == prefix {
+            return true;
+        }
+        path.strip_prefix(prefix)
+            .map(|remainder| remainder.starts_with('/'))
+            .unwrap_or(false)
     }
 
     fn capture_stash(&self, work_feature: &str) -> Result<StashState> {
@@ -3475,8 +3592,13 @@ mod tests {
             .unwrap();
 
         fs::write(repo_path.join("README.md"), "# Test Repo\n").unwrap();
+        fs::write(
+            repo_path.join(".gitignore"),
+            ".env\n.devcontainer/.branchbox.env\n.devcontainer/.cloudflared.env\n",
+        )
+        .unwrap();
         Command::new("git")
-            .args(["add", "README.md"])
+            .args(["add", "README.md", ".gitignore"])
             .current_dir(repo_path)
             .output()
             .unwrap();
@@ -3510,6 +3632,26 @@ mod tests {
                 }
                 fs::copy(entry.path(), &target).unwrap();
             }
+        }
+
+        Command::new("git")
+            .args(["add", ".devcontainer"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let diff_status = Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+
+        if !diff_status.success() {
+            Command::new("git")
+                .args(["commit", "-m", "Add devcontainer scaffolding"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap();
         }
     }
 
@@ -3672,6 +3814,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3718,6 +3861,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3749,6 +3893,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3814,6 +3959,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3832,6 +3978,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3843,10 +3990,15 @@ mod tests {
         let temp = setup_test_repo();
         let repo_path = temp.path();
         fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let worktree_path = repo_path.parent().unwrap().join("dirty");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
         workflow
             .start(StartRequest {
                 name: Some("dirty".to_string()),
@@ -3854,7 +4006,6 @@ mod tests {
             })
             .unwrap();
 
-        let worktree_path = repo_path.parent().unwrap().join("dirty");
         assert!(worktree_path.exists());
 
         // Introduce an untracked change so the git removal path falls back to manual cleanup.
@@ -3866,6 +4017,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: false,
+                force_remove_modules: false,
                 complete_spec: false,
                 telemetry: false,
             })
@@ -3884,6 +4036,128 @@ mod tests {
         let git = GitWorktree::new(repo_path).unwrap();
         let worktrees = git.list().unwrap();
         assert!(worktrees.into_iter().all(|info| info.path != worktree_path));
+    }
+
+    #[test]
+    fn feature_teardown_detects_module_changes_without_force() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .start(StartRequest {
+                name: Some("dirty-devcontainer".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let worktree_path = repo_path.parent().unwrap().join("dirty-devcontainer");
+        let dev_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&dev_dir).unwrap();
+        fs::write(dev_dir.join("compose.yaml"), "services: {}\n").unwrap();
+
+        let err = workflow
+            .teardown(TeardownRequest {
+                work_feature: "dirty-devcontainer".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: false,
+                force_remove_modules: false,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .expect_err("expected teardown to block on dirty module files");
+
+        match err {
+            Error::WorktreeDirty { files, .. } => {
+                assert!(
+                    files.iter().any(|entry| entry.contains(".devcontainer")),
+                    "expected dirty entry to reference .devcontainer, got {:?}",
+                    files
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+
+        // Force removal to cleanup for test completion.
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: "dirty-devcontainer".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+                force_remove_modules: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn feature_teardown_force_handles_missing_worktree() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .start(StartRequest {
+                name: Some("ghost".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let worktree_path = repo_path.parent().unwrap().join("ghost");
+        assert!(worktree_path.exists());
+        fs::remove_dir_all(&worktree_path).unwrap();
+        assert!(!worktree_path.exists());
+
+        let summary = workflow
+            .teardown(TeardownRequest {
+                work_feature: "ghost".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_remove: true,
+                force_remove_modules: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+
+        assert!(!summary.worktree_removed);
+        assert!(summary.branch_deleted);
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("already removed")));
+
+        let branch_check = Command::new("git")
+            .args(["branch", "--list", "feature/ghost"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branch_check.stdout)
+                .trim()
+                .is_empty(),
+            "expected feature branch to be deleted"
+        );
+
+        let registry_path = repo_path.join(".branchbox/feature.json");
+        let registry_data = fs::read_to_string(&registry_path).unwrap();
+        let registry: Value = serde_json::from_str(&registry_data).unwrap();
+        let entry = registry["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item.get("work_feature").unwrap() == "ghost")
+            .unwrap();
+        assert_eq!(entry.get("status").unwrap(), "removed");
     }
 
     #[test]
@@ -3916,6 +4190,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: true,
                 telemetry: false,
             })
@@ -3966,6 +4241,7 @@ mod tests {
                 branch_prefix: None,
                 delete_branch: true,
                 force_remove: true,
+                force_remove_modules: true,
                 complete_spec: false,
                 telemetry: false,
             })

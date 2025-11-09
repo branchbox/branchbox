@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use clap::{Args, Subcommand};
+use dialoguer::{console::Term, theme::ColorfulTheme, Confirm};
 use serde::Serialize;
 use serde_json::json;
 use shell_words::split as split_command_line;
@@ -9,10 +10,13 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use worktree_core::workflows::feature::{
-    FeatureMetadata, FeatureStatus, FeatureTunnelStatus, FeatureWorkflow, ModuleOutcome,
-    ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus, StartMode, StartRequest, StartSummary,
-    TeardownRequest, TeardownSummary,
+use worktree_core::{
+    workflows::feature::{
+        FeatureMetadata, FeatureStatus, FeatureTunnelStatus, FeatureWorkflow, ModuleOutcome,
+        ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus, StartMode, StartRequest, StartSummary,
+        TeardownRequest, TeardownSummary,
+    },
+    Error as CoreError,
 };
 
 const DEFAULT_MINIMAL_PROMPT: &str = "You are the default BranchBox coding agent operating in minimal mode. Devcontainer, compose, and specs modules were skipped to keep setup lightweight—focus on quick tweaks or documentation updates, and run `branchbox devcontainer sync` later if full provisioning becomes necessary.";
@@ -502,19 +506,71 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
-    let request = TeardownRequest {
+    let mut request = TeardownRequest {
         work_feature: name,
         branch_prefix,
         delete_branch,
         force_remove: force,
+        force_remove_modules: force,
         complete_spec,
         telemetry,
     };
 
-    let summary = workflow.teardown(request)?;
+    let summary = match workflow.teardown(request.clone()) {
+        Ok(summary) => summary,
+        Err(err) => handle_teardown_error(err, &workflow, &mut request)?,
+    };
+
     print_teardown_summary(&summary);
 
     Ok(())
+}
+
+fn handle_teardown_error(
+    err: CoreError,
+    workflow: &FeatureWorkflow,
+    request: &mut TeardownRequest,
+) -> Result<TeardownSummary> {
+    match err {
+        CoreError::WorktreeDirty { worktree, files } => {
+            handle_dirty_worktree(workflow, request, &worktree, &files)
+        }
+        other => Err(other.into()),
+    }
+}
+
+fn handle_dirty_worktree(
+    workflow: &FeatureWorkflow,
+    request: &mut TeardownRequest,
+    worktree: &Path,
+    files: &[String],
+) -> Result<TeardownSummary> {
+    println!(
+        "⚠️  Detected devcontainer/compose changes inside {}:",
+        worktree.display()
+    );
+    for entry in files {
+        println!("    • {}", entry);
+    }
+    println!("    (BranchBox refuses to delete dirty module files without --force)");
+
+    if !Term::stdout().is_term() {
+        anyhow::bail!(
+            "Devcontainer/compose changes detected; rerun this command with --force to proceed."
+        );
+    }
+
+    let proceed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Continue teardown with --force? This will discard local module changes.")
+        .default(false)
+        .interact()?;
+
+    if !proceed {
+        anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
+    }
+
+    request.force_remove_modules = true;
+    Ok(workflow.teardown(request.clone())?)
 }
 
 fn print_start_summary(
