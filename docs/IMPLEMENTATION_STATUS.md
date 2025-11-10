@@ -207,7 +207,8 @@ branchbox/
 - [x] SwiftUI macOS preview app (`macos/Package.swift`) that lists features via gRPC
 - [x] CLI fallback when the agent daemon is unavailable (reuses `branchbox feature list --json`)
 - [x] Start/teardown actions in the mac app, wired to gRPC/CLI transports
-- [x] macOS app workspace picker, transport badge, module/adaptor/tunnel health display, and teardown confirmations
+- [x] macOS app workspace picker, transport badge, module/adapter/tunnel health display, and teardown confirmations
+- [x] gRPC + CLI control-plane status endpoint (`branchbox agent status`, mac app badge)
 - [x] Manual doc updates describing the new workflow (README + docs/docs/getting-started/manual-cli-e2e.md)
 - [ ] Control-plane ack/offset tracking (persist the last HTTP delivery window so we can resume mid-batch)
 - [ ] macOS app polish: workspace picker, status badges, gRPC transport selection UI

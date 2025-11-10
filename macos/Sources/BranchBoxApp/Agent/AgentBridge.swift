@@ -50,6 +50,34 @@ final class AgentBridge {
     struct FeatureFetchResult {
         let features: [FeatureViewData]
         let transport: Transport
+        let status: AgentStatusSnapshot
+    }
+
+    struct AgentStatusSnapshot {
+        let controlPlaneConfigured: Bool
+        let controlPlaneConnected: Bool
+        let lastDeliveryAt: String?
+        let lastFailureAt: String?
+        let lastError: String?
+        let lastAckEventID: Int64?
+
+        init(grpc status: Branchbox_Agent_AgentStatus) {
+            controlPlaneConfigured = status.controlPlaneConfigured
+            controlPlaneConnected = status.controlPlaneConnected
+            lastDeliveryAt = status.lastDeliveryAt.isEmpty ? nil : status.lastDeliveryAt
+            lastFailureAt = status.lastFailureAt.isEmpty ? nil : status.lastFailureAt
+            lastError = status.lastError.isEmpty ? nil : status.lastError
+            lastAckEventID = status.lastAckEventID == 0 ? nil : Int64(status.lastAckEventID)
+        }
+
+        init(cli status: CLICompat.AgentStatusRecord) {
+            controlPlaneConfigured = status.control_plane_configured
+            controlPlaneConnected = status.control_plane_connected
+            lastDeliveryAt = status.last_delivery_at
+            lastFailureAt = status.last_failure_at
+            lastError = status.last_error
+            lastAckEventID = status.last_ack_event_id.map { Int64($0) }
+        }
     }
 
     private var configuration: AgentConfiguration
@@ -84,16 +112,31 @@ final class AgentBridge {
             request.repoPath = configuration.workspacePath
             request.includeRemoved = includeRemoved
             let response = try await client.list(request).response.get()
+            let statusResponse = try await client.status(Branchbox_Agent_StatusRequest()).response.get()
+            let snapshot = statusResponse.status.map(AgentStatusSnapshot.init(grpc:)) ?? AgentStatusSnapshot(
+                controlPlaneConfigured: false,
+                controlPlaneConnected: false,
+                lastDeliveryAt: nil,
+                lastFailureAt: nil,
+                lastError: nil,
+                lastAckEventID: nil
+            )
             return FeatureFetchResult(
                 features: response.features.map(FeatureViewData.init(grpc:)),
-                transport: .grpc
+                transport: .grpc,
+                status: snapshot
             )
         } catch {
             logger.error("gRPC list failed: %{public}@", error.localizedDescription)
             let features = try CLICompat
                 .featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
                 .map(FeatureViewData.init(cli:))
-            return FeatureFetchResult(features: features, transport: .cliFallback)
+            let status = try CLICompat.agentStatus(workspacePath: configuration.workspacePath)
+            return FeatureFetchResult(
+                features: features,
+                transport: .cliFallback,
+                status: AgentStatusSnapshot(cli: status)
+            )
         }
     }
 

@@ -45,4 +45,16 @@ struct Branchbox_Agent_FeatureServiceClient: GRPCClient {
             interceptors: []
         )
     }
+
+    func status(
+        _ request: Branchbox_Agent_StatusRequest,
+        callOptions: CallOptions? = nil
+    ) -> UnaryCall<Branchbox_Agent_StatusRequest, Branchbox_Agent_StatusResponse> {
+        self.makeUnaryCall(
+            path: "/branchbox.agent.FeatureService/Status",
+            request: request,
+            callOptions: callOptions ?? defaultCallOptions,
+            interceptors: []
+        )
+    }
 }

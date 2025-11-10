@@ -612,6 +612,104 @@ struct Branchbox_Agent_ModuleOutcome: SwiftProtobuf.Message, GRPCPayload, Equata
     }
 }
 
+struct Branchbox_Agent_StatusRequest: SwiftProtobuf.Message, GRPCPayload, Equatable {
+    var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    init() {}
+
+    mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+        while let _ = try decoder.nextFieldNumber() {
+            try decoder.skipField()
+        }
+    }
+
+    func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+        try unknownFields.traverse(visitor: &visitor)
+    }
+}
+
+struct Branchbox_Agent_StatusResponse: SwiftProtobuf.Message, GRPCPayload, Equatable {
+    var status: Branchbox_Agent_AgentStatus?
+    var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    init() {}
+
+    mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+        while let fieldNumber = try decoder.nextFieldNumber() {
+            switch fieldNumber {
+            case 1:
+                var value = Branchbox_Agent_AgentStatus()
+                try decoder.decodeSingularMessageField(value: &value)
+                status = value
+            default:
+                try decoder.skipField()
+            }
+        }
+    }
+
+    func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+        if var status {
+            try visitor.visitSingularMessageField(value: status, fieldNumber: 1)
+        }
+        try unknownFields.traverse(visitor: &visitor)
+    }
+}
+
+struct Branchbox_Agent_AgentStatus: SwiftProtobuf.Message, GRPCPayload, Equatable {
+    var controlPlaneConfigured: Bool = false
+    var controlPlaneConnected: Bool = false
+    var lastDeliveryAt: String = ""
+    var lastFailureAt: String = ""
+    var lastError: String = ""
+    var lastAckEventID: UInt64 = 0
+    var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    init() {}
+
+    mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+        while let fieldNumber = try decoder.nextFieldNumber() {
+            switch fieldNumber {
+            case 1:
+                controlPlaneConfigured = try decoder.decodeSingularBoolField()
+            case 2:
+                controlPlaneConnected = try decoder.decodeSingularBoolField()
+            case 3:
+                lastDeliveryAt = try decoder.decodeSingularStringField()
+            case 4:
+                lastFailureAt = try decoder.decodeSingularStringField()
+            case 5:
+                lastError = try decoder.decodeSingularStringField()
+            case 6:
+                lastAckEventID = try decoder.decodeSingularUInt64Field()
+            default:
+                try decoder.skipField()
+            }
+        }
+    }
+
+    func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+        if controlPlaneConfigured {
+            try visitor.visitSingularBoolField(value: controlPlaneConfigured, fieldNumber: 1)
+        }
+        if controlPlaneConnected {
+            try visitor.visitSingularBoolField(value: controlPlaneConnected, fieldNumber: 2)
+        }
+        if !lastDeliveryAt.isEmpty {
+            try visitor.visitSingularStringField(value: lastDeliveryAt, fieldNumber: 3)
+        }
+        if !lastFailureAt.isEmpty {
+            try visitor.visitSingularStringField(value: lastFailureAt, fieldNumber: 4)
+        }
+        if !lastError.isEmpty {
+            try visitor.visitSingularStringField(value: lastError, fieldNumber: 5)
+        }
+        if lastAckEventID != 0 {
+            try visitor.visitSingularUInt64Field(value: lastAckEventID, fieldNumber: 6)
+        }
+        try unknownFields.traverse(visitor: &visitor)
+    }
+}
+
 struct Branchbox_Agent_Adapter: SwiftProtobuf.Message, GRPCPayload, Equatable {
     var name: String = ""
     var serviceURL: String = ""

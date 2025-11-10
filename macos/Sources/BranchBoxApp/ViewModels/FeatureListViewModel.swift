@@ -19,6 +19,7 @@ final class FeatureListViewModel: ObservableObject {
     @Published var pendingTeardown: FeatureViewData?
     @Published var teardownOptions = TeardownOptions()
     @Published private(set) var promptHistory: [String]
+    @Published var controlPlaneStatus: AgentBridge.AgentStatusSnapshot?
 
     private let bridge: AgentBridge
     private let defaults: UserDefaults
@@ -56,6 +57,7 @@ final class FeatureListViewModel: ObservableObject {
             let result = try await bridge.listFeatures(includeRemoved: nil)
             features = result.features
             transportStatus = result.transport
+            controlPlaneStatus = result.status
         } catch {
             activeAlert = FeatureAlert(
                 title: "Unable to reach agent",

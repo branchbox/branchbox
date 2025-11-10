@@ -296,6 +296,8 @@ impl AgentState {
                         WHEN last_ack_event_id < :ack_event_id THEN :ack_event_id
                         ELSE last_ack_event_id
                     END,
+                    last_delivery_at = :updated_at,
+                    last_error = NULL,
                     updated_at = :updated_at
                 WHERE id = 1
                 "#,
@@ -306,12 +308,30 @@ impl AgentState {
         .await
     }
 
-    #[allow(dead_code)]
+    pub async fn record_control_plane_failure(&self, message: &str) -> Result<()> {
+        let error = message.to_string();
+        self.execute(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET last_error = :error,
+                    last_failure_at = :updated_at,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {":error": &error, ":updated_at": now},
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn control_plane_status(&self) -> Result<ControlPlaneStatus> {
         self.execute(move |conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT last_ack_event_id, next_batch_id
+                SELECT last_ack_event_id, next_batch_id, last_delivery_at, last_failure_at, last_error, updated_at
                 FROM control_plane_status
                 WHERE id = 1
                 "#,
@@ -320,6 +340,20 @@ impl AgentState {
                 Ok(ControlPlaneStatus {
                     last_ack_event_id: row.get(0)?,
                     next_batch_id: row.get(1)?,
+                    last_delivery_at: row.get::<_, Option<String>>(2)?.and_then(|ts| {
+                        DateTime::parse_from_rfc3339(&ts)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                    last_failure_at: row.get::<_, Option<String>>(3)?.and_then(|ts| {
+                        DateTime::parse_from_rfc3339(&ts)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                    last_error: row.get(4).ok(),
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
                 })
             })?;
             Ok(status)
@@ -370,15 +404,49 @@ impl AgentState {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 last_ack_event_id INTEGER,
                 next_batch_id INTEGER NOT NULL DEFAULT 1,
+                last_delivery_at TEXT,
+                last_failure_at TEXT,
+                last_error TEXT,
                 updated_at TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO control_plane_status (id, last_ack_event_id, next_batch_id, updated_at)
-            VALUES (1, NULL, 1, datetime('now'));
+            INSERT OR IGNORE INTO control_plane_status (id, last_ack_event_id, next_batch_id, last_delivery_at, last_failure_at, last_error, updated_at)
+            VALUES (1, NULL, 1, NULL, NULL, NULL, datetime('now'));
             "#,
         )?;
 
+        Self::ensure_control_plane_status_columns(connection)?;
+
         debug!("Agent state migrations applied");
+        Ok(())
+    }
+
+    fn ensure_control_plane_status_columns(connection: &Connection) -> Result<()> {
+        let mut stmt = connection.prepare("PRAGMA table_info(control_plane_status)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let maybe_add = |column: &str, ddl: &str| -> Result<()> {
+            if !columns.iter().any(|name| name == column) {
+                connection.execute(ddl, [])?;
+            }
+            Ok(())
+        };
+
+        maybe_add(
+            "last_delivery_at",
+            "ALTER TABLE control_plane_status ADD COLUMN last_delivery_at TEXT",
+        )?;
+        maybe_add(
+            "last_failure_at",
+            "ALTER TABLE control_plane_status ADD COLUMN last_failure_at TEXT",
+        )?;
+        maybe_add(
+            "last_error",
+            "ALTER TABLE control_plane_status ADD COLUMN last_error TEXT",
+        )?;
+
         Ok(())
     }
 }
@@ -447,10 +515,14 @@ pub struct StoredWorktree {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ControlPlaneStatus {
     pub last_ack_event_id: Option<i64>,
     pub next_batch_id: i64,
+    pub last_delivery_at: Option<DateTime<Utc>>,
+    pub last_failure_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[cfg(test)]
@@ -477,6 +549,7 @@ mod tests {
         state.update_control_plane_ack(5).await.unwrap();
         let status = state.control_plane_status().await.unwrap();
         assert_eq!(status.last_ack_event_id, Some(5));
+        assert!(status.last_delivery_at.is_some());
 
         // Lower acknowledgements should be ignored.
         state.update_control_plane_ack(3).await.unwrap();
@@ -486,5 +559,20 @@ mod tests {
         state.update_control_plane_ack(42).await.unwrap();
         let status = state.control_plane_status().await.unwrap();
         assert_eq!(status.last_ack_event_id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn control_plane_failure_records_error() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        state
+            .record_control_plane_failure("permission denied")
+            .await
+            .unwrap();
+
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_error.as_deref(), Some("permission denied"));
+        assert!(status.last_failure_at.is_some());
     }
 }

@@ -208,6 +208,7 @@ Milestone 2 begins the control-plane integration by draining all agent events 
 - Heartbeats snapshot every registered worktree and keep emitting even if the HTTP endpoint is unavailable; delivery retries back off in the queue so you can restart the control plane without losing history.
 - Durable acknowledgements are stored per batch (`control_plane_status` table) so the agent can resume from the last acked event after restarts. Failed deliveries use exponential backoff + jitter before retrying so unhealthy endpoints don’t get hammered.
 - `scripts/manual-agent-e2e.sh` now accepts the same environment variables so you can point the smoke test at a local Rails stub (or `webhook.site`) before promoting the change to CI. Pass `--cp-stub` to spin up the embedded Python webhook and print the persisted `last_ack_event_id` cursor when the run finishes.
+- Inspect control-plane connectivity any time with `branchbox agent status` (add `--json` for scripts). The command reports whether the drain is configured/connected plus the last delivery/failure timestamps so you can debug mismatched tokens or endpoints quickly.
 
 ## macOS App Preview
 

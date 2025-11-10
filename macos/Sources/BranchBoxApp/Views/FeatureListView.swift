@@ -47,6 +47,7 @@ struct FeatureListView: View {
             }
             .disabled(viewModel.isWorking)
             transportBadge
+            controlPlaneBadge
         }
     }
 
@@ -321,6 +322,22 @@ private extension FeatureListView {
             .padding(.vertical, 4)
             .background(isGrpc ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
             .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    var controlPlaneBadge: some View {
+        if let status = viewModel.controlPlaneStatus {
+            let connected = status.controlPlaneConfigured && status.controlPlaneConnected
+            Label(
+                connected ? "Control plane" : "CP pending",
+                systemImage: connected ? "waveform.path.ecg" : "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(connected ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
+            .clipShape(Capsule())
+        }
     }
 
     func chooseWorkspace() {

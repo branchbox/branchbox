@@ -49,6 +49,14 @@ enum CLICompat {
         _ = try run(arguments: args, workspacePath: workspacePath)
     }
 
+    static func agentStatus(workspacePath: String) throws -> AgentStatusRecord {
+        let output = try run(arguments: ["agent", "status", "--json"], workspacePath: workspacePath)
+        guard let data = output.data(using: .utf8) else {
+            throw AgentBridgeError.cliUnavailable("agent status returned empty output")
+        }
+        return try JSONDecoder().decode(AgentStatusRecord.self, from: data)
+    }
+
     private static func run(arguments: [String], workspacePath: String) throws -> String {
         let cliBinary = ProcessInfo.processInfo.environment["BRANCHBOX_CLI_PATH"] ?? "branchbox"
         let process = Process()
@@ -101,5 +109,14 @@ enum CLICompat {
         let name: String
         let service_url: String
         let warnings: [String]?
+    }
+
+    struct AgentStatusRecord: Decodable {
+        let control_plane_configured: Bool
+        let control_plane_connected: Bool
+        let last_delivery_at: String?
+        let last_failure_at: String?
+        let last_error: String?
+        let last_ack_event_id: Int64?
     }
 }

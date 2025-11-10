@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -121,6 +123,17 @@ impl AgentClient {
             )),
         }
     }
+
+    pub fn agent_status(&self) -> Result<AgentStatus> {
+        let payload = json!({
+            "action": "agent_status",
+        });
+        let data = self.send(payload)?;
+        let status = data
+            .get("status")
+            .ok_or_else(|| anyhow!("agent response missing 'status' field"))?;
+        Ok(serde_json::from_value(status.clone())?)
+    }
 }
 
 pub struct StartFeatureRequest {
@@ -228,6 +241,20 @@ pub struct TeardownFeatureSummary {
     pub adapter_warnings: Vec<String>,
     #[serde(default)]
     pub module_reports: Vec<ModuleReportPayload>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AgentStatus {
+    pub control_plane_configured: bool,
+    pub control_plane_connected: bool,
+    #[serde(default)]
+    pub last_delivery_at: Option<String>,
+    #[serde(default)]
+    pub last_failure_at: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_ack_event_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -339,6 +366,7 @@ impl From<FeatureMetadata> for FeatureRecord {
             start_mode: meta.start_mode,
             module_outcomes: meta.module_outcomes,
             pr_number: meta.pr_number,
+            adapter: meta.adapter.map(AdapterPayload::from),
         }
     }
 }

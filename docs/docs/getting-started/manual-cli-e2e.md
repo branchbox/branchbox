@@ -86,6 +86,8 @@ Usage:
 
 `--cp-stub` starts a disposable Python HTTP server inside the devcontainer, points the agent’s `BRANCHBOX_CP_ENDPOINT` at it, and prints both the stub log and the `control_plane_status.last_ack_event_id` cursor once the CLI harness finishes. Use this whenever you want to see the durable-ack logic in action or reproduce control-plane failures locally.
 
+Need a quick health check without rerunning the harness? Use `branchbox agent status --json`—it reports whether the drain is configured/connected and when the last delivery or failure occurred so you can diagnose token/endpoint issues.
+
 Run the script locally before publishing releases (or wire it into CI once Docker is available). When it fails, use the manual checklist above to dig into the exact stage and file detailed bug reports.
 
 ## Mac App ↔ Agent Loop

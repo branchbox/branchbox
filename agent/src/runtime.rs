@@ -274,6 +274,14 @@ async fn event_loop(
                                     }
                                     Err(err) => {
                                         warn!("Failed to deliver events to control plane: {err:#}");
+                                        if let Err(status_err) = state
+                                            .record_control_plane_failure(&err.to_string())
+                                            .await
+                                        {
+                                            warn!(
+                                                "Failed to persist control-plane failure status: {status_err:#}"
+                                            );
+                                        }
                                         if let Some(backoff) = backoff.as_mut() {
                                             let delay = backoff.record_failure();
                                             warn!(?delay, "Applying control-plane backoff");
