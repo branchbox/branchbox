@@ -190,15 +190,15 @@ branchbox/
   - [x] Specs module
 - [ ] Cloudflare API client (deferred to future phase)
 
-### 📋 Phase 3: Local Agent (PLANNED)
+### ✅ Phase 3: Local Agent (COMPLETE)
 
-- [ ] gRPC server setup
-- [ ] Unix socket server
-- [ ] Command handlers
-- [ ] SQLite state storage
-- [ ] Offline queue
-- [ ] Heartbeat mechanism
-- [ ] State synchronization
+- [x] gRPC server setup (`branchbox-agent` serves tonic on 127.0.0.1:50515 with JSON summaries)
+- [x] Unix socket server + CLI IPC bridge (macOS/Linux)
+- [x] Command handlers for feature start/list/teardown with adapter/module orchestration
+- [x] SQLite state storage + durable event queue (`.branchbox/agent/agent.db`)
+- [x] Offline queue + heartbeat scheduler (events land in queue for future control plane)
+- [x] Manual testing helpers (`scripts/manual-agent-e2e.sh`)
+- [ ] Windows transport (tracked in `docs/features/backlog/agent-windows-support.md`)
 
 ### 📋 Phase 4: CLI Tool (PLANNED)
 
@@ -480,3 +480,8 @@ cargo build --release
 - ⏳ In Progress
 - 📋 Planned
 - ❌ Blocked
+- **Milestone 2 readiness**:
+  - Control-plane API can plug into the existing gRPC surface (`feature start/list/teardown` share the same proto used by the CLI).
+  - Registry/events queue captures `devcontainer_outdated`, tunnel metadata, and module outcomes for state sync.
+  - Manual agent e2e harness + README docs walk contributors through the daemon workflow.
+  - Remaining work: Windows/TCP transport plus the actual Rails control-plane endpoints (tracked separately).

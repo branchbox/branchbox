@@ -96,7 +96,7 @@ A distributed development environment orchestrator that manages git worktrees an
 
 **Location**: `agent/`
 
-**Purpose**: Long-running daemon on user's device that executes worktree operations
+**Purpose**: Long-running daemon on user's device that executes worktree operations. The Milestone 1 implementation targets Unix-like hosts (macOS, Linux, devcontainers); Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
 
 **Features**:
 - gRPC server listening on Tailscale IP + localhost

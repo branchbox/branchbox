@@ -221,6 +221,22 @@ branchbox --help
 
 See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed installation instructions, platform-specific guides, and troubleshooting.
 
+## Agent Daemon (macOS/Linux)
+
+Milestone 1 ships the BranchBox agent—a long-running daemon that owns feature orchestration, persistent state, and heartbeat telemetry. **It currently targets Unix-like hosts (macOS, Linux, devcontainers).** On Windows, keep using CLI direct mode (`BRANCHBOX_CLI_DIRECT=1`) until we land the backlog work described in [agent-windows-support](docs/features/backlog/agent-windows-support.md).
+
+```bash
+# Start the agent (defaults to ~/.branchbox/agent)
+cargo run -p branchbox-agent --release
+
+# CLI commands will now stream through the daemon
+branchbox feature start "Add OAuth Integration"
+```
+
+- Customize the socket/state directory via `BRANCHBOX_AGENT_SOCKET` / `BRANCHBOX_AGENT_DIR`.
+- To run the full manual harness against the live agent, use `./scripts/manual-agent-e2e.sh` (passes through any `--mode`/`STACK` flags from `scripts/manual-cli-e2e.sh` and preserves logs when `KEEP_AGENT_TMP=1`).
+- Bypass the daemon when needed (CI, Windows) with `BRANCHBOX_CLI_DIRECT=1 branchbox feature …`.
+
 ## What Works Now
 
 **✅ Milestone 0 Complete** - Core worktree orchestration:
@@ -230,11 +246,15 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed installation instr
 - Environment configuration (.env copying with `APP_URL` injection)
 - State tracking (JSON registry at `.branchbox/registry.json`)
 
+**✅ Milestone 1 (Agent) Highlights**
+- `branchbox-agent` daemon exposes Unix-socket IPC + tonic gRPC for feature workflows.
+- CLI bridges through the agent by default; manual harness + docs updated.
+- Persistent registry + offline queue + heartbeat metrics ready for future control-plane wiring.
+
 **🚧 Coming Soon:**
-- Cloudflare tunnel provisioning (Milestone 1)
-- Agent daemon for background orchestration (Milestone 1)
+- Agent transport for Windows hosts (see backlog doc above)
 - Native macOS app (Milestone 2)
-- Multi-device coordination via control plane (Milestone 3)
+- Multi-device coordination via Rust agent ↔ Rails control plane (Milestone 2/3)
 - Tailscale mesh networking (Milestone 3)
 
 See [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for detailed progress.

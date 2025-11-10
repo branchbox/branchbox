@@ -277,7 +277,7 @@ worktree bootstrap --stack rust .
 - [x] Protocol specification
 - [x] Core library implementation (Milestone 0)
 - [x] CLI implementation (Milestone 0)
-- [ ] Agent implementation (Milestone 1)
+- [x] Agent implementation (Milestone 1 — macOS/Linux daemon + CLI IPC)
 - [ ] Mac app implementation (Milestone 2)
 - [ ] Control plane implementation (Milestone 3)
 
