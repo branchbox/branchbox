@@ -93,6 +93,7 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
     var startMode: String = ""
     var updatedAt: String = ""
     var moduleOutcomes: [Branchbox_Agent_ModuleOutcome] = []
+    var adapter: Branchbox_Agent_Adapter?
     var unknownFields = SwiftProtobuf.UnknownStorage()
 
     init() {}
@@ -122,6 +123,10 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
                 updatedAt = try decoder.decodeSingularStringField()
             case 20:
                 try decoder.decodeRepeatedMessageField(value: &moduleOutcomes)
+            case 22:
+                var adapterValue = Branchbox_Agent_Adapter()
+                try decoder.decodeSingularMessageField(value: &adapterValue)
+                adapter = adapterValue
             default:
                 try decoder.skipField()
             }
@@ -162,6 +167,9 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
         if !moduleOutcomes.isEmpty {
             try visitor.visitRepeatedMessageField(value: moduleOutcomes, fieldNumber: 20)
         }
+        if var adapter {
+            try visitor.visitSingularMessageField(value: adapter, fieldNumber: 22)
+        }
         try unknownFields.traverse(visitor: &visitor)
     }
 
@@ -177,6 +185,7 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
             lhs.startMode == rhs.startMode &&
             lhs.updatedAt == rhs.updatedAt &&
             lhs.moduleOutcomes == rhs.moduleOutcomes &&
+            lhs.adapter == rhs.adapter &&
             lhs.unknownFields == rhs.unknownFields
     }
 }
@@ -600,5 +609,42 @@ struct Branchbox_Agent_ModuleOutcome: SwiftProtobuf.Message, GRPCPayload, Equata
             lhs.notes == rhs.notes &&
             lhs.forced == rhs.forced &&
             lhs.unknownFields == rhs.unknownFields
+    }
+}
+
+struct Branchbox_Agent_Adapter: SwiftProtobuf.Message, GRPCPayload, Equatable {
+    var name: String = ""
+    var serviceURL: String = ""
+    var warnings: [String] = []
+    var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    init() {}
+
+    mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+        while let fieldNumber = try decoder.nextFieldNumber() {
+            switch fieldNumber {
+            case 1:
+                name = try decoder.decodeSingularStringField()
+            case 2:
+                serviceURL = try decoder.decodeSingularStringField()
+            case 3:
+                try decoder.decodeRepeatedStringField(value: &warnings)
+            default:
+                try decoder.skipField()
+            }
+        }
+    }
+
+    func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+        if !name.isEmpty {
+            try visitor.visitSingularStringField(value: name, fieldNumber: 1)
+        }
+        if !serviceURL.isEmpty {
+            try visitor.visitSingularStringField(value: serviceURL, fieldNumber: 2)
+        }
+        if !warnings.isEmpty {
+            try visitor.visitRepeatedStringField(value: warnings, fieldNumber: 3)
+        }
+        try unknownFields.traverse(visitor: &visitor)
     }
 }

@@ -19,7 +19,7 @@ Milestone 2 connects the new agent daemon to the forthcoming Rails control pla
 - Bootstrapped `macos/BranchBoxApp`, a SwiftUI executable backed by `grpc-swift` + handwritten protobufs. The UI lists features, calls `FeatureService/Start`, `FeatureService/Teardown`, and falls back to `branchbox feature list --json` if the daemon is offline.
 - Added CLI fallback hooks + doc updates describing how to configure the workspace path, GRPC address, and CLI binary for the preview app.
 - Durable control-plane acknowledgements now live in `control_plane_status` (batch IDs + `last_ack_event_id`) with exponential backoff/jitter on failures, and the manual agent harness grew a `--cp-stub` flag to exercise the path automatically.
-- The mac app picked up a workspace picker (`NSOpenPanel`), transport badge, module/tunnel telemetry, prompt history, skip-module chips, and a teardown confirmation sheet with `--force/--complete-spec` toggles.
+- The mac app picked up a workspace picker (`NSOpenPanel`), transport badge, module/tunnel telemetry, prompt history, skip-module chips, adapter metadata display (name/service URL/warnings), and a teardown confirmation sheet with `--force/--complete-spec` toggles.
 
 ### Still in scope
 

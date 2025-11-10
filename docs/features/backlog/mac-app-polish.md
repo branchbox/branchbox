@@ -15,7 +15,7 @@ The SwiftUI preview in `macos/` proves that the gRPC surface works end-to-end, b
 - ✅ Inline telemetry (module outcomes, tunnel provider) pulled from `Feature` metadata.
 - ✅ Start form improvements: branch prefix selector, module skip list, prompt seed history, reuse toggle.
 - ✅ Teardown confirmation flow with `--force` + `--complete-spec` toggles.
-- ⏳ Surface adapter metadata + control-plane health once the control plane exposes those signals over gRPC/CLI.
+- ✅ Surface adapter metadata (name/service URL/warnings) via gRPC + CLI fallback; control-plane health still pending until the service exposes an API.
 
 ## Testing
 - Manual testing via `swift run BranchBoxApp` using the new workspace picker + CLI fallback path.

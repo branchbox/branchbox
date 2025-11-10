@@ -70,6 +70,7 @@ message Feature {
   string start_mode = 19;
   repeated ModuleOutcome module_outcomes = 20;
   uint32 pr_number = 21;
+  Adapter adapter = 22;
 }
 
 message StartSummary {

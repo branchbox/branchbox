@@ -228,6 +228,25 @@ private struct FeatureRow: View {
                             .foregroundColor(.secondary)
                     }
                 }
+                if let adapter = feature.adapterName {
+                    Text("Adapter: \(adapter)")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                if let url = feature.adapterServiceURL, !url.isEmpty {
+                    Text(url)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                if !feature.adapterWarnings.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(feature.adapterWarnings, id: \.self) { warning in
+                            Text("⚠️  \(warning)")
+                                .font(.footnote)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                }
                 Text("Updated \(feature.updatedAtLabel)")
                     .font(.footnote)
                     .foregroundColor(.secondary)

@@ -185,6 +185,8 @@ pub struct FeatureRecord {
     pub module_outcomes: Vec<ModuleOutcomeRecord>,
     #[serde(default)]
     pub pr_number: Option<u32>,
+    #[serde(default)]
+    pub adapter: Option<AdapterPayload>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

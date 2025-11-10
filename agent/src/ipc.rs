@@ -311,6 +311,8 @@ struct FeatureRecord {
     module_outcomes: Vec<ModuleOutcomeRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr_number: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adapter: Option<AdapterPayload>,
 }
 
 impl From<FeatureMetadata> for FeatureRecord {
@@ -344,6 +346,7 @@ impl From<FeatureMetadata> for FeatureRecord {
             start_mode: meta.start_mode,
             module_outcomes: meta.module_outcomes,
             pr_number: meta.pr_number,
+            adapter: meta.adapter.map(AdapterPayload::from),
         }
     }
 }

@@ -226,6 +226,7 @@ swift run BranchBoxApp
 - The app lists every feature via `FeatureService/List`, exposes start/teardown actions, and displays whether the data came from gRPC or the CLI fallback.
 - When the agent socket is missing the view transparently shells out to `branchbox feature list --json` so testing can continue on machines that only have the CLI installed.
 - Workspace picker + transport badge live in the toolbar (choose a repo via `NSOpenPanel`, see whether the data came from gRPC or the CLI fallback). Start form now includes branch prefix, reuse toggle, module skip list, and prompt history chips so the mac app stays in feature parity with the CLI.
+- Rows now surface adapter metadata (name, service URL, warnings) plus module/tunnel health so you can spot misconfigured stacks without dropping to the CLI.
 - Teardown actions open a confirmation sheet with `--force` + `--complete-spec` toggles so you don’t accidentally drop worktrees.
 - Configuration happens through environment variables (`BRANCHBOX_AGENT_GRPC_ADDR`, `BRANCHBOX_WORKSPACE`, `BRANCHBOX_CLI_PATH`) or the stored `defaults` domain `dev.branchbox.app`. See `macos/Sources/BranchBoxApp/Agent/AgentBridge.swift` for the full precedence order.
 - Manual validation steps live in [docs/docs/getting-started/manual-cli-e2e.md](docs/docs/getting-started/manual-cli-e2e.md) and cover: launching the agent, running the SwiftUI preview, starting a feature, tearing it down, and confirming the control-plane stub receives batched events.

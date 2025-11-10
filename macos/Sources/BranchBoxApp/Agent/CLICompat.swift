@@ -89,10 +89,17 @@ enum CLICompat {
         let tunnel_status: String?
         let tunnel_provider: String?
         let module_outcomes: [ModuleOutcomeRecord]?
+        let adapter: AdapterRecord?
     }
 
     struct ModuleOutcomeRecord: Decodable {
         let module: String
         let status: String
+    }
+
+    struct AdapterRecord: Decodable {
+        let name: String
+        let service_url: String
+        let warnings: [String]?
     }
 }

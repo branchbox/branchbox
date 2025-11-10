@@ -270,7 +270,7 @@ pub struct TunnelRemoveSummary {
 }
 
 /// Adapter orchestration summary.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AdapterSummary {
     pub name: String,
     pub service_url: String,
@@ -579,6 +579,7 @@ impl FeatureWorkflow {
             prompt_seed: request.prompt_seed.clone(),
             module_outcomes: module_outcome_records.clone(),
             last_summary_rendered_at: Some(summary_generated_at),
+            adapter: adapter_summary.clone(),
         }) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -2843,6 +2844,9 @@ pub struct FeatureMetadata {
     /// Timestamp when the CLI rendered the summary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_summary_rendered_at: Option<DateTime<Utc>>,
+    /// Adapter information captured at start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterSummary>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2905,6 +2909,9 @@ impl FeatureStateStore {
             }
             if metadata.prompt_seed.is_none() {
                 metadata.prompt_seed = existing.prompt_seed.clone();
+            }
+            if metadata.adapter.is_none() {
+                metadata.adapter = existing.adapter.clone();
             }
             *existing = metadata;
         } else {
@@ -3426,6 +3433,7 @@ mod tests {
             prompt_seed: None,
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
+            adapter: None,
         };
 
         store.record_start(metadata.clone()).unwrap();
@@ -3464,6 +3472,7 @@ mod tests {
             prompt_seed: None,
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
+            adapter: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -3504,6 +3513,7 @@ mod tests {
             prompt_seed: None,
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
+            adapter: None,
         };
 
         store.record_start(metadata1).unwrap();
@@ -3532,6 +3542,7 @@ mod tests {
             prompt_seed: None,
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
+            adapter: None,
         };
 
         store.record_start(metadata2).unwrap();
@@ -3573,6 +3584,7 @@ mod tests {
             prompt_seed: None,
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
+            adapter: None,
         };
 
         store.record_start(metadata).unwrap();

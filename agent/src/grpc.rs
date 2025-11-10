@@ -192,6 +192,7 @@ fn proto_feature_from_metadata(meta: FeatureMetadata) -> Feature {
             .map(proto_module_outcome_record)
             .collect(),
         pr_number: meta.pr_number.unwrap_or_default(),
+        adapter: meta.adapter.map(proto_adapter),
     }
 }
 
