@@ -198,6 +198,18 @@ branchbox/
 - [x] SQLite state storage + durable event queue (`.branchbox/agent/agent.db`)
 - [x] Offline queue + heartbeat scheduler (events land in queue for future control plane)
 - [x] Manual testing helpers (`scripts/manual-agent-e2e.sh`)
+
+### 🟡 Phase 4: Control Plane + macOS App (IN PROGRESS)
+
+- [x] Control-plane HTTP drain that batches queued events + host metadata (`agent/src/control_plane.rs`)
+- [x] Heartbeat snapshots forwarded through the same drain with retry semantics
+- [x] SwiftUI macOS preview app (`macos/Package.swift`) that lists features via gRPC
+- [x] CLI fallback when the agent daemon is unavailable (reuses `branchbox feature list --json`)
+- [x] Start/teardown actions in the mac app, wired to gRPC/CLI transports
+- [x] Manual doc updates describing the new workflow (README + docs/docs/getting-started/manual-cli-e2e.md)
+- [ ] Control-plane ack/offset tracking (persist the last HTTP delivery window so we can resume mid-batch)
+- [ ] macOS app polish: workspace picker, status badges, gRPC transport selection UI
+- [ ] Windows agent parity (tracked separately in `docs/features/backlog/agent-windows-support.md`)
 - [ ] Windows transport (tracked in `docs/features/backlog/agent-windows-support.md`)
 
 ### 📋 Phase 4: CLI Tool (PLANNED)

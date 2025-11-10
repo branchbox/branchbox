@@ -1,6 +1,10 @@
 use crate::{
-    config::AgentConfig, control_plane::ControlPlaneClient, grpc::GrpcServer, ipc::IpcServer,
-    shutdown::Shutdown, state::AgentState,
+    config::AgentConfig,
+    control_plane::{AgentMetadata, ControlPlaneClient},
+    grpc::GrpcServer,
+    ipc::IpcServer,
+    shutdown::Shutdown,
+    state::AgentState,
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -51,6 +55,7 @@ impl AgentRuntime {
             }
         };
 
+        let agent_meta = Arc::new(AgentMetadata::detect());
         let heartbeat_state = state.clone();
         let heartbeat_handle = tokio::spawn(heartbeat_loop(
             heartbeat_state,
@@ -63,6 +68,7 @@ impl AgentRuntime {
             event_state,
             Arc::clone(&self.config),
             cp_client.clone(),
+            Arc::clone(&agent_meta),
             event_token,
         ));
 
@@ -178,6 +184,7 @@ async fn event_loop(
     state: AgentState,
     config: Arc<AgentConfig>,
     cp_client: Option<ControlPlaneClient>,
+    agent_meta: Arc<AgentMetadata>,
     shutdown: CancellationToken,
 ) {
     let mut ticker = interval(config.event_flush_interval);
@@ -218,7 +225,7 @@ async fn event_loop(
                         let mut delivered = false;
                         if let Some(client) = cp_client.as_ref() {
                             match client
-                                .send_events(&config.workspace_root, &events)
+                                .send_events(&config.workspace_root, agent_meta.as_ref(), &events)
                                 .await
                             {
                                 Ok(_) => {

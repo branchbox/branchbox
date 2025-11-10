@@ -21,6 +21,7 @@ prost-types = "0.12"
 tonic = { version = "0.11", features = ["transport"] }
 reqwest = { workspace = true }
 once_cell = "1.19"
+hostname = "0.4"
 
 [build-dependencies]
 tonic-build = "0.11"

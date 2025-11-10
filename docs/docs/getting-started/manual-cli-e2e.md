@@ -83,6 +83,26 @@ Usage:
 
 Run the script locally before publishing releases (or wire it into CI once Docker is available). When it fails, use the manual checklist above to dig into the exact stage and file detailed bug reports.
 
+## Mac App ↔ Agent Loop
+
+Milestone 2 adds a minimal SwiftUI client under `macos/` so we can validate end-to-end agent orchestration on macOS. Run this loop in addition to the CLI harness whenever you touch the agent, control-plane drain, or desktop app code:
+
+1. **Start the agent locally**
+   - From the repo root run `cargo run -p branchbox-agent` (or `scripts/manual-agent-e2e.sh` to reuse the smoke harness). Set `BRANCHBOX_AGENT_DIR` so the daemon stores its SQLite queue outside your real workspace if you want a clean slate.
+   - Optional: point the HTTP drain at a staging endpoint with `BRANCHBOX_CP_ENDPOINT=https://example.test/hooks/devices BRANCHBOX_CP_TOKEN=fake-token` so you can confirm batches land outside stdout.
+2. **Configure workspace + gRPC address for the mac app**
+   - On macOS set the expected workspace path via `defaults write dev.branchbox.app workspace "$(pwd)"`.
+   - Override the transport as needed with `export BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515` or by editing `~/Library/Preferences/dev.branchbox.app.plist`.
+3. **Run the SwiftUI preview**
+   - From a mac host run `cd macos && swift run BranchBoxApp`. The window should list all features detected by `FeatureService/List`. Rows tagged “CLI” indicate the fallback path kicked in because the gRPC transport was unavailable.
+4. **Start + teardown from the UI**
+   - Use the “Start feature” form to launch a new worktree (toggle minimal mode + prompt seed as needed). Confirm the action flows through gRPC (watch the agent logs) and that the entry appears with the right status.
+   - Select “Teardown” on the new feature. Verify the worktree disappears, the specs module runs, and the UI updates.
+5. **Confirm control-plane delivery**
+   - Tail the agent logs to ensure the HTTP drain batches the start + teardown events (look for `control plane` lines and host metadata). When pointing at a stub endpoint you should see HTTP 200s; otherwise the agent logs that it fell back to local logging.
+
+Document any divergence (UI not updating, CLI fallback misfiring, HTTP drain errors) in the Milestone 2 tracking issue before marking a PR ready for review.
+
 ## Release-blocking matrix
 
 Every release candidate must pass the harness in all modes and stacks listed below. This matrix mirrors the requirements in `AGENTS.md` and `RELEASING.md`—document the results in your release notes so reviewers know the workflow was exercised end-to-end.

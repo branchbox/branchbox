@@ -198,6 +198,34 @@ BranchBox ships a full VS Code/Cursor devcontainer setup and propagates it to ev
 ### Troubleshooting
 - **No “Reopen in Container” prompt**: confirm `.devcontainer/` exists in the feature (`ls .devcontainer/`); rerun `branchbox devcontainer sync` if it is missing files.
 - **Tools ask to re-authenticate**: verify shared mounts inside the container (`mount | grep -E '(codex|claude|gh)'`) and ensure `SHARED_CONFIG_DIR` points to the directory holding your credentials.
+
+## Agent + Control Plane Stub
+
+Milestone 2 begins the control-plane integration by draining all agent events (feature starts, teardowns, and heartbeats) to a configurable HTTP endpoint.
+
+- Configure the target endpoint via `BRANCHBOX_CP_ENDPOINT`, provide a bearer token in `BRANCHBOX_CP_TOKEN`, and set `BRANCHBOX_CP_VERIFY_TLS=0` when hitting staging systems without valid certificates. The agent automatically adds host metadata (hostname, OS, architecture, agent version) to every batch so the Rails control plane can tag devices without probing the socket directly.
+- Events continue to land in the on-disk SQLite queue under `~/.branchbox/agent/agent.db`. When the HTTP drain is enabled the event loop flushes in batches (`event_batch_size`, default 50) and only logs to stdout if the control plane is disabled.
+- Heartbeats snapshot every registered worktree and keep emitting even if the HTTP endpoint is unavailable; delivery retries back off in the queue so you can restart the control plane without losing history.
+- `scripts/manual-agent-e2e.sh` now accepts the same environment variables so you can point the smoke test at a local Rails stub (or `webhook.site`) before promoting the change to CI.
+
+## macOS App Preview
+
+The new `macos/` Swift package hosts a SwiftUI app that talks to the agent over gRPC and falls back to the CLI when the daemon is offline. It is intentionally minimal so we can validate the IPC surface before layering on UI polish.
+
+```bash
+cd macos
+# Configure the workspace and optional gRPC address
+defaults write dev.branchbox.app workspace "$(pwd)/.."
+export BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515
+
+# Run the preview app (opens a SwiftUI window on macOS)
+swift run BranchBoxApp
+```
+
+- The app lists every feature via `FeatureService/List`, exposes start/teardown actions, and displays whether the data came from gRPC or the CLI fallback.
+- When the agent socket is missing the view transparently shells out to `branchbox feature list --json` so testing can continue on machines that only have the CLI installed.
+- Configuration happens through environment variables (`BRANCHBOX_AGENT_GRPC_ADDR`, `BRANCHBOX_WORKSPACE`, `BRANCHBOX_CLI_PATH`) or the stored `defaults` domain `dev.branchbox.app`. See `macos/Sources/BranchBoxApp/Agent/AgentBridge.swift` for the full precedence order.
+- Manual validation steps live in [docs/docs/getting-started/manual-cli-e2e.md](docs/docs/getting-started/manual-cli-e2e.md) and cover: launching the agent, running the SwiftUI preview, starting a feature, tearing it down, and confirming the control-plane stub receives batched events.
 - **Custom devcontainer behaviour**: override per run with `BRANCHBOX_DEVCONTAINER_STRATEGY` or update `.env` if you always prefer symlinks.
 
 ## Installation
