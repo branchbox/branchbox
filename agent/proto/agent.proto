@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package branchbox.agent;
+
+service FeatureService {
+  rpc List (ListRequest) returns (ListResponse);
+  rpc Start (StartRequest) returns (StartResponse);
+  rpc Teardown (TeardownRequest) returns (TeardownResponse);
+}
+
+message ListRequest {
+  string repo_path = 1;
+  bool include_removed = 2;
+}
+
+message ListResponse {
+  repeated Feature features = 1;
+}
+
+message StartRequest {
+  string repo_path = 1;
+  string name = 2;
+  string title = 3;
+  string base_branch = 4;
+  string branch_prefix = 5;
+  bool reuse = 6;
+  bool telemetry = 7;
+  repeated string skip_modules = 8;
+  string mode = 9;
+  string prompt_seed = 10;
+}
+
+message StartResponse {
+  StartSummary summary = 1;
+}
+
+message TeardownRequest {
+  string repo_path = 1;
+  string name = 2;
+  string branch_prefix = 3;
+  bool delete_branch = 4;
+  bool force = 5;
+  bool complete_spec = 6;
+  bool telemetry = 7;
+}
+
+message TeardownResponse {
+  TeardownSummary summary = 1;
+}
+
+message Feature {
+  string work_feature = 1;
+  string branch_name = 2;
+  string worktree_path = 3;
+  string status = 4;
+  string feature_url = 5;
+  string env_path = 6;
+  string compose_project_name = 7;
+  string color = 8;
+  string tunnel_provider = 9;
+  string tunnel_status = 10;
+  string tunnel_hostname = 11;
+  bool devcontainer_outdated = 12;
+  string last_sync_at = 13;
+  string sync_strategy = 14;
+  string created_at = 15;
+  string updated_at = 16;
+  string removed_at = 17;
+  string prompt_seed = 18;
+  string start_mode = 19;
+  repeated ModuleOutcome module_outcomes = 20;
+  uint32 pr_number = 21;
+}
+
+message StartSummary {
+  string work_feature = 1;
+  string branch_name = 2;
+  string worktree_path = 3;
+  string feature_url = 4;
+  string compose_project_name = 5;
+  string env_path = 6;
+  string mode = 7;
+  string color = 8;
+  string prompt_seed = 9;
+  repeated string warnings = 10;
+  repeated ModuleOutcome module_outcomes = 11;
+  repeated SkippedModule skipped_modules = 12;
+  Adapter adapter = 13;
+  Tunnel tunnel = 14;
+  string generated_at = 15;
+}
+
+message ModuleOutcome {
+  string module = 1;
+  string status = 2;
+  uint64 duration_ms = 3;
+  repeated string notes = 4;
+  bool forced = 5;
+}
+
+message SkippedModule {
+  string name = 1;
+  string reason = 2;
+}
+
+message Adapter {
+  string name = 1;
+  string service_url = 2;
+  repeated string warnings = 3;
+}
+
+message Tunnel {
+  string provider = 1;
+  string hostname = 2;
+  string status = 3;
+}
+
+message TeardownSummary {
+  string work_feature = 1;
+  string branch_name = 2;
+  bool worktree_removed = 3;
+  bool branch_deleted = 4;
+  repeated string warnings = 5;
+  repeated string adapter_warnings = 6;
+  repeated ModuleReport module_reports = 7;
+}
+
+message ModuleReport {
+  string name = 1;
+  bool teardown_ok = 2;
+  repeated string errors = 3;
+}

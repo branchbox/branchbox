@@ -1,0 +1,30 @@
+[package]
+name = "branchbox-agent"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+tokio-util = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+worktree-core = { path = "../core" }
+prost = "0.12"
+prost-types = "0.12"
+tonic = { version = "0.11", features = ["transport"] }
+reqwest = { workspace = true }
+once_cell = "1.19"
+
+[build-dependencies]
+tonic-build = "0.11"
+protoc-bin-vendored = "3.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
