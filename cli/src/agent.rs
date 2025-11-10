@@ -3,10 +3,6 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::env;
-use std::io::{Read, Write};
-use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use worktree_core::workflows::feature::{
     AdapterSummary, FeatureMetadata, FeatureStatus, FeatureTunnelState, ModuleOutcome,
@@ -14,125 +10,204 @@ use worktree_core::workflows::feature::{
     StartSummary, TeardownSummary,
 };
 
-pub struct AgentClient {
-    socket_path: PathBuf,
+#[cfg(unix)]
+pub use platform::AgentClient;
+#[cfg(unix)]
+mod platform {
+    use super::*;
+    use std::env;
+    use std::io::{Read, Write};
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    pub struct AgentClient {
+        socket_path: PathBuf,
+    }
+
+    impl AgentClient {
+        pub fn connect() -> Result<Self> {
+            let socket_path = detect_socket_path()?;
+            Ok(Self { socket_path })
+        }
+
+        pub fn list_features(
+            &self,
+            repo_path: Option<&Path>,
+            include_removed: bool,
+        ) -> Result<Vec<FeatureRecord>> {
+            let request = json!({
+                "action": "list_features",
+                "repo_path": repo_path.map(|path| path.display().to_string()),
+                "include_removed": include_removed,
+            });
+            let data = self.send(request)?;
+            let features = data
+                .get("features")
+                .ok_or_else(|| anyhow!("agent response missing 'features' field"))?;
+            Ok(serde_json::from_value(features.clone())?)
+        }
+
+        pub fn start_feature(&self, request: StartFeatureRequest) -> Result<StartFeatureSummary> {
+            let payload = json!({
+                "action": "start_feature",
+                "repo_path": request.repo_path.map(|path| path.display().to_string()),
+                "name": request.name,
+                "title": request.title,
+                "base_branch": request.base_branch,
+                "branch_prefix": request.branch_prefix,
+                "reuse": request.reuse,
+                "telemetry": request.telemetry,
+                "skip_modules": request.skip_modules,
+                "minimal": request.mode == StartMode::Minimal,
+                "prompt": request.prompt_seed,
+            });
+            let data = self.send(payload)?;
+            let summary = data
+                .get("start")
+                .ok_or_else(|| anyhow!("agent response missing 'start' field"))?;
+            Ok(serde_json::from_value(summary.clone())?)
+        }
+
+        pub fn teardown_feature(
+            &self,
+            request: TeardownFeatureRequest,
+        ) -> Result<TeardownFeatureSummary> {
+            let payload = json!({
+                "action": "teardown_feature",
+                "repo_path": request.repo_path.map(|path| path.display().to_string()),
+                "name": request.name,
+                "branch_prefix": request.branch_prefix,
+                "delete_branch": request.delete_branch,
+                "force": request.force,
+                "complete_spec": request.complete_spec,
+                "telemetry": request.telemetry,
+            });
+            let data = self.send(payload)?;
+            let summary = data
+                .get("teardown")
+                .ok_or_else(|| anyhow!("agent response missing 'teardown' field"))?;
+            Ok(serde_json::from_value(summary.clone())?)
+        }
+
+        fn send(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+            let mut stream = UnixStream::connect(&self.socket_path).with_context(|| {
+                format!(
+                    "failed to connect to BranchBox agent at {}",
+                    self.socket_path.display()
+                )
+            })?;
+
+            let payload = serde_json::to_vec(&request)?;
+            stream
+                .write_all(&payload)
+                .with_context(|| "failed to send request to agent")?;
+            stream
+                .shutdown(Shutdown::Write)
+                .with_context(|| "failed to finalize agent request")?;
+
+            let mut response = Vec::new();
+            stream
+                .read_to_end(&mut response)
+                .with_context(|| "failed to read agent response")?;
+
+            if response.is_empty() {
+                return Err(anyhow!("agent returned empty response"));
+            }
+
+            let reply: AgentReply = serde_json::from_slice(&response)
+                .with_context(|| "failed to parse agent response")?;
+
+            match reply.status {
+                ResponseStatus::Success => reply
+                    .data
+                    .ok_or_else(|| anyhow!("agent response missing data payload")),
+                ResponseStatus::Error => Err(anyhow!(
+                    "{}",
+                    reply
+                        .error
+                        .unwrap_or_else(|| "agent returned an unknown error".to_string())
+                )),
+            }
+        }
+
+        pub fn agent_status(&self) -> Result<AgentStatus> {
+            let payload = json!({
+                "action": "agent_status",
+            });
+            let data = self.send(payload)?;
+            let status = data
+                .get("status")
+                .ok_or_else(|| anyhow!("agent response missing 'status' field"))?;
+            Ok(serde_json::from_value(status.clone())?)
+        }
+    }
+
+    fn detect_socket_path() -> Result<PathBuf> {
+        if let Ok(path) = env::var("BRANCHBOX_AGENT_SOCKET") {
+            return Ok(PathBuf::from(path));
+        }
+
+        if let Some(dir) = env::var_os("BRANCHBOX_AGENT_DIR") {
+            return Ok(PathBuf::from(dir).join("branchbox-agent.sock"));
+        }
+
+        let base = dirs::home_dir().map(|home| home.join(".branchbox").join("agent"));
+
+        let Some(dir) = base else {
+            return Err(anyhow!(
+                "Unable to locate agent socket. Set BRANCHBOX_AGENT_SOCKET."
+            ));
+        };
+
+        Ok(dir.join("branchbox-agent.sock"))
+    }
 }
 
-impl AgentClient {
-    pub fn connect() -> Result<Self> {
-        let socket_path = detect_socket_path()?;
-        Ok(Self { socket_path })
-    }
+#[cfg(not(unix))]
+pub use stub::AgentClient;
+#[cfg(not(unix))]
+mod stub {
+    use super::*;
 
-    pub fn list_features(
-        &self,
-        repo_path: Option<&Path>,
-        include_removed: bool,
-    ) -> Result<Vec<FeatureRecord>> {
-        let request = json!({
-            "action": "list_features",
-            "repo_path": repo_path.map(|path| path.display().to_string()),
-            "include_removed": include_removed,
-        });
-        let data = self.send(request)?;
-        let features = data
-            .get("features")
-            .ok_or_else(|| anyhow!("agent response missing 'features' field"))?;
-        Ok(serde_json::from_value(features.clone())?)
-    }
+    pub struct AgentClient;
 
-    pub fn start_feature(&self, request: StartFeatureRequest) -> Result<StartFeatureSummary> {
-        let payload = json!({
-            "action": "start_feature",
-            "repo_path": request.repo_path.map(|path| path.display().to_string()),
-            "name": request.name,
-            "title": request.title,
-            "base_branch": request.base_branch,
-            "branch_prefix": request.branch_prefix,
-            "reuse": request.reuse,
-            "telemetry": request.telemetry,
-            "skip_modules": request.skip_modules,
-            "minimal": request.mode == StartMode::Minimal,
-            "prompt": request.prompt_seed,
-        });
-        let data = self.send(payload)?;
-        let summary = data
-            .get("start")
-            .ok_or_else(|| anyhow!("agent response missing 'start' field"))?;
-        Ok(serde_json::from_value(summary.clone())?)
-    }
-
-    pub fn teardown_feature(
-        &self,
-        request: TeardownFeatureRequest,
-    ) -> Result<TeardownFeatureSummary> {
-        let payload = json!({
-            "action": "teardown_feature",
-            "repo_path": request.repo_path.map(|path| path.display().to_string()),
-            "name": request.name,
-            "branch_prefix": request.branch_prefix,
-            "delete_branch": request.delete_branch,
-            "force": request.force,
-            "complete_spec": request.complete_spec,
-            "telemetry": request.telemetry,
-        });
-        let data = self.send(payload)?;
-        let summary = data
-            .get("teardown")
-            .ok_or_else(|| anyhow!("agent response missing 'teardown' field"))?;
-        Ok(serde_json::from_value(summary.clone())?)
-    }
-
-    fn send(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let mut stream = UnixStream::connect(&self.socket_path).with_context(|| {
-            format!(
-                "failed to connect to BranchBox agent at {}",
-                self.socket_path.display()
-            )
-        })?;
-
-        let payload = serde_json::to_vec(&request)?;
-        stream
-            .write_all(&payload)
-            .with_context(|| "failed to send request to agent")?;
-        stream
-            .shutdown(Shutdown::Write)
-            .with_context(|| "failed to finalize agent request")?;
-
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .with_context(|| "failed to read agent response")?;
-
-        if response.is_empty() {
-            return Err(anyhow!("agent returned empty response"));
+    impl AgentClient {
+        pub fn connect() -> Result<Self> {
+            Err(anyhow!(
+                "BranchBox agent IPC currently supports Unix-like hosts only. Set BRANCHBOX_CLI_DIRECT=1 to run commands directly."
+            ))
         }
 
-        let reply: AgentReply =
-            serde_json::from_slice(&response).with_context(|| "failed to parse agent response")?;
-
-        match reply.status {
-            ResponseStatus::Success => reply
-                .data
-                .ok_or_else(|| anyhow!("agent response missing data payload")),
-            ResponseStatus::Error => Err(anyhow!(
-                "{}",
-                reply
-                    .error
-                    .unwrap_or_else(|| "agent returned an unknown error".to_string())
-            )),
+        pub fn list_features(
+            &self,
+            _repo_path: Option<&Path>,
+            _include_removed: bool,
+        ) -> Result<Vec<FeatureRecord>> {
+            Err(anyhow!(
+                "BranchBox agent feature list unavailable on this platform. Use CLI direct mode instead."
+            ))
         }
-    }
 
-    pub fn agent_status(&self) -> Result<AgentStatus> {
-        let payload = json!({
-            "action": "agent_status",
-        });
-        let data = self.send(payload)?;
-        let status = data
-            .get("status")
-            .ok_or_else(|| anyhow!("agent response missing 'status' field"))?;
-        Ok(serde_json::from_value(status.clone())?)
+        pub fn start_feature(&self, _request: StartFeatureRequest) -> Result<StartFeatureSummary> {
+            Err(anyhow!(
+                "BranchBox agent start is unavailable on this platform. Use CLI direct mode instead."
+            ))
+        }
+
+        pub fn teardown_feature(
+            &self,
+            _request: TeardownFeatureRequest,
+        ) -> Result<TeardownFeatureSummary> {
+            Err(anyhow!(
+                "BranchBox agent teardown is unavailable on this platform. Use CLI direct mode instead."
+            ))
+        }
+
+        pub fn agent_status(&self) -> Result<AgentStatus> {
+            Err(anyhow!(
+                "BranchBox agent status is unavailable on this platform. Use CLI direct mode instead."
+            ))
+        }
     }
 }
 
@@ -313,26 +388,6 @@ struct AgentReply {
 enum ResponseStatus {
     Success,
     Error,
-}
-
-fn detect_socket_path() -> Result<PathBuf> {
-    if let Ok(path) = env::var("BRANCHBOX_AGENT_SOCKET") {
-        return Ok(PathBuf::from(path));
-    }
-
-    if let Some(dir) = env::var_os("BRANCHBOX_AGENT_DIR") {
-        return Ok(PathBuf::from(dir).join("branchbox-agent.sock"));
-    }
-
-    let base = dirs::home_dir().map(|home| home.join(".branchbox").join("agent"));
-
-    let Some(dir) = base else {
-        return Err(anyhow!(
-            "Unable to locate agent socket. Set BRANCHBOX_AGENT_SOCKET."
-        ));
-    };
-
-    Ok(dir.join("branchbox-agent.sock"))
 }
 
 impl From<FeatureMetadata> for FeatureRecord {
