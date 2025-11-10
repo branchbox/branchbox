@@ -2,7 +2,7 @@
 members = [
     "core",
     "cli",
-    # "agent",
+    "agent",
 ]
 resolver = "2"
 
