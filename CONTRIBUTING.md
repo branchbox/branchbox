@@ -1,6 +1,6 @@
-# Contributing to Worktree Manager
+# Contributing to BranchBox
 
-Thank you for your interest in contributing to Worktree Manager! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to BranchBox! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 

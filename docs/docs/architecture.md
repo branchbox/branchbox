@@ -2,7 +2,7 @@
 sidebar_position: 3
 ---
 
-# Worktree Manager - Distributed Architecture
+# BranchBox — Distributed Architecture
 
 ## Overview
 
@@ -111,20 +111,20 @@ A distributed development environment orchestrator that manages git worktrees an
 - Auto-update capability
 
 **Communication**:
-- **Local**: Unix domain socket (`/var/run/worktree-agent.sock`)
+- **Local**: Unix domain socket (BranchBox agent-managed path)
 - **Remote**: gRPC over Tailscale network
 - **Control Plane**: Bi-directional gRPC streaming
 
 **Installation**:
 ```bash
 # Homebrew
-brew install worktree-agent
+brew install branchbox-agent
 
 # Initialize
-worktree-agent init
+branchbox-agent init
 
 # Install as system service
-sudo worktree-agent install
+sudo branchbox-agent install
 ```
 
 ### 3. CLI Tool (Rust)
@@ -136,9 +136,9 @@ sudo worktree-agent install
 **Commands**:
 ```bash
 # Local operations (talks to local agent)
-worktree start "oauth integration"
-worktree list
-worktree teardown oauth-integration
+branchbox feature start "Add OAuth Integration"
+branchbox feature list
+branchbox feature teardown oauth-integration
 
 # Remote operations (talks to control plane)
 worktree devices
@@ -148,7 +148,7 @@ worktree remote list --device=macbook
 
 **Distribution**:
 - Homebrew: `brew install worktree`
-- Cargo: `cargo install worktree-cli`
+- Cargo: `cargo install --path cli --locked`
 - Direct binary download from GitHub releases
 
 ### 4. Mac App (SwiftUI)
@@ -218,12 +218,12 @@ POST   /agent/report_state
 **Mac App/CLI ↔ Local Agent**
 
 - **Protocol**: gRPC or Unix domain socket
-- **Transport**: Localhost (127.0.0.1:50051) or `/var/run/worktree-agent.sock`
+- **Transport**: Localhost (127.0.0.1:50051) or BranchBox agent Unix socket
 - **Security**: Local user permissions
 - **Latency**: &lt;1ms
 
 ```
-CLI Tool → Unix Socket → Local Agent → Worktree Core
+CLI → Unix socket → BranchBox agent → Core library
 ```
 
 ### Remote Communication
@@ -236,7 +236,7 @@ CLI Tool → Unix Socket → Local Agent → Worktree Core
 - **Latency**: 10-100ms
 
 ```
-Web UI → Rails API → gRPC/Tailscale → Agent → Worktree Core
+Web UI → Rails API → gRPC/Tailscale → Agent → Core library
 ```
 
 ### State Synchronization
@@ -324,16 +324,16 @@ CREATE TABLE config (
 
 1. User logs into web dashboard
 2. User generates 6-digit registration code (expires in 15 minutes)
-3. User runs `worktree-agent init` on device and enters code
+3. User runs `branchbox-agent init` on device and enters code
 4. Agent exchanges code for long-lived device token
-5. Device token stored in `~/.worktree/config.toml` (600 permissions)
+5. Device token stored in `~/.branchbox/agent/config.toml` (600 permissions)
 
 ```bash
 # Web UI
 Code: ABC123
 
 # Device
-$ worktree-agent init
+$ branchbox-agent init
 Enter registration code: ABC123
 ✓ Device registered successfully
 ✓ Device ID: 550e8400-e29b-41d4-a716-446655440000
@@ -402,23 +402,23 @@ loop {
 
 ```bash
 # Homebrew
-brew tap your-org/worktree
-brew install worktree-agent
+brew tap branchbox/tap
+brew install branchbox-agent
 
 # Manual
-curl -L https://github.com/branchbox-branchbox/releases/download/v1.0.0/worktree-agent-darwin-arm64.tar.gz | tar xz
-sudo mv worktree-agent /usr/local/bin/
+curl -L https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-agent-darwin-arm64.tar.gz | tar xz
+sudo mv branchbox-agent /usr/local/bin/
 
 # Initialize
-worktree-agent init
+branchbox-agent init
 
 # Install as LaunchDaemon
-sudo worktree-agent install
+sudo branchbox-agent install
 ```
 
 ### Agent Configuration
 
-`~/.worktree/config.toml`:
+`~/.branchbox/agent/config.toml`:
 ```toml
 [agent]
 device_id = "550e8400-e29b-41d4-a716-446655440000"
@@ -427,7 +427,7 @@ device_name = "MacBook Pro"
 
 [control_plane]
 enabled = true
-url = "https://worktree.example.com"
+url = "https://branchbox.example.com"
 
 [tailscale]
 auto_detect = true
@@ -435,12 +435,12 @@ ip = "100.64.0.1"
 
 [local]
 listen_addr = "127.0.0.1:50051"
-unix_socket = "/var/run/worktree-agent.sock"
-data_dir = "/Users/username/.worktree/data"
+unix_socket = "/Users/username/.branchbox/agent/agent.sock"
+data_dir = "/Users/username/.branchbox/data"
 
 [logging]
 level = "info"
-file = "/Users/username/.worktree/agent.log"
+file = "/Users/username/.branchbox/agent/agent.log"
 ```
 
 ### Control Plane Deployment
@@ -478,13 +478,13 @@ Build Rust daemon:
 4. ✅ Local state storage (SQLite)
 5. ✅ Command handlers
 
-### Phase 3: CLI Tool
+### Phase 3: CLI
 
 Build Rust CLI:
 
 1. ✅ Argument parsing (clap)
 2. ✅ Agent communication
-3. ✅ Pretty output (indicatif, colored)
+3. ✅ Pretty output
 4. ✅ Interactive prompts (dialoguer)
 
 ### Phase 4: Control Plane

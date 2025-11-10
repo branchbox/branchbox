@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document tracks the implementation progress of the Worktree Manager distributed system.
+This document tracks the implementation progress of the BranchBox distributed system.
 
 **Created**: 2025-10-21
 **Status**: 🟡 Phase 2 In Progress - Core Library scaffolding exists, shell workflows pending Rust migration
