@@ -57,27 +57,29 @@ impl CleanPath for PathBuf {
 }
 
 // Helper constructors used by IPC/GRPC layers.
-pub fn build_start_request(
-    name: Option<String>,
-    title: Option<String>,
-    base_branch: Option<String>,
-    branch_prefix: Option<String>,
-    reuse_existing: bool,
-    telemetry: bool,
-    skip_modules: Vec<String>,
-    mode: StartMode,
-    prompt_seed: Option<String>,
-) -> StartRequest {
+pub struct StartRequestParams {
+    pub name: Option<String>,
+    pub title: Option<String>,
+    pub base_branch: Option<String>,
+    pub branch_prefix: Option<String>,
+    pub reuse_existing: bool,
+    pub telemetry: bool,
+    pub skip_modules: Vec<String>,
+    pub mode: StartMode,
+    pub prompt_seed: Option<String>,
+}
+
+pub fn build_start_request(params: StartRequestParams) -> StartRequest {
     StartRequest {
-        name,
-        title,
-        base_branch,
-        branch_prefix,
-        reuse_existing,
-        telemetry,
-        skip_modules,
-        mode,
-        prompt_seed,
+        name: params.name,
+        title: params.title,
+        base_branch: params.base_branch,
+        branch_prefix: params.branch_prefix,
+        reuse_existing: params.reuse_existing,
+        telemetry: params.telemetry,
+        skip_modules: params.skip_modules,
+        mode: params.mode,
+        prompt_seed: params.prompt_seed,
     }
 }
 

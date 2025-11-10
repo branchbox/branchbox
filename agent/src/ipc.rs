@@ -145,21 +145,21 @@ async fn dispatch(
             minimal,
             prompt,
         } => {
-            let request = ops::build_start_request(
+            let request = ops::build_start_request(ops::StartRequestParams {
                 name,
                 title,
                 base_branch,
                 branch_prefix,
-                reuse,
+                reuse_existing: reuse,
                 telemetry,
                 skip_modules,
-                if minimal {
+                mode: if minimal {
                     StartMode::Minimal
                 } else {
                     StartMode::Full
                 },
-                prompt,
-            );
+                prompt_seed: prompt,
+            });
 
             let summary = ops::start_feature(config, repo_path, request)?;
             state.record_feature_start(&summary).await?;

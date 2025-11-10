@@ -75,20 +75,20 @@ impl FeatureService for GrpcFeatureService {
     ) -> Result<Response<StartResponse>, Status> {
         let req = request.into_inner();
         let repo_path = parse_repo_path(req.repo_path);
-        let start_req = ops::build_start_request(
-            optional_string(req.name),
-            optional_string(req.title),
-            optional_string(req.base_branch),
-            optional_string(req.branch_prefix),
-            req.reuse,
-            req.telemetry,
-            req.skip_modules,
-            match req.mode.as_str() {
+        let start_req = ops::build_start_request(ops::StartRequestParams {
+            name: optional_string(req.name),
+            title: optional_string(req.title),
+            base_branch: optional_string(req.base_branch),
+            branch_prefix: optional_string(req.branch_prefix),
+            reuse_existing: req.reuse,
+            telemetry: req.telemetry,
+            skip_modules: req.skip_modules,
+            mode: match req.mode.as_str() {
                 "minimal" => StartMode::Minimal,
                 _ => StartMode::Full,
             },
-            optional_string(req.prompt_seed),
-        );
+            prompt_seed: optional_string(req.prompt_seed),
+        });
 
         let summary = ops::start_feature(&self.config, repo_path, start_req).map_err(to_status)?;
         self.state

@@ -267,7 +267,7 @@ impl AgentState {
         let conn = Arc::clone(&self.conn);
         task::spawn_blocking(move || {
             let mut guard = conn.lock().expect("AgentState connection mutex poisoned");
-            action(&mut *guard)
+            action(&mut guard)
         })
         .await
         .context("AgentState task join error")?

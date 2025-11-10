@@ -60,7 +60,7 @@ impl AgentConfig {
 
         let file_config: FileConfig = content
             .as_deref()
-            .map(|raw| toml::from_str(raw))
+            .map(toml::from_str)
             .unwrap_or_else(|| Ok(FileConfig::default()))?;
 
         let workspace_root = file_config
