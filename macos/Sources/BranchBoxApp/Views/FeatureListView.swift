@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct FeatureListView: View {
     @EnvironmentObject private var viewModel: FeatureListViewModel
@@ -6,6 +9,7 @@ struct FeatureListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+            workspaceSection
             startForm
             Divider()
             featureList
@@ -42,6 +46,26 @@ struct FeatureListView: View {
                 }
             }
             .disabled(viewModel.isWorking)
+            transportBadge
+        }
+    }
+
+    private var workspaceSection: some View {
+        GroupBox("Workspace") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(viewModel.workspacePath)
+                    .font(.callout)
+                    .lineLimit(2)
+                HStack {
+                    Button("Choose…") {
+                        chooseWorkspace()
+                    }
+                    Button("Reload") {
+                        viewModel.refresh()
+                    }
+                }
+            }
+            .padding(.top, 4)
         }
     }
 
@@ -56,11 +80,62 @@ struct FeatureListView: View {
                 }
 
                 HStack {
+                    TextField("Branch prefix", text: $viewModel.branchPrefix)
+                        .textFieldStyle(.roundedBorder)
+                    Toggle("Reuse existing worktree", isOn: $viewModel.reuseExisting)
+                }
+
+                HStack {
                     Toggle("Minimal mode", isOn: $viewModel.useMinimalMode)
                     Spacer()
                     TextField("Prompt seed", text: $viewModel.promptSeed)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 260)
+                }
+
+                if !viewModel.promptHistory.isEmpty {
+                    Menu("Prompt history") {
+                        ForEach(viewModel.promptHistory, id: \.self) { seed in
+                            Button(seed) {
+                                viewModel.applyPromptHistory(seed)
+                            }
+                        }
+                    }
+                }
+
+                HStack {
+                    Menu {
+                        ForEach(viewModel.availableModules, id: \.self) { module in
+                            let binding = Binding(
+                                get: { viewModel.skipModules.contains(module) },
+                                set: { newValue in
+                                    if newValue {
+                                        viewModel.skipModules.insert(module)
+                                    } else {
+                                        viewModel.skipModules.remove(module)
+                                    }
+                                }
+                            )
+                            Toggle(module.capitalized, isOn: binding)
+                        }
+                    } label: {
+                        Label("Skip modules", systemImage: "slider.horizontal.3")
+                    }
+
+                    if !viewModel.skipModules.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack {
+                                ForEach(Array(viewModel.skipModules).sorted(), id: \.self) { module in
+                                    Text(module)
+                                        .font(.caption)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.blue.opacity(0.1))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Button {
@@ -99,11 +174,19 @@ struct FeatureListView: View {
                 List(viewModel.features) { feature in
                     FeatureRow(
                         feature: feature,
-                        onTeardown: { viewModel.teardown(feature) }
+                        onTeardown: { viewModel.openTeardownSheet(for: feature) }
                     )
                 }
                 .listStyle(.inset)
             }
+        }
+        .sheet(item: $viewModel.pendingTeardown) { feature in
+            TeardownSheet(
+                feature: feature,
+                options: $viewModel.teardownOptions,
+                onConfirm: { viewModel.performPendingTeardown() },
+                onCancel: { viewModel.cancelPendingTeardown() }
+            )
         }
     }
 }
@@ -134,6 +217,16 @@ private struct FeatureRow: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
+                }
+                HStack(spacing: 12) {
+                    Text("Modules: \(feature.moduleSummary)")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    if let provider = feature.tunnelProvider, !provider.isEmpty {
+                        Text("Tunnel: \(provider)")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 Text("Updated \(feature.updatedAtLabel)")
                     .font(.footnote)
@@ -169,5 +262,59 @@ private struct FeatureRow: View {
 
     private var statusColor: Color {
         feature.status.lowercased() == "active" ? .green : .gray
+    }
+}
+
+private struct TeardownSheet: View {
+    let feature: FeatureViewData
+    @Binding var options: TeardownOptions
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Teardown \(feature.workFeature)?")
+                .font(.headline)
+            Toggle("Force removal", isOn: $options.force)
+            Toggle("Complete spec", isOn: $options.completeSpec)
+            HStack {
+                Button("Cancel", role: .cancel) {
+                    onCancel()
+                }
+                Spacer()
+                Button("Teardown", role: .destructive) {
+                    onConfirm()
+                }
+            }
+        }
+        .padding()
+        .frame(width: 320)
+    }
+}
+
+private extension FeatureListView {
+    @ViewBuilder
+    var transportBadge: some View {
+        let isGrpc = viewModel.transportStatus == .grpc
+        Label(isGrpc ? "gRPC" : "CLI fallback", systemImage: isGrpc ? "bolt.horizontal" : "arrow.triangle.2.circlepath")
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(isGrpc ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
+            .clipShape(Capsule())
+    }
+
+    func chooseWorkspace() {
+#if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                viewModel.updateWorkspace(to: url.path)
+            }
+        }
+#endif
     }
 }

@@ -203,9 +203,11 @@ branchbox/
 
 - [x] Control-plane HTTP drain that batches queued events + host metadata (`agent/src/control_plane.rs`)
 - [x] Heartbeat snapshots forwarded through the same drain with retry semantics
+- [x] Durable ack tracking + exponential backoff for the HTTP drain (`control_plane_status` table)
 - [x] SwiftUI macOS preview app (`macos/Package.swift`) that lists features via gRPC
 - [x] CLI fallback when the agent daemon is unavailable (reuses `branchbox feature list --json`)
 - [x] Start/teardown actions in the mac app, wired to gRPC/CLI transports
+- [x] macOS app workspace picker, transport badge, module health display, and teardown confirmations
 - [x] Manual doc updates describing the new workflow (README + docs/docs/getting-started/manual-cli-e2e.md)
 - [ ] Control-plane ack/offset tracking (persist the last HTTP delivery window so we can resume mid-batch)
 - [ ] macOS app polish: workspace picker, status badges, gRPC transport selection UI

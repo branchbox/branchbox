@@ -88,9 +88,11 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
     var status: String = ""
     var featureURL: String = ""
     var tunnelStatus: String = ""
+    var tunnelProvider: String = ""
     var promptSeed: String = ""
     var startMode: String = ""
     var updatedAt: String = ""
+    var moduleOutcomes: [Branchbox_Agent_ModuleOutcome] = []
     var unknownFields = SwiftProtobuf.UnknownStorage()
 
     init() {}
@@ -110,12 +112,16 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
                 featureURL = try decoder.decodeSingularStringField()
             case 10:
                 tunnelStatus = try decoder.decodeSingularStringField()
+            case 9:
+                tunnelProvider = try decoder.decodeSingularStringField()
             case 18:
                 promptSeed = try decoder.decodeSingularStringField()
             case 19:
                 startMode = try decoder.decodeSingularStringField()
             case 16:
                 updatedAt = try decoder.decodeSingularStringField()
+            case 20:
+                try decoder.decodeRepeatedMessageField(value: &moduleOutcomes)
             default:
                 try decoder.skipField()
             }
@@ -141,6 +147,9 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
         if !tunnelStatus.isEmpty {
             try visitor.visitSingularStringField(value: tunnelStatus, fieldNumber: 10)
         }
+        if !tunnelProvider.isEmpty {
+            try visitor.visitSingularStringField(value: tunnelProvider, fieldNumber: 9)
+        }
         if !promptSeed.isEmpty {
             try visitor.visitSingularStringField(value: promptSeed, fieldNumber: 18)
         }
@@ -149,6 +158,9 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
         }
         if !updatedAt.isEmpty {
             try visitor.visitSingularStringField(value: updatedAt, fieldNumber: 16)
+        }
+        if !moduleOutcomes.isEmpty {
+            try visitor.visitRepeatedMessageField(value: moduleOutcomes, fieldNumber: 20)
         }
         try unknownFields.traverse(visitor: &visitor)
     }
@@ -160,9 +172,11 @@ struct Branchbox_Agent_Feature: SwiftProtobuf.Message, GRPCPayload, Equatable {
             lhs.status == rhs.status &&
             lhs.featureURL == rhs.featureURL &&
             lhs.tunnelStatus == rhs.tunnelStatus &&
+            lhs.tunnelProvider == rhs.tunnelProvider &&
             lhs.promptSeed == rhs.promptSeed &&
             lhs.startMode == rhs.startMode &&
             lhs.updatedAt == rhs.updatedAt &&
+            lhs.moduleOutcomes == rhs.moduleOutcomes &&
             lhs.unknownFields == rhs.unknownFields
     }
 }
@@ -527,6 +541,64 @@ struct Branchbox_Agent_TeardownSummary: SwiftProtobuf.Message, GRPCPayload {
             lhs.worktreeRemoved == rhs.worktreeRemoved &&
             lhs.branchDeleted == rhs.branchDeleted &&
             lhs.warnings == rhs.warnings &&
+            lhs.unknownFields == rhs.unknownFields
+    }
+}
+
+struct Branchbox_Agent_ModuleOutcome: SwiftProtobuf.Message, GRPCPayload, Equatable {
+    var module: String = ""
+    var status: String = ""
+    var durationMs: UInt64 = 0
+    var notes: [String] = []
+    var forced: Bool = false
+    var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    init() {}
+
+    mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+        while let fieldNumber = try decoder.nextFieldNumber() {
+            switch fieldNumber {
+            case 1:
+                module = try decoder.decodeSingularStringField()
+            case 2:
+                status = try decoder.decodeSingularStringField()
+            case 3:
+                durationMs = try decoder.decodeSingularUInt64Field()
+            case 4:
+                try decoder.decodeRepeatedStringField(value: &notes)
+            case 5:
+                forced = try decoder.decodeSingularBoolField()
+            default:
+                try decoder.skipField()
+            }
+        }
+    }
+
+    func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+        if !module.isEmpty {
+            try visitor.visitSingularStringField(value: module, fieldNumber: 1)
+        }
+        if !status.isEmpty {
+            try visitor.visitSingularStringField(value: status, fieldNumber: 2)
+        }
+        if durationMs != 0 {
+            try visitor.visitSingularUInt64Field(value: durationMs, fieldNumber: 3)
+        }
+        if !notes.isEmpty {
+            try visitor.visitRepeatedStringField(value: notes, fieldNumber: 4)
+        }
+        if forced {
+            try visitor.visitSingularBoolField(value: forced, fieldNumber: 5)
+        }
+        try unknownFields.traverse(visitor: &visitor)
+    }
+
+    static func == (lhs: Branchbox_Agent_ModuleOutcome, rhs: Branchbox_Agent_ModuleOutcome) -> Bool {
+        lhs.module == rhs.module &&
+            lhs.status == rhs.status &&
+            lhs.durationMs == rhs.durationMs &&
+            lhs.notes == rhs.notes &&
+            lhs.forced == rhs.forced &&
             lhs.unknownFields == rhs.unknownFields
     }
 }

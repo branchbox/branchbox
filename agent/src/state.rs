@@ -259,6 +259,74 @@ impl AgentState {
         .await
     }
 
+    pub async fn next_batch_id(&self) -> Result<i64> {
+        self.execute(move |conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT next_batch_id
+                FROM control_plane_status
+                WHERE id = 1
+                "#,
+            )?;
+            let current: i64 = stmt.query_row([], |row| row.get(0))?;
+            let next = current.saturating_add(1);
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET next_batch_id = :next_batch_id,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {":next_batch_id": next, ":updated_at": now},
+            )?;
+            Ok(current)
+        })
+        .await
+    }
+
+    pub async fn update_control_plane_ack(&self, ack_event_id: i64) -> Result<()> {
+        self.execute(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET last_ack_event_id = CASE
+                        WHEN last_ack_event_id IS NULL THEN :ack_event_id
+                        WHEN last_ack_event_id < :ack_event_id THEN :ack_event_id
+                        ELSE last_ack_event_id
+                    END,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {":ack_event_id": ack_event_id, ":updated_at": now},
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn control_plane_status(&self) -> Result<ControlPlaneStatus> {
+        self.execute(move |conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT last_ack_event_id, next_batch_id
+                FROM control_plane_status
+                WHERE id = 1
+                "#,
+            )?;
+            let status = stmt.query_row([], |row| {
+                Ok(ControlPlaneStatus {
+                    last_ack_event_id: row.get(0)?,
+                    next_batch_id: row.get(1)?,
+                })
+            })?;
+            Ok(status)
+        })
+        .await
+    }
+
     async fn execute<F, T>(&self, action: F) -> Result<T>
     where
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
@@ -297,6 +365,16 @@ impl AgentState {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 last_sent_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS control_plane_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_ack_event_id INTEGER,
+                next_batch_id INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT OR IGNORE INTO control_plane_status (id, last_ack_event_id, next_batch_id, updated_at)
+            VALUES (1, NULL, 1, datetime('now'));
             "#,
         )?;
 
@@ -366,4 +444,47 @@ pub struct StoredWorktree {
     pub status: String,
     pub metadata: serde_json::Value,
     pub updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct ControlPlaneStatus {
+    pub last_ack_event_id: Option<i64>,
+    pub next_batch_id: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentState;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn next_batch_id_increments_monotonically() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        let first = state.next_batch_id().await.unwrap();
+        let second = state.next_batch_id().await.unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+    }
+
+    #[tokio::test]
+    async fn control_plane_ack_persists_high_watermark() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        state.update_control_plane_ack(5).await.unwrap();
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_ack_event_id, Some(5));
+
+        // Lower acknowledgements should be ignored.
+        state.update_control_plane_ack(3).await.unwrap();
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_ack_event_id, Some(5));
+
+        state.update_control_plane_ack(42).await.unwrap();
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_ack_event_id, Some(42));
+    }
 }

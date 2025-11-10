@@ -77,9 +77,14 @@ Usage:
 
 # Pretend/dry-run (log steps, skip BranchBox + Docker)
 ./scripts/manual-cli-e2e.sh --mode pretend
+
+# Spin up the HTTP drain stub and verify acks
+./scripts/manual-agent-e2e.sh --cp-stub
 ```
 
 `--mode verbose` enables shell tracing and passes verbose flags to BranchBox commands so you can watch every git/module operation. `--mode pretend` is a safe dry-run that logs each action without invoking BranchBox or Docker while still performing lightweight repo scaffolding under `/tmp`. Combine any mode with `KEEP_E2E_TMP=1` to preserve the temporary workspace for manual inspection.
+
+`--cp-stub` starts a disposable Python HTTP server inside the devcontainer, points the agent’s `BRANCHBOX_CP_ENDPOINT` at it, and prints both the stub log and the `control_plane_status.last_ack_event_id` cursor once the CLI harness finishes. Use this whenever you want to see the durable-ack logic in action or reproduce control-plane failures locally.
 
 Run the script locally before publishing releases (or wire it into CI once Docker is available). When it fails, use the manual checklist above to dig into the exact stage and file detailed bug reports.
 

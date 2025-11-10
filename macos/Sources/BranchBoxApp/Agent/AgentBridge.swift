@@ -7,7 +7,7 @@ import OSLog
 struct AgentConfiguration {
     let grpcHost: String
     let grpcPort: Int
-    let workspacePath: String
+    var workspacePath: String
     let includeRemoved: Bool
 
     static func detect(userDefaults: UserDefaults = .standard) -> AgentConfiguration {
@@ -28,6 +28,12 @@ struct AgentConfiguration {
             includeRemoved: includeRemoved
         )
     }
+
+    func withWorkspace(_ path: String) -> AgentConfiguration {
+        var copy = self
+        copy.workspacePath = path
+        return copy
+    }
 }
 
 enum AgentBridgeError: Error {
@@ -36,7 +42,17 @@ enum AgentBridgeError: Error {
 }
 
 final class AgentBridge {
-    private let configuration: AgentConfiguration
+    enum Transport: String {
+        case grpc
+        case cliFallback
+    }
+
+    struct FeatureFetchResult {
+        let features: [FeatureViewData]
+        let transport: Transport
+    }
+
+    private var configuration: AgentConfiguration
     private let group: EventLoopGroup
     private var client: Branchbox_Agent_FeatureServiceClient?
     private var connection: ClientConnection?
@@ -52,7 +68,15 @@ final class AgentBridge {
         try? group.syncShutdownGracefully()
     }
 
-    func listFeatures(includeRemoved override: Bool? = nil) async throws -> [FeatureViewData] {
+    var workspacePath: String { configuration.workspacePath }
+
+    func updateWorkspacePath(_ path: String) {
+        guard !path.isEmpty, configuration.workspacePath != path else { return }
+        configuration = configuration.withWorkspace(path)
+        resetConnection()
+    }
+
+    func listFeatures(includeRemoved override: Bool? = nil) async throws -> FeatureFetchResult {
         let includeRemoved = override ?? configuration.includeRemoved
         do {
             let client = try ensureClient()
@@ -60,11 +84,16 @@ final class AgentBridge {
             request.repoPath = configuration.workspacePath
             request.includeRemoved = includeRemoved
             let response = try await client.list(request).response.get()
-            return response.features.map(FeatureViewData.init(grpc:))
+            return FeatureFetchResult(
+                features: response.features.map(FeatureViewData.init(grpc:)),
+                transport: .grpc
+            )
         } catch {
             logger.error("gRPC list failed: %{public}@", error.localizedDescription)
-            return try CLICompat.featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
+            let features = try CLICompat
+                .featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
                 .map(FeatureViewData.init(cli:))
+            return FeatureFetchResult(features: features, transport: .cliFallback)
         }
     }
 
@@ -81,6 +110,9 @@ final class AgentBridge {
             request.title = intent.title ?? ""
             request.mode = intent.minimal ? "minimal" : "full"
             request.promptSeed = intent.promptSeed ?? ""
+            request.branchPrefix = intent.branchPrefix ?? ""
+            request.reuse = intent.reuseExisting
+            request.skipModules = intent.skipModules
             _ = try await client.start(request).response.get()
         } catch {
             logger.error("gRPC start failed: %{public}@", error.localizedDescription)
@@ -88,7 +120,7 @@ final class AgentBridge {
         }
     }
 
-    func teardownFeature(name: String, force: Bool) async throws {
+    func teardownFeature(name: String, force: Bool, completeSpec: Bool) async throws {
         guard !name.isEmpty else {
             throw AgentBridgeError.invalidFeatureName
         }
@@ -99,10 +131,16 @@ final class AgentBridge {
             request.repoPath = configuration.workspacePath
             request.name = name
             request.force = force
+            request.completeSpec = completeSpec
             _ = try await client.teardown(request).response.get()
         } catch {
             logger.error("gRPC teardown failed: %{public}@", error.localizedDescription)
-            try CLICompat.teardownFeature(name: name, workspacePath: configuration.workspacePath, force: force)
+            try CLICompat.teardownFeature(
+                name: name,
+                workspacePath: configuration.workspacePath,
+                force: force,
+                completeSpec: completeSpec
+            )
         }
     }
 
@@ -118,5 +156,11 @@ final class AgentBridge {
         let client = Branchbox_Agent_FeatureServiceClient(channel: connection)
         self.client = client
         return client
+    }
+
+    private func resetConnection() {
+        client = nil
+        connection?.close(promise: nil)
+        connection = nil
     }
 }

@@ -206,7 +206,8 @@ Milestone 2 begins the control-plane integration by draining all agent events 
 - Configure the target endpoint via `BRANCHBOX_CP_ENDPOINT`, provide a bearer token in `BRANCHBOX_CP_TOKEN`, and set `BRANCHBOX_CP_VERIFY_TLS=0` when hitting staging systems without valid certificates. The agent automatically adds host metadata (hostname, OS, architecture, agent version) to every batch so the Rails control plane can tag devices without probing the socket directly.
 - Events continue to land in the on-disk SQLite queue under `~/.branchbox/agent/agent.db`. When the HTTP drain is enabled the event loop flushes in batches (`event_batch_size`, default 50) and only logs to stdout if the control plane is disabled.
 - Heartbeats snapshot every registered worktree and keep emitting even if the HTTP endpoint is unavailable; delivery retries back off in the queue so you can restart the control plane without losing history.
-- `scripts/manual-agent-e2e.sh` now accepts the same environment variables so you can point the smoke test at a local Rails stub (or `webhook.site`) before promoting the change to CI.
+- Durable acknowledgements are stored per batch (`control_plane_status` table) so the agent can resume from the last acked event after restarts. Failed deliveries use exponential backoff + jitter before retrying so unhealthy endpoints don’t get hammered.
+- `scripts/manual-agent-e2e.sh` now accepts the same environment variables so you can point the smoke test at a local Rails stub (or `webhook.site`) before promoting the change to CI. Pass `--cp-stub` to spin up the embedded Python webhook and print the persisted `last_ack_event_id` cursor when the run finishes.
 
 ## macOS App Preview
 
@@ -224,6 +225,8 @@ swift run BranchBoxApp
 
 - The app lists every feature via `FeatureService/List`, exposes start/teardown actions, and displays whether the data came from gRPC or the CLI fallback.
 - When the agent socket is missing the view transparently shells out to `branchbox feature list --json` so testing can continue on machines that only have the CLI installed.
+- Workspace picker + transport badge live in the toolbar (choose a repo via `NSOpenPanel`, see whether the data came from gRPC or the CLI fallback). Start form now includes branch prefix, reuse toggle, module skip list, and prompt history chips so the mac app stays in feature parity with the CLI.
+- Teardown actions open a confirmation sheet with `--force` + `--complete-spec` toggles so you don’t accidentally drop worktrees.
 - Configuration happens through environment variables (`BRANCHBOX_AGENT_GRPC_ADDR`, `BRANCHBOX_WORKSPACE`, `BRANCHBOX_CLI_PATH`) or the stored `defaults` domain `dev.branchbox.app`. See `macos/Sources/BranchBoxApp/Agent/AgentBridge.swift` for the full precedence order.
 - Manual validation steps live in [docs/docs/getting-started/manual-cli-e2e.md](docs/docs/getting-started/manual-cli-e2e.md) and cover: launching the agent, running the SwiftUI preview, starting a feature, tearing it down, and confirming the control-plane stub receives batched events.
 - **Custom devcontainer behaviour**: override per run with `BRANCHBOX_DEVCONTAINER_STRATEGY` or update `.env` if you always prefer symlinks.

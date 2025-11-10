@@ -23,16 +23,28 @@ enum CLICompat {
         if intent.minimal {
             args.append("--minimal")
         }
+        if let branchPrefix = intent.branchPrefix, !branchPrefix.isEmpty {
+            args.append(contentsOf: ["--branch-prefix", branchPrefix])
+        }
+        if intent.reuseExisting {
+            args.append("--reuse")
+        }
+        for module in intent.skipModules where !module.isEmpty {
+            args.append(contentsOf: ["--skip-module", module])
+        }
         if let prompt = intent.promptSeed, !prompt.isEmpty {
             args.append(contentsOf: ["--prompt", prompt])
         }
         _ = try run(arguments: args, workspacePath: workspacePath)
     }
 
-    static func teardownFeature(name: String, workspacePath: String, force: Bool) throws {
+    static func teardownFeature(name: String, workspacePath: String, force: Bool, completeSpec: Bool) throws {
         var args = ["feature", "teardown", name, "--repo", workspacePath, "--json"]
         if force {
             args.append("--force")
+        }
+        if completeSpec {
+            args.append("--complete-spec")
         }
         _ = try run(arguments: args, workspacePath: workspacePath)
     }
@@ -75,5 +87,12 @@ enum CLICompat {
         let start_mode: String?
         let updated_at: String?
         let tunnel_status: String?
+        let tunnel_provider: String?
+        let module_outcomes: [ModuleOutcomeRecord]?
+    }
+
+    struct ModuleOutcomeRecord: Decodable {
+        let module: String
+        let status: String
     }
 }

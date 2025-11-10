@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use hostname::get;
 use once_cell::sync::Lazy;
 use reqwest::{header, Client};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::info;
 
@@ -36,15 +36,21 @@ impl ControlPlaneClient {
         &self,
         workspace_root: &Path,
         agent: &AgentMetadata,
+        batch_id: i64,
+        last_event_id: i64,
         events: &[PendingEvent],
-    ) -> Result<()> {
+    ) -> Result<i64> {
         if events.is_empty() {
-            return Ok(());
+            return Ok(last_event_id);
         }
 
         let payload = ControlPlanePayload {
             workspace_root: workspace_root.display().to_string(),
             agent,
+            cursor: BatchCursor {
+                batch_id,
+                last_event_id,
+            },
             events: events.iter().map(EventPayload::from).collect(),
         };
 
@@ -57,18 +63,29 @@ impl ControlPlaneClient {
             .await
             .context("Failed to send events to control plane")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
             return Err(anyhow!("Control plane responded with {}: {}", status, body));
         }
 
+        let ack_id = if body.trim().is_empty() {
+            None
+        } else {
+            serde_json::from_str::<ControlPlaneAck>(&body)
+                .ok()
+                .and_then(|ack| ack.acked_through)
+        }
+        .unwrap_or(last_event_id);
+
         info!(
-            "Delivered {} queued events to control plane ({})",
-            events.len(),
+            batch_id,
+            acked_through = ack_id,
+            delivered = events.len(),
+            "Delivered queued events to control plane ({})",
             self.config.endpoint
         );
-        Ok(())
+        Ok(ack_id)
     }
 }
 
@@ -76,7 +93,14 @@ impl ControlPlaneClient {
 struct ControlPlanePayload<'a> {
     workspace_root: String,
     agent: &'a AgentMetadata,
+    cursor: BatchCursor,
     events: Vec<EventPayload>,
+}
+
+#[derive(Serialize)]
+struct BatchCursor {
+    batch_id: i64,
+    last_event_id: i64,
 }
 
 #[derive(Serialize)]
@@ -96,6 +120,11 @@ impl From<&PendingEvent> for EventPayload {
             payload: event.payload.clone(),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct ControlPlaneAck {
+    acked_through: Option<i64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -139,6 +168,10 @@ mod tests {
         let payload = ControlPlanePayload {
             workspace_root: "/tmp/repo".to_string(),
             agent: &agent,
+            cursor: BatchCursor {
+                batch_id: 7,
+                last_event_id: 42,
+            },
             events: vec![EventPayload {
                 id: 1,
                 kind: "heartbeat".to_string(),
@@ -150,6 +183,8 @@ mod tests {
         let serialized = serde_json::to_value(&payload).expect("payload serializes");
         assert_eq!(serialized["agent"]["hostname"], "devbox");
         assert_eq!(serialized["workspace_root"], "/tmp/repo");
+        assert_eq!(serialized["cursor"]["batch_id"], 7);
+        assert_eq!(serialized["cursor"]["last_event_id"], 42);
         assert_eq!(serialized["events"].as_array().unwrap().len(), 1);
     }
 }
