@@ -138,25 +138,24 @@ if [[ -d "$REPO_ROOT/.devcontainer" ]]; then
 fi
 
 echo "==> branchbox init"
-"$BRANCHBOX_BIN" init >/dev/null || true
+BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" init >/dev/null || true
 
 echo "==> Start first feature (full, but skip heavy modules)"
-"$BRANCHBOX_BIN" feature start "Add OAuth Integration" \
+BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature start \
+  --title "Add OAuth Integration" \
   --skip-module compose \
-  --skip-module database \
-  --json | jq -r '.worktree_path // empty' | tee "$DEMO_ROOT/feature1_path" >/dev/null
+  --skip-module database 
 
 echo "==> Start second feature (minimal + default prompt)"
-"$BRANCHBOX_BIN" feature new backlog-quick-fix --minimal --default-prompt >/dev/null
+BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature new backlog-quick-fix --minimal --default-prompt >/dev/null
 
 echo "==> List features"
-"$BRANCHBOX_BIN" feature list
+BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature list
 
 echo "==> Edit .devcontainer in main repo and sync"
 if [[ -f .devcontainer/devcontainer.json ]]; then
   echo "// demo tweak" >> .devcontainer/devcontainer.json
 fi
-"$BRANCHBOX_BIN" devcontainer sync --dry-run
+BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" devcontainer sync --dry-run
 
 echo "==> Done. Demo root: $DEMO_ROOT"
-
