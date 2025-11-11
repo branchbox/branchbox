@@ -1,8 +1,8 @@
-# Worktree Manager - Distributed Architecture
+# BranchBox — Distributed Architecture
 
 ## Overview
 
-A distributed development environment orchestrator that manages git worktrees and devcontainers across multiple devices via a control plane and local agents.
+BranchBox is a distributed development environment orchestrator that manages git worktrees and devcontainers across multiple devices via a control plane and local agents.
 
 ## System Architecture
 
@@ -64,7 +64,7 @@ A distributed development environment orchestrator that manages git worktrees an
 
 ## Components
 
-### 1. Worktree Core (Rust Library)
+### 1. Core Library (Rust)
 
 **Location**: `core/`
 
@@ -89,14 +89,13 @@ A distributed development environment orchestrator that manages git worktrees an
 - Reads optional `APP_NAME`/`APP_SLUG` settings from `.env` to align compose/devcontainer naming with the host project and propagates them to Docker Compose container names
 
 **Distribution**:
-- Published to crates.io as `worktree-core`
-- Embedded in agent, CLI, and available for FFI bindings
+- Embedded in agent and CLI; crates.io publishing is planned
 
-### 2. Agent (Rust Daemon)
+### 2. Agent (Rust daemon)
 
 **Location**: `agent/`
 
-**Purpose**: Long-running daemon on user's device that executes worktree operations. The Milestone 1 implementation targets Unix-like hosts (macOS, Linux, devcontainers); Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
+**Purpose**: Long-running daemon on the user's device that executes worktree operations. The Milestone 1 implementation targets Unix-like hosts (macOS, Linux, devcontainers); Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
 
 **Features**:
 - gRPC server listening on Tailscale IP + localhost
@@ -107,47 +106,35 @@ A distributed development environment orchestrator that manages git worktrees an
 - Auto-update capability
 
 **Communication**:
-- **Local**: Unix domain socket (`/var/run/worktree-agent.sock`)
+- **Local**: Unix domain socket (BranchBox agent-managed path)
 - **Remote**: gRPC over Tailscale network
 - **Control Plane**: Bi-directional gRPC streaming
 
-**Installation**:
+**Local development**:
 ```bash
-# Homebrew
-brew install worktree-agent
-
-# Initialize
-worktree-agent init
-
-# Install as system service
-sudo worktree-agent install
+cargo run -p branchbox-agent --release
 ```
 
-### 3. CLI Tool (Rust)
+### 3. CLI (Rust)
 
 **Location**: `cli/`
 
 **Purpose**: Command-line interface for local worktree management
 
-**Commands**:
+**Core commands**:
 ```bash
-# Local operations (talks to local agent)
-worktree start "oauth integration"
-worktree list
-worktree teardown oauth-integration
-
-# Remote operations (talks to control plane)
-worktree devices
-worktree remote start --device=macbook "oauth integration"
-worktree remote list --device=macbook
+branchbox feature start "Add OAuth Integration"
+branchbox feature list
+branchbox feature teardown oauth-integration
+branchbox devcontainer sync
 ```
 
 **Distribution**:
-- Homebrew: `brew install worktree`
-- Cargo: `cargo install worktree-cli`
-- Direct binary download from GitHub releases
+- Install script (Linux/macOS)
+- Homebrew/Scoop taps (planned)
+- Direct binaries from GitHub Releases
 
-### 4. Mac App (SwiftUI)
+### 4. Mac app (SwiftUI)
 
 **Location**: `macos/`
 
@@ -169,7 +156,7 @@ worktree remote list --device=macbook
 - Mac App Store
 - Direct download (DMG)
 
-### 5. Control Plane (Rails)
+### 5. Control plane (Rails)
 
 **Location**: `control-plane/` (or extend existing Agentify app)
 
@@ -214,12 +201,12 @@ POST   /agent/report_state
 **Mac App/CLI ↔ Local Agent**
 
 - **Protocol**: gRPC or Unix domain socket
-- **Transport**: Localhost (127.0.0.1:50051) or `/var/run/worktree-agent.sock`
+- **Transport**: Localhost (127.0.0.1:50051) or BranchBox agent Unix socket
 - **Security**: Local user permissions
 - **Latency**: <1ms
 
 ```
-CLI Tool → Unix Socket → Local Agent → Worktree Core
+CLI → Unix socket → BranchBox agent → Core library
 ```
 
 ### Remote Communication
@@ -232,7 +219,7 @@ CLI Tool → Unix Socket → Local Agent → Worktree Core
 - **Latency**: 10-100ms
 
 ```
-Web UI → Rails API → gRPC/Tailscale → Agent → Worktree Core
+Web UI → Rails API → gRPC/Tailscale → Agent → Core library
 ```
 
 ### State Synchronization
@@ -320,16 +307,16 @@ CREATE TABLE config (
 
 1. User logs into web dashboard
 2. User generates 6-digit registration code (expires in 15 minutes)
-3. User runs `worktree-agent init` on device and enters code
+3. User runs `branchbox-agent init` on device and enters code
 4. Agent exchanges code for long-lived device token
-5. Device token stored in `~/.worktree/config.toml` (600 permissions)
+5. Device token stored in `~/.branchbox/agent/config.toml` (600 permissions)
 
 ```bash
 # Web UI
 Code: ABC123
 
 # Device
-$ worktree-agent init
+$ branchbox-agent init
 Enter registration code: ABC123
 ✓ Device registered successfully
 ✓ Device ID: 550e8400-e29b-41d4-a716-446655440000
@@ -398,23 +385,23 @@ loop {
 
 ```bash
 # Homebrew
-brew tap your-org/worktree
-brew install worktree-agent
+brew tap branchbox/tap
+brew install branchbox-agent
 
 # Manual
-curl -L https://github.com/branchbox-branchbox/releases/download/v1.0.0/worktree-agent-darwin-arm64.tar.gz | tar xz
-sudo mv worktree-agent /usr/local/bin/
+curl -L https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-agent-darwin-arm64.tar.gz | tar xz
+sudo mv branchbox-agent /usr/local/bin/
 
 # Initialize
-worktree-agent init
+branchbox-agent init
 
 # Install as LaunchDaemon
-sudo worktree-agent install
+sudo branchbox-agent install
 ```
 
 ### Agent Configuration
 
-`~/.worktree/config.toml`:
+`~/.branchbox/agent/config.toml`:
 ```toml
 [agent]
 device_id = "550e8400-e29b-41d4-a716-446655440000"
@@ -423,7 +410,7 @@ device_name = "MacBook Pro"
 
 [control_plane]
 enabled = true
-url = "https://worktree.example.com"
+url = "https://branchbox.example.com"
 
 [tailscale]
 auto_detect = true
@@ -431,12 +418,12 @@ ip = "100.64.0.1"
 
 [local]
 listen_addr = "127.0.0.1:50051"
-unix_socket = "/var/run/worktree-agent.sock"
-data_dir = "/Users/username/.worktree/data"
+unix_socket = "/Users/username/.branchbox/agent/agent.sock"
+data_dir = "/Users/username/.branchbox/data"
 
 [logging]
 level = "info"
-file = "/Users/username/.worktree/agent.log"
+file = "/Users/username/.branchbox/agent/agent.log"
 ```
 
 ### Control Plane Deployment
