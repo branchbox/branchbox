@@ -41,6 +41,17 @@ enum AgentBridgeError: Error {
     case cliUnavailable(String)
 }
 
+extension AgentBridgeError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .invalidFeatureName:
+            return "Feature name is required."
+        case .cliUnavailable(let reason):
+            return "CLI fallback failed: \(reason)"
+        }
+    }
+}
+
 final class AgentBridge {
     enum Transport: String {
         case grpc

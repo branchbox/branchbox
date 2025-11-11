@@ -5,6 +5,7 @@ import AppKit
 
 struct FeatureListView: View {
     @EnvironmentObject private var viewModel: FeatureListViewModel
+    @State private var didPromptWorkspace = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -18,6 +19,13 @@ struct FeatureListView: View {
         .frame(minWidth: 760, minHeight: 560)
         .task {
             await viewModel.loadIfNeeded()
+        }
+        .onAppear {
+            // If the configured workspace path doesn't exist locally, prompt the user to choose one.
+            if !didPromptWorkspace && !FileManager.default.fileExists(atPath: viewModel.workspacePath) {
+                didPromptWorkspace = true
+                chooseWorkspace()
+            }
         }
         .alert(item: $viewModel.activeAlert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("OK")))
