@@ -294,7 +294,7 @@ final class FeatureListViewModel: ObservableObject {
 #endif
 }
 
-private extension String {
+internal extension String {
     var trimmed: String {
         trimmingCharacters(in: .whitespacesAndNewlines)
     }
