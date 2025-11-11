@@ -40,7 +40,8 @@ enum CLICompat {
     }
 
     static func teardownFeature(name: String, workspacePath: String, force: Bool, completeSpec: Bool) throws {
-        var args = ["feature", "teardown", name, "--repo", workspacePath, "--json"]
+        // The CLI does not support --json for teardown; parse nothing and rely on exit status.
+        var args = ["feature", "teardown", name, "--repo", workspacePath]
         if force {
             args.append("--force")
         }
