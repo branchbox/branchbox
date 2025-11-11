@@ -78,7 +78,7 @@ struct FeatureDetailView: View {
             if feature.moduleOutcomes.isEmpty {
                 Text("—").foregroundColor(.secondary)
             } else {
-                FlowLayout(alignment: .leading, spacing: 8) {
+                FlowLayout(spacing: 8) {
                     ForEach(feature.moduleOutcomes, id: \.self) { outcome in
                         Text("\(outcome.name): \(outcome.status)")
                             .font(.caption)
@@ -153,34 +153,65 @@ private extension FeatureDetailView {
     }()
 }
 
-// Simple flow layout for chips
+// Simple flow layout for chips using the Layout protocol
 struct FlowLayout<Content: View>: View {
-    var alignment: HorizontalAlignment = .leading
     var spacing: CGFloat = 8
     @ViewBuilder var content: Content
 
     var body: some View {
-        var width: CGFloat = 0
-        var height: CGFloat = 0
-        return GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                content
-                    .alignmentGuide(.leading) { d in
-                        if (abs(width - d.width) > geo.size.width) {
-                            width = 0
-                            height -= d.height + spacing
-                        }
-                        let result = width
-                        if content is EmptyView == false { width -= d.width + spacing }
-                        return result
-                    }
-                    .alignmentGuide(.top) { _ in
-                        let result = height
-                        return result
-                    }
-            }
+        FlowLayoutLayout(spacing: spacing) {
+            content
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 40)
+    }
+}
+
+private struct FlowLayoutLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let maxWidth = proposal.width ?? .infinity
+        var lineWidth: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var measuredWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if maxWidth.isFinite && lineWidth > 0 && lineWidth + spacing + size.width > maxWidth {
+                totalHeight += lineHeight + spacing
+                lineWidth = 0
+                lineHeight = 0
+            }
+            if lineWidth > 0 {
+                lineWidth += spacing
+            }
+            lineWidth += size.width
+            lineHeight = max(lineHeight, size.height)
+            measuredWidth = max(measuredWidth, lineWidth)
+        }
+
+        totalHeight += lineHeight
+        let finalWidth = proposal.width ?? measuredWidth
+        return CGSize(width: finalWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: size.width, height: size.height))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
     }
 }

@@ -226,8 +226,11 @@ final class AgentBridge {
 
     func syncDevcontainer(strategy: String? = nil, dryRun: Bool = false) async throws {
         // Currently no gRPC endpoint; use CLI compat.
+        let path = configuration.workspacePath
         do {
-            try CLICompat.devcontainerSync(workspacePath: configuration.workspacePath, strategy: strategy, dryRun: dryRun)
+            try await Task.detached(priority: .userInitiated) {
+                try CLICompat.devcontainerSync(workspacePath: path, strategy: strategy, dryRun: dryRun)
+            }.value
         } catch {
             logger.error("Devcontainer sync failed: \(error.localizedDescription, privacy: .public)")
             throw error

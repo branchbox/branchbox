@@ -12,7 +12,7 @@ struct SettingsView: View {
                 HStack {
                     Text(viewModel.workspacePath).lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Button("Choose…") { chooseWorkspace() }
+                    Button("Choose…") { viewModel.openWorkspacePicker() }
                 }
                 HStack {
                     Button("Reveal in Finder") { viewModel.revealWorkspaceInFinder() }
@@ -42,17 +42,4 @@ struct SettingsView: View {
         .navigationTitle("Settings")
     }
 
-    private func chooseWorkspace() {
-        #if os(macOS)
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
-                viewModel.updateWorkspace(to: url.path)
-            }
-        }
-        #endif
-    }
 }
