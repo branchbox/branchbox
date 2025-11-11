@@ -159,6 +159,7 @@ enum CLICompat {
         let devcontainerOutdated: Bool?
         let lastSyncAt: Date?
         let syncStrategy: String?
+        let worktreePath: String?
     }
 
     struct ModuleOutcomeRecord: Decodable {

@@ -29,13 +29,18 @@ struct HomeView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Welcome to BranchBox")
                 .font(.largeTitle).bold()
-            Text(viewModel.workspacePath)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HStack {
+                Text(viewModel.workspacePath)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Reveal in Finder") { viewModel.revealWorkspaceInFinder() }
+                Button("Open in Terminal") { viewModel.openWorkspaceInTerminal() }
+            }
         }
     }
 
@@ -137,6 +142,14 @@ struct HomeView: View {
                     Button("Teardown…") { viewModel.openTeardownSheet(for: feature) }
                         .buttonStyle(.bordered)
                 }
+                HStack(spacing: 12) {
+                    Button("Reveal in Finder") { viewModel.revealFeatureInFinder(feature) }
+                        .disabled(feature.worktreePath == nil)
+                    Button("Open in Terminal") { viewModel.openFeatureInTerminal(feature) }
+                        .disabled(feature.worktreePath == nil)
+                    Button("Copy path") { copyPath(feature) }
+                        .disabled(feature.worktreePath == nil)
+                }
             }
             .padding()
         }
@@ -157,5 +170,15 @@ struct HomeView: View {
     private func quickStart() {
         viewModel.startFeatureQuick(name: name)
         name = ""
+    }
+}
+
+private extension HomeView {
+    func copyPath(_ feature: FeatureViewData) {
+        guard let path = feature.worktreePath else { return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        #endif
     }
 }

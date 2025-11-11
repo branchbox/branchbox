@@ -20,6 +20,7 @@ struct FeatureViewData: Identifiable, Hashable {
     let adapterServiceURL: String?
     let adapterWarnings: [String]
     let moduleOutcomes: [ModuleOutcomeSummary]
+    let worktreePath: String?
     let devcontainerOutdated: Bool
     let lastSyncAt: Date?
     let syncStrategy: String?
@@ -96,6 +97,7 @@ extension FeatureViewData {
             self.adapterWarnings = []
         }
         self.moduleOutcomes = feature.moduleOutcomes.map(ModuleOutcomeSummary.init(grpc:))
+        self.worktreePath = feature.worktreePath.isEmpty ? nil : feature.worktreePath
         self.devcontainerOutdated = feature.devcontainerOutdated
         self.lastSyncAt = FeatureViewData.parse(dateString: feature.lastSyncAt)
         self.syncStrategy = feature.syncStrategy.isEmpty ? nil : feature.syncStrategy
@@ -122,6 +124,7 @@ extension FeatureViewData {
             self.adapterWarnings = []
         }
         self.moduleOutcomes = record.moduleOutcomes?.map(ModuleOutcomeSummary.init(record:)) ?? []
+        self.worktreePath = record.worktreePath
         self.devcontainerOutdated = record.devcontainerOutdated ?? false
         self.lastSyncAt = record.lastSyncAt
         self.syncStrategy = record.syncStrategy

@@ -26,6 +26,7 @@ struct MainAppView: View {
         } detail: {
             if viewModel.selectedSection == .features, let feature = selectedFeature {
                 FeatureDetailView(feature: feature)
+                    .environmentObject(viewModel)
             } else {
                 PlaceholderDetail()
             }

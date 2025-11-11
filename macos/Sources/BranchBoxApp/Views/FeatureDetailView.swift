@@ -115,12 +115,14 @@ struct FeatureDetailView: View {
                 Link("Open", destination: link)
             }
             Button("Copy branch") { copyToPasteboard(feature.branchName) }
+                .buttonStyle(.bordered)
             Button("Sync devcontainer") { viewModel.syncDevcontainer(strategy: feature.syncStrategy) }
+                .buttonStyle(.bordered)
                 .disabled(viewModel.isWorking)
             Button("Teardown…", role: .destructive) { viewModel.openTeardownSheet(for: feature) }
+                .buttonStyle(.borderedProminent)
             Spacer()
         }
-        .buttonStyle(.bordered)
     }
 
     private var statusPill: some View {

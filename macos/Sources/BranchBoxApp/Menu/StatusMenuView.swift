@@ -60,6 +60,22 @@ struct StatusMenuView: View {
                     Spacer()
                     Button("Teardown…") { viewModel.openTeardownSheet(for: feature) }
                 }
+                HStack {
+                    Button { viewModel.revealFeatureInFinder(feature) } label: {
+                        Label("Finder", systemImage: "folder")
+                    }
+                    .disabled(feature.worktreePath == nil)
+                    Button { viewModel.openFeatureInTerminal(feature) } label: {
+                        Label("Terminal", systemImage: "terminal")
+                    }
+                    .disabled(feature.worktreePath == nil)
+                    Button { copyPath(feature) } label: {
+                        Label("Copy path", systemImage: "doc.on.doc")
+                    }
+                    .disabled(feature.worktreePath == nil)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
             }
             .padding(8)
         }
@@ -112,5 +128,13 @@ struct StatusMenuView: View {
         .padding(.vertical, 4)
         .background(feature.devcontainerHasWarning ? Color.orange.opacity(0.2) : Color.blue.opacity(0.15))
         .clipShape(Capsule())
+    }
+
+    private func copyPath(_ feature: FeatureViewData) {
+        guard let path = feature.worktreePath else { return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        #endif
     }
 }

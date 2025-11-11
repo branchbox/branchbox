@@ -14,6 +14,11 @@ struct SettingsView: View {
                     Spacer()
                     Button("Choose…") { chooseWorkspace() }
                 }
+                HStack {
+                    Button("Reveal in Finder") { viewModel.revealWorkspaceInFinder() }
+                    Button("Open in Terminal") { viewModel.openWorkspaceInTerminal() }
+                    Spacer()
+                }
                 Button("Run detect") {
                     viewModel.runDetect()
                 }

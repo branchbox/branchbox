@@ -261,6 +261,37 @@ final class FeatureListViewModel: ObservableObject {
         }
         defaults.set(promptHistory, forKey: Self.promptHistoryKey)
     }
+
+#if os(macOS)
+    func revealWorkspaceInFinder() {
+        revealInFinder(path: workspacePath)
+    }
+
+    func openWorkspaceInTerminal() {
+        openInTerminal(path: workspacePath)
+    }
+
+    func revealFeatureInFinder(_ feature: FeatureViewData) {
+        guard let path = feature.worktreePath else { return }
+        revealInFinder(path: path)
+    }
+
+    func openFeatureInTerminal(_ feature: FeatureViewData) {
+        guard let path = feature.worktreePath else { return }
+        openInTerminal(path: path)
+    }
+
+    private func revealInFinder(path: String) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
+    private func openInTerminal(path: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Terminal", path]
+        try? process.run()
+    }
+#endif
 }
 
 private extension String {

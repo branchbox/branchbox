@@ -45,6 +45,11 @@ struct FeaturesView: View {
                         Button("Open feature") { openURL(link) }
                     }
                     Button("Copy branch") { copyToPasteboard(feature.branchName) }
+                    if feature.worktreePath != nil {
+                        Button("Reveal in Finder") { viewModel.revealFeatureInFinder(feature) }
+                        Button("Open in Terminal") { viewModel.openFeatureInTerminal(feature) }
+                        Button("Copy path") { copyPath(feature) }
+                    }
                     Button("Sync devcontainer") { viewModel.syncDevcontainer(strategy: feature.syncStrategy) }
                     Button("Teardown…", role: .destructive) { viewModel.openTeardownSheet(for: feature) }
                 }
@@ -100,5 +105,10 @@ struct FeaturesView: View {
         #if os(macOS)
         NSWorkspace.shared.open(url)
         #endif
+    }
+
+    private func copyPath(_ feature: FeatureViewData) {
+        guard let path = feature.worktreePath else { return }
+        copyToPasteboard(path)
     }
 }
