@@ -167,6 +167,8 @@ branchbox --help
 
 Other methods: Homebrew (coming soon), Scoop (coming soon), prebuilt binaries via Releases, or `cargo install --path cli --locked`. See docs/INSTALLATION.md for details.
 
+Note: After installing, open a new terminal session (or run `hash -r`) so your shell picks up the updated PATH.
+
 ## Safety & Agent‑Ready
 
 - Dirty guard on teardown refuses to delete changed devcontainer/compose files unless `--force` is confirmed.
