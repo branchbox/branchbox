@@ -20,6 +20,9 @@ struct FeatureViewData: Identifiable, Hashable {
     let adapterServiceURL: String?
     let adapterWarnings: [String]
     let moduleOutcomes: [ModuleOutcomeSummary]
+    let devcontainerOutdated: Bool
+    let lastSyncAt: Date?
+    let syncStrategy: String?
     let source: Source
 
     var statusLabel: String {
@@ -45,10 +48,28 @@ struct FeatureViewData: Identifiable, Hashable {
         return "\(ok) ok"
     }
 
+    var devcontainerStatusSummary: String {
+        if devcontainerOutdated {
+            return "Outdated"
+        }
+        if let lastSyncAt {
+            return "Synced " + Self.relativeFormatter.localizedString(for: lastSyncAt, relativeTo: Date())
+        }
+        return "Pending"
+    }
+
+    var devcontainerHasWarning: Bool { devcontainerOutdated }
+
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
         return formatter
     }()
 }
@@ -75,6 +96,9 @@ extension FeatureViewData {
             self.adapterWarnings = []
         }
         self.moduleOutcomes = feature.moduleOutcomes.map(ModuleOutcomeSummary.init(grpc:))
+        self.devcontainerOutdated = feature.devcontainerOutdated
+        self.lastSyncAt = FeatureViewData.parse(dateString: feature.lastSyncAt)
+        self.syncStrategy = feature.syncStrategy.isEmpty ? nil : feature.syncStrategy
         self.source = .grpc
     }
 
@@ -98,6 +122,9 @@ extension FeatureViewData {
             self.adapterWarnings = []
         }
         self.moduleOutcomes = record.moduleOutcomes?.map(ModuleOutcomeSummary.init(record:)) ?? []
+        self.devcontainerOutdated = record.devcontainerOutdated ?? false
+        self.lastSyncAt = record.lastSyncAt
+        self.syncStrategy = record.syncStrategy
         self.source = .cliFallback
     }
 

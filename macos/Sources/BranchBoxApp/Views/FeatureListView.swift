@@ -24,7 +24,7 @@ struct FeatureListView: View {
             // If the configured workspace path doesn't exist locally, prompt the user to choose one.
             if !didPromptWorkspace && !FileManager.default.fileExists(atPath: viewModel.workspacePath) {
                 didPromptWorkspace = true
-                chooseWorkspace()
+                viewModel.openWorkspacePicker()
             }
         }
         .alert(item: $viewModel.activeAlert) { alert in
@@ -66,9 +66,7 @@ struct FeatureListView: View {
                     .font(.callout)
                     .lineLimit(2)
                 HStack {
-                    Button("Choose…") {
-                        chooseWorkspace()
-                    }
+                    Button("Choose…") { viewModel.openWorkspacePicker() }
                     Button("Reload") {
                         viewModel.refresh()
                     }
@@ -190,7 +188,7 @@ struct FeatureListView: View {
             }
         }
         .sheet(item: $viewModel.pendingTeardown) { feature in
-            TeardownSheet(
+            TeardownSheetView(
                 feature: feature,
                 options: $viewModel.teardownOptions,
                 onConfirm: { viewModel.performPendingTeardown() },
@@ -259,6 +257,7 @@ private struct FeatureRow: View {
                 Text("Updated \(feature.updatedAtLabel)")
                     .font(.footnote)
                     .foregroundColor(.secondary)
+                devcontainerStatus
             }
 
             Spacer()
@@ -291,32 +290,18 @@ private struct FeatureRow: View {
     private var statusColor: Color {
         feature.status.lowercased() == "active" ? .green : .gray
     }
-}
 
-private struct TeardownSheet: View {
-    let feature: FeatureViewData
-    @Binding var options: TeardownOptions
-    let onConfirm: () -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Teardown \(feature.workFeature)?")
-                .font(.headline)
-            Toggle("Force removal", isOn: $options.force)
-            Toggle("Complete spec", isOn: $options.completeSpec)
-            HStack {
-                Button("Cancel", role: .cancel) {
-                    onCancel()
-                }
-                Spacer()
-                Button("Teardown", role: .destructive) {
-                    onConfirm()
-                }
-            }
+    private var devcontainerStatus: some View {
+        let strategy = feature.syncStrategy?.capitalized
+        return HStack(spacing: 8) {
+            Image(systemName: feature.devcontainerHasWarning ? "exclamationmark.triangle" : "shippingbox")
+            Text("Devcontainer: \(feature.devcontainerStatusSummary)\(strategy.map { " • \($0)" } ?? "")")
+                .font(.footnote)
         }
-        .padding()
-        .frame(width: 320)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(feature.devcontainerHasWarning ? Color.orange.opacity(0.15) : Color.blue.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -348,17 +333,4 @@ private extension FeatureListView {
         }
     }
 
-    func chooseWorkspace() {
-#if os(macOS)
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
-                viewModel.updateWorkspace(to: url.path)
-            }
-        }
-#endif
-    }
 }

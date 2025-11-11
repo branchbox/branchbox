@@ -39,7 +39,7 @@ enum CLICompat {
         _ = try run(arguments: args, workspacePath: workspacePath)
     }
 
-    static func teardownFeature(name: String, workspacePath: String, force: Bool, completeSpec: Bool) throws {
+    static func teardownFeature(name: String, workspacePath: String, force: Bool, completeSpec: Bool, deleteBranch: Bool) throws {
         // The CLI does not support --json for teardown; parse nothing and rely on exit status.
         var args = ["feature", "teardown", name, "--repo", workspacePath]
         if force {
@@ -47,6 +47,9 @@ enum CLICompat {
         }
         if completeSpec {
             args.append("--complete-spec")
+        }
+        if deleteBranch {
+            args.append("--delete-branch")
         }
         _ = try run(arguments: args, workspacePath: workspacePath)
     }
@@ -76,6 +79,22 @@ enum CLICompat {
             lastError: nil,
             lastAckEventId: nil
         )
+    }
+
+    static func devcontainerSync(workspacePath: String, strategy: String? = nil, dryRun: Bool = false) throws {
+        var args = ["devcontainer", "sync", "--path", workspacePath]
+        if let strategy, !strategy.isEmpty {
+            args.append(contentsOf: ["--strategy", strategy])
+        }
+        if dryRun {
+            args.append("--dry-run")
+        }
+        _ = try run(arguments: args, workspacePath: workspacePath)
+    }
+
+    static func detectProject(path: String) throws -> String {
+        let args = ["detect", "--path", path]
+        return try run(arguments: args, workspacePath: path)
     }
 
     private static func run(arguments: [String], workspacePath: String) throws -> String {
@@ -137,6 +156,9 @@ enum CLICompat {
         let tunnelProvider: String?
         let moduleOutcomes: [ModuleOutcomeRecord]?
         let adapter: AdapterRecord?
+        let devcontainerOutdated: Bool?
+        let lastSyncAt: Date?
+        let syncStrategy: String?
     }
 
     struct ModuleOutcomeRecord: Decodable {

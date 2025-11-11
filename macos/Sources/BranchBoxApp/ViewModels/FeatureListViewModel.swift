@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 final class FeatureListViewModel: ObservableObject {
@@ -20,6 +23,14 @@ final class FeatureListViewModel: ObservableObject {
     @Published var teardownOptions = TeardownOptions()
     @Published private(set) var promptHistory: [String]
     @Published var controlPlaneStatus: AgentBridge.AgentStatusSnapshot?
+    // UI intents
+    @Published var commandStartRequested: Bool = false
+    @Published var syncDevcontainerRequested: Bool = false
+    @Published var isCommandPalettePresented: Bool = false
+    @Published var selectedSection: AppSection? = .home
+    @Published var devcontainerStrategy: String
+    @Published var detectOutput: String?
+    @Published var isDetectSheetPresented = false
 
     private let bridge: AgentBridge
     private let defaults: UserDefaults
@@ -34,6 +45,8 @@ final class FeatureListViewModel: ObservableObject {
         let storedWorkspace = defaults.string(forKey: Self.workspaceDefaultsKey) ?? bridge.workspacePath
         self.workspacePath = storedWorkspace
         self.promptHistory = defaults.stringArray(forKey: Self.promptHistoryKey) ?? []
+        self.devcontainerStrategy = defaults.string(forKey: "branchbox.devcontainerStrategy") ?? "copy"
+        self.detectOutput = nil
         self.bridge.updateWorkspacePath(storedWorkspace)
     }
 
@@ -67,6 +80,25 @@ final class FeatureListViewModel: ObservableObject {
         isLoading = false
     }
 
+    // MARK: - Derived UI state
+
+    var activeFeature: FeatureViewData? {
+        features.first { $0.status.lowercased() == "active" }
+    }
+
+    var isAgentConnected: Bool { transportStatus == .grpc }
+
+    var isControlPlaneHealthy: Bool {
+        guard let status = controlPlaneStatus else { return false }
+        return status.controlPlaneConfigured && status.controlPlaneConnected
+    }
+
+    var outdatedDevcontainersCount: Int {
+        features.filter { $0.devcontainerOutdated }.count
+    }
+
+    var suggestedFeatureName: String { "" }
+
     func startFeature() {
         let trimmedName = newFeatureName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
@@ -98,8 +130,37 @@ final class FeatureListViewModel: ObservableObject {
                 self.reuseExisting = false
                 self.recordPromptSeed(intent.promptSeed)
                 await self.loadFeatures()
+#if os(macOS)
+                LocalNotifier.notify(title: "Feature started", body: "\(trimmedName) is ready")
+#endif
             } catch {
                 self.activeAlert = FeatureAlert(title: "Start failed", message: error.localizedDescription)
+            }
+            self.isWorking = false
+        }
+    }
+
+    func startFeatureQuick(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        newFeatureName = trimmed
+        startFeature()
+    }
+
+    func syncDevcontainer(strategy: String? = nil, dryRun: Bool = false) {
+        isWorking = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let chosen = strategy ?? self.devcontainerStrategy
+                try await self.bridge.syncDevcontainer(strategy: chosen, dryRun: dryRun)
+                self.activeAlert = FeatureAlert(title: "Devcontainer", message: "Sync completed")
+                await self.loadFeatures()
+#if os(macOS)
+                LocalNotifier.notify(title: "Devcontainer synced", body: "Strategy: \(chosen)\(dryRun ? " (dry-run)" : "")")
+#endif
+            } catch {
+                self.activeAlert = FeatureAlert(title: "Sync failed", message: error.localizedDescription)
             }
             self.isWorking = false
         }
@@ -116,17 +177,25 @@ final class FeatureListViewModel: ObservableObject {
 
     func performPendingTeardown() {
         guard let feature = pendingTeardown else { return }
-        teardown(feature: feature, force: teardownOptions.force, completeSpec: teardownOptions.completeSpec)
+        teardown(
+            feature: feature,
+            force: teardownOptions.force,
+            completeSpec: teardownOptions.completeSpec,
+            deleteBranch: teardownOptions.deleteBranch
+        )
         pendingTeardown = nil
     }
 
-    func teardown(feature: FeatureViewData, force: Bool = false, completeSpec: Bool = false) {
+    func teardown(feature: FeatureViewData, force: Bool = false, completeSpec: Bool = false, deleteBranch: Bool = false) {
         isWorking = true
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.bridge.teardownFeature(name: feature.workFeature, force: force, completeSpec: completeSpec)
+                try await self.bridge.teardownFeature(name: feature.workFeature, force: force, completeSpec: completeSpec, deleteBranch: deleteBranch)
                 await self.loadFeatures()
+#if os(macOS)
+                LocalNotifier.notify(title: "Feature torn down", body: feature.workFeature)
+#endif
             } catch {
                 self.activeAlert = FeatureAlert(title: "Teardown failed", message: error.localizedDescription)
             }
@@ -145,6 +214,40 @@ final class FeatureListViewModel: ObservableObject {
 
     func applyPromptHistory(_ seed: String) {
         promptSeed = seed
+    }
+
+    func openWorkspacePicker() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                self.updateWorkspace(to: url.path)
+            }
+        }
+        #endif
+    }
+
+    func setDevcontainerStrategy(_ strategy: String) {
+        devcontainerStrategy = strategy
+        defaults.set(strategy, forKey: "branchbox.devcontainerStrategy")
+    }
+
+    func runDetect() {
+        isWorking = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let output = try CLICompat.detectProject(path: self.workspacePath)
+                self.detectOutput = output
+                self.isDetectSheetPresented = true
+            } catch {
+                self.activeAlert = FeatureAlert(title: "Detect failed", message: error.localizedDescription)
+            }
+            self.isWorking = false
+        }
     }
 
     private func recordPromptSeed(_ seed: String?) {
@@ -169,4 +272,5 @@ private extension String {
 struct TeardownOptions {
     var force = false
     var completeSpec = false
+    var deleteBranch = false
 }

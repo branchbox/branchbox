@@ -198,7 +198,7 @@ final class AgentBridge {
         }
     }
 
-    func teardownFeature(name: String, force: Bool, completeSpec: Bool) async throws {
+    func teardownFeature(name: String, force: Bool, completeSpec: Bool, deleteBranch: Bool) async throws {
         guard !name.isEmpty else {
             throw AgentBridgeError.invalidFeatureName
         }
@@ -210,6 +210,7 @@ final class AgentBridge {
             request.name = name
             request.force = force
             request.completeSpec = completeSpec
+            request.deleteBranch = deleteBranch
             _ = try await client.teardown(request)
         } catch {
             logger.error("gRPC teardown failed: \(error.localizedDescription, privacy: .public)")
@@ -217,8 +218,19 @@ final class AgentBridge {
                 name: name,
                 workspacePath: configuration.workspacePath,
                 force: force,
-                completeSpec: completeSpec
+                completeSpec: completeSpec,
+                deleteBranch: deleteBranch
             )
+        }
+    }
+
+    func syncDevcontainer(strategy: String? = nil, dryRun: Bool = false) async throws {
+        // Currently no gRPC endpoint; use CLI compat.
+        do {
+            try CLICompat.devcontainerSync(workspacePath: configuration.workspacePath, strategy: strategy, dryRun: dryRun)
+        } catch {
+            logger.error("Devcontainer sync failed: \(error.localizedDescription, privacy: .public)")
+            throw error
         }
     }
 
