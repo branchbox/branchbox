@@ -199,6 +199,22 @@ branchbox/
 - [x] Offline queue + heartbeat scheduler (events land in queue for future control plane)
 - [x] Manual testing helpers (`scripts/manual-agent-e2e.sh`)
 
+### ✅ Phase 4: macOS Companion Experience (IN PROGRESS)
+
+#### Tooling & Automation
+- [x] Devcontainer now includes the Swift toolchain (5.10.1) so contributors can run `swift build`/`swift test` inside the shared workspace.
+- [x] CI adds a dedicated `macOS App (Swift)` job (Xcode 15.4) that builds and tests the `macos/` package on every PR/merge to `main`.
+
+#### App UX
+- [x] Split-view SwiftUI shell with `NavigationSplitView`, home dashboard, features pane + detail inspector, agent health, and settings.
+- [x] Menu bar companion exposing quick start, devcontainer sync, active-feature teardown, and workspace shortcuts.
+- [x] Command palette (`⌘K`) with navigation + action shortcuts (Start Feature, Sync Devcontainer, Switch Workspace, etc.).
+- [x] Advanced start sheet (modules, prompts, minimal mode, reuse, normalization) with shared form state.
+- [x] Devcontainer telemetry surfaced across home/features/detail/agent views (strategy, last sync, outdated badges).
+- [x] Finder/Terminal quick actions for workspaces and active feature worktrees.
+- [x] Local notification hooks for start/teardown/sync completions.
+- [ ] Agent-controlled Start/Teardown sheet parity with CLI prompt history (future polish).
+
 ### 🟡 Phase 4: Control Plane + macOS App (IN PROGRESS)
 
 - [x] Control-plane HTTP drain that batches queued events + host metadata (`agent/src/control_plane.rs`)
