@@ -61,7 +61,7 @@ enum CLICompat {
     }
 
     private static func run(arguments: [String], workspacePath: String) throws -> String {
-        let cliBinary = ProcessInfo.processInfo.environment["BRANCHBOX_CLI_PATH"] ?? "branchbox"
+        let cliBinary = resolveCLIBinary()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [cliBinary] + arguments
@@ -75,7 +75,7 @@ enum CLICompat {
         do {
             try process.run()
         } catch {
-            throw AgentBridgeError.cliUnavailable(error.localizedDescription)
+            throw AgentBridgeError.cliUnavailable("CLI not runnable: \(error.localizedDescription)")
         }
 
         process.waitUntilExit()
@@ -87,6 +87,24 @@ enum CLICompat {
         }
 
         return String(data: stdOut, encoding: .utf8) ?? ""
+    }
+
+    private static func resolveCLIBinary() -> String {
+        // 1) Explicit override via env
+        if let override = ProcessInfo.processInfo.environment["BRANCHBOX_CLI_PATH"], !override.isEmpty {
+            return override
+        }
+        #if os(macOS)
+        // 2) Embedded binary inside app bundle Resources/bin/branchbox
+        if let resURL = Bundle.main.resourceURL {
+            let embedded = resURL.appendingPathComponent("bin/branchbox").path
+            if FileManager.default.isExecutableFile(atPath: embedded) {
+                return embedded
+            }
+        }
+        #endif
+        // 3) Fallback to PATH
+        return "branchbox"
     }
 
     struct FeatureRecord: Decodable {

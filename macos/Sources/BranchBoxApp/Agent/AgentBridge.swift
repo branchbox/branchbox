@@ -61,13 +61,29 @@ final class AgentBridge {
         let lastError: String?
         let lastAckEventID: Int64?
 
+        init(
+            controlPlaneConfigured: Bool,
+            controlPlaneConnected: Bool,
+            lastDeliveryAt: String?,
+            lastFailureAt: String?,
+            lastError: String?,
+            lastAckEventID: Int64?
+        ) {
+            self.controlPlaneConfigured = controlPlaneConfigured
+            self.controlPlaneConnected = controlPlaneConnected
+            self.lastDeliveryAt = lastDeliveryAt
+            self.lastFailureAt = lastFailureAt
+            self.lastError = lastError
+            self.lastAckEventID = lastAckEventID
+        }
+
         init(grpc status: Branchbox_Agent_AgentStatus) {
             controlPlaneConfigured = status.controlPlaneConfigured
             controlPlaneConnected = status.controlPlaneConnected
-            lastDeliveryAt = status.lastDeliveryAt.isEmpty ? nil : status.lastDeliveryAt
-            lastFailureAt = status.lastFailureAt.isEmpty ? nil : status.lastFailureAt
-            lastError = status.lastError.isEmpty ? nil : status.lastError
-            lastAckEventID = status.lastAckEventID == 0 ? nil : Int64(status.lastAckEventID)
+            lastDeliveryAt = status.hasLastDeliveryAt ? status.lastDeliveryAt : nil
+            lastFailureAt = status.hasLastFailureAt ? status.lastFailureAt : nil
+            lastError = status.hasLastError ? status.lastError : nil
+            lastAckEventID = status.hasLastAckEventID ? Int64(status.lastAckEventID) : nil
         }
 
         init(cli status: CLICompat.AgentStatusRecord) {
@@ -82,7 +98,7 @@ final class AgentBridge {
 
     private var configuration: AgentConfiguration
     private let group: EventLoopGroup
-    private var client: Branchbox_Agent_FeatureServiceClient?
+    private var client: Branchbox_Agent_FeatureServiceAsyncClient?
     private var connection: ClientConnection?
     private let logger = Logger(subsystem: "dev.branchbox.app", category: "agent")
 
@@ -92,7 +108,10 @@ final class AgentBridge {
     }
 
     deinit {
-        connection?.close(promise: nil)
+        // Close the connection gracefully if present
+        if let connection {
+            _ = try? connection.close().wait()
+        }
         try? group.syncShutdownGracefully()
     }
 
@@ -111,23 +130,28 @@ final class AgentBridge {
             var request = Branchbox_Agent_ListRequest()
             request.repoPath = configuration.workspacePath
             request.includeRemoved = includeRemoved
-            let response = try await client.list(request).response.get()
-            let statusResponse = try await client.status(Branchbox_Agent_StatusRequest()).response.get()
-            let snapshot = statusResponse.status.map(AgentStatusSnapshot.init(grpc:)) ?? AgentStatusSnapshot(
-                controlPlaneConfigured: false,
-                controlPlaneConnected: false,
-                lastDeliveryAt: nil,
-                lastFailureAt: nil,
-                lastError: nil,
-                lastAckEventID: nil
-            )
+            let response = try await client.list(request)
+            let statusResponse = try await client.status(Branchbox_Agent_StatusRequest())
+            let snapshot: AgentStatusSnapshot = {
+                if statusResponse.hasStatus {
+                    return AgentStatusSnapshot(grpc: statusResponse.status)
+                }
+                return AgentStatusSnapshot(
+                    controlPlaneConfigured: false,
+                    controlPlaneConnected: false,
+                    lastDeliveryAt: nil,
+                    lastFailureAt: nil,
+                    lastError: nil,
+                    lastAckEventID: nil
+                )
+            }()
             return FeatureFetchResult(
                 features: response.features.map(FeatureViewData.init(grpc:)),
                 transport: .grpc,
                 status: snapshot
             )
         } catch {
-            logger.error("gRPC list failed: %{public}@", error.localizedDescription)
+            logger.error("gRPC list failed: \(error.localizedDescription, privacy: .public)")
             let features = try CLICompat
                 .featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
                 .map(FeatureViewData.init(cli:))
@@ -156,9 +180,9 @@ final class AgentBridge {
             request.branchPrefix = intent.branchPrefix ?? ""
             request.reuse = intent.reuseExisting
             request.skipModules = intent.skipModules
-            _ = try await client.start(request).response.get()
+            _ = try await client.start(request)
         } catch {
-            logger.error("gRPC start failed: %{public}@", error.localizedDescription)
+            logger.error("gRPC start failed: \(error.localizedDescription, privacy: .public)")
             try CLICompat.startFeature(intent, workspacePath: configuration.workspacePath)
         }
     }
@@ -175,9 +199,9 @@ final class AgentBridge {
             request.name = name
             request.force = force
             request.completeSpec = completeSpec
-            _ = try await client.teardown(request).response.get()
+            _ = try await client.teardown(request)
         } catch {
-            logger.error("gRPC teardown failed: %{public}@", error.localizedDescription)
+            logger.error("gRPC teardown failed: \(error.localizedDescription, privacy: .public)")
             try CLICompat.teardownFeature(
                 name: name,
                 workspacePath: configuration.workspacePath,
@@ -187,7 +211,7 @@ final class AgentBridge {
         }
     }
 
-    private func ensureClient() throws -> Branchbox_Agent_FeatureServiceClient {
+    private func ensureClient() throws -> Branchbox_Agent_FeatureServiceAsyncClient {
         if let client {
             return client
         }
@@ -196,14 +220,16 @@ final class AgentBridge {
             .withConnectionBackoff(maximum: .seconds(5))
             .connect(host: configuration.grpcHost, port: configuration.grpcPort)
         self.connection = connection
-        let client = Branchbox_Agent_FeatureServiceClient(channel: connection)
+        let client = Branchbox_Agent_FeatureServiceAsyncClient(channel: connection)
         self.client = client
         return client
     }
 
     private func resetConnection() {
         client = nil
-        connection?.close(promise: nil)
+        if let connection {
+            _ = try? connection.close().wait()
+        }
         connection = nil
     }
 }

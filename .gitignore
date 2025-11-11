@@ -27,6 +27,11 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# SwiftPM/macOS app artifacts
+macos/.build/
+macos/build/
+*.app
+
 # Testing
 *.profraw
 *.profdata

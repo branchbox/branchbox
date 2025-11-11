@@ -39,7 +39,8 @@
     "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
   },
   "forwardPorts": [
-    50051
+    50515,
+    8787
   ],
   "name": "Worktree Manager",
   "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version'",

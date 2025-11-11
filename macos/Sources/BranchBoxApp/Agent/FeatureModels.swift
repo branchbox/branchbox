@@ -64,7 +64,8 @@ extension FeatureViewData {
         self.updatedAt = FeatureViewData.parse(dateString: feature.updatedAt)
         self.tunnelStatus = feature.tunnelStatus.isEmpty ? nil : feature.tunnelStatus
         self.tunnelProvider = feature.tunnelProvider.isEmpty ? nil : feature.tunnelProvider
-        if let adapter = feature.adapter {
+        if feature.hasAdapter {
+            let adapter = feature.adapter
             self.adapterName = adapter.name.isEmpty ? nil : adapter.name
             self.adapterServiceURL = adapter.serviceURL.isEmpty ? nil : adapter.serviceURL
             self.adapterWarnings = adapter.warnings
