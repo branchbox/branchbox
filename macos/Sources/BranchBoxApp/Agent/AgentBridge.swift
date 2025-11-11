@@ -166,7 +166,7 @@ final class AgentBridge {
             let features = try CLICompat
                 .featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
                 .map(FeatureViewData.init(cli:))
-            let status = try CLICompat.agentStatus(workspacePath: configuration.workspacePath)
+            let status = CLICompat.agentStatusOrDefault(workspacePath: configuration.workspacePath)
             return FeatureFetchResult(
                 features: features,
                 transport: .cliFallback,

@@ -50,14 +50,31 @@ enum CLICompat {
         _ = try run(arguments: args, workspacePath: workspacePath)
     }
 
-    static func agentStatus(workspacePath: String) throws -> AgentStatusRecord {
-        let output = try run(arguments: ["agent", "status", "--json"], workspacePath: workspacePath)
-        guard let data = output.data(using: .utf8) else {
-            throw AgentBridgeError.cliUnavailable("agent status returned empty output")
+    static func agentStatusOrDefault(workspacePath: String) -> AgentStatusRecord {
+        do {
+            // Probe for agent support; if absent, fall back to defaults.
+            let help = try run(arguments: ["--help"], workspacePath: workspacePath)
+            if help.contains("agent status") || help.contains("agent") {
+                let output = try run(arguments: ["agent", "status", "--json"], workspacePath: workspacePath)
+                if let data = output.data(using: .utf8) {
+                    let decoder = JSONDecoder()
+                    decoder.keyDecodingStrategy = .convertFromSnakeCase
+                    if let parsed = try? decoder.decode(AgentStatusRecord.self, from: data) {
+                        return parsed
+                    }
+                }
+            }
+        } catch {
+            // ignore and return defaults
         }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(AgentStatusRecord.self, from: data)
+        return AgentStatusRecord(
+            controlPlaneConfigured: false,
+            controlPlaneConnected: false,
+            lastDeliveryAt: nil,
+            lastFailureAt: nil,
+            lastError: nil,
+            lastAckEventId: nil
+        )
     }
 
     private static func run(arguments: [String], workspacePath: String) throws -> String {
