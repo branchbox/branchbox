@@ -1,7 +1,11 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct FeatureDetailView: View {
     let feature: FeatureViewData
+    @EnvironmentObject private var viewModel: FeatureListViewModel
 
     var body: some View {
         ScrollView {
@@ -106,10 +110,17 @@ struct FeatureDetailView: View {
     }
 
     private var actions: some View {
-        HStack {
-            if let url = feature.featureURL, let link = URL(string: url) { Link("Open", destination: link) }
+        HStack(spacing: 12) {
+            if let url = feature.featureURL, let link = URL(string: url) {
+                Link("Open", destination: link)
+            }
+            Button("Copy branch") { copyToPasteboard(feature.branchName) }
+            Button("Sync devcontainer") { viewModel.syncDevcontainer(strategy: feature.syncStrategy) }
+                .disabled(viewModel.isWorking)
+            Button("Teardown…", role: .destructive) { viewModel.openTeardownSheet(for: feature) }
             Spacer()
         }
+        .buttonStyle(.bordered)
     }
 
     private var statusPill: some View {
@@ -119,6 +130,15 @@ struct FeatureDetailView: View {
             .padding(.vertical, 4)
             .background(feature.status.lowercased() == "active" ? Color.green.opacity(0.2) : Color.gray.opacity(0.2))
             .clipShape(Capsule())
+    }
+}
+
+private extension FeatureDetailView {
+    func copyToPasteboard(_ value: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        #endif
     }
 }
 

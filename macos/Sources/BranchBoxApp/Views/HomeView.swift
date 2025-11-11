@@ -12,6 +12,9 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+                if let active = viewModel.activeFeature {
+                    activeCard(active)
+                }
                 startCard
                 recentCard
                 healthRow
@@ -111,6 +114,44 @@ struct HomeView: View {
                 .padding(8)
             }
         }
+    }
+
+    private func activeCard(_ feature: FeatureViewData) -> some View {
+        GroupBox("Active feature") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(feature.workFeature).font(.title3).bold()
+                        Text(feature.branchName).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    devcontainerBadge(for: feature)
+                }
+                HStack(spacing: 12) {
+                    if let url = feature.featureURL, let link = URL(string: url) {
+                        Link("Open", destination: link)
+                    }
+                    Button("Sync devcontainer") { viewModel.syncDevcontainer(strategy: feature.syncStrategy) }
+                        .buttonStyle(.bordered)
+                        .disabled(viewModel.isWorking)
+                    Button("Teardown…") { viewModel.openTeardownSheet(for: feature) }
+                        .buttonStyle(.bordered)
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func devcontainerBadge(for feature: FeatureViewData) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: feature.devcontainerHasWarning ? "exclamationmark.triangle" : "shippingbox")
+            Text(feature.devcontainerStatusSummary)
+                .font(.caption)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(feature.devcontainerHasWarning ? Color.orange.opacity(0.15) : Color.blue.opacity(0.15))
+        .clipShape(Capsule())
     }
 
     private func quickStart() {

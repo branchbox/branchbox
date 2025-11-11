@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct FeaturesView: View {
     @EnvironmentObject private var viewModel: FeatureListViewModel
@@ -24,16 +27,27 @@ struct FeaturesView: View {
             .padding(.horizontal)
 
             List(filteredFeatures, selection: $selected) { feature in
-                HStack {
-                    VStack(alignment: .leading) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(feature.workFeature).font(.headline)
                         Text(feature.branchName).foregroundColor(.secondary).font(.caption)
+                        devcontainerBadge(for: feature)
                     }
                     Spacer()
-                    Text(feature.updatedAtLabel).foregroundColor(.secondary).font(.caption)
-                    statusPill(for: feature)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(feature.updatedAtLabel).foregroundColor(.secondary).font(.caption)
+                        statusPill(for: feature)
+                    }
                 }
                 .tag(feature)
+                .contextMenu {
+                    if let url = feature.featureURL, let link = URL(string: url) {
+                        Button("Open feature") { openURL(link) }
+                    }
+                    Button("Copy branch") { copyToPasteboard(feature.branchName) }
+                    Button("Sync devcontainer") { viewModel.syncDevcontainer(strategy: feature.syncStrategy) }
+                    Button("Teardown…", role: .destructive) { viewModel.openTeardownSheet(for: feature) }
+                }
             }
             .listStyle(.inset)
         }
@@ -62,5 +76,29 @@ struct FeaturesView: View {
             .background(feature.status.lowercased() == "active" ? Color.green.opacity(0.2) : Color.gray.opacity(0.2))
             .clipShape(Capsule())
     }
-}
 
+    private func devcontainerBadge(for feature: FeatureViewData) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: feature.devcontainerHasWarning ? "exclamationmark.triangle" : "shippingbox")
+            Text(feature.devcontainerStatusSummary)
+                .font(.caption2)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(feature.devcontainerHasWarning ? Color.orange.opacity(0.2) : Color.blue.opacity(0.15))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        #endif
+    }
+
+    private func openURL(_ url: URL) {
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
+    }
+}
