@@ -18,11 +18,20 @@ swift build -c release
 SWIFT_BIN="${BUILD_DIR}/release/${APP_NAME}"
 popd >/dev/null
 
-echo "[2/5] Building Rust CLI (release)"
-pushd "${ROOT_DIR}" >/dev/null
-cargo build -p branchbox-cli --release
-CLI_BIN="${ROOT_DIR}/target/release/branchbox"
-popd >/dev/null
+if [[ "${SKIP_CLI:-}" != "1" ]]; then
+  echo "[2/5] Building Rust CLI (release)"
+  pushd "${ROOT_DIR}" >/dev/null
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "Rust toolchain not found. Install rustup or set SKIP_CLI=1 to skip embedding CLI." >&2
+    exit 1
+  fi
+  cargo build -p branchbox-cli --release
+  CLI_BIN="${ROOT_DIR}/target/release/branchbox"
+  popd >/dev/null
+else
+  echo "[2/5] Skipping Rust CLI build (SKIP_CLI=1)"
+  CLI_BIN=""
+fi
 
 echo "[3/5] Creating app bundle layout"
 rm -rf "${APP_DIR}"
@@ -60,9 +69,11 @@ PLIST
 
 echo "[4/5] Staging binaries"
 cp "${SWIFT_BIN}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
-cp "${CLI_BIN}" "${APP_DIR}/Contents/Resources/bin/branchbox"
-chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}" "${APP_DIR}/Contents/Resources/bin/branchbox"
+if [[ -n "${CLI_BIN}" ]]; then
+  cp "${CLI_BIN}" "${APP_DIR}/Contents/Resources/bin/branchbox"
+  chmod +x "${APP_DIR}/Contents/Resources/bin/branchbox"
+fi
+chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 echo "[5/5] Done: ${APP_DIR}"
 echo "Open with: open \"${APP_DIR}\""
-
