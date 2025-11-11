@@ -6,7 +6,7 @@ Set FontSize 16
 Set Width 1000
 Set Height 650
 Set Framerate 60
-Set Theme "Carbon"
+Set Theme "Dracula"
 
 Type "# BranchBox: work on multiple features in parallel"
 Enter
@@ -25,4 +25,3 @@ Sleep 800ms
 Type "# Learn more: https://github.com/branchbox/branchbox"
 Enter
 Sleep 800ms
-
