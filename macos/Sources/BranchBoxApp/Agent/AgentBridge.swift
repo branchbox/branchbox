@@ -71,12 +71,12 @@ final class AgentBridge {
         }
 
         init(cli status: CLICompat.AgentStatusRecord) {
-            controlPlaneConfigured = status.control_plane_configured
-            controlPlaneConnected = status.control_plane_connected
-            lastDeliveryAt = status.last_delivery_at
-            lastFailureAt = status.last_failure_at
-            lastError = status.last_error
-            lastAckEventID = status.last_ack_event_id.map { Int64($0) }
+            controlPlaneConfigured = status.controlPlaneConfigured
+            controlPlaneConnected = status.controlPlaneConnected
+            lastDeliveryAt = status.lastDeliveryAt
+            lastFailureAt = status.lastFailureAt
+            lastError = status.lastError
+            lastAckEventID = status.lastAckEventId.map { Int64($0) }
         }
     }
 

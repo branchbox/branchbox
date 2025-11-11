@@ -18,7 +18,9 @@ final class BranchBoxAppTests: XCTestCase {
         ]
         """.data(using: .utf8)!
         let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
         let records = try decoder.decode([CLICompat.FeatureRecord].self, from: payload)
-        XCTAssertEqual(records.first?.work_feature, "demo")
+        XCTAssertEqual(records.first?.workFeature, "demo")
     }
 }

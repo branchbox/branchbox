@@ -64,7 +64,7 @@ impl ControlPlaneClient {
             .context("Failed to send events to control plane")?;
 
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text().await.ok().unwrap_or_default();
         if !status.is_success() {
             return Err(anyhow!("Control plane responded with {}: {}", status, body));
         }

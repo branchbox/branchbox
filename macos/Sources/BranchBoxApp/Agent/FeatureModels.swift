@@ -78,25 +78,25 @@ extension FeatureViewData {
     }
 
     init(cli record: CLICompat.FeatureRecord) {
-        self.workFeature = record.work_feature
-        self.branchName = record.branch_name
+        self.workFeature = record.workFeature
+        self.branchName = record.branchName
         self.status = record.status
-        self.featureURL = record.feature_url
-        self.promptSeed = record.prompt_seed
-        self.startMode = record.start_mode ?? "full"
-        self.updatedAt = FeatureViewData.parse(dateString: record.updated_at)
-        self.tunnelStatus = record.tunnel_status
-        self.tunnelProvider = record.tunnel_provider
+        self.featureURL = record.featureUrl
+        self.promptSeed = record.promptSeed
+        self.startMode = record.startMode ?? "full"
+        self.updatedAt = record.updatedAt
+        self.tunnelStatus = record.tunnelStatus
+        self.tunnelProvider = record.tunnelProvider
         if let adapter = record.adapter {
             self.adapterName = adapter.name
-            self.adapterServiceURL = adapter.service_url
+            self.adapterServiceURL = adapter.serviceUrl
             self.adapterWarnings = adapter.warnings ?? []
         } else {
             self.adapterName = nil
             self.adapterServiceURL = nil
             self.adapterWarnings = []
         }
-        self.moduleOutcomes = record.module_outcomes?.map(ModuleOutcomeSummary.init(record:)) ?? []
+        self.moduleOutcomes = record.moduleOutcomes?.map(ModuleOutcomeSummary.init(record:)) ?? []
         self.source = .cliFallback
     }
 

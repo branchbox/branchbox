@@ -22,3 +22,7 @@ Target early Milestone 3 (after the control-plane Rails work lands) so the nec
 ## Open Questions
 - Should we ship the generated files in the repo or fetch them via SwiftPM? (Initial plan: check them in to avoid requiring protoc on mac testers.)
 - Do we want a shared Rust→Swift descriptor step (e.g., `tonic-build` emitting JSON) to keep CLI + mac app in sync?
+
+## Status (2025-11-10)
+- SwiftProtobuf + gRPC Swift stubs are now generated via `scripts/generate-swift-protos.sh` and checked into `macos/Sources/BranchBoxApp/Generated/`.
+- Remaining work: wire the generator into CI/devcontainer images so the docker fallback is only needed for local runs, and evaluate descriptor sharing once the Rails control plane lands.

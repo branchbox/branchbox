@@ -89,15 +89,13 @@ final class FeatureListViewModel: ObservableObject {
             guard let self else { return }
             do {
                 try await self.bridge.startFeature(intent)
-                await MainActor.run {
-                    self.newFeatureName = ""
-                    self.newFeatureTitle = ""
-                    self.promptSeed = ""
-                    self.useMinimalMode = false
-                    self.branchPrefix = ""
-                    self.skipModules = []
-                    self.reuseExisting = false
-                }
+                self.newFeatureName = ""
+                self.newFeatureTitle = ""
+                self.promptSeed = ""
+                self.useMinimalMode = false
+                self.branchPrefix = ""
+                self.skipModules = []
+                self.reuseExisting = false
                 self.recordPromptSeed(intent.promptSeed)
                 await self.loadFeatures()
             } catch {

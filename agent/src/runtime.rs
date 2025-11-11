@@ -256,20 +256,41 @@ async fn event_loop(
                                     .await
                                 {
                                     Ok(ack_id) => {
-                                        if let Err(err) = state.mark_events_delivered(&ids).await {
-                                            warn!("Failed to mark events delivered: {err:#}");
+                                        let acked: Vec<i64> =
+                                            ids.iter().copied().take_while(|id| *id <= ack_id).collect();
+
+                                        if acked.is_empty() {
+                                            debug!(
+                                                ack_id,
+                                                batch_size = ids.len(),
+                                                "Control plane acked no events from batch"
+                                            );
                                         } else if let Err(err) =
-                                            state.update_control_plane_ack(ack_id).await
+                                            state.mark_events_delivered(&acked).await
+                                        {
+                                            warn!("Failed to mark acked events delivered: {err:#}");
+                                        }
+
+                                        if let Err(err) = state.update_control_plane_ack(ack_id).await
                                         {
                                             warn!(
                                                 "Failed to persist control-plane ack (event {}): {err:#}",
                                                 ack_id
                                             );
-                                        } else {
+                                        }
+
+                                        if acked.len() == ids.len() {
                                             delivered = true;
                                             if let Some(backoff) = backoff.as_mut() {
                                                 backoff.reset();
                                             }
+                                        } else {
+                                            debug!(
+                                                acked = acked.len(),
+                                                pending = ids.len() - acked.len(),
+                                                ack_id,
+                                                "Partial control-plane ack; retaining remaining events"
+                                            );
                                         }
                                     }
                                     Err(err) => {

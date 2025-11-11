@@ -11,6 +11,7 @@ enum CLICompat {
             return []
         }
         let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode([FeatureRecord].self, from: data)
     }
@@ -54,7 +55,9 @@ enum CLICompat {
         guard let data = output.data(using: .utf8) else {
             throw AgentBridgeError.cliUnavailable("agent status returned empty output")
         }
-        return try JSONDecoder().decode(AgentStatusRecord.self, from: data)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(AgentStatusRecord.self, from: data)
     }
 
     private static func run(arguments: [String], workspacePath: String) throws -> String {
@@ -87,16 +90,16 @@ enum CLICompat {
     }
 
     struct FeatureRecord: Decodable {
-        let work_feature: String
-        let branch_name: String
+        let workFeature: String
+        let branchName: String
         let status: String
-        let feature_url: String?
-        let prompt_seed: String?
-        let start_mode: String?
-        let updated_at: String?
-        let tunnel_status: String?
-        let tunnel_provider: String?
-        let module_outcomes: [ModuleOutcomeRecord]?
+        let featureUrl: String?
+        let promptSeed: String?
+        let startMode: String?
+        let updatedAt: Date?
+        let tunnelStatus: String?
+        let tunnelProvider: String?
+        let moduleOutcomes: [ModuleOutcomeRecord]?
         let adapter: AdapterRecord?
     }
 
@@ -107,16 +110,16 @@ enum CLICompat {
 
     struct AdapterRecord: Decodable {
         let name: String
-        let service_url: String
+        let serviceUrl: String
         let warnings: [String]?
     }
 
     struct AgentStatusRecord: Decodable {
-        let control_plane_configured: Bool
-        let control_plane_connected: Bool
-        let last_delivery_at: String?
-        let last_failure_at: String?
-        let last_error: String?
-        let last_ack_event_id: Int64?
+        let controlPlaneConfigured: Bool
+        let controlPlaneConnected: Bool
+        let lastDeliveryAt: String?
+        let lastFailureAt: String?
+        let lastError: String?
+        let lastAckEventId: Int64?
     }
 }
