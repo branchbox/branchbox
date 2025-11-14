@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document tracks the implementation progress of the Worktree Manager distributed system.
+This document tracks the implementation progress of the BranchBox distributed system.
 
 **Created**: 2025-10-21
 **Status**: 🟢 Phase 3 Ready – Milestone 2 (agent daemon + macOS preview) completed; control-plane + distribution work queued

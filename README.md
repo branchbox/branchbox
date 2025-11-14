@@ -5,9 +5,12 @@
 [![CI](https://github.com/branchbox/branchbox/workflows/CI/badge.svg)](https://github.com/branchbox/branchbox/actions)
 [![License](https://img.shields.io/github/license/branchbox/branchbox)](LICENSE)
 
-**Stop context-switching between features. Start working in parallel.**
+Stop context switching. Run multiple features in parallel—safely.
 
-BranchBox manages isolated git worktrees with complete development environments—separate databases, Docker networks, and configurations—so you can work on multiple features simultaneously without conflicts or cleanup overhead.
+Isolated git worktrees with per‑feature devcontainers, databases, Docker networks, and configuration. Perfect for solo engineers and agent‑assisted workflows—you can “yolo” big refactors without touching your main workspace.
+
+▶ Watch 60s teaser: https://example.com/branchbox-teaser  
+<!-- Replace the link above with your video URL. Optional: add a thumbnail image here. -->
 
 ## Quick Start
 
@@ -15,69 +18,38 @@ BranchBox manages isolated git worktrees with complete development environments�
 # Install (Linux/macOS)
 curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash
 
-# Start a new feature with complete isolation
+# Initialize project (creates registry, checks environment)
+branchbox init
+
+# Start a fully isolated feature workspace
 branchbox feature start "Add OAuth Integration"
 
-# Work in the new worktree
+# Open and work in the new worktree
 cd ../oauth-integration/
-# Your feature has its own database, Docker network, and configuration
+# Your feature has its own DB, Docker network, and ports
 ```
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for all installation methods.
+Prefer a disposable sample? Use the bundled harness: `./scripts/setup-sample-workspaces.sh` then run `branchbox init` → `branchbox feature start`.
 
-## Documentation
+## Aha Moments
 
-- **Docs site:** https://branchbox.github.io/branchbox/ (built with Docusaurus, deployed from `main`)
-- **Source:** `docs/` — run `cd docs && npm install && npm run build` to preview locally
-- **CLI reference:** update `docs/docs/reference/cli.md` whenever command flags change (capture `branchbox --help` output)
+- Multiple features running simultaneously with zero collisions (DB, network, ports).
+- One command spins up a complete, stack‑aware feature workspace (Rails, Node, generic).
+- Edit `.devcontainer/` once; replay changes everywhere with `branchbox devcontainer sync`.
+- Minimal mode for quick spikes or agent “yolo” experiments; add full provisioning later.
+- Safety nets: dirty devcontainer/compose guard on teardown; JSON registry for automations.
+- Agent‑friendly: shared credentials mount across containers; copy or symlink sync strategy.
 
-## Why BranchBox?
+## Core Commands
 
-Traditional git workflows force you to:
-- Stash changes when switching branches
-- Rebuild databases for each feature
-- Restart Docker containers to avoid port conflicts
-- Wait for CI to catch environment issues
+- `branchbox feature start "<title>"` — Create isolated worktree + provision modules
+- `branchbox feature list [--json]` — Show feature registry (machine‑readable when needed)
+- `branchbox feature teardown <name> [--complete-spec] [--keep-branch]` — Clean up safely
+- `branchbox devcontainer sync [--strategy copy|symlink] [--dry-run]` — Replay config across features
+- `branchbox detect` — Print detected adapter/modules for the current repo
+- `branchbox name generate|validate` — Naming helpers for features
 
-**BranchBox gives you:**
-- ✅ **Multiple features running simultaneously** with complete isolation
-- ✅ **Zero context switching** - each feature is a separate directory
-- ✅ **Automatic environment provisioning** - database, Docker, and configuration
-- ✅ **Stack-aware setup** - Rails, Node.js, or generic projects
-
-## Usage Examples
-
-### Starting a New Feature
-
-```bash
-# Create an isolated worktree for your feature
-branchbox feature start "Add OAuth Integration"
-
-# Output:
-# ✓ Created branch: feature/oauth-integration
-# ✓ Created worktree: /Users/you/projects/your-app-oauth-integration/
-# ✓ Copied .env with APP_URL=http://localhost:3000
-# ✓ Set COMPOSE_PROJECT_NAME=oauth-integration
-# ✓ Rails detected: Database setup instructions included
-# ✓ Spec created: docs/features/in-progress/oauth-integration.md
-#
-# Next steps:
-#   cd ../oauth-integration/
-#   bundle install
-#   rails db:create db:migrate
-```
-
-**What just happened:**
-- Created git worktree at `../oauth-integration/`
-- Created branch `feature/oauth-integration`
-- Copied `.env` with `APP_URL` configured for this feature
-- Set `COMPOSE_PROJECT_NAME` to isolate Docker containers
-- Detected Rails stack and provided database setup instructions
-- Created feature spec in `docs/features/in-progress/oauth-integration.md`
-
-### Fast Path & Prompt Seeds
-
-Need a lightweight worktree to spike an idea? Use the `feature new` alias plus minimal mode:
+Minimal mode (fast spikes and agent hand‑off):
 
 ```bash
 branchbox feature new backlog-quick-fix \
@@ -86,88 +58,37 @@ branchbox feature new backlog-quick-fix \
   --json
 ```
 
-Highlights:
-- Minimal mode skips the devcontainer, compose, and specs modules (you can still skip others via `--skip-module`). The CLI prints a reminder to run `branchbox devcontainer sync` when you want full provisioning.
-- `--default-prompt` drops in a BranchBox-authored seed for your default coding agent so you can stay hands-free (`--prompt "<custom text>"` still works when you want to override it).
-- Prompt seeds (up to 2,000 characters) are stored in the registry so the forthcoming agent bridge can resume context. The summary reports whether `BRANCHBOX_ENABLE_PROMPT_BRIDGE` is active.
-- Set `BRANCHBOX_DEFAULT_AGENT_CMD="cursor --workspace ." BRANCHBOX_DEFAULT_AGENT_NAME=cursor` (or any command) to auto-launch your preferred agent once the devcontainer module finishes. The checklist row explains whether it will run immediately or wait for `branchbox devcontainer sync`.
-- `--json` mirrors the richer on-screen summary (the checklist, module table, skipped modules, warnings, prompt metadata) and now includes a `default_agent` block so automation knows whether an agent will launch (`ready`, `waiting`, `blocked`, `disabled`). Add `--no-summary` for machine-only output.
+## Devcontainers, Simplified
 
-### Working on Your Feature
+- New features copy `.devcontainer/` automatically; open in VS Code/Cursor and accept “Reopen in Container”.
+- Update all features after editing `.devcontainer/` in the main repo:
 
 ```bash
-cd ../oauth-integration/
-
-# Your feature runs in complete isolation:
-# - Separate database (oauth_integration_development)
-# - Separate Docker network (oauth-integration_default)
-# - Separate port allocation
-# - Independent configuration
-
-# Make changes
-git add .
-git commit -m "Add OAuth provider configuration"
-git push -u origin feature/oauth-integration
-
-# Meanwhile, your main worktree keeps running without conflicts!
+branchbox devcontainer sync
+# Optional: --strategy copy|symlink, --dry-run
 ```
 
-### Checking Active Features
+- Shared tool credentials (`.gh`, `.claude/`, `.codex/`) mount from `SHARED_CONFIG_DIR` (default `../..`). Authenticate once; every feature reuses it.
 
-```bash
-branchbox feature list
+## Examples
 
-# Output (abbreviated):
-# 📚 Feature registry — 3 active · 0 removed (showing 3/3)
-# Feature             Status  Mode    Prompt            Modules           Branch                       URL                       Tunnel   Devcontainer  PR  Color    Updated
-# oauth-integration   Active  full    —                 4 ok / 1 skip     feature/oauth-integration    https://dev-oauth.local   —        synced 2025-11-03  —  #7a6bff  2025-11-03 10:12
-# backlog-quick-fix   Active  minimal seed (28 chars)   0 fail / 3 skip   feature/backlog-quick-fix    https://dev-backlog.local pending  outdated        —  #8d68ff  2025-11-05 14:20
-# api-refactor        Active  full    seed (41 chars)   5 ok              feature/api-refactor         https://dev-api.local     active   synced 2025-11-04  #42c9f0  #ff6b6b  2025-11-04 09:55
-```
-
-Use `branchbox feature list --json` when you need machine-readable data; entries include `start_mode`, `prompt_seed`, each module outcome, and the last summary timestamp.
-
-### Cleaning Up After Merge
-
-```bash
-# After merging your PR, tear down the feature worktree
-branchbox feature teardown oauth-integration
-
-# Output:
-# ✓ Stopped Docker containers
-# ✓ Removed worktree: /Users/you/projects/your-app-oauth-integration/
-# ✓ Deleted branch: feature/oauth-integration
-# ✓ Moved spec to: docs/features/completed/oauth-integration.md
-
-# Or complete the spec without deleting the branch:
-branchbox feature teardown oauth-integration --complete-spec --keep-branch
-```
-
-### Stack Detection Examples
-
-BranchBox automatically detects your project type and adapts:
-
-**Rails Project:**
+Rails:
 ```bash
 branchbox feature start "Add User Dashboard"
 # ✓ Rails detected (Gemfile, config/application.rb)
-# ✓ Database name: user-dashboard_development
-# ✓ Run: rails db:create db:migrate
+# ✓ DB: user-dashboard_development · Next: rails db:create db:migrate
 ```
 
-**Node.js Project:**
+Node.js:
 ```bash
 branchbox feature start "Add GraphQL API"
-# ✓ Node.js detected (package.json)
-# ✓ Docker Compose project: graphql-api
-# ✓ Run: npm install
+# ✓ Node.js detected (package.json) · Next: npm install
 ```
 
-**Generic Project:**
+Generic:
 ```bash
-branchbox feature start "Documentation Update"
-# ✓ Generic adapter (no specific stack detected)
-# ✓ Basic worktree isolation applied
+branchbox feature start "Docs Refresh"
+# ✓ Generic adapter · Basic isolation applied
 ```
 
 ## Devcontainer Workflow
@@ -241,144 +162,36 @@ swift run BranchBoxApp
 **Quick install (Linux/macOS):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash
-```
-
-**Other methods:**
-- **Homebrew** (macOS): `brew install branchbox/tap/branchbox` *(coming soon)*
-- **Scoop** (Windows): `scoop install branchbox` *(coming soon)*
-- **Pre-built binaries**: Download from [GitHub Releases](https://github.com/branchbox/branchbox/releases/latest)
-- **From source**: `cargo install --path cli --locked`
-
-**Verify installation:**
-```bash
-branchbox --version
 branchbox --help
 ```
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed installation instructions, platform-specific guides, and troubleshooting.
+Other methods: Homebrew (coming soon), Scoop (coming soon), prebuilt binaries via Releases, or `cargo install --path cli --locked`. See docs/INSTALLATION.md for details.
 
-## Agent Daemon (macOS/Linux)
+## Safety & Agent‑Ready
 
-Milestone 1 ships the BranchBox agent—a long-running daemon that owns feature orchestration, persistent state, and heartbeat telemetry. **It currently targets Unix-like hosts (macOS, Linux, devcontainers).** On Windows, keep using CLI direct mode (`BRANCHBOX_CLI_DIRECT=1`) until we land the backlog work described in [agent-windows-support](docs/features/backlog/agent-windows-support.md).
+- Dirty guard on teardown refuses to delete changed devcontainer/compose files unless `--force` is confirmed.
+- Copy strategy by default (avoids macOS prompts); opt‑in to symlink for always‑up‑to‑date worktrees.
+- Prompt seeds (up to 2,000 chars) stored in the registry; `--default-prompt` available in minimal mode.
+- Shared mounts are never deleted; BranchBox preserves host‑side credentials.
 
-```bash
-# Start the agent (defaults to ~/.branchbox/agent)
-cargo run -p branchbox-agent --release
+## What’s Built
 
-# CLI commands will now stream through the daemon
-branchbox feature start "Add OAuth Integration"
-```
+- Milestone 0: Core worktree orchestration (start, teardown, list), stack detection, module system (compose, database, specs), env provisioning, JSON registry.
+- Milestone 1 (in progress): Agent daemon for background workflows; CLI bridge; telemetry.
 
-- Customize the socket/state directory via `BRANCHBOX_AGENT_SOCKET` / `BRANCHBOX_AGENT_DIR`.
-- To run the full manual harness against the live agent, use `./scripts/manual-agent-e2e.sh` (passes through any `--mode`/`STACK` flags from `scripts/manual-cli-e2e.sh` and preserves logs when `KEEP_AGENT_TMP=1`).
-- Bypass the daemon when needed (CI, Windows) with `BRANCHBOX_CLI_DIRECT=1 branchbox feature …`.
+Roadmap highlights: Windows agent transport, native macOS app, Rails control plane, Tailscale mesh. See docs/ARCHITECTURE.md.
 
-## What Works Now
+## Troubleshooting
 
-**✅ Milestone 0 Complete** - Core worktree orchestration:
-- Full feature lifecycle (`start`, `teardown`, `list`)
-- Stack detection (Rails, Node.js, Generic)
-- Module system (Docker Compose, Database, Specs)
-- Environment configuration (.env copying with `APP_URL` injection)
-- State tracking (JSON registry at `.branchbox/registry.json`)
-
-**✅ Milestone 1 (Agent) Highlights**
-- `branchbox-agent` daemon exposes Unix-socket IPC + tonic gRPC for feature workflows.
-- CLI bridges through the agent by default; manual harness + docs updated.
-- Persistent registry + offline queue + heartbeat metrics ready for future control-plane wiring.
-
-**🚧 Coming Soon:**
-- Agent transport for Windows hosts (see backlog doc above)
-- Native macOS app (Milestone 2)
-- Multi-device coordination via Rust agent ↔ Rails control plane (Milestone 2/3)
-- Tailscale mesh networking (Milestone 3)
-
-See [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for detailed progress.
-
-## Architecture
-
-```
-Local Device ─┬─ Mac App (SwiftUI)              [Milestone 2]
-              ├─ CLI Tool (Rust)                 [✓ Milestone 0]
-              └─ Agent (Rust daemon) ──┬─ Core Library (Rust)  [✓ Milestone 0]
-                                       │
-                          Tailscale Network       [Milestone 3]
-                                       │
-Control Plane (Rails) ─────────────────┘         [Milestone 3]
-  ├─ Web Dashboard
-  ├─ API
-  └─ PostgreSQL
-```
-
-**Current Architecture** (Milestone 0):
-- **Core Library** (`core/`) - Rust library providing git worktree operations, stack adapters, and module system
-- **CLI Tool** (`cli/`) - Command-line interface exposing feature lifecycle commands
-
-**Future Architecture:**
-- **Agent** - Long-running daemon for background operations and offline-first sync
-- **Control Plane** - Rails app coordinating state across devices
-- **Mac App** - Native SwiftUI interface for local and remote worktree management
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design and [docs/PROTOCOL.md](docs/PROTOCOL.md) for communication protocols.
-
-## Documentation
-
-- **[Installation Guide](docs/INSTALLATION.md)** - All installation methods and troubleshooting
-- **[Development Guide](docs/DEVELOPMENT.md)** - Building, testing, and contributing
-- **[Architecture](docs/ARCHITECTURE.md)** - System design and components
-- **[Protocol Spec](docs/PROTOCOL.md)** - gRPC and REST API documentation
-- **[Implementation Status](docs/IMPLEMENTATION_STATUS.md)** - Feature completion tracking
-- **[Homebrew Setup](docs/HOMEBREW_SETUP.md)** - Homebrew tap automation
+- No “Reopen in Container”? Ensure `.devcontainer/` exists in the feature; run `branchbox devcontainer sync`.
+- Tools ask to re‑auth? Verify mounts inside the container (`mount | grep -E '(codex|claude|gh)'`) and `SHARED_CONFIG_DIR`.
+- Prefer symlinks? Set `BRANCHBOX_DEVCONTAINER_STRATEGY=symlink` (or persist in `.env`).
 
 ## Contributing
 
-We welcome contributions! To get started:
-
-1. Check out the [Development Guide](docs/DEVELOPMENT.md)
-2. Read [AGENTS.md](AGENTS.md) for repository guidelines
-3. Fork the repository and create a feature branch
-4. Make your changes with tests
-5. Submit a pull request
-
-**Development environment:**
-- Use the included devcontainer for instant setup
-- Run `cargo test --all-features` before submitting
-- Follow conventional commit format: `feat(module): description`
-
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed development workflow.
-
-## Components
-
-### Core Library (`core/`)
-Rust library providing:
-- Git worktree operations via `git2` crate
-- Stack adapter system (Rails, Node.js, Generic)
-- Module system (tunnel, database, compose, specs)
-- Naming and validation utilities
-
-### CLI Tool (`cli/`)
-Command-line interface for:
-- Feature lifecycle operations (`start`, `teardown`, `list`)
-- Stack detection and configuration
-- Local worktree management
-
-### Future Components
-- **Agent** (`agent/`) - Rust daemon for background operations [Milestone 1]
-- **Mac App** (`macos/`) - SwiftUI native interface [Milestone 2]
-- **Control Plane** (`control-plane/`) - Rails coordination service [Milestone 3]
+- Devcontainer ships a ready toolchain. Run `cargo fmt && cargo clippy && cargo test` before PRs.
+- Use conventional commits (e.g., `feat(modules): …`). See CONTRIBUTING.md and AGENTS.md.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Status
-
-**⚠️ Active Development**: Milestone 0 complete (core worktree orchestration). Milestones 1-3 (agent, native app, control plane) in progress.
-
-Current version is suitable for **local development workflows** with manual CLI usage. Multi-device coordination and native apps coming in future milestones.
-
-## Related Projects
-
-- [Git Worktree](https://git-scm.com/docs/git-worktree) - Official git worktree documentation
-- [Tailscale](https://tailscale.com/) - Secure mesh VPN for device connectivity (Milestone 3)
-- [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) - Expose local services securely (Milestone 1)
+MIT — see LICENSE.
