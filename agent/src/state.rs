@@ -519,30 +519,36 @@ impl AgentState {
             Ok(())
         };
 
-        maybe_add(
-            "last_delivery_at",
-            "ALTER TABLE control_plane_status ADD COLUMN last_delivery_at TEXT",
-        )?;
-        maybe_add(
-            "last_failure_at",
-            "ALTER TABLE control_plane_status ADD COLUMN last_failure_at TEXT",
-        )?;
-        maybe_add(
-            "last_error",
-            "ALTER TABLE control_plane_status ADD COLUMN last_error TEXT",
-        )?;
-        maybe_add(
-            "last_sent_batch_id",
-            "ALTER TABLE control_plane_status ADD COLUMN last_sent_batch_id INTEGER",
-        )?;
-        maybe_add(
-            "last_sent_event_id",
-            "ALTER TABLE control_plane_status ADD COLUMN last_sent_event_id INTEGER",
-        )?;
-        maybe_add(
-            "last_sent_at",
-            "ALTER TABLE control_plane_status ADD COLUMN last_sent_at TEXT",
-        )?;
+        let columns_to_add = [
+            (
+                "last_delivery_at",
+                "ALTER TABLE control_plane_status ADD COLUMN last_delivery_at TEXT",
+            ),
+            (
+                "last_failure_at",
+                "ALTER TABLE control_plane_status ADD COLUMN last_failure_at TEXT",
+            ),
+            (
+                "last_error",
+                "ALTER TABLE control_plane_status ADD COLUMN last_error TEXT",
+            ),
+            (
+                "last_sent_batch_id",
+                "ALTER TABLE control_plane_status ADD COLUMN last_sent_batch_id INTEGER",
+            ),
+            (
+                "last_sent_event_id",
+                "ALTER TABLE control_plane_status ADD COLUMN last_sent_event_id INTEGER",
+            ),
+            (
+                "last_sent_at",
+                "ALTER TABLE control_plane_status ADD COLUMN last_sent_at TEXT",
+            ),
+        ];
+
+        for (column, ddl) in columns_to_add {
+            maybe_add(column, ddl)?;
+        }
 
         Ok(())
     }

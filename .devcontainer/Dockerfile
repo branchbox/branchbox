@@ -9,31 +9,31 @@ ARG MDBOOK_VERSION=0.4.40
 # Install additional tools for worktree development
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
-    git \
-    curl \
-    ca-certificates \
-    gnupg \
-    unzip \
-    tzdata \
     build-essential \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
+    ca-certificates \
     clang \
-    libsqlite3-dev \
-    libsqlite3-0 \
-    libncurses5-dev \
-    libcurl4-openssl-dev \
-    libicu-dev \
-    libxml2-dev \
+    curl \
+    git \
+    gnupg \
+    libatomic1 \
     libbsd-dev \
+    libcurl4-openssl-dev \
     libedit-dev \
     libedit2 \
-    libz3-dev \
-    zlib1g-dev \
-    libzip-dev \
-    libatomic1 \
+    libicu-dev \
+    libncurses5-dev \
     libpython3-dev \
+    libsqlite3-0 \
+    libsqlite3-dev \
+    libssl-dev \
+    libxml2-dev \
+    libz3-dev \
+    libzip-dev \
+    pkg-config \
+    protobuf-compiler \
+    tzdata \
+    unzip \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install useful Rust tools as root, then fix permissions
