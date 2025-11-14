@@ -33,6 +33,9 @@ macos/build/
 macos/.cache/
 *.app
 
+# macOS screenshots
+macos/screenshots/
+
 # Generic caches
 .cache/
 
