@@ -297,16 +297,29 @@ impl DevcontainerModule {
         let workspace_mount =
             "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached";
 
+        let mut needs_update = false;
+
         match config.as_object_mut() {
             Some(map) => {
-                map.insert(
-                    "workspaceFolder".to_string(),
-                    JsonValue::String(workspace_folder.to_string()),
-                );
-                map.insert(
-                    "workspaceMount".to_string(),
-                    JsonValue::String(workspace_mount.to_string()),
-                );
+                let folder_value = JsonValue::String(workspace_folder.to_string());
+                if map
+                    .get("workspaceFolder")
+                    .map(|value| value != &folder_value)
+                    .unwrap_or(true)
+                {
+                    map.insert("workspaceFolder".to_string(), folder_value);
+                    needs_update = true;
+                }
+
+                let mount_value = JsonValue::String(workspace_mount.to_string());
+                if map
+                    .get("workspaceMount")
+                    .map(|value| value != &mount_value)
+                    .unwrap_or(true)
+                {
+                    map.insert("workspaceMount".to_string(), mount_value);
+                    needs_update = true;
+                }
             }
             None => {
                 return Err(Error::validation(format!(
@@ -314,6 +327,10 @@ impl DevcontainerModule {
                     config_path.display()
                 )))
             }
+        }
+
+        if !needs_update {
+            return Ok(());
         }
 
         let mut formatted = serde_json::to_string_pretty(&config)?;
