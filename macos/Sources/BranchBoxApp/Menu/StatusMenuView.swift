@@ -12,6 +12,7 @@ struct StatusMenuView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             workspaceCard
+            tunnelCard
             if let active = viewModel.activeFeature {
                 activeCard(active)
             }
@@ -69,6 +70,40 @@ struct StatusMenuView: View {
                 .buttonStyle(.borderless)
             }
             .padding(8)
+        }
+    }
+
+    private var tunnelCard: some View {
+        GroupBox("Tunnel") {
+            if let summary = viewModel.tunnelSummary {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(summary.provider, systemImage: "lock.shield")
+                        .font(.subheadline)
+                    Text(summary.status)
+                        .font(.caption)
+                        .foregroundColor(summary.status.lowercased().contains("error") ? .orange : .secondary)
+                    if let hostname = summary.hostname {
+                        HStack {
+                            Text(hostname)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button("Copy") { viewModel.copyTunnelHostname() }
+                                .buttonStyle(.borderless)
+                        }
+                    } else {
+                        Text("No hostname yet").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                .padding(8)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No tunnel detected").font(.subheadline)
+                    Text("Start a feature with the tunnel module enabled.").font(.caption).foregroundColor(.secondary)
+                }
+                .padding(8)
+            }
         }
     }
 
