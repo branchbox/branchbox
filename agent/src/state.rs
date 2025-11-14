@@ -308,6 +308,61 @@ impl AgentState {
         .await
     }
 
+    pub async fn record_control_plane_delivery_attempt(
+        &self,
+        batch_id: i64,
+        last_event_id: i64,
+    ) -> Result<()> {
+        self.execute(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET last_sent_batch_id = :batch_id,
+                    last_sent_event_id = :last_event_id,
+                    last_sent_at = :updated_at,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {
+                    ":batch_id": batch_id,
+                    ":last_event_id": last_event_id,
+                    ":updated_at": now,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn reconcile_control_plane_cursor(&self) -> Result<()> {
+        self.execute(move |conn| {
+            let ack_id: Option<i64> = conn.query_row(
+                "SELECT last_ack_event_id FROM control_plane_status WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )?;
+
+            if let Some(ack_id) = ack_id {
+                let delivered_at = Utc::now().to_rfc3339();
+                conn.execute(
+                    r#"
+                    UPDATE events
+                    SET delivered_at = COALESCE(delivered_at, :delivered_at)
+                    WHERE id <= :ack_id
+                    "#,
+                    named_params! {
+                        ":delivered_at": &delivered_at,
+                        ":ack_id": ack_id,
+                    },
+                )?;
+            }
+
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn record_control_plane_failure(&self, message: &str) -> Result<()> {
         let error = message.to_string();
         self.execute(move |conn| {
@@ -331,7 +386,16 @@ impl AgentState {
         self.execute(move |conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT last_ack_event_id, next_batch_id, last_delivery_at, last_failure_at, last_error, updated_at
+                SELECT
+                    last_ack_event_id,
+                    next_batch_id,
+                    last_delivery_at,
+                    last_failure_at,
+                    last_error,
+                    updated_at,
+                    last_sent_batch_id,
+                    last_sent_event_id,
+                    last_sent_at
                 FROM control_plane_status
                 WHERE id = 1
                 "#,
@@ -354,6 +418,13 @@ impl AgentState {
                     updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
+                    last_sent_batch_id: row.get(6).ok(),
+                    last_sent_event_id: row.get(7).ok(),
+                    last_sent_at: row.get::<_, Option<String>>(8)?.and_then(|ts| {
+                        DateTime::parse_from_rfc3339(&ts)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
                 })
             })?;
             Ok(status)
@@ -407,11 +478,25 @@ impl AgentState {
                 last_delivery_at TEXT,
                 last_failure_at TEXT,
                 last_error TEXT,
+                last_sent_batch_id INTEGER,
+                last_sent_event_id INTEGER,
+                last_sent_at TEXT,
                 updated_at TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO control_plane_status (id, last_ack_event_id, next_batch_id, last_delivery_at, last_failure_at, last_error, updated_at)
-            VALUES (1, NULL, 1, NULL, NULL, NULL, datetime('now'));
+            INSERT OR IGNORE INTO control_plane_status (
+                id,
+                last_ack_event_id,
+                next_batch_id,
+                last_delivery_at,
+                last_failure_at,
+                last_error,
+                last_sent_batch_id,
+                last_sent_event_id,
+                last_sent_at,
+                updated_at
+            )
+            VALUES (1, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL, datetime('now'));
             "#,
         )?;
 
@@ -445,6 +530,18 @@ impl AgentState {
         maybe_add(
             "last_error",
             "ALTER TABLE control_plane_status ADD COLUMN last_error TEXT",
+        )?;
+        maybe_add(
+            "last_sent_batch_id",
+            "ALTER TABLE control_plane_status ADD COLUMN last_sent_batch_id INTEGER",
+        )?;
+        maybe_add(
+            "last_sent_event_id",
+            "ALTER TABLE control_plane_status ADD COLUMN last_sent_event_id INTEGER",
+        )?;
+        maybe_add(
+            "last_sent_at",
+            "ALTER TABLE control_plane_status ADD COLUMN last_sent_at TEXT",
         )?;
 
         Ok(())
@@ -522,6 +619,9 @@ pub struct ControlPlaneStatus {
     pub last_delivery_at: Option<DateTime<Utc>>,
     pub last_failure_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub last_sent_batch_id: Option<i64>,
+    pub last_sent_event_id: Option<i64>,
+    pub last_sent_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -559,6 +659,22 @@ mod tests {
         state.update_control_plane_ack(42).await.unwrap();
         let status = state.control_plane_status().await.unwrap();
         assert_eq!(status.last_ack_event_id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn control_plane_delivery_attempt_records_cursor() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        state
+            .record_control_plane_delivery_attempt(7, 99)
+            .await
+            .unwrap();
+
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_sent_batch_id, Some(7));
+        assert_eq!(status.last_sent_event_id, Some(99));
+        assert!(status.last_sent_at.is_some());
     }
 
     #[tokio::test]

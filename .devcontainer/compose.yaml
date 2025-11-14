@@ -5,6 +5,8 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
     privileged: true
+    init: true
+    ipc: host
     container_name: ${DEVCONTAINER_NAME:-branchbox}
     volumes:
     - ../..:/workspaces:cached

@@ -63,6 +63,25 @@ private extension AgentStatusView {
                             copyToPasteboard(String(ack))
                         }
                     }
+                    if let batch = status.lastSentBatchID {
+                        let cursor = status.lastSentEventID.map { "#\($0)" } ?? "—"
+                        infoRow(title: "Last batch sent", value: "#\(batch) · \(cursor)") {
+                            var payload = "#\(batch)"
+                            if let event = status.lastSentEventID {
+                                payload += " (event \(event))"
+                            }
+                            copyToPasteboard(payload)
+                        }
+                    } else if let cursor = status.lastSentEventID {
+                        infoRow(title: "Last sent cursor", value: "#\(cursor)") {
+                            copyToPasteboard(String(cursor))
+                        }
+                    }
+                    if let sent = formattedStatusDate(status.lastSentAt) {
+                        infoRow(title: "Last send attempt", value: sent.display) {
+                            copyToPasteboard(sent.raw)
+                        }
+                    }
                     if let delivery = formattedStatusDate(status.lastDeliveryAt) {
                         infoRow(title: "Last delivery", value: delivery.display) {
                             copyToPasteboard(delivery.raw)

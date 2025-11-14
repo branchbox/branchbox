@@ -213,7 +213,7 @@ branchbox/
 - [x] Devcontainer telemetry surfaced across home/features/detail/agent views (strategy, last sync, outdated badges).
 - [x] Finder/Terminal quick actions for workspaces and active feature worktrees.
 - [x] Local notification hooks for start/teardown/sync completions.
-- [ ] Agent-controlled Start/Teardown sheet parity with CLI prompt history (future polish).
+- [x] Agent-controlled Start/Teardown sheet parity with CLI prompt history (sheet now binds directly to the agent/view model state, reuses prompt history chips, and persists teardown toggles via defaults).
 
 ### 🟡 Phase 4: Control Plane + macOS App (IN PROGRESS)
 
@@ -226,8 +226,8 @@ branchbox/
 - [x] macOS app workspace picker, transport badge, module/adapter/tunnel health display, and teardown confirmations
 - [x] gRPC + CLI control-plane status endpoint (`branchbox agent status`, mac app badge)
 - [x] Manual doc updates describing the new workflow (README + docs/docs/getting-started/manual-cli-e2e.md)
-- [ ] Control-plane ack/offset tracking (persist the last HTTP delivery window so we can resume mid-batch)
-- [ ] macOS app polish: workspace picker, status badges, gRPC transport selection UI
+- [x] Control-plane ack/offset tracking (agent now persists last sent batch/cursor, reconciles acked events on startup, and surfaces the data through `branchbox agent status`)
+- [x] macOS app polish: workspace picker, status badges, gRPC transport selection UI (toolbar picker, transport overrides, and shared start/teardown state)
 - [ ] Windows agent parity (tracked separately in `docs/features/backlog/agent-windows-support.md`)
 - [ ] Windows transport (tracked in `docs/features/backlog/agent-windows-support.md`)
 

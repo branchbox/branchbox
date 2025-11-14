@@ -330,6 +330,12 @@ pub struct AgentStatus {
     pub last_error: Option<String>,
     #[serde(default)]
     pub last_ack_event_id: Option<i64>,
+    #[serde(default)]
+    pub last_sent_batch_id: Option<i64>,
+    #[serde(default)]
+    pub last_sent_event_id: Option<i64>,
+    #[serde(default)]
+    pub last_sent_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

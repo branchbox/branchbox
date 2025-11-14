@@ -4,31 +4,25 @@ struct StartFeatureSheet: View {
     @EnvironmentObject private var viewModel: FeatureListViewModel
     @Environment(\.dismiss) private var dismiss
     @Binding var name: String
-    @State private var title: String = ""
-    @State private var minimal = false
-    @State private var prompt = ""
-    @State private var branchPrefix = ""
-    @State private var reuse = false
-    @State private var skipped: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Advanced Start Options").font(.headline)
             TextField("Feature name", text: $name).textFieldStyle(.roundedBorder)
-            TextField("Optional title", text: $title).textFieldStyle(.roundedBorder)
+            TextField("Optional title", text: titleBinding).textFieldStyle(.roundedBorder)
 
-            Toggle("Minimal mode", isOn: $minimal)
-            Toggle("Reuse existing worktree", isOn: $reuse)
+            Toggle("Minimal mode", isOn: minimalBinding)
+            Toggle("Reuse existing worktree", isOn: reuseBinding)
 
             HStack {
-                TextField("Branch prefix", text: $branchPrefix).textFieldStyle(.roundedBorder)
-                TextField("Prompt seed", text: $prompt).textFieldStyle(.roundedBorder)
+                TextField("Branch prefix", text: branchPrefixBinding).textFieldStyle(.roundedBorder)
+                TextField("Prompt seed", text: promptBinding).textFieldStyle(.roundedBorder)
             }
 
             if !viewModel.promptHistory.isEmpty {
                 HStack { Text("Recent prompts:").font(.caption)
                     ForEach(viewModel.promptHistory, id: \.self) { seed in
-                        Button(seed) { prompt = seed }
+                        Button(seed) { viewModel.promptSeed = seed }
                             .buttonStyle(.borderless)
                             .font(.caption)
                             .padding(.horizontal, 8)
@@ -41,7 +35,7 @@ struct StartFeatureSheet: View {
 
             Menu("Skip modules") {
                 ForEach(viewModel.availableModules, id: \.self) { module in
-                    let isOn = skipped.contains(module)
+                    let isOn = viewModel.skipModules.contains(module)
                     Button(action: { toggle(module) }) {
                         Label(module.capitalized, systemImage: isOn ? "checkmark" : "")
                     }
@@ -58,28 +52,18 @@ struct StartFeatureSheet: View {
         }
         .padding()
         .frame(width: 520)
-        .onAppear {
-            title = viewModel.newFeatureTitle
-            minimal = viewModel.useMinimalMode
-            prompt = viewModel.promptSeed
-            branchPrefix = viewModel.branchPrefix
-            skipped = viewModel.skipModules
-            reuse = viewModel.reuseExisting
-        }
     }
 
     private func toggle(_ module: String) {
-        if skipped.contains(module) { skipped.remove(module) } else { skipped.insert(module) }
+        if viewModel.skipModules.contains(module) {
+            viewModel.skipModules.remove(module)
+        } else {
+            viewModel.skipModules.insert(module)
+        }
     }
 
     private func start() {
         viewModel.newFeatureName = normalized(name)
-        viewModel.newFeatureTitle = title
-        viewModel.useMinimalMode = minimal
-        viewModel.promptSeed = prompt
-        viewModel.branchPrefix = branchPrefix
-        viewModel.skipModules = skipped
-        viewModel.reuseExisting = reuse
         viewModel.startFeature()
         close()
     }
@@ -98,5 +82,40 @@ struct StartFeatureSheet: View {
         // Collapse multiple dashes
         let collapsed = joined.replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
         return collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    private var titleBinding: Binding<String> {
+        Binding(
+            get: { viewModel.newFeatureTitle },
+            set: { viewModel.newFeatureTitle = $0 }
+        )
+    }
+
+    private var promptBinding: Binding<String> {
+        Binding(
+            get: { viewModel.promptSeed },
+            set: { viewModel.promptSeed = $0 }
+        )
+    }
+
+    private var branchPrefixBinding: Binding<String> {
+        Binding(
+            get: { viewModel.branchPrefix },
+            set: { viewModel.branchPrefix = $0 }
+        )
+    }
+
+    private var minimalBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.useMinimalMode },
+            set: { viewModel.useMinimalMode = $0 }
+        )
+    }
+
+    private var reuseBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.reuseExisting },
+            set: { viewModel.reuseExisting = $0 }
+        )
     }
 }

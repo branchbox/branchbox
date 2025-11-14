@@ -36,6 +36,10 @@ impl AgentRuntime {
         );
 
         let state = AgentState::initialize(&self.config.state_dir)?;
+        state
+            .reconcile_control_plane_cursor()
+            .await
+            .context("Failed to reconcile control-plane cursor")?;
         let shutdown = Shutdown::new();
         let ipc_server = IpcServer::new(Arc::clone(&self.config), state.clone());
         let shutdown_token = shutdown.subscribe();
@@ -244,6 +248,16 @@ async fn event_loop(
                                     }
                                 };
                                 let last_event_id = *ids.last().unwrap_or(&0);
+
+                                if let Err(err) = state
+                                    .record_control_plane_delivery_attempt(batch_id, last_event_id)
+                                    .await
+                                {
+                                    warn!(
+                                        "Failed to persist control-plane delivery attempt (batch {}): {err:#}",
+                                        batch_id
+                                    );
+                                }
 
                                 match client
                                     .send_events(
