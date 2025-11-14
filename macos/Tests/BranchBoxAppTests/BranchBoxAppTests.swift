@@ -52,6 +52,7 @@ final class BranchBoxAppTests: XCTestCase {
             updatedAt: Date(),
             tunnelStatus: nil,
             tunnelProvider: nil,
+            tunnelHostname: nil,
             adapterName: nil,
             adapterServiceURL: nil,
             adapterWarnings: [],
