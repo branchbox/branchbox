@@ -139,7 +139,17 @@ if [[ -d "$REPO_ROOT/.devcontainer" ]]; then
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --exclude '.env' "$REPO_ROOT/.devcontainer/" .devcontainer/
   else
-    (cd "$REPO_ROOT/.devcontainer" && find . -type f ! -name '.env' -print0 | xargs -0 -I{} sh -c 'mkdir -p ".devcontainer/$(dirname "{}")"; cp -f "$REPO_ROOT/.devcontainer/{}" ".devcontainer/{}"')
+    dest_dir="$PWD/.devcontainer"
+    (
+      cd "$REPO_ROOT/.devcontainer" || exit 1
+      while IFS= read -r -d '' rel_path; do
+        rel="${rel_path#./}"
+        src="${PWD}/${rel}"
+        dst="${dest_dir}/${rel}"
+        mkdir -p "$(dirname "$dst")"
+        cp -f "$src" "$dst"
+      done < <(find . -type f ! -name '.env' -print0)
+    )
   fi
 fi
 
