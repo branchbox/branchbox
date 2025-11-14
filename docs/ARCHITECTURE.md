@@ -95,15 +95,17 @@ BranchBox is a distributed development environment orchestrator that manages git
 
 **Location**: `agent/`
 
-**Purpose**: Long-running daemon on the user's device that executes worktree operations. The Milestone 1 implementation targets Unix-like hosts (macOS, Linux, devcontainers); Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
+**Purpose**: Long-running daemon on the user's device that executes worktree operations. The Milestone 1 implementation targets Unix-like hosts (macOS, Linux, devcontainers); Milestone 2 added the control-plane HTTP drain + `branchbox agent status` surface. Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
 
 **Features**:
 - gRPC server listening on Tailscale IP + localhost
 - Executes commands from control plane or local clients
-- Offline operation with SQLite queue
+- Offline operation with SQLite queue + durable control-plane acknowledgements (`control_plane_status.last_ack_event_id`)
+- Configurable HTTP drain (`BRANCHBOX_CP_ENDPOINT`/`BRANCHBOX_CP_TOKEN`) with exponential backoff/jitter + telemetry surfaced via `branchbox agent status`
 - Periodic heartbeat to control plane
 - State synchronization
 - Auto-update capability
+- CLI fallback bridge when the daemon is offline so macOS preview + CLI can keep working
 
 **Communication**:
 - **Local**: Unix domain socket (BranchBox agent-managed path)
@@ -141,16 +143,18 @@ branchbox devcontainer sync
 **Purpose**: Native macOS application for worktree management
 
 **Features**:
-- View local worktrees
-- Start/stop/teardown features
-- Monitor Docker containers
-- View logs
-- Manage remote devices (optional)
-- Beautiful native UI with live updates
+- View local worktrees with adapter/module metadata, prompt history, and tunnel/telemetry badges
+- Start/stop/teardown features (including minimal mode toggles and `--force` / `--complete-spec`)
+- Visual indicators for transport path (agent gRPC vs CLI fallback) plus drain health surfaced via `branchbox agent status`
+- Monitor Docker containers + module output snippets
+- Workspace picker + configuration UI for CLI/grpc endpoints
+- Manage remote devices (future control-plane integration)
+- SwiftUI interface with live updates
 
 **Communication**:
 - Talks to local agent via Unix socket or localhost gRPC
-- Optionally talks to control plane for multi-device management
+- Falls back to invoking the CLI directly when the daemon is unavailable
+- Optionally talks to control plane for multi-device management (future)
 
 **Distribution**:
 - Mac App Store

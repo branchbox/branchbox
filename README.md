@@ -47,6 +47,7 @@ Prefer a disposable sample? Use the bundled harness: `./scripts/setup-sample-wor
 - `branchbox feature teardown <name> [--complete-spec] [--keep-branch]` — Clean up safely
 - `branchbox devcontainer sync [--strategy copy|symlink] [--dry-run]` — Replay config across features
 - `branchbox detect` — Print detected adapter/modules for the current repo
+- `branchbox agent status` — Inspect daemon health, drain configuration, and macOS app connectivity
 - `branchbox name generate|validate` — Naming helpers for features
 
 Minimal mode (fast spikes and agent hand‑off):
@@ -165,7 +166,9 @@ curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh
 branchbox --help
 ```
 
-Other methods: Homebrew (coming soon), Scoop (coming soon), prebuilt binaries via Releases, or `cargo install --path cli --locked`. See docs/INSTALLATION.md for details.
+Other methods: Prebuilt binaries via Releases or `cargo install --path cli --locked`. See docs/INSTALLATION.md for details.
+
+Note: After installing, open a new terminal session (or run `hash -r`) so your shell picks up the updated PATH.
 
 ## Safety & Agent‑Ready
 
@@ -177,9 +180,8 @@ Other methods: Homebrew (coming soon), Scoop (coming soon), prebuilt binaries vi
 ## What’s Built
 
 - Milestone 0: Core worktree orchestration (start, teardown, list), stack detection, module system (compose, database, specs), env provisioning, JSON registry.
-- Milestone 1 (in progress): Agent daemon for background workflows; CLI bridge; telemetry.
-
-Roadmap highlights: Windows agent transport, native macOS app, Rails control plane, Tailscale mesh. See docs/ARCHITECTURE.md.
+- Milestone 1: Always-on agent daemon for background workflows plus CLI bridge + telemetry so automations can delegate long-running jobs safely.
+- Milestone 2: Control-plane drain with durable acknowledgements, `branchbox agent status`, and a SwiftUI macOS preview app riding the same gRPC surface as the CLI.
 
 ## Troubleshooting
 

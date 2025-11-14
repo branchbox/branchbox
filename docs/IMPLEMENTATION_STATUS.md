@@ -231,13 +231,14 @@ branchbox/
 - [ ] Windows agent parity (tracked separately in `docs/features/backlog/agent-windows-support.md`)
 - [ ] Windows transport (tracked in `docs/features/backlog/agent-windows-support.md`)
 
-### 📋 Phase 4: CLI Tool (PLANNED)
+### ✅ Phase 4: CLI Tool (COMPLETE)
 
-- [ ] Argument parsing (clap)
-- [ ] Agent communication
-- [ ] Pretty output (indicatif, colored)
-- [ ] Interactive prompts (dialoguer)
-- [ ] Command implementations
+- [x] Clap-based command tree shipping `branchbox feature/devcontainer/name/detect`
+- [x] Agent bridge with `BRANCHBOX_AGENT_SOCKET`/`BRANCHBOX_CLI_DIRECT` fallbacks
+- [x] JSON/TTY output with progress bars + friendly errors
+- [x] Prompt + automation flags (`--minimal`, `--default-prompt`, `--yes`, `--skip-*`)
+- [x] Devcontainer + module orchestration hooks exposed via `branchbox devcontainer sync`
+- [x] `branchbox agent status` plumbing for Milestone 2 telemetry
 
 ### 📋 Phase 5: Control Plane (PLANNED)
 
@@ -247,13 +248,14 @@ branchbox/
 - [ ] Web UI for device management
 - [ ] Real-time updates (Turbo Streams)
 
-### 📋 Phase 6: Mac App (PLANNED)
+### ✅ Phase 6: Mac App (COMPLETE)
 
-- [ ] SwiftUI interface
-- [ ] Local agent communication
-- [ ] Worktree management UI
-- [ ] Settings and preferences
-- [ ] Optional: Control plane integration
+- [x] SwiftUI preview app under `macos/` with workspace picker + transport badges
+- [x] gRPC client built on `grpc-swift` with CLI fallback when the daemon is offline
+- [x] Feature list + start/teardown flows (minimal mode, prompt seeds, `--force`/`--complete-spec`)
+- [x] Module/tunnel telemetry chips, adapter metadata panes, and drain health surfaced via `branchbox agent status`
+- [x] Control-plane drain stub harness (`scripts/manual-agent-e2e.sh --cp-stub`) documented for validation
+- [ ] Follow-up: move from handwritten protos to generated sources (see `docs/features/backlog/mac-app-proto-codegen.md`)
 
 ## Code Quality
 
@@ -513,8 +515,11 @@ cargo build --release
 - ⏳ In Progress
 - 📋 Planned
 - ❌ Blocked
-- **Milestone 2 readiness**:
-  - Control-plane API can plug into the existing gRPC surface (`feature start/list/teardown` share the same proto used by the CLI).
-  - Registry/events queue captures `devcontainer_outdated`, tunnel metadata, and module outcomes for state sync.
-  - Manual agent e2e harness + README docs walk contributors through the daemon workflow.
-  - Remaining work: Windows/TCP transport plus the actual Rails control-plane endpoints (tracked separately).
+- **Milestone 2 complete**:
+  - Added an authenticated HTTP drain (configured via `BRANCHBOX_CP_ENDPOINT`/`BRANCHBOX_CP_TOKEN`) that batches feature events + heartbeats with host metadata for the control plane.
+  - Hardened registry persistence with `control_plane_status` (batch IDs + `last_ack_event_id`) to support durable acknowledgements and exponential backoff on failures.
+  - Extended the manual agent harness with `--cp-stub` plus documentation so contributors can exercise the drain locally.
+  - Bootstrapped a SwiftUI macOS preview app (workspace picker, telemetry badges, teardown sheet, CLI fallback) that speaks the same gRPC surface as the CLI.
+  - Added `branchbox agent status`/gRPC bindings so downstream clients can detect drain configuration, last delivery, and error conditions.
+  - Documented codegen follow-ups (`docs/features/backlog/mac-app-proto-codegen.md`) for moving away from handwritten proto stubs.
+  - Remaining work for Milestone 3: Windows/TCP transport and the production Rails control-plane endpoints.

@@ -189,9 +189,9 @@ branchbox/
 │   │   ├── modules/        # Feature modules (tunnel, database)
 │   │   └── bootstrap/      # Self-bootstrapping system (meta!)
 │   └── Cargo.toml
-├── agent/                  # Local agent daemon (planned)
+├── agent/                  # Local agent daemon (Milestones 1-2)
 ├── cli/                    # CLI tool
-├── macos/                  # Mac app (planned)
+├── macos/                  # SwiftUI preview app (Milestone 2)
 ├── docs/                   # Documentation
 ├── .env.sample             # Environment variable template
 ├── .gitignore
@@ -278,7 +278,7 @@ worktree bootstrap --stack rust .
 - [x] Core library implementation (Milestone 0)
 - [x] CLI implementation (Milestone 0)
 - [x] Agent implementation (Milestone 1 — macOS/Linux daemon + CLI IPC)
-- [ ] Mac app implementation (Milestone 2)
+- [x] Mac app implementation (Milestone 2 — SwiftUI preview app backed by the agent gRPC surface)
 - [ ] Control plane implementation (Milestone 3)
 
 ## Related Projects

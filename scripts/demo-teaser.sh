@@ -21,6 +21,8 @@ STACK="rust"
 KEEP=0
 BRANCHBOX_BIN=""
 
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stack)
@@ -52,7 +54,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-case "${STACK,,}" in
+case "$(lower "$STACK")" in
   rust|node|rails|generic) ;;
   *) echo "Unsupported stack: $STACK" >&2; exit 1 ;;
 esac
@@ -134,7 +136,21 @@ git commit -q -m "seed"
 # Ensure a .devcontainer exists so sync is meaningful. Copy project templates.
 if [[ -d "$REPO_ROOT/.devcontainer" ]]; then
   mkdir -p .devcontainer
-  rsync -a --exclude '.env' "$REPO_ROOT/.devcontainer/" .devcontainer/
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --exclude '.env' "$REPO_ROOT/.devcontainer/" .devcontainer/
+  else
+    dest_dir="$PWD/.devcontainer"
+    (
+      cd "$REPO_ROOT/.devcontainer" || exit 1
+      while IFS= read -r -d '' rel_path; do
+        rel="${rel_path#./}"
+        src="${PWD}/${rel}"
+        dst="${dest_dir}/${rel}"
+        mkdir -p "$(dirname "$dst")"
+        cp -f "$src" "$dst"
+      done < <(find . -type f ! -name '.env' -print0)
+    )
+  fi
 fi
 
 echo "==> branchbox init"
