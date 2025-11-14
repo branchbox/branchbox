@@ -1,11 +1,16 @@
 use crate::{
-    config::AgentConfig, control_plane::ControlPlaneClient, grpc::GrpcServer, ipc::IpcServer,
-    shutdown::Shutdown, state::AgentState,
+    config::AgentConfig,
+    control_plane::{AgentMetadata, ControlPlaneClient},
+    grpc::GrpcServer,
+    ipc::IpcServer,
+    shutdown::Shutdown,
+    state::AgentState,
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{interval, Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -31,6 +36,10 @@ impl AgentRuntime {
         );
 
         let state = AgentState::initialize(&self.config.state_dir)?;
+        state
+            .reconcile_control_plane_cursor()
+            .await
+            .context("Failed to reconcile control-plane cursor")?;
         let shutdown = Shutdown::new();
         let ipc_server = IpcServer::new(Arc::clone(&self.config), state.clone());
         let shutdown_token = shutdown.subscribe();
@@ -51,6 +60,7 @@ impl AgentRuntime {
             }
         };
 
+        let agent_meta = Arc::new(AgentMetadata::detect());
         let heartbeat_state = state.clone();
         let heartbeat_handle = tokio::spawn(heartbeat_loop(
             heartbeat_state,
@@ -63,6 +73,7 @@ impl AgentRuntime {
             event_state,
             Arc::clone(&self.config),
             cp_client.clone(),
+            Arc::clone(&agent_meta),
             event_token,
         ));
 
@@ -178,6 +189,7 @@ async fn event_loop(
     state: AgentState,
     config: Arc<AgentConfig>,
     cp_client: Option<ControlPlaneClient>,
+    agent_meta: Arc<AgentMetadata>,
     shutdown: CancellationToken,
 ) {
     let mut ticker = interval(config.event_flush_interval);
@@ -190,6 +202,10 @@ async fn event_loop(
         config.event_log_only
     );
 
+    let mut backoff = cp_client
+        .as_ref()
+        .and_then(|_| (!config.event_log_only).then(ControlPlaneBackoff::new));
+
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
@@ -200,6 +216,11 @@ async fn event_loop(
                 match state.dequeue_events(config.event_batch_size).await {
                     Ok(events) => {
                         if events.is_empty() {
+                            continue;
+                        }
+
+                        if let Some(ref delay) = backoff.as_ref().and_then(|b| b.remaining()) {
+                            debug!(?delay, "Control-plane backoff active; skipping flush tick");
                             continue;
                         }
 
@@ -215,31 +236,98 @@ async fn event_loop(
                             }
                         }
 
+                        let ids: Vec<i64> = events.iter().map(|event| event.id).collect();
                         let mut delivered = false;
-                        if let Some(client) = cp_client.as_ref() {
-                            match client
-                                .send_events(&config.workspace_root, &events)
-                                .await
-                            {
-                                Ok(_) => {
-                                    let ids: Vec<i64> =
-                                        events.iter().map(|event| event.id).collect();
-                                    if let Err(err) = state.mark_events_delivered(&ids).await {
-                                        warn!("Failed to mark events delivered: {err:#}");
-                                    } else {
-                                        delivered = true;
+                        if !config.event_log_only {
+                            if let Some(client) = cp_client.as_ref() {
+                                let batch_id = match state.next_batch_id().await {
+                                    Ok(id) => id,
+                                    Err(err) => {
+                                        warn!("Failed to allocate control-plane batch id: {err:#}");
+                                        continue;
                                     }
+                                };
+                                let last_event_id = *ids.last().unwrap_or(&0);
+
+                                if let Err(err) = state
+                                    .record_control_plane_delivery_attempt(batch_id, last_event_id)
+                                    .await
+                                {
+                                    warn!(
+                                        "Failed to persist control-plane delivery attempt (batch {}): {err:#}",
+                                        batch_id
+                                    );
                                 }
-                                Err(err) => {
-                                    warn!("Failed to deliver events to control plane: {err:#}");
+
+                                match client
+                                    .send_events(
+                                        &config.workspace_root,
+                                        agent_meta.as_ref(),
+                                        batch_id,
+                                        last_event_id,
+                                        &events,
+                                    )
+                                    .await
+                                {
+                                    Ok(ack_id) => {
+                                        let acked: Vec<i64> =
+                                            ids.iter().copied().take_while(|id| *id <= ack_id).collect();
+
+                                        if acked.is_empty() {
+                                            debug!(
+                                                ack_id,
+                                                batch_size = ids.len(),
+                                                "Control plane acked no events from batch"
+                                            );
+                                        } else if let Err(err) =
+                                            state.mark_events_delivered(&acked).await
+                                        {
+                                            warn!("Failed to mark acked events delivered: {err:#}");
+                                        }
+
+                                        if let Err(err) = state.update_control_plane_ack(ack_id).await
+                                        {
+                                            warn!(
+                                                "Failed to persist control-plane ack (event {}): {err:#}",
+                                                ack_id
+                                            );
+                                        }
+
+                                        if acked.len() == ids.len() {
+                                            delivered = true;
+                                            if let Some(backoff) = backoff.as_mut() {
+                                                backoff.reset();
+                                            }
+                                        } else {
+                                            debug!(
+                                                acked = acked.len(),
+                                                pending = ids.len() - acked.len(),
+                                                ack_id,
+                                                "Partial control-plane ack; retaining remaining events"
+                                            );
+                                        }
+                                    }
+                                    Err(err) => {
+                                        warn!("Failed to deliver events to control plane: {err:#}");
+                                        if let Err(status_err) = state
+                                            .record_control_plane_failure(&err.to_string())
+                                            .await
+                                        {
+                                            warn!(
+                                                "Failed to persist control-plane failure status: {status_err:#}"
+                                            );
+                                        }
+                                        if let Some(backoff) = backoff.as_mut() {
+                                            let delay = backoff.record_failure();
+                                            warn!(?delay, "Applying control-plane backoff");
+                                        }
+                                    }
                                 }
                             }
                         }
 
                         if !delivered {
                             if config.event_log_only || cp_client.is_none() {
-                                let ids: Vec<i64> =
-                                    events.iter().map(|event| event.id).collect();
                                 if let Err(err) = state.mark_events_delivered(&ids).await {
                                     warn!("Failed to mark logged events delivered: {err:#}");
                                 }
@@ -257,5 +345,51 @@ async fn event_loop(
                 }
             }
         }
+    }
+}
+
+struct ControlPlaneBackoff {
+    attempt: u32,
+    base: Duration,
+    max: Duration,
+    next_allowed: Option<Instant>,
+}
+
+impl ControlPlaneBackoff {
+    fn new() -> Self {
+        Self {
+            attempt: 0,
+            base: Duration::from_secs(2),
+            max: Duration::from_secs(120),
+            next_allowed: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.attempt = 0;
+        self.next_allowed = None;
+    }
+
+    fn record_failure(&mut self) -> Duration {
+        let shift = self.attempt.min(10);
+        let base_ms = self.base.as_millis() as u64;
+        let mut delay_ms = base_ms.saturating_mul(1u64 << shift);
+        let max_ms = self.max.as_millis() as u64;
+        if delay_ms > max_ms {
+            delay_ms = max_ms;
+        }
+
+        let jitter_range = (delay_ms / 2).max(1);
+        let jitter = fastrand::u64(0..jitter_range);
+        let total_ms = delay_ms.saturating_add(jitter);
+        let delay = Duration::from_millis(total_ms);
+        self.attempt = self.attempt.saturating_add(1);
+        self.next_allowed = Some(Instant::now() + delay);
+        delay
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.next_allowed
+            .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
     }
 }

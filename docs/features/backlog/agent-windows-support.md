@@ -52,6 +52,10 @@ BranchBox’s new Rust agent currently compiles and runs only on Unix-like syste
 - Should the control plane also talk over TCP/outbound connections for Windows support, or do we assume only local CLI usage for now?
 - How do we coordinate the config file between Unix socket and TCP settings without confusing existing users?
 
+## Timeline
+
+- Target **post-Milestone 3** once the control-plane + macOS surface fully stabilises. Until then Windows users should continue using `BRANCHBOX_CLI_DIRECT=1`.
+
 ## Next Steps
 
 1. Land transport abstraction with TCP fallback (agent + CLI updates).

@@ -1,5 +1,6 @@
 use crate::{config::AgentConfig, ops, state::AgentState};
 use anyhow::Result;
+use chrono::{Duration as ChronoDuration, Utc};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,10 +17,11 @@ pub mod proto {
 
 use proto::feature_service_server::{FeatureService, FeatureServiceServer};
 use proto::{
-    Adapter, Feature, ListRequest, ListResponse, ModuleOutcome as ProtoModuleOutcome,
-    ModuleReport as ProtoModuleReport, SkippedModule as ProtoSkippedModule, StartRequest,
-    StartResponse, StartSummary as ProtoStartSummary, TeardownRequest, TeardownResponse,
-    TeardownSummary as ProtoTeardownSummary, Tunnel,
+    Adapter, AgentStatus as ProtoAgentStatus, Feature, ListRequest, ListResponse,
+    ModuleOutcome as ProtoModuleOutcome, ModuleReport as ProtoModuleReport,
+    SkippedModule as ProtoSkippedModule, StartRequest, StartResponse,
+    StartSummary as ProtoStartSummary, StatusRequest, StatusResponse, TeardownRequest,
+    TeardownResponse, TeardownSummary as ProtoTeardownSummary, Tunnel,
 };
 
 pub struct GrpcServer {
@@ -127,6 +129,33 @@ impl FeatureService for GrpcFeatureService {
             summary: Some(proto_teardown_summary(summary)),
         }))
     }
+
+    async fn status(
+        &self,
+        _request: Request<StatusRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let configured = self.config.control_plane.is_some();
+        let snapshot = self.state.control_plane_status().await.map_err(to_status)?;
+        let now = Utc::now();
+        let max_age = ChronoDuration::from_std(self.config.event_flush_interval * 2)
+            .unwrap_or_else(|_| ChronoDuration::seconds(60));
+        let connected = configured
+            && snapshot
+                .last_delivery_at
+                .map(|ts| now.signed_duration_since(ts) <= max_age)
+                .unwrap_or(false);
+
+        Ok(Response::new(StatusResponse {
+            status: Some(ProtoAgentStatus {
+                control_plane_configured: configured,
+                control_plane_connected: connected,
+                last_delivery_at: snapshot.last_delivery_at.map(|ts| ts.to_rfc3339()),
+                last_failure_at: snapshot.last_failure_at.map(|ts| ts.to_rfc3339()),
+                last_error: snapshot.last_error.clone(),
+                last_ack_event_id: snapshot.last_ack_event_id.map(|id| id as u64),
+            }),
+        }))
+    }
 }
 
 fn parse_repo_path(path: String) -> Option<PathBuf> {
@@ -192,6 +221,7 @@ fn proto_feature_from_metadata(meta: FeatureMetadata) -> Feature {
             .map(proto_module_outcome_record)
             .collect(),
         pr_number: meta.pr_number.unwrap_or_default(),
+        adapter: meta.adapter.map(proto_adapter),
     }
 }
 

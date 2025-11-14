@@ -259,6 +259,179 @@ impl AgentState {
         .await
     }
 
+    pub async fn next_batch_id(&self) -> Result<i64> {
+        self.execute(move |conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT next_batch_id
+                FROM control_plane_status
+                WHERE id = 1
+                "#,
+            )?;
+            let current: i64 = stmt.query_row([], |row| row.get(0))?;
+            let next = current.saturating_add(1);
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET next_batch_id = :next_batch_id,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {":next_batch_id": next, ":updated_at": now},
+            )?;
+            Ok(current)
+        })
+        .await
+    }
+
+    pub async fn update_control_plane_ack(&self, ack_event_id: i64) -> Result<()> {
+        self.execute(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET last_ack_event_id = CASE
+                        WHEN last_ack_event_id IS NULL THEN :ack_event_id
+                        WHEN last_ack_event_id < :ack_event_id THEN :ack_event_id
+                        ELSE last_ack_event_id
+                    END,
+                    last_delivery_at = :updated_at,
+                    last_error = NULL,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {":ack_event_id": ack_event_id, ":updated_at": now},
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn record_control_plane_delivery_attempt(
+        &self,
+        batch_id: i64,
+        last_event_id: i64,
+    ) -> Result<()> {
+        self.execute(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET last_sent_batch_id = :batch_id,
+                    last_sent_event_id = :last_event_id,
+                    last_sent_at = :updated_at,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {
+                    ":batch_id": batch_id,
+                    ":last_event_id": last_event_id,
+                    ":updated_at": now,
+                },
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn reconcile_control_plane_cursor(&self) -> Result<()> {
+        self.execute(move |conn| {
+            let ack_id: Option<i64> = conn.query_row(
+                "SELECT last_ack_event_id FROM control_plane_status WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )?;
+
+            if let Some(ack_id) = ack_id {
+                let delivered_at = Utc::now().to_rfc3339();
+                conn.execute(
+                    r#"
+                    UPDATE events
+                    SET delivered_at = COALESCE(delivered_at, :delivered_at)
+                    WHERE id <= :ack_id
+                    "#,
+                    named_params! {
+                        ":delivered_at": &delivered_at,
+                        ":ack_id": ack_id,
+                    },
+                )?;
+            }
+
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn record_control_plane_failure(&self, message: &str) -> Result<()> {
+        let error = message.to_string();
+        self.execute(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                r#"
+                UPDATE control_plane_status
+                SET last_error = :error,
+                    last_failure_at = :updated_at,
+                    updated_at = :updated_at
+                WHERE id = 1
+                "#,
+                named_params! {":error": &error, ":updated_at": now},
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn control_plane_status(&self) -> Result<ControlPlaneStatus> {
+        self.execute(move |conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT
+                    last_ack_event_id,
+                    next_batch_id,
+                    last_delivery_at,
+                    last_failure_at,
+                    last_error,
+                    updated_at,
+                    last_sent_batch_id,
+                    last_sent_event_id,
+                    last_sent_at
+                FROM control_plane_status
+                WHERE id = 1
+                "#,
+            )?;
+            let status = stmt.query_row([], |row| {
+                Ok(ControlPlaneStatus {
+                    last_ack_event_id: row.get(0)?,
+                    next_batch_id: row.get(1)?,
+                    last_delivery_at: row.get::<_, Option<String>>(2)?.and_then(|ts| {
+                        DateTime::parse_from_rfc3339(&ts)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                    last_failure_at: row.get::<_, Option<String>>(3)?.and_then(|ts| {
+                        DateTime::parse_from_rfc3339(&ts)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                    last_error: row.get(4).ok(),
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    last_sent_batch_id: row.get(6).ok(),
+                    last_sent_event_id: row.get(7).ok(),
+                    last_sent_at: row.get::<_, Option<String>>(8)?.and_then(|ts| {
+                        DateTime::parse_from_rfc3339(&ts)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    }),
+                })
+            })?;
+            Ok(status)
+        })
+        .await
+    }
+
     async fn execute<F, T>(&self, action: F) -> Result<T>
     where
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
@@ -297,10 +470,86 @@ impl AgentState {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 last_sent_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS control_plane_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_ack_event_id INTEGER,
+                next_batch_id INTEGER NOT NULL DEFAULT 1,
+                last_delivery_at TEXT,
+                last_failure_at TEXT,
+                last_error TEXT,
+                last_sent_batch_id INTEGER,
+                last_sent_event_id INTEGER,
+                last_sent_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT OR IGNORE INTO control_plane_status (
+                id,
+                last_ack_event_id,
+                next_batch_id,
+                last_delivery_at,
+                last_failure_at,
+                last_error,
+                last_sent_batch_id,
+                last_sent_event_id,
+                last_sent_at,
+                updated_at
+            )
+            VALUES (1, NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL, datetime('now'));
             "#,
         )?;
 
+        Self::ensure_control_plane_status_columns(connection)?;
+
         debug!("Agent state migrations applied");
+        Ok(())
+    }
+
+    fn ensure_control_plane_status_columns(connection: &Connection) -> Result<()> {
+        let mut stmt = connection.prepare("PRAGMA table_info(control_plane_status)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let maybe_add = |column: &str, ddl: &str| -> Result<()> {
+            if !columns.iter().any(|name| name == column) {
+                connection.execute(ddl, [])?;
+            }
+            Ok(())
+        };
+
+        let columns_to_add = [
+            (
+                "last_delivery_at",
+                "ALTER TABLE control_plane_status ADD COLUMN last_delivery_at TEXT",
+            ),
+            (
+                "last_failure_at",
+                "ALTER TABLE control_plane_status ADD COLUMN last_failure_at TEXT",
+            ),
+            (
+                "last_error",
+                "ALTER TABLE control_plane_status ADD COLUMN last_error TEXT",
+            ),
+            (
+                "last_sent_batch_id",
+                "ALTER TABLE control_plane_status ADD COLUMN last_sent_batch_id INTEGER",
+            ),
+            (
+                "last_sent_event_id",
+                "ALTER TABLE control_plane_status ADD COLUMN last_sent_event_id INTEGER",
+            ),
+            (
+                "last_sent_at",
+                "ALTER TABLE control_plane_status ADD COLUMN last_sent_at TEXT",
+            ),
+        ];
+
+        for (column, ddl) in columns_to_add {
+            maybe_add(column, ddl)?;
+        }
+
         Ok(())
     }
 }
@@ -366,4 +615,86 @@ pub struct StoredWorktree {
     pub status: String,
     pub metadata: serde_json::Value,
     pub updated_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ControlPlaneStatus {
+    pub last_ack_event_id: Option<i64>,
+    pub next_batch_id: i64,
+    pub last_delivery_at: Option<DateTime<Utc>>,
+    pub last_failure_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub last_sent_batch_id: Option<i64>,
+    pub last_sent_event_id: Option<i64>,
+    pub last_sent_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentState;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn next_batch_id_increments_monotonically() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        let first = state.next_batch_id().await.unwrap();
+        let second = state.next_batch_id().await.unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+    }
+
+    #[tokio::test]
+    async fn control_plane_ack_persists_high_watermark() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        state.update_control_plane_ack(5).await.unwrap();
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_ack_event_id, Some(5));
+        assert!(status.last_delivery_at.is_some());
+
+        // Lower acknowledgements should be ignored.
+        state.update_control_plane_ack(3).await.unwrap();
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_ack_event_id, Some(5));
+
+        state.update_control_plane_ack(42).await.unwrap();
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_ack_event_id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn control_plane_delivery_attempt_records_cursor() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        state
+            .record_control_plane_delivery_attempt(7, 99)
+            .await
+            .unwrap();
+
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_sent_batch_id, Some(7));
+        assert_eq!(status.last_sent_event_id, Some(99));
+        assert!(status.last_sent_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn control_plane_failure_records_error() {
+        let dir = tempdir().unwrap();
+        let state = AgentState::initialize(dir.path()).unwrap();
+
+        state
+            .record_control_plane_failure("permission denied")
+            .await
+            .unwrap();
+
+        let status = state.control_plane_status().await.unwrap();
+        assert_eq!(status.last_error.as_deref(), Some("permission denied"));
+        assert!(status.last_failure_at.is_some());
+    }
 }

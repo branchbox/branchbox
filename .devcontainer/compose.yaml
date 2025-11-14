@@ -5,6 +5,8 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
     privileged: true
+    init: true
+    ipc: host
     container_name: ${DEVCONTAINER_NAME:-branchbox}
     volumes:
     - ../..:/workspaces:cached
@@ -12,6 +14,9 @@ services:
     - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
     - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
     - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
+    ports:
+    - "50515:50515"
+    - "8787:8787"
     command: sleep infinity
     env_file:
     - ../.env

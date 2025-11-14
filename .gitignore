@@ -27,6 +27,18 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# SwiftPM/macOS app artifacts
+macos/.build/
+macos/build/
+macos/.cache/
+*.app
+
+# macOS screenshots
+macos/screenshots/
+
+# Generic caches
+.cache/
+
 # Testing
 *.profraw
 *.profdata

@@ -5,7 +5,7 @@
 This document tracks the implementation progress of the BranchBox distributed system.
 
 **Created**: 2025-10-21
-**Status**: 🟡 Phase 2 In Progress - Core Library scaffolding exists, shell workflows pending Rust migration
+**Status**: 🟢 Phase 3 Ready – Milestone 2 (agent daemon + macOS preview) completed; control-plane + distribution work queued
 
 ## Project Structure
 
@@ -198,6 +198,37 @@ branchbox/
 - [x] SQLite state storage + durable event queue (`.branchbox/agent/agent.db`)
 - [x] Offline queue + heartbeat scheduler (events land in queue for future control plane)
 - [x] Manual testing helpers (`scripts/manual-agent-e2e.sh`)
+
+### ✅ Phase 4: macOS Companion Experience (IN PROGRESS)
+
+#### Tooling & Automation
+- [x] Devcontainer now includes the Swift toolchain (5.10.1) so contributors can run `swift build`/`swift test` inside the shared workspace.
+- [x] CI adds a dedicated `macOS App (Swift)` job (Xcode 15.4) that builds and tests the `macos/` package on every PR/merge to `main`.
+
+#### App UX
+- [x] Split-view SwiftUI shell with `NavigationSplitView`, home dashboard, features pane + detail inspector, agent health, and settings.
+- [x] Menu bar companion exposing quick start, devcontainer sync, active-feature teardown, and workspace shortcuts.
+- [x] Command palette (`⌘K`) with navigation + action shortcuts (Start Feature, Sync Devcontainer, Switch Workspace, etc.).
+- [x] Advanced start sheet (modules, prompts, minimal mode, reuse, normalization) with shared form state.
+- [x] Devcontainer telemetry surfaced across home/features/detail/agent views (strategy, last sync, outdated badges).
+- [x] Finder/Terminal quick actions for workspaces and active feature worktrees.
+- [x] Local notification hooks for start/teardown/sync completions.
+- [x] Agent-controlled Start/Teardown sheet parity with CLI prompt history (sheet now binds directly to the agent/view model state, reuses prompt history chips, and persists teardown toggles via defaults).
+
+### 🟡 Phase 4: Control Plane + macOS App (IN PROGRESS)
+
+- [x] Control-plane HTTP drain that batches queued events + host metadata (`agent/src/control_plane.rs`)
+- [x] Heartbeat snapshots forwarded through the same drain with retry semantics
+- [x] Durable ack tracking + exponential backoff for the HTTP drain (`control_plane_status` table)
+- [x] SwiftUI macOS preview app (`macos/Package.swift`) that lists features via gRPC
+- [x] CLI fallback when the agent daemon is unavailable (reuses `branchbox feature list --json`)
+- [x] Start/teardown actions in the mac app, wired to gRPC/CLI transports
+- [x] macOS app workspace picker, transport badge, module/adapter/tunnel health display, and teardown confirmations
+- [x] gRPC + CLI control-plane status endpoint (`branchbox agent status`, mac app badge)
+- [x] Manual doc updates describing the new workflow (README + docs/docs/getting-started/manual-cli-e2e.md)
+- [x] Control-plane ack/offset tracking (agent now persists last sent batch/cursor, reconciles acked events on startup, and surfaces the data through `branchbox agent status`)
+- [x] macOS app polish: workspace picker, status badges, gRPC transport selection UI (toolbar picker, transport overrides, and shared start/teardown state)
+- [ ] Windows agent parity (tracked separately in `docs/features/backlog/agent-windows-support.md`)
 - [ ] Windows transport (tracked in `docs/features/backlog/agent-windows-support.md`)
 
 ### 📋 Phase 4: CLI Tool (PLANNED)
@@ -349,53 +380,55 @@ cargo build
 cargo test
 ```
 
+## Milestone 2 Summary (2025-11-13)
+
+- ✅ Agent daemon orchestrates feature lifecycle via gRPC + CLI fallback and persists devcontainer/tunnel/module metadata for every worktree.
+- ✅ README + manual E2E guide document the CLI/agent smoke harness plus transport troubleshooting.
+- ✅ macOS SwiftUI preview app (and menu bar extra) exposes workspace picker, tunnel health, quick start/teardown, and devcontainer sync actions.
+- ✅ Tunnel metadata now flows from CLI → agent → UI, including hostname copy affordances and warnings when automation fails.
+- ✅ Devcontainer workflow polished (strategy overrides, sync command, troubleshooting docs) and surfaced in both the app Home dashboard and menubar menu.
+
 ## Next Steps
 
-### Immediate (Phase 2)
+### Immediate (Milestone 3 – Control Plane & macOS distribution)
 
-1. **Complete Git Module**
-   - Implement using `git2` crate
-   - Create worktree operations
-   - List and remove operations
-   - Integration tests
+1. **Control Plane Bridge**
+   - Wire the agent’s HTTP drain to the Rails control plane (`/v1/devices`, `/v1/devcontainers/sync`) with durable checkpoints.
+   - Surface control-plane connectivity + recent events inside the macOS Agent tab (drives the new “View log” buttons).
 
-2. **Implement Core Modules**
-   - Tunnel module (Cloudflare API)
-   - Database module (volume management)
-   - Compose module (template rendering)
-   - Specs module (frontmatter parsing)
+2. **macOS Build + Release Automation**
+   - Add a GitHub Actions workflow that runs `swift build`, `swift test`, and `./scripts/package-macos-app.sh` on `macos-latest`.
+   - Upload signed/notarized artifacts (or at least zipped `.app` bundles) so internal testers can download each PR build.
 
-3. **Infrastructure Setup**
-   - Add devcontainer for Rust development
-   - Set up CI/CD pipeline
-   - Add contribution guidelines
+3. **Dependency Hygiene**
+   - Bump `swift-protobuf` and `grpc-swift` when their plugins migrate off the deprecated `Path` APIs (or fork + patch with `@preconcurrency` and `URL` usage to silence Sendable warnings).
+   - Track the warnings in `docs/features/backlog/mac-app-polish.md` so we fail CI once the upstream fix merges.
 
-### Medium Term (Phases 3-4)
+4. **Agent Diagnostics + Tunnel Health**
+   - Populate the Agent tab with control-plane delivery timeline, retry button, and registry diffs.
+   - Promote the Home/Status menu tunnel card to show provider errors and offer re-sync actions.
 
-1. **Build Local Agent**
-   - Set up gRPC server with tonic
-   - Implement command handlers
-   - SQLite for state storage
-   - Offline queue system
+### Medium Term (Milestone 3 follow-ups)
 
-2. **Build CLI Tool**
-   - clap for argument parsing
-   - Pretty terminal output
-   - Interactive prompts
-   - Agent client
+1. **Windows/TCP Support**
+   - Add TCP transport fallback so CLI ↔ agent works outside Unix sockets and document Windows installation steps.
 
-### Long Term (Phases 5-6)
+2. **Control Plane UX**
+   - Mirror the macOS health signals (devcontainer drift, tunnels, module outcomes) inside the Rails dashboard for remote monitoring.
 
-1. **Control Plane Integration**
-   - Extend Agentify Rails app
-   - Device management
-   - Remote command execution
-   - State synchronization
+3. **Distribution Decisions**
+   - Finalize whether we notarize DMGs, ship via TestFlight, or distribute zipped apps, and document the signing process.
 
-2. **Mac App**
-   - SwiftUI interface
-   - Local agent integration
-   - App Store distribution
+### Long Term (Milestones 4+)
+
+1. **Automated Tunnel Providers**
+   - Expand beyond Cloudflare (add Tailscale, local reverse proxy) with remediation UX when automation fails.
+
+2. **Native Notifications + Launch Agents**
+   - Convert the macOS preview into a true menu-bar daemon that auto-launches the Rust agent and emits notifications.
+
+3. **Remote Commands**
+   - Allow the control plane to trigger start/teardown, view logs, and sync tunnels across fleets once auth is in place.
 
 ## Testing the Implementation
 

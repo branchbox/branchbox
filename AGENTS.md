@@ -135,5 +135,11 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 - Keep CLI reference pages up to date: manually regenerate `docs/docs/reference/cli.md` by capturing `branchbox --help` output and its subcommands during releases or when command flags change.
 - Engineers and coding agents must update documentation content as needed, mirror critical entry points in `README.md`, and document any automation adjustments in this file so future contributors know how docs are built and shipped.
 
+## macOS Proto Bindings
+- The macOS app now consumes generated SwiftProtobuf + gRPC Swift stubs checked into `macos/Sources/BranchBoxApp/Generated/`.
+- Regenerate bindings after editing `agent/proto/agent.proto` by running `./scripts/generate-swift-protos.sh` (requires Docker; the script caches toolchains under `.build/swift-proto-tools`).
+- Generated files must be committed with the proto change so the mac app stays in sync even when contributors skip the generator.
+- Do not hand-edit the generated files; adjust the proto definitions instead.
+
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.

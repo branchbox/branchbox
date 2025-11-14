@@ -188,6 +188,32 @@ async fn dispatch(
             let payload = TeardownFeaturePayload::from(summary);
             Ok(AgentResponse::success(json!({ "teardown": payload })))
         }
+        AgentRequest::AgentStatus {} => {
+            let configured = config.control_plane.is_some();
+            let snapshot = state.control_plane_status().await?;
+            let now = chrono::Utc::now();
+            let threshold = chrono::Duration::from_std(config.event_flush_interval * 2)
+                .unwrap_or_else(|_| chrono::Duration::seconds(60));
+            let connected = configured
+                && snapshot
+                    .last_delivery_at
+                    .map(|ts| now.signed_duration_since(ts) <= threshold)
+                    .unwrap_or(false);
+
+            let payload = AgentStatusPayload {
+                control_plane_configured: configured,
+                control_plane_connected: connected,
+                last_delivery_at: snapshot.last_delivery_at.map(|ts| ts.to_rfc3339()),
+                last_failure_at: snapshot.last_failure_at.map(|ts| ts.to_rfc3339()),
+                last_error: snapshot.last_error,
+                last_ack_event_id: snapshot.last_ack_event_id,
+                last_sent_batch_id: snapshot.last_sent_batch_id,
+                last_sent_event_id: snapshot.last_sent_event_id,
+                last_sent_at: snapshot.last_sent_at.map(|ts| ts.to_rfc3339()),
+            };
+
+            Ok(AgentResponse::success(json!({ "status": payload })))
+        }
     }
 }
 
@@ -237,6 +263,7 @@ enum AgentRequest {
         #[serde(default)]
         telemetry: bool,
     },
+    AgentStatus {},
 }
 
 #[derive(Debug, Serialize)]
@@ -311,6 +338,8 @@ struct FeatureRecord {
     module_outcomes: Vec<ModuleOutcomeRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr_number: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adapter: Option<AdapterPayload>,
 }
 
 impl From<FeatureMetadata> for FeatureRecord {
@@ -344,6 +373,7 @@ impl From<FeatureMetadata> for FeatureRecord {
             start_mode: meta.start_mode,
             module_outcomes: meta.module_outcomes,
             pr_number: meta.pr_number,
+            adapter: meta.adapter.map(AdapterPayload::from),
         }
     }
 }
@@ -458,6 +488,26 @@ impl From<ModuleOutcome> for ModuleOutcomePayload {
             forced: outcome.forced,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct AgentStatusPayload {
+    control_plane_configured: bool,
+    control_plane_connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_delivery_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_failure_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_ack_event_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sent_batch_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sent_event_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sent_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

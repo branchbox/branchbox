@@ -6,6 +6,7 @@ service FeatureService {
   rpc List (ListRequest) returns (ListResponse);
   rpc Start (StartRequest) returns (StartResponse);
   rpc Teardown (TeardownRequest) returns (TeardownResponse);
+  rpc Status (StatusRequest) returns (StatusResponse);
 }
 
 message ListRequest {
@@ -70,6 +71,7 @@ message Feature {
   string start_mode = 19;
   repeated ModuleOutcome module_outcomes = 20;
   uint32 pr_number = 21;
+  Adapter adapter = 22;
 }
 
 message StartSummary {
@@ -129,4 +131,19 @@ message ModuleReport {
   string name = 1;
   bool teardown_ok = 2;
   repeated string errors = 3;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  AgentStatus status = 1;
+}
+
+message AgentStatus {
+  bool control_plane_configured = 1;
+  bool control_plane_connected = 2;
+  optional string last_delivery_at = 3;
+  optional string last_failure_at = 4;
+  optional string last_error = 5;
+  optional uint64 last_ack_event_id = 6;
 }

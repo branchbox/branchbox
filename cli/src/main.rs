@@ -1,7 +1,10 @@
+mod agent;
 mod commands;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::agent as agent_commands;
+use commands::agent::AgentCommands;
 use commands::devcontainer::{self, DevcontainerCommands};
 use commands::feature::{self, FeatureCommands};
 use commands::init::{self, InitArgs};
@@ -26,6 +29,10 @@ enum Commands {
     /// Manage devcontainer configuration
     #[command(subcommand)]
     Devcontainer(DevcontainerCommands),
+
+    /// Agent and control-plane helpers
+    #[command(subcommand)]
+    Agent(AgentCommands),
 
     /// Detect project configuration
     Detect {
@@ -76,6 +83,10 @@ fn main() -> Result<()> {
 
         Commands::Devcontainer(devcontainer_cmd) => {
             devcontainer::execute(devcontainer_cmd)?;
+        }
+
+        Commands::Agent(agent_cmd) => {
+            agent_commands::execute(agent_cmd)?;
         }
 
         Commands::Detect { path } => {
