@@ -16,10 +16,15 @@ struct FeatureViewData: Identifiable, Hashable {
     let updatedAt: Date?
     let tunnelStatus: String?
     let tunnelProvider: String?
+    let tunnelHostname: String?
     let adapterName: String?
     let adapterServiceURL: String?
     let adapterWarnings: [String]
     let moduleOutcomes: [ModuleOutcomeSummary]
+    let worktreePath: String?
+    let devcontainerOutdated: Bool
+    let lastSyncAt: Date?
+    let syncStrategy: String?
     let source: Source
 
     var statusLabel: String {
@@ -45,10 +50,28 @@ struct FeatureViewData: Identifiable, Hashable {
         return "\(ok) ok"
     }
 
+    var devcontainerStatusSummary: String {
+        if devcontainerOutdated {
+            return "Outdated"
+        }
+        if let lastSyncAt {
+            return "Synced " + Self.relativeFormatter.localizedString(for: lastSyncAt, relativeTo: Date())
+        }
+        return "Pending"
+    }
+
+    var devcontainerHasWarning: Bool { devcontainerOutdated }
+
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
         return formatter
     }()
 }
@@ -64,6 +87,7 @@ extension FeatureViewData {
         self.updatedAt = FeatureViewData.parse(dateString: feature.updatedAt)
         self.tunnelStatus = feature.tunnelStatus.isEmpty ? nil : feature.tunnelStatus
         self.tunnelProvider = feature.tunnelProvider.isEmpty ? nil : feature.tunnelProvider
+        self.tunnelHostname = feature.tunnelHostname.isEmpty ? nil : feature.tunnelHostname
         if feature.hasAdapter {
             let adapter = feature.adapter
             self.adapterName = adapter.name.isEmpty ? nil : adapter.name
@@ -75,6 +99,10 @@ extension FeatureViewData {
             self.adapterWarnings = []
         }
         self.moduleOutcomes = feature.moduleOutcomes.map(ModuleOutcomeSummary.init(grpc:))
+        self.worktreePath = feature.worktreePath.isEmpty ? nil : feature.worktreePath
+        self.devcontainerOutdated = feature.devcontainerOutdated
+        self.lastSyncAt = FeatureViewData.parse(dateString: feature.lastSyncAt)
+        self.syncStrategy = feature.syncStrategy.isEmpty ? nil : feature.syncStrategy
         self.source = .grpc
     }
 
@@ -88,6 +116,7 @@ extension FeatureViewData {
         self.updatedAt = record.updatedAt
         self.tunnelStatus = record.tunnelStatus
         self.tunnelProvider = record.tunnelProvider
+        self.tunnelHostname = record.tunnelHostname
         if let adapter = record.adapter {
             self.adapterName = adapter.name
             self.adapterServiceURL = adapter.serviceUrl
@@ -98,6 +127,10 @@ extension FeatureViewData {
             self.adapterWarnings = []
         }
         self.moduleOutcomes = record.moduleOutcomes?.map(ModuleOutcomeSummary.init(record:)) ?? []
+        self.worktreePath = record.worktreePath
+        self.devcontainerOutdated = record.devcontainerOutdated ?? false
+        self.lastSyncAt = record.lastSyncAt
+        self.syncStrategy = record.syncStrategy
         self.source = .cliFallback
     }
 

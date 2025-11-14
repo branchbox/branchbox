@@ -102,6 +102,7 @@ Milestone 2 adds a minimal SwiftUI client under `macos/` so we can validate en
    - Override the transport as needed with `export BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515` or by editing `~/Library/Preferences/dev.branchbox.app.plist`.
 3. **Run the SwiftUI preview**
    - From a mac host run `cd macos && swift run BranchBoxApp`. The window should list all features detected by `FeatureService/List`. Rows tagged “CLI” indicate the fallback path kicked in because the gRPC transport was unavailable.
+   - Linux devcontainers cannot build the SwiftUI target—the Apple SDKs that provide `OSLog`, SwiftUI, and friends only ship with macOS/Xcode—so this step must execute on a macOS machine or CI runner.
 4. **Start + teardown from the UI**
    - Use the “Start feature” form to launch a new worktree (toggle minimal mode + prompt seed as needed). Confirm the action flows through gRPC (watch the agent logs) and that the entry appears with the right status.
    - Select “Teardown” on the new feature. Verify the worktree disappears, the specs module runs, and the UI updates.

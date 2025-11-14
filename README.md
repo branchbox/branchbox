@@ -172,7 +172,7 @@ branchbox feature start "Documentation Update"
 
 ## Devcontainer Workflow
 
-BranchBox ships a full VS Code/Cursor devcontainer setup and propagates it to every feature worktree.
+BranchBox ships a full VS Code/Cursor devcontainer setup and propagates it to every feature worktree. It focuses on Rust + CLI workflows; macOS SwiftUI builds still happen on a Mac host because the devcontainer intentionally omits Apple-only SDKs.
 
 ### Reopen Features in Containers
 - `branchbox feature start "<name>"` copies `.devcontainer/` into the new worktree.
@@ -224,9 +224,12 @@ export BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515
 swift run BranchBoxApp
 ```
 
+- **Requires macOS**: SwiftUI builds need Apple’s SDKs (`OSLog`, SwiftUI, etc.), so the Linux devcontainer cannot compile or test the app. Run UI/E2E checks from a macOS host (or CI runner) that has the Xcode command line tools installed.
+
 - The app lists every feature via `FeatureService/List`, exposes start/teardown actions, and displays whether the data came from gRPC or the CLI fallback.
 - When the agent socket is missing the view transparently shells out to `branchbox feature list --json` so testing can continue on machines that only have the CLI installed.
-- Workspace picker + transport badge live in the toolbar (choose a repo via `NSOpenPanel`, see whether the data came from gRPC or the CLI fallback). Start form now includes branch prefix, reuse toggle, module skip list, and prompt history chips so the mac app stays in feature parity with the CLI.
+- Workspace picker + transport badge live in the toolbar (choose a repo via `NSOpenPanel`, see whether the data came from gRPC or the CLI fallback). You can also force a transport (Automatic/gRPC/CLI) when debugging agent connectivity. Start form now includes branch prefix, reuse toggle, module skip list, and prompt history chips so the mac app stays in feature parity with the CLI.
+- The Home dashboard shows workspace health, tunnel status (with copyable hostname), and active feature quick actions so new users can start/teardown without digging into diagnostics tabs.
 - Rows now surface adapter metadata (name, service URL, warnings) plus module/tunnel health so you can spot misconfigured stacks without dropping to the CLI.
 - Teardown actions open a confirmation sheet with `--force` + `--complete-spec` toggles so you don’t accidentally drop worktrees.
 - Configuration happens through environment variables (`BRANCHBOX_AGENT_GRPC_ADDR`, `BRANCHBOX_WORKSPACE`, `BRANCHBOX_CLI_PATH`) or the stored `defaults` domain `dev.branchbox.app`. See `macos/Sources/BranchBoxApp/Agent/AgentBridge.swift` for the full precedence order.

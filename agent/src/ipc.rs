@@ -207,6 +207,9 @@ async fn dispatch(
                 last_failure_at: snapshot.last_failure_at.map(|ts| ts.to_rfc3339()),
                 last_error: snapshot.last_error,
                 last_ack_event_id: snapshot.last_ack_event_id,
+                last_sent_batch_id: snapshot.last_sent_batch_id,
+                last_sent_event_id: snapshot.last_sent_event_id,
+                last_sent_at: snapshot.last_sent_at.map(|ts| ts.to_rfc3339()),
             };
 
             Ok(AgentResponse::success(json!({ "status": payload })))
@@ -499,6 +502,12 @@ struct AgentStatusPayload {
     last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_ack_event_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sent_batch_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sent_event_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sent_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

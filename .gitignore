@@ -30,7 +30,14 @@ Thumbs.db
 # SwiftPM/macOS app artifacts
 macos/.build/
 macos/build/
+macos/.cache/
 *.app
+
+# macOS screenshots
+macos/screenshots/
+
+# Generic caches
+.cache/
 
 # Testing
 *.profraw

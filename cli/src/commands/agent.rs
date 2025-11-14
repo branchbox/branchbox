@@ -44,6 +44,18 @@ fn run_status(args: AgentStatusArgs) -> Result<()> {
     if let Some(ack) = status.last_ack_event_id {
         println!("Last acked event ID: {ack}");
     }
+    if let Some(batch) = status.last_sent_batch_id {
+        if let Some(cursor) = status.last_sent_event_id {
+            println!("Last batch sent: #{batch} (through event {cursor})");
+        } else {
+            println!("Last batch sent: #{batch}");
+        }
+    } else if let Some(cursor) = status.last_sent_event_id {
+        println!("Last sent cursor: event {cursor}");
+    }
+    if let Some(ts) = format_timestamp(status.last_sent_at.as_deref()) {
+        println!("Last send attempt: {ts}");
+    }
     if let Some(ts) = format_timestamp(status.last_delivery_at.as_deref()) {
         println!("Last delivery: {ts}");
     }

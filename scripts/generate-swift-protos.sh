@@ -11,11 +11,13 @@ GRPC_SWIFT_REF="${GRPC_SWIFT_REF:-1.27.0}"
 mkdir -p "${REPO_ROOT}/${OUT_DIR}"
 mkdir -p "${CACHE_ROOT}"
 
+SWIFT_IMAGE="${SWIFT_IMAGE:-swift:6.2.1-bookworm}" # Override to pin a different Swift toolchain version if needed.
+
 docker run --rm \
   -v "${REPO_ROOT}":/work \
   -v "${CACHE_ROOT}":/cache \
   -w /work \
-  swift:6.1 /bin/bash -lc "
+  "${SWIFT_IMAGE}" /bin/bash -lc "
 set -euo pipefail
 apt-get update >/dev/null
 apt-get install -y git protobuf-compiler >/dev/null

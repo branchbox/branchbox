@@ -71,6 +71,9 @@ final class AgentBridge {
         let lastFailureAt: String?
         let lastError: String?
         let lastAckEventID: Int64?
+        let lastSentBatchID: Int64?
+        let lastSentEventID: Int64?
+        let lastSentAt: String?
 
         init(
             controlPlaneConfigured: Bool,
@@ -78,7 +81,10 @@ final class AgentBridge {
             lastDeliveryAt: String?,
             lastFailureAt: String?,
             lastError: String?,
-            lastAckEventID: Int64?
+            lastAckEventID: Int64?,
+            lastSentBatchID: Int64?,
+            lastSentEventID: Int64?,
+            lastSentAt: String?
         ) {
             self.controlPlaneConfigured = controlPlaneConfigured
             self.controlPlaneConnected = controlPlaneConnected
@@ -86,6 +92,9 @@ final class AgentBridge {
             self.lastFailureAt = lastFailureAt
             self.lastError = lastError
             self.lastAckEventID = lastAckEventID
+            self.lastSentBatchID = lastSentBatchID
+            self.lastSentEventID = lastSentEventID
+            self.lastSentAt = lastSentAt
         }
 
         init(grpc status: Branchbox_Agent_AgentStatus) {
@@ -95,6 +104,9 @@ final class AgentBridge {
             lastFailureAt = status.hasLastFailureAt ? status.lastFailureAt : nil
             lastError = status.hasLastError ? status.lastError : nil
             lastAckEventID = status.hasLastAckEventID ? Int64(status.lastAckEventID) : nil
+            lastSentBatchID = nil
+            lastSentEventID = nil
+            lastSentAt = nil
         }
 
         init(cli status: CLICompat.AgentStatusRecord) {
@@ -104,6 +116,9 @@ final class AgentBridge {
             lastFailureAt = status.lastFailureAt
             lastError = status.lastError
             lastAckEventID = status.lastAckEventId.map { Int64($0) }
+            lastSentBatchID = status.lastSentBatchId.map { Int64($0) }
+            lastSentEventID = status.lastSentEventId.map { Int64($0) }
+            lastSentAt = status.lastSentAt
         }
     }
 
@@ -112,10 +127,12 @@ final class AgentBridge {
     private var client: Branchbox_Agent_FeatureServiceAsyncClient?
     private var connection: ClientConnection?
     private let logger = Logger(subsystem: "dev.branchbox.app", category: "agent")
+    private var transportOverride: Transport?
 
     init(configuration: AgentConfiguration = .detect()) {
         self.configuration = configuration
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        self.transportOverride = nil
     }
 
     deinit {
@@ -136,6 +153,12 @@ final class AgentBridge {
 
     func listFeatures(includeRemoved override: Bool? = nil) async throws -> FeatureFetchResult {
         let includeRemoved = override ?? configuration.includeRemoved
+        if transportOverride == .cliFallback {
+            return try fetchFeaturesViaCLI(includeRemoved: includeRemoved)
+        }
+
+        let forceGrpc = transportOverride == .grpc
+
         do {
             let client = try ensureClient()
             var request = Branchbox_Agent_ListRequest()
@@ -153,7 +176,10 @@ final class AgentBridge {
                     lastDeliveryAt: nil,
                     lastFailureAt: nil,
                     lastError: nil,
-                    lastAckEventID: nil
+                    lastAckEventID: nil,
+                    lastSentBatchID: nil,
+                    lastSentEventID: nil,
+                    lastSentAt: nil
                 )
             }()
             return FeatureFetchResult(
@@ -163,15 +189,10 @@ final class AgentBridge {
             )
         } catch {
             logger.error("gRPC list failed: \(error.localizedDescription, privacy: .public)")
-            let features = try CLICompat
-                .featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
-                .map(FeatureViewData.init(cli:))
-            let status = CLICompat.agentStatusOrDefault(workspacePath: configuration.workspacePath)
-            return FeatureFetchResult(
-                features: features,
-                transport: .cliFallback,
-                status: AgentStatusSnapshot(cli: status)
-            )
+            if forceGrpc {
+                throw error
+            }
+            return try fetchFeaturesViaCLI(includeRemoved: includeRemoved)
         }
     }
 
@@ -179,6 +200,13 @@ final class AgentBridge {
         guard !intent.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AgentBridgeError.invalidFeatureName
         }
+
+        if transportOverride == .cliFallback {
+            try CLICompat.startFeature(intent, workspacePath: configuration.workspacePath)
+            return
+        }
+
+        let forceGrpc = transportOverride == .grpc
 
         do {
             let client = try ensureClient()
@@ -194,14 +222,30 @@ final class AgentBridge {
             _ = try await client.start(request)
         } catch {
             logger.error("gRPC start failed: \(error.localizedDescription, privacy: .public)")
+            if forceGrpc {
+                throw error
+            }
             try CLICompat.startFeature(intent, workspacePath: configuration.workspacePath)
         }
     }
 
-    func teardownFeature(name: String, force: Bool, completeSpec: Bool) async throws {
+    func teardownFeature(name: String, force: Bool, completeSpec: Bool, deleteBranch: Bool) async throws {
         guard !name.isEmpty else {
             throw AgentBridgeError.invalidFeatureName
         }
+
+        if transportOverride == .cliFallback {
+            try CLICompat.teardownFeature(
+                name: name,
+                workspacePath: configuration.workspacePath,
+                force: force,
+                completeSpec: completeSpec,
+                deleteBranch: deleteBranch
+            )
+            return
+        }
+
+        let forceGrpc = transportOverride == .grpc
 
         do {
             let client = try ensureClient()
@@ -210,15 +254,40 @@ final class AgentBridge {
             request.name = name
             request.force = force
             request.completeSpec = completeSpec
+            request.deleteBranch = deleteBranch
             _ = try await client.teardown(request)
         } catch {
             logger.error("gRPC teardown failed: \(error.localizedDescription, privacy: .public)")
+            if forceGrpc {
+                throw error
+            }
             try CLICompat.teardownFeature(
                 name: name,
                 workspacePath: configuration.workspacePath,
                 force: force,
-                completeSpec: completeSpec
+                completeSpec: completeSpec,
+                deleteBranch: deleteBranch
             )
+        }
+    }
+
+    func syncDevcontainer(strategy: String? = nil, dryRun: Bool = false) async throws {
+        // Currently no gRPC endpoint; use CLI compat.
+        let path = configuration.workspacePath
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try CLICompat.devcontainerSync(workspacePath: path, strategy: strategy, dryRun: dryRun)
+            }.value
+        } catch {
+            logger.error("Devcontainer sync failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
+
+    func setTransportOverride(_ override: Transport?) {
+        transportOverride = override
+        if override != .grpc {
+            resetConnection()
         }
     }
 
@@ -242,5 +311,17 @@ final class AgentBridge {
             _ = try? connection.close().wait()
         }
         connection = nil
+    }
+
+    private func fetchFeaturesViaCLI(includeRemoved: Bool) throws -> FeatureFetchResult {
+        let features = try CLICompat
+            .featureList(workspacePath: configuration.workspacePath, includeRemoved: includeRemoved)
+            .map(FeatureViewData.init(cli:))
+        let status = CLICompat.agentStatusOrDefault(workspacePath: configuration.workspacePath)
+        return FeatureFetchResult(
+            features: features,
+            transport: .cliFallback,
+            status: AgentStatusSnapshot(cli: status)
+        )
     }
 }
