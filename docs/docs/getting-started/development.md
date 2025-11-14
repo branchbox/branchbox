@@ -228,9 +228,9 @@ branchbox/
 │   │   ├── modules/        # Feature modules (tunnel, database)
 │   │   └── bootstrap/      # Self-bootstrapping system (meta!)
 │   └── Cargo.toml
-├── agent/                  # Local agent daemon (planned)
+├── agent/                  # Local agent daemon (Milestones 1-2)
 ├── cli/                    # CLI tool
-├── macos/                  # Mac app (planned)
+├── macos/                  # SwiftUI preview app (Milestone 2)
 ├── docs/                   # Documentation
 ├── .env.sample             # Environment variable template
 ├── .gitignore
@@ -274,41 +274,6 @@ For detailed architecture information, see:
 - [CLAUDE.md](https://github.com/branchbox/branchbox/blob/main/CLAUDE.md) - AI agent development guidelines
 - [AGENTS.md](https://github.com/branchbox/branchbox/blob/main/AGENTS.md) - Repository guidelines and patterns
 
-## Meta Feature: Bootstrap System
-
-The branchbox can bootstrap devcontainer configurations for **any project** - including itself! This meta capability is implemented in `core/src/bootstrap/`.
-
-**Concept**: A tool that sets up development environments can set up its own development environment.
-
-**Usage (planned):**
-
-```bash
-# Bootstrap devcontainer for a Rails project
-worktree bootstrap --stack rails /path/to/rails-project
-
-# Bootstrap devcontainer for a Node.js project
-worktree bootstrap --stack nodejs /path/to/node-project
-
-# Auto-detect stack and bootstrap
-worktree bootstrap /path/to/project
-
-# Bootstrap branchbox itself (meta!)
-worktree bootstrap --stack rust .
-```
-
-**What it generates:**
-- `.devcontainer/devcontainer.json` - VS Code/Cursor devcontainer configuration
-- `.devcontainer/compose.yaml` - Docker Compose services
-- `.devcontainer/Dockerfile` - Custom development image
-- `.env.sample` - Environment variable template
-- Stack-specific setup scripts
-
-**Why this matters:**
-- Self-documenting development setup
-- Reproducible environments
-- Onboard new developers instantly
-- Same tool manages worktrees AND their development containers
-
 ## Development Status
 
 **Current Progress:**
@@ -316,9 +281,8 @@ worktree bootstrap --stack rust .
 - [x] Protocol specification
 - [x] Core library implementation (Milestone 0)
 - [x] CLI implementation (Milestone 0)
-- [ ] Agent implementation (Milestone 1)
-- [ ] Mac app implementation (Milestone 2)
-- [ ] Control plane implementation (Milestone 3)
+- [x] Agent implementation (Milestone 1 — daemon + CLI IPC on macOS/Linux/devcontainers)
+- [x] Mac app implementation (Milestone 2 — SwiftUI preview riding the gRPC surface)
 
 ## Related Projects
 

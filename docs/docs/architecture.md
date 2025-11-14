@@ -6,64 +6,34 @@ sidebar_position: 3
 
 ## Overview
 
-A distributed development environment orchestrator that manages git worktrees and devcontainers across multiple devices via a control plane and local agents.
+A distributed development environment orchestrator that manages git worktrees and devcontainers via a Rust CLI, always-on agent, and SwiftUI macOS client.
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    User's Devices                       │
-│         (connected via Tailscale network)               │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌──────────────────┐      ┌──────────────────┐       │
-│  │   Mac App        │      │   CLI Tool       │       │
-│  │   (SwiftUI)      │      │   (Rust)         │       │
-│  └────────┬─────────┘      └────────┬─────────┘       │
-│           │                         │                  │
-│           └─────────┬───────────────┘                  │
-│                     │                                  │
-│           ┌─────────▼──────────┐                       │
-│           │  Local Agent       │                       │
-│           │  (Rust daemon)     │◄──────────┐           │
-│           │                    │           │           │
-│           │  - Receives cmds   │           │           │
-│           │  - Executes ops    │      Tailscale        │
-│           │  - Reports state   │       Tunnel          │
-│           │  - Offline queue   │           │           │
-│           └─────────┬──────────┘           │           │
-│                     │                      │           │
-│           ┌─────────▼──────────┐           │           │
-│           │  Worktree Engine   │           │           │
-│           │  (Rust core lib)   │           │           │
-│           └────────────────────┘           │           │
-└────────────────────────────────────────────┼───────────┘
-                                             │
-                                    Tailscale Network
-                                             │
-┌────────────────────────────────────────────┼───────────┐
-│              Control Plane (Hosted)        │           │
-├────────────────────────────────────────────┼───────────┤
-│                                            │           │
-│           ┌────────────────────┐           │           │
-│           │  Web Dashboard     │           │           │
-│           │  (Rails + Hotwire) │           │           │
-│           └─────────┬──────────┘           │           │
-│                     │                      │           │
-│           ┌─────────▼──────────┐           │           │
-│           │   Rails API        │───────────┘           │
-│           │                    │                       │
-│           │  - Device registry │                       │
-│           │  - Job queue       │                       │
-│           │  - State sync      │                       │
-│           │  - User auth       │                       │
-│           └─────────┬──────────┘                       │
-│                     │                                  │
-│           ┌─────────▼──────────┐                       │
-│           │   PostgreSQL       │                       │
-│           │   + Job Queue      │                       │
-│           └────────────────────┘                       │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│                User Device                   │
+│ ┌──────────────┐   ┌──────────────┐          │
+│ │  Mac App     │   │    CLI       │          │
+│ │  (SwiftUI)   │   │   (Rust)     │          │
+│ └──────┬───────┘   └──────┬───────┘          │
+│        │                  │                  │
+│        └───────┬──────────┘                  │
+│                │                             │
+│        ┌───────▼──────────┐                  │
+│        │  BranchBox Agent │                  │
+│        │  (Rust daemon)   │                  │
+│        └───────┬──────────┘                  │
+│                │                             │
+│        ┌───────▼──────────┐                  │
+│        │ Worktree Core    │                  │
+│        │ (Rust library)   │                  │
+│        └──────────────────┘                  │
+└──────────────────────────────────────────────┘
+                 │
+                 │ Batched events / heartbeats
+                 ▼
+      HTTPS drain (control-plane endpoint or stub)
 ```
 
 ## Components
@@ -100,20 +70,22 @@ A distributed development environment orchestrator that manages git worktrees an
 
 **Location**: `agent/`
 
-**Purpose**: Long-running daemon on user's device that executes worktree operations
+**Purpose**: Long-running daemon on the user's device that executes worktree operations. Milestone 1 delivered the macOS/Linux/devcontainer daemon plus CLI bridge; Milestone 2 added the control-plane HTTP drain and `branchbox agent status` reporting. Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
 
 **Features**:
-- gRPC server listening on Tailscale IP + localhost
-- Executes commands from control plane or local clients
-- Offline operation with SQLite queue
-- Periodic heartbeat to control plane
+- gRPC server listening on localhost (configurable bind address)
+- Executes commands from local clients (CLI + macOS preview) over IPC/gRPC
+- Offline operation with SQLite queue + durable control-plane acknowledgements (`control_plane_status.last_ack_event_id`)
+- Configurable HTTP drain (`BRANCHBOX_CP_ENDPOINT`/`BRANCHBOX_CP_TOKEN`) with exponential backoff/jitter and telemetry surfaced via `branchbox agent status`
+- Periodic heartbeat + event batching for the configured drain endpoint
 - State synchronization
 - Auto-update capability
+- CLI fallback bridge when the daemon is offline so macOS preview + CLI stay usable
 
 **Communication**:
 - **Local**: Unix domain socket (BranchBox agent-managed path)
-- **Remote**: gRPC over Tailscale network
-- **Control Plane**: Bi-directional gRPC streaming
+- **Remote**: TCP gRPC (configurable address) for CLI/macOS clients
+- **Drain**: HTTPS POSTs to the configured endpoint (control-plane or stub) for telemetry/state sync
 
 **Installation**:
 ```bash
@@ -135,15 +107,10 @@ sudo branchbox-agent install
 
 **Commands**:
 ```bash
-# Local operations (talks to local agent)
 branchbox feature start "Add OAuth Integration"
 branchbox feature list
 branchbox feature teardown oauth-integration
-
-# Remote operations (talks to control plane)
-worktree devices
-worktree remote start --device=macbook "oauth integration"
-worktree remote list --device=macbook
+branchbox devcontainer sync
 ```
 
 **Distribution**:
@@ -158,133 +125,45 @@ worktree remote list --device=macbook
 **Purpose**: Native macOS application for worktree management
 
 **Features**:
-- View local worktrees
-- Start/stop/teardown features
-- Monitor Docker containers
-- View logs
-- Manage remote devices (optional)
-- Beautiful native UI with live updates
+- View local worktrees with adapter/module metadata, prompt history, tunnel telemetry, and transport badges
+- Start/stop/teardown features (minimal mode toggles plus `--force` / `--complete-spec` confirmations)
+- Visual indicators for agent gRPC vs CLI fallback plus drain health surfaced via `branchbox agent status`
+- Monitor Docker containers + module output snippets
+- Workspace picker + configuration UI for CLI/gRPC endpoints
 
 **Communication**:
 - Talks to local agent via Unix socket or localhost gRPC
-- Optionally talks to control plane for multi-device management
+- Falls back to invoking the CLI directly when the daemon is unavailable
 
 **Distribution**:
 - Mac App Store
 - Direct download (DMG)
 
-### 5. Control Plane (Rails)
-
-**Location**: `control-plane/` (or extend existing Agentify app)
-
-**Purpose**: Central management and coordination of multiple devices
-
-**Features**:
-- User authentication and authorization
-- Device registration and management
-- Remote command execution
-- State aggregation across devices
-- Feature spec library (shared across devices)
-- Real-time updates via Turbo Streams
-- Device health monitoring
-- Audit logs
-
-**API Endpoints**:
-```ruby
-# Device management
-GET    /api/v1/devices
-POST   /api/v1/devices/register
-DELETE /api/v1/devices/:id
-
-# Worktree operations
-GET    /api/v1/devices/:device_id/worktrees
-POST   /api/v1/devices/:device_id/worktrees/start
-DELETE /api/v1/devices/:device_id/worktrees/:name
-
-# Agent endpoints
-POST   /agent/heartbeat
-POST   /agent/report_state
-```
-
-**Distribution**:
-- Hosted service (Heroku, Fly.io, Railway)
-- Self-hosted via Kamal
-- Docker Compose for local development
-
 ## Communication Protocols
 
 ### Local Communication
 
-**Mac App/CLI ↔ Local Agent**
-
-- **Protocol**: gRPC or Unix domain socket
-- **Transport**: Localhost (127.0.0.1:50051) or BranchBox agent Unix socket
-- **Security**: Local user permissions
-- **Latency**: &lt;1ms
+- CLI and macOS clients talk to the agent over a Unix domain socket under `~/.branchbox/agent/` by default.
+- Non-interactive tooling can opt into TCP gRPC by exporting `BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515`.
+- Authentication piggybacks on OS permissions—the socket inherits the user's UID/GID and is not world-readable.
 
 ```
-CLI → Unix socket → BranchBox agent → Core library
+CLI / Mac App → Unix socket → BranchBox agent → Worktree core
 ```
 
 ### Remote Communication
 
-**Control Plane ↔ Agent**
+- The gRPC server can bind to alternative interfaces (e.g., devcontainer ↔ host) when `BRANCHBOX_AGENT_GRPC_ADDR` points at a non-loopback IP.
+- Secure the connection via SSH or WireGuard tunnels if you expose the agent outside localhost.
+- All APIs return structured errors so remote callers can fall back to CLI direct mode if the agent becomes unreachable.
 
-- **Protocol**: gRPC
-- **Transport**: Tailscale network (encrypted mesh VPN)
-- **Security**: Device token authentication + Tailscale encryption
-- **Latency**: 10-100ms
+### Telemetry Drain
 
-```
-Web UI → Rails API → gRPC/Tailscale → Agent → Core library
-```
-
-### State Synchronization
-
-**Agent → Control Plane**
-
-- **Heartbeat**: Every 30 seconds (device status)
-- **State Reports**: On every worktree operation (event-driven)
-- **Offline Queue**: SQLite queue for operations when offline
-- **Sync**: Drain queue when connection restored
+- The agent batches heartbeats and workflow events, then POSTs them to `BRANCHBOX_CP_ENDPOINT` with `BRANCHBOX_CP_TOKEN` for authentication.
+- Failures trigger exponential backoff (configurable via env) and surface via `branchbox agent status`.
+- `scripts/manual-agent-e2e.sh --cp-stub` lets you observe the payloads without a real control plane.
 
 ## Data Models
-
-### Control Plane (PostgreSQL)
-
-```ruby
-# Device
-- id: uuid
-- user_id: references users
-- name: string (hostname)
-- tailscale_ip: inet
-- token: string (encrypted)
-- agent_version: string
-- status: enum (online, offline, error)
-- last_seen_at: datetime
-- metadata: jsonb (OS, architecture, etc)
-
-# Worktree
-- id: uuid
-- device_id: references devices
-- name: string (work_feature)
-- branch: string
-- url: string (Cloudflare tunnel)
-- status: enum (starting, running, stopped, error)
-- worktree_path: string
-- metadata: jsonb (container names, volumes, etc)
-- created_at: datetime
-- updated_at: datetime
-
-# FeatureSpec
-- id: uuid
-- user_id: references users
-- name: string
-- title: string
-- content: text (markdown)
-- status: enum (backlog, in_progress, completed)
-- metadata: jsonb
-```
 
 ### Agent (SQLite)
 
@@ -318,44 +197,6 @@ CREATE TABLE config (
 );
 ```
 
-## Security Model
-
-### Device Registration
-
-1. User logs into web dashboard
-2. User generates 6-digit registration code (expires in 15 minutes)
-3. User runs `branchbox-agent init` on device and enters code
-4. Agent exchanges code for long-lived device token
-5. Device token stored in `~/.branchbox/agent/config.toml` (600 permissions)
-
-```bash
-# Web UI
-Code: ABC123
-
-# Device
-$ branchbox-agent init
-Enter registration code: ABC123
-✓ Device registered successfully
-✓ Device ID: 550e8400-e29b-41d4-a716-446655440000
-```
-
-### Authentication
-
-**Local**:
-- Mac App/CLI: No auth required (local user permissions)
-- Agent: Listens on localhost + Unix socket
-
-**Remote**:
-- Control Plane → Agent: Device token in gRPC metadata
-- Web UI → Control Plane: Session-based auth (existing Rails auth)
-- Tailscale network: Automatic encryption and ACLs
-
-### Authorization
-
-- Users can only manage their own devices
-- Devices can only report state for themselves
-- Control plane validates device ownership before accepting commands
-
 ## Offline Operation
 
 ### Offline-First Design
@@ -367,14 +208,13 @@ The agent is designed to work **completely offline**:
    - No network required
 
 2. **State updates queued for sync**
-   - Agent writes to SQLite queue
-   - Periodically attempts to sync with control plane
-   - Queue drains when connection restored
+   - Agent writes to a durable SQLite queue
+   - Periodically attempts to sync with the configured HTTP drain
+   - Queue drains when the endpoint responds successfully
 
 3. **Conflict resolution**
-   - Control plane state is source of truth
-   - Agent reports local state
-   - Manual resolution via web UI if conflicts detected
+   - Drain failures leave events queued; agent logs the error and surfaces it via `branchbox agent status`
+   - Operators inspect stub/endpoint logs and re-run the sync once the issue is resolved
 
 ### Queue Management
 
@@ -389,7 +229,7 @@ queue.enqueue(StateUpdate {
 
 // Periodic sync task
 loop {
-    if control_plane.is_reachable() {
+    if drain.is_reachable() {
         queue.drain_all().await?;
     }
     tokio::time::sleep(Duration::from_secs(30)).await;
@@ -420,91 +260,26 @@ sudo branchbox-agent install
 
 `~/.branchbox/agent/config.toml`:
 ```toml
-[agent]
-device_id = "550e8400-e29b-41d4-a716-446655440000"
-device_token = "long-secret-token"
-device_name = "MacBook Pro"
+workspace_root = "/workspaces/main"
+state_dir = "/Users/you/.branchbox/agent"
+socket_path = "/Users/you/.branchbox/agent/branchbox-agent.sock"
+heartbeat_interval_secs = 30
+grpc_enabled = true
+grpc_addr = "127.0.0.1:50515"
+event_flush_interval_secs = 10
+event_batch_size = 50
+event_log_only = false
 
 [control_plane]
 enabled = true
-url = "https://branchbox.example.com"
-
-[tailscale]
-auto_detect = true
-ip = "100.64.0.1"
-
-[local]
-listen_addr = "127.0.0.1:50051"
-unix_socket = "/Users/username/.branchbox/agent/agent.sock"
-data_dir = "/Users/username/.branchbox/data"
+endpoint = "https://example.test/hooks/devices"
+api_token = "stub-token"
+verify_tls = true
 
 [logging]
 level = "info"
-file = "/Users/username/.branchbox/agent/agent.log"
+file = "/Users/you/.branchbox/agent/agent.log"
 ```
-
-### Control Plane Deployment
-
-```bash
-# Using Kamal (existing Agentify deployment)
-bin/kamal deploy
-
-# Or Heroku
-git push heroku main
-
-# Or Fly.io
-fly deploy
-```
-
-## Migration Plan
-
-### Phase 1: Core Library (Rust)
-
-Migrate existing bash utilities to Rust:
-
-1. ✅ `lib/core/naming.sh` → `core/src/naming.rs`
-2. ✅ `lib/core/validation.sh` → `core/src/validation.rs`
-3. ✅ `lib/core/git-operations.sh` → `core/src/git.rs`
-4. ✅ `lib/adapters/` → `core/src/adapters/`
-5. ✅ `lib/modules/` → `core/src/modules/`
-
-### Phase 2: Local Agent
-
-Build Rust daemon:
-
-1. ✅ gRPC server setup
-2. ✅ Unix socket server
-3. ✅ Integrate core library
-4. ✅ Local state storage (SQLite)
-5. ✅ Command handlers
-
-### Phase 3: CLI
-
-Build Rust CLI:
-
-1. ✅ Argument parsing (clap)
-2. ✅ Agent communication
-3. ✅ Pretty output
-4. ✅ Interactive prompts (dialoguer)
-
-### Phase 4: Control Plane
-
-Extend Rails app (Agentify):
-
-1. ✅ Device model and registration
-2. ✅ Agent API endpoints
-3. ✅ gRPC client for agent communication
-4. ✅ Web UI for device management
-
-### Phase 5: Mac App
-
-Build SwiftUI app:
-
-1. ✅ Local agent communication
-2. ✅ Worktree list view
-3. ✅ Start/stop/teardown actions
-4. ✅ Settings and preferences
-5. ✅ Optional: Control plane integration
 
 ## Technology Stack
 
@@ -514,28 +289,23 @@ Build SwiftUI app:
 | **Agent** | Rust + Tokio | Low resource, reliable, async I/O |
 | **CLI** | Rust + Clap | Single binary, fast startup, great UX |
 | **Mac App** | SwiftUI | Native macOS, best performance/UX |
-| **Control Plane** | Rails 8 | Rapid development, great for business logic |
-| **Web UI** | Hotwire (Turbo/Stimulus) | Real-time updates, minimal JS |
 | **Communication** | gRPC (tonic) | Type-safe, bi-directional streaming |
-| **Network** | Tailscale | Secure mesh VPN, NAT traversal |
-| **Database** | PostgreSQL + SQLite | Postgres for control plane, SQLite for agent |
-| **Queue** | Solid Queue (Rails) | Background jobs, agent command queue |
+| **Database** | SQLite | Durable local registry + event queue |
 
 ## Development Setup
 
 ### Prerequisites
 
 - Rust 1.75+
-- Ruby 3.3+
-- PostgreSQL 16+
 - Docker
-- Tailscale account (optional for remote features)
+- Node.js 20+ (for building the docs site)
+- Swift toolchain + Xcode (for the macOS preview app)
 
 ### Local Development
 
 ```bash
 # Clone repository
-git clone https://github.com/branchbox-branchbox
+git clone https://github.com/branchbox/branchbox
 cd branchbox
 
 # Build core library
@@ -555,39 +325,8 @@ cd ../cli
 cargo build
 ./target/debug/worktree --help
 
-# Run control plane
-cd ../control-plane
-bin/rails db:setup
-bin/dev
-```
-
-## Future Enhancements
-
-### Version 2.0
-
-- [ ] Windows support (WSL2)
-- [ ] Linux desktop app (Tauri)
-- [ ] Team collaboration features
-- [ ] Shared worktrees across devices
-- [ ] Template library
-- [ ] VS Code extension
-- [ ] JetBrains IDE plugin
-- [ ] Metrics and telemetry
-- [ ] Cost optimization recommendations
-
-### Enterprise Features
-
-- [ ] SSO/SAML integration
-- [ ] RBAC (role-based access control)
-- [ ] Audit logging
-- [ ] Compliance reports
-- [ ] On-premise deployment
-- [ ] High availability (HA) setup
-
 ## References
 
 - [Git Worktree Documentation](https://git-scm.com/docs/git-worktree)
-- [Tailscale Documentation](https://tailscale.com/kb/)
 - [gRPC Rust (Tonic)](https://github.com/hyperium/tonic)
 - [Tokio Async Runtime](https://tokio.rs/)
-- [Rails 8 Documentation](https://guides.rubyonrails.org/)

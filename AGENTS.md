@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Overview & Current State
-BranchBox is a distributed development environment orchestrator managing git worktrees and devcontainers. Milestone 0 is complete—core workflow orchestration for feature worktrees is implemented in Rust. The CLI supports `branchbox feature start/teardown/list` with full lifecycle management. Future milestones will add a Rust agent daemon, Rails control plane, and native macOS app, all coordinating via Tailscale in an offline-first architecture.
+BranchBox is a distributed development environment orchestrator managing git worktrees and devcontainers. Milestone 0 is complete—core workflow orchestration for feature worktrees is implemented in Rust. Milestone 1 shipped the Rust agent daemon (macOS/Linux/devcontainer) plus CLI bridge + telemetry so long-running workflows can run in the background. Milestone 2 added the control-plane HTTP drain, `branchbox agent status`, and a SwiftUI macOS preview app that rides on the same gRPC surface as the CLI. Next up: Windows transport, full Rails control plane UX, and tighter Tailscale coordination so the offline-first contract holds across devices.
 
 ## Project Structure & Module Organization
 The workspace roots at `Cargo.toml` and currently ships two members: the core library in `core/` and the CLI in `cli/`. Core modules live under `core/src/` (notably `adapters/`, `modules/`, `bootstrap/`, and cross-cutting helpers like `git.rs`). The CLI entry point is `cli/src/main.rs`, exporting the `branchbox` binary on behalf of the library. Shared documentation sits in `docs/`, CI workflows in `.github/workflows/`, and reproducible tooling in `.devcontainer/`. Future members (agent, control-plane, macos) are commented out in the root workspace until their respective milestones.
@@ -27,6 +27,10 @@ STACK=generic ./scripts/manual-cli-e2e.sh
 STACK=rails ./scripts/manual-cli-e2e.sh
 STACK=node ./scripts/manual-cli-e2e.sh
 ```
+
+Follow up with `./scripts/manual-agent-e2e.sh --cp-stub` to exercise the control-plane HTTP drain. The flag spins up a disposable stub endpoint, feeds it the agent’s batched events, and prints the ack cursor so you can confirm retries/metadata before cutting a release. For quick spot checks (without rerunning the harness) use `branchbox agent status --json`—it reports whether the drain is configured/connected plus the last delivery/failure timestamps.
+
+When touching the macOS client or anything gRPC-related, run the “Mac App ↔ Agent Loop” from `docs/docs/getting-started/manual-cli-e2e.md`: start the agent locally, point the SwiftUI preview at your workspace, issue start/teardown operations from the UI, and verify the HTTP drain logs show the matching events.
 
 The harness intentionally edits the feature devcontainer before teardown to exercise the dirty-worktree guard, so an initial `feature teardown` failure followed by the scripted `--force` retry is expected. Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
 CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch another stack locally, mirror that by passing `--stack <stack>` when running the script.
