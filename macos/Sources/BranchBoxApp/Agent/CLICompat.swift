@@ -77,7 +77,10 @@ enum CLICompat {
             lastDeliveryAt: nil,
             lastFailureAt: nil,
             lastError: nil,
-            lastAckEventId: nil
+            lastAckEventId: nil,
+            lastSentBatchId: nil,
+            lastSentEventId: nil,
+            lastSentAt: nil
         )
     }
 
@@ -180,5 +183,8 @@ enum CLICompat {
         let lastFailureAt: String?
         let lastError: String?
         let lastAckEventId: Int64?
+        let lastSentBatchId: Int64?
+        let lastSentEventId: Int64?
+        let lastSentAt: String?
     }
 }

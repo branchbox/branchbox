@@ -6,6 +6,7 @@ import AppKit
 struct FeatureListView: View {
     @EnvironmentObject private var viewModel: FeatureListViewModel
     @State private var didPromptWorkspace = false
+    @State private var showAdvancedStartOptions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -86,65 +87,6 @@ struct FeatureListView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                HStack {
-                    TextField("Branch prefix", text: $viewModel.branchPrefix)
-                        .textFieldStyle(.roundedBorder)
-                    Toggle("Reuse existing worktree", isOn: $viewModel.reuseExisting)
-                }
-
-                HStack {
-                    Toggle("Minimal mode", isOn: $viewModel.useMinimalMode)
-                    Spacer()
-                    TextField("Prompt seed", text: $viewModel.promptSeed)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 260)
-                }
-
-                if !viewModel.promptHistory.isEmpty {
-                    Menu("Prompt history") {
-                        ForEach(viewModel.promptHistory, id: \.self) { seed in
-                            Button(seed) {
-                                viewModel.applyPromptHistory(seed)
-                            }
-                        }
-                    }
-                }
-
-                HStack {
-                    Menu {
-                        ForEach(viewModel.availableModules, id: \.self) { module in
-                            let binding = Binding(
-                                get: { viewModel.skipModules.contains(module) },
-                                set: { newValue in
-                                    if newValue {
-                                        viewModel.skipModules.insert(module)
-                                    } else {
-                                        viewModel.skipModules.remove(module)
-                                    }
-                                }
-                            )
-                            Toggle(module.capitalized, isOn: binding)
-                        }
-                    } label: {
-                        Label("Skip modules", systemImage: "slider.horizontal.3")
-                    }
-
-                    if !viewModel.skipModules.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack {
-                                ForEach(Array(viewModel.skipModules).sorted(), id: \.self) { module in
-                                    Text(module)
-                                        .font(.caption)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(Color.blue.opacity(0.1))
-                                        .clipShape(Capsule())
-                                }
-                            }
-                        }
-                    }
-                }
-
                 Button {
                     viewModel.startFeature()
                 } label: {
@@ -152,6 +94,77 @@ struct FeatureListView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.isWorking)
+
+                DisclosureGroup(isExpanded: $showAdvancedStartOptions) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            TextField("Branch prefix", text: $viewModel.branchPrefix)
+                                .textFieldStyle(.roundedBorder)
+                            Toggle("Reuse existing worktree", isOn: $viewModel.reuseExisting)
+                        }
+
+                        HStack(alignment: .top) {
+                            Toggle("Minimal mode", isOn: $viewModel.useMinimalMode)
+                            Spacer()
+                            TextField("Prompt seed", text: $viewModel.promptSeed)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 260)
+                        }
+
+                        if !viewModel.promptHistory.isEmpty {
+                            Menu("Prompt history") {
+                                ForEach(viewModel.promptHistory, id: \.self) { seed in
+                                    Button(seed) {
+                                        viewModel.applyPromptHistory(seed)
+                                    }
+                                }
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Menu {
+                                ForEach(viewModel.availableModules, id: \.self) { module in
+                                    let binding = Binding(
+                                        get: { viewModel.skipModules.contains(module) },
+                                        set: { newValue in
+                                            if newValue {
+                                                viewModel.skipModules.insert(module)
+                                            } else {
+                                                viewModel.skipModules.remove(module)
+                                            }
+                                        }
+                                    )
+                                    Toggle(module.capitalized, isOn: binding)
+                                }
+                            } label: {
+                                Label("Skip modules", systemImage: "slider.horizontal.3")
+                            }
+
+                            if !viewModel.skipModules.isEmpty {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack {
+                                        ForEach(Array(viewModel.skipModules).sorted(), id: \.self) { module in
+                                            Text(module)
+                                                .font(.caption)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(Color.blue.opacity(0.1))
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Label(
+                        showAdvancedStartOptions ? "Hide advanced options" : "Show advanced options",
+                        systemImage: "slider.horizontal.3"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
             }
             .padding()
         }

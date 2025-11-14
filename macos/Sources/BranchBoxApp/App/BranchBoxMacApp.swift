@@ -9,8 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Bring the app to the foreground when launched via `swift run`.
         NSApp.activate(ignoringOtherApps: true)
 
-        // Request local notification permission for completion toasts.
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        // Request local notification permission for completion toasts when running as a bundled app.
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        }
     }
 }
 #endif

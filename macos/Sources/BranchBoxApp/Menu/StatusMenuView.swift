@@ -11,6 +11,7 @@ struct StatusMenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            workspaceCard
             if let active = viewModel.activeFeature {
                 activeCard(active)
             }
@@ -46,6 +47,28 @@ struct StatusMenuView: View {
             Button { viewModel.refresh() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless)
                 .disabled(viewModel.isWorking)
+        }
+    }
+
+    private var workspaceCard: some View {
+        GroupBox("Workspace") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(viewModel.workspaceDisplayName)
+                    .font(.headline)
+                Text(viewModel.workspacePath)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                HStack {
+                    Button("Choose…") { viewModel.openWorkspacePicker() }
+                    Button("Reveal") { viewModel.revealWorkspaceInFinder() }
+                    Button("Terminal") { viewModel.openWorkspaceInTerminal() }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+            }
+            .padding(8)
         }
     }
 

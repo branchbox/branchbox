@@ -8,16 +8,32 @@ struct HomeView: View {
     @State private var name: String = ""
     @State private var showOptions = false
 
+    private let gridColumns: [GridItem] = [
+        GridItem(.flexible(), spacing: 24),
+        GridItem(.flexible(), spacing: 24)
+    ]
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
-                if let active = viewModel.activeFeature {
-                    activeCard(active)
+                if viewModel.workspaceNeedsSetup {
+                    workspaceSetupCard
                 }
-                startCard
-                recentCard
-                healthRow
+                LazyVGrid(columns: gridColumns, spacing: 24) {
+                    VStack(spacing: 24) {
+                        primaryCard
+                        recentCard
+                    }
+                    VStack(spacing: 24) {
+                        workspaceHealthCard
+                        if let feature = viewModel.activeFeature {
+                            activeCard(feature)
+                        } else {
+                            emptyActiveCard
+                        }
+                    }
+                }
             }
             .padding(24)
         }
@@ -44,7 +60,7 @@ struct HomeView: View {
         }
     }
 
-    private var startCard: some View {
+    private var primaryCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Start a Feature").font(.title3).bold()
@@ -62,6 +78,7 @@ struct HomeView: View {
             }
             .padding()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var recentCard: some View {
@@ -86,39 +103,41 @@ struct HomeView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var healthRow: some View {
-        HStack(spacing: 12) {
-            GroupBox {
-                HStack {
-                    Circle().fill(viewModel.isAgentConnected ? Color.green : Color.orange)
-                        .frame(width: 10, height: 10)
-                    Text(viewModel.isAgentConnected ? "Agent online" : "Agent fallback")
-                    Spacer()
-                }
-                .padding(8)
+    private var workspaceHealthCard: some View {
+        GroupBox("Workspace health") {
+            VStack(alignment: .leading, spacing: 12) {
+                statusRow(
+                    title: "Agent connection",
+                    detail: viewModel.isAgentConnected ? "Online" : "Offline",
+                    color: viewModel.isAgentConnected ? .green : .orange,
+                    description: viewModel.isAgentConnected ? "Connected to BranchBox agent" : "Falling back to CLI output",
+                    actionLabel: "Check agent",
+                    action: viewModel.isAgentConnected ? nil : { viewModel.selectedSection = .agent }
+                )
+                statusRow(
+                    title: "Cloud sync",
+                    detail: viewModel.isControlPlaneHealthy ? "Delivering" : "Pending",
+                    color: viewModel.isControlPlaneHealthy ? .green : .orange,
+                    description: viewModel.isControlPlaneHealthy ? "Events acknowledged" : "Awaiting delivery",
+                    actionLabel: "View log",
+                    action: viewModel.isControlPlaneHealthy ? nil : { viewModel.selectedSection = .agent }
+                )
+                let hasIssues = viewModel.outdatedDevcontainersCount > 0
+                statusRow(
+                    title: "Workspace sync",
+                    detail: hasIssues ? "Needs sync" : "Up to date",
+                    color: hasIssues ? .orange : .green,
+                    description: hasIssues ? "\(viewModel.outdatedDevcontainersCount) worktree(s) require sync" : "All worktrees synced",
+                    actionLabel: "Sync now",
+                    action: hasIssues ? { viewModel.syncDevcontainer() } : nil
+                )
             }
-            GroupBox {
-                HStack {
-                    Circle().fill(viewModel.isControlPlaneHealthy ? Color.green : Color.orange)
-                        .frame(width: 10, height: 10)
-                    Text(viewModel.isControlPlaneHealthy ? "Control plane" : "CP pending")
-                    Spacer()
-                }
-                .padding(8)
-            }
-            GroupBox {
-                HStack {
-                    let hasIssues = viewModel.outdatedDevcontainersCount > 0
-                    Circle().fill(hasIssues ? Color.orange : Color.green)
-                        .frame(width: 10, height: 10)
-                    Text(hasIssues ? "\(viewModel.outdatedDevcontainersCount) devcontainer(s) outdated" : "Devcontainers synced")
-                    Spacer()
-                }
-                .padding(8)
-            }
+            .padding()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func activeCard(_ feature: FeatureViewData) -> some View {
@@ -167,9 +186,67 @@ struct HomeView: View {
         .clipShape(Capsule())
     }
 
+    private var emptyActiveCard: some View {
+        GroupBox("Active feature") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("No active feature")
+                    .font(.title3).bold()
+                Text("Launch a feature from the form on the left to see runtime status, quick actions, and module health.")
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func quickStart() {
         viewModel.startFeatureQuick(name: name)
         name = ""
+    }
+
+    private func statusRow(title: String, detail: String, color: Color, description: String) -> some View {
+        statusRow(title: title, detail: detail, color: color, description: description, actionLabel: nil, action: nil)
+    }
+
+    private func statusRow(
+        title: String,
+        detail: String,
+        color: Color,
+        description: String,
+        actionLabel: String?,
+        action: (() -> Void)?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Circle().fill(color).frame(width: 10, height: 10)
+                Text("\(title) • \(detail)").font(.headline)
+                Spacer()
+                if let actionLabel, let action {
+                    Button(actionLabel, action: action)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            Text(description)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var workspaceSetupCard: some View {
+        GroupBox("Choose a workspace") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Select the repository you want BranchBox to manage. You can always change this later from Settings.")
+                    .foregroundColor(.secondary)
+                HStack {
+                    Button("Choose workspace…") { viewModel.openWorkspacePicker() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Open Settings") { viewModel.selectedSection = .settings }
+                }
+            }
+            .padding()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -9,6 +9,7 @@ Prerequisites
 - macOS 13+
 - Xcode command line tools (`xcode-select --install`)
 - Rust toolchain installed for macOS if you plan to embed the CLI.
+- Linux devcontainers cannot compile or run the app because the required Apple SDKs (`OSLog`, SwiftUI, etc.) are unavailable there—run builds/tests on macOS hardware or CI runners only.
 
 Run from Terminal (debug)
 - Start the agent inside the devcontainer:
@@ -35,4 +36,3 @@ CLI resolution order
 Notes
 - When using gRPC to a devcontainer agent, the workspace path should be `/workspaces/milestone2`.
 - When using the CLI on your Mac host, select the host path to the repo.
-

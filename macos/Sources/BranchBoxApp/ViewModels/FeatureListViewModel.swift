@@ -4,6 +4,36 @@ import SwiftUI
 import AppKit
 #endif
 
+enum TransportPreference: String, CaseIterable, Identifiable {
+    case automatic
+    case grpc
+    case cliFallback
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic:
+            return "Automatic"
+        case .grpc:
+            return "Force gRPC"
+        case .cliFallback:
+            return "Force CLI"
+        }
+    }
+
+    var overrideTransport: AgentBridge.Transport? {
+        switch self {
+        case .automatic:
+            return nil
+        case .grpc:
+            return .grpc
+        case .cliFallback:
+            return .cliFallback
+        }
+    }
+}
+
 @MainActor
 final class FeatureListViewModel: ObservableObject {
     @Published var features: [FeatureViewData] = []
@@ -20,9 +50,14 @@ final class FeatureListViewModel: ObservableObject {
     @Published var workspacePath: String
     @Published var transportStatus: AgentBridge.Transport = .grpc
     @Published var pendingTeardown: FeatureViewData?
-    @Published var teardownOptions = TeardownOptions()
+    @Published var teardownOptions = TeardownOptions() {
+        didSet {
+            persistTeardownOptions()
+        }
+    }
     @Published private(set) var promptHistory: [String]
     @Published var controlPlaneStatus: AgentBridge.AgentStatusSnapshot?
+    @Published var transportPreference: TransportPreference
     // UI intents
     @Published var commandStartRequested: Bool = false
     @Published var syncDevcontainerRequested: Bool = false
@@ -37,6 +72,10 @@ final class FeatureListViewModel: ObservableObject {
     private var hasLoadedInitially = false
     private static let workspaceDefaultsKey = "branchbox.workspace"
     private static let promptHistoryKey = "branchbox.promptHistory"
+    private static let transportPreferenceKey = "branchbox.transportPreference"
+    private static let teardownForceKey = "branchbox.teardown.force"
+    private static let teardownCompleteSpecKey = "branchbox.teardown.completeSpec"
+    private static let teardownDeleteBranchKey = "branchbox.teardown.deleteBranch"
     let availableModules = ["compose", "database", "tunnel", "specs"]
 
     init(bridge: AgentBridge = AgentBridge(), defaults: UserDefaults = .standard) {
@@ -47,7 +86,13 @@ final class FeatureListViewModel: ObservableObject {
         self.promptHistory = defaults.stringArray(forKey: Self.promptHistoryKey) ?? []
         self.devcontainerStrategy = defaults.string(forKey: "branchbox.devcontainerStrategy") ?? "copy"
         self.detectOutput = nil
+        let storedPreference = defaults
+            .string(forKey: Self.transportPreferenceKey)
+            .flatMap(TransportPreference.init(rawValue:)) ?? .automatic
+        self.transportPreference = storedPreference
+        self.teardownOptions = FeatureListViewModel.loadTeardownDefaults(from: defaults)
         self.bridge.updateWorkspacePath(storedWorkspace)
+        self.bridge.setTransportOverride(storedPreference.overrideTransport)
     }
 
     func loadIfNeeded() async {
@@ -59,6 +104,19 @@ final class FeatureListViewModel: ObservableObject {
     }
 
     func refresh() {
+        Task {
+            await loadFeatures()
+        }
+    }
+
+    func setTransportPreference(_ preference: TransportPreference) {
+        transportPreference = preference
+        if preference == .automatic {
+            defaults.removeObject(forKey: Self.transportPreferenceKey)
+        } else {
+            defaults.set(preference.rawValue, forKey: Self.transportPreferenceKey)
+        }
+        bridge.setTransportOverride(preference.overrideTransport)
         Task {
             await loadFeatures()
         }
@@ -98,6 +156,40 @@ final class FeatureListViewModel: ObservableObject {
     }
 
     var suggestedFeatureName: String { "" }
+
+    var workspaceDisplayName: String {
+        let url = URL(fileURLWithPath: workspacePath)
+        let name = url.lastPathComponent
+        return name.isEmpty ? workspacePath : name
+    }
+
+    var transportStatusLabel: String {
+        transportStatus == .grpc ? "gRPC" : "CLI fallback"
+    }
+
+    var transportStatusIcon: String {
+        transportStatus == .grpc ? "bolt.horizontal" : "arrow.triangle.2.circlepath"
+    }
+
+    var transportStatusTint: Color {
+        transportStatus == .grpc ? .green : .orange
+    }
+
+    var controlPlaneStatusLabel: String {
+        isControlPlaneHealthy ? "CP connected" : "CP pending"
+    }
+
+    var controlPlaneStatusIcon: String {
+        isControlPlaneHealthy ? "waveform.path.ecg" : "exclamationmark.triangle"
+    }
+
+    var controlPlaneStatusTint: Color {
+        isControlPlaneHealthy ? .green : .orange
+    }
+
+    var workspaceNeedsSetup: Bool {
+        !FileManager.default.fileExists(atPath: workspacePath)
+    }
 
     func startFeature() {
         let trimmedName = newFeatureName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -168,7 +260,6 @@ final class FeatureListViewModel: ObservableObject {
 
     func openTeardownSheet(for feature: FeatureViewData) {
         pendingTeardown = feature
-        teardownOptions = TeardownOptions()
     }
 
     func cancelPendingTeardown() {
@@ -260,6 +351,20 @@ final class FeatureListViewModel: ObservableObject {
             promptHistory = Array(promptHistory.prefix(5))
         }
         defaults.set(promptHistory, forKey: Self.promptHistoryKey)
+    }
+
+    private static func loadTeardownDefaults(from defaults: UserDefaults) -> TeardownOptions {
+        TeardownOptions(
+            force: defaults.bool(forKey: Self.teardownForceKey),
+            completeSpec: defaults.bool(forKey: Self.teardownCompleteSpecKey),
+            deleteBranch: defaults.bool(forKey: Self.teardownDeleteBranchKey)
+        )
+    }
+
+    private func persistTeardownOptions() {
+        defaults.set(teardownOptions.force, forKey: Self.teardownForceKey)
+        defaults.set(teardownOptions.completeSpec, forKey: Self.teardownCompleteSpecKey)
+        defaults.set(teardownOptions.deleteBranch, forKey: Self.teardownDeleteBranchKey)
     }
 
 #if os(macOS)
