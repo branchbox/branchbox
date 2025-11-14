@@ -70,7 +70,7 @@ A distributed development environment orchestrator that manages git worktrees an
 
 **Location**: `agent/`
 
-**Purpose**: Long-running daemon on the user's device that executes worktree operations. Milestone 1 delivered the macOS/Linux/devcontainer daemon plus CLI bridge; Milestone 2 added the control-plane HTTP drain and `branchbox agent status` reporting. Windows transport support is tracked in [docs/features/backlog/agent-windows-support.md](docs/features/backlog/agent-windows-support.md).
+**Purpose**: Long-running daemon on the user's device that executes worktree operations. Milestone 1 delivered the macOS/Linux/devcontainer daemon plus CLI bridge; Milestone 2 added the control-plane HTTP drain and `branchbox agent status` reporting. Windows transport support is tracked internally (see `docs/features/backlog/agent-windows-support.md` in the repo).
 
 **Features**:
 - gRPC server listening on localhost (configurable bind address)
