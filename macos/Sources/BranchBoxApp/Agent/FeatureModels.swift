@@ -16,6 +16,7 @@ struct FeatureViewData: Identifiable, Hashable {
     let updatedAt: Date?
     let tunnelStatus: String?
     let tunnelProvider: String?
+    let tunnelHostname: String?
     let adapterName: String?
     let adapterServiceURL: String?
     let adapterWarnings: [String]
@@ -86,6 +87,7 @@ extension FeatureViewData {
         self.updatedAt = FeatureViewData.parse(dateString: feature.updatedAt)
         self.tunnelStatus = feature.tunnelStatus.isEmpty ? nil : feature.tunnelStatus
         self.tunnelProvider = feature.tunnelProvider.isEmpty ? nil : feature.tunnelProvider
+        self.tunnelHostname = feature.tunnelHostname.isEmpty ? nil : feature.tunnelHostname
         if feature.hasAdapter {
             let adapter = feature.adapter
             self.adapterName = adapter.name.isEmpty ? nil : adapter.name
@@ -114,6 +116,7 @@ extension FeatureViewData {
         self.updatedAt = record.updatedAt
         self.tunnelStatus = record.tunnelStatus
         self.tunnelProvider = record.tunnelProvider
+        self.tunnelHostname = record.tunnelHostname
         if let adapter = record.adapter {
             self.adapterName = adapter.name
             self.adapterServiceURL = adapter.serviceUrl

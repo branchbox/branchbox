@@ -34,7 +34,7 @@ The SwiftUI preview in `macos/` proves that the gRPC surface works end-to-end, b
 
 ### Surface breakdown
 - **Toolbar**: Workspace picker, transport selector (Automatic/gRPC/CLI), “Refresh” button, and status lights. Advanced toggles move to Settings.
-- **Home tab**: Two-column grid with (a) Quick Start + Recent Activity; (b) Active Feature card + simple “Workspace status” card that includes a “Fix it” button (opens Agent tab or kicks off devcontainer sync). Add a “Tunnels” card once APIs land (configure provider, copy hostname).
+- **Home tab**: Two-column grid with (a) Quick Start + Recent Activity; (b) Active Feature card + simple “Workspace status” card that includes a “Fix it” button (opens Agent tab or kicks off devcontainer sync) plus a tunnels card that shows provider/status and lets people copy the hostname.
 - **Features tab**: List and detail remain, but the inline start form defaults to minimal fields with a “Show advanced options” disclosure for branch prefixes, prompt seeds, module skip list, etc.
 - **Agent tab**: Diagnostics, logs, drains, and devcontainer strategies live here, targeting operators.
 - **Settings tab**: CLI path overrides, telemetry opt-in, default branch prefixes, tunnel defaults.

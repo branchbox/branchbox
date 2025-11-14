@@ -191,6 +191,29 @@ final class FeatureListViewModel: ObservableObject {
         !FileManager.default.fileExists(atPath: workspacePath)
     }
 
+    struct TunnelSummary {
+        let provider: String
+        let status: String
+        let hostname: String?
+        let workFeature: String
+    }
+
+    var tunnelSummary: TunnelSummary? {
+        guard let feature = (activeFeature ?? features.first(where: {
+            ($0.tunnelProvider?.isEmpty == false) || ($0.tunnelStatus?.isEmpty == false)
+        })) else {
+            return nil
+        }
+        let provider = feature.tunnelProvider ?? "Unknown provider"
+        let status = feature.tunnelStatus ?? "Unknown status"
+        return TunnelSummary(
+            provider: provider,
+            status: status,
+            hostname: feature.tunnelHostname,
+            workFeature: feature.workFeature
+        )
+    }
+
     func startFeature() {
         let trimmedName = newFeatureName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
@@ -339,6 +362,17 @@ final class FeatureListViewModel: ObservableObject {
             }
             self.isWorking = false
         }
+    }
+
+    func copyTunnelHostname() {
+        guard let hostname = tunnelSummary?.hostname, !hostname.isEmpty else {
+            activeAlert = FeatureAlert(title: "No tunnel hostname", message: "Start a feature with a tunnel to copy its hostname.")
+            return
+        }
+#if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(hostname, forType: .string)
+#endif
     }
 
     private func recordPromptSeed(_ seed: String?) {

@@ -27,6 +27,7 @@ struct HomeView: View {
                     }
                     VStack(spacing: 24) {
                         workspaceHealthCard
+                        tunnelSection
                         if let feature = viewModel.activeFeature {
                             activeCard(feature)
                         } else {
@@ -140,6 +141,27 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var tunnelSection: some View {
+        GroupBox("Tunnels") {
+            if let summary = viewModel.tunnelSummary {
+                tunnelCard(summary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("No tunnels detected")
+                        .font(.headline)
+                    Text("Start a feature with the tunnel module enabled to see status and copy its hostname.")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                    Button("View modules") { viewModel.selectedSection = .features }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                .padding()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func activeCard(_ feature: FeatureViewData) -> some View {
         GroupBox("Active feature") {
             VStack(alignment: .leading, spacing: 8) {
@@ -247,6 +269,40 @@ struct HomeView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func tunnelCard(_ summary: FeatureListViewModel.TunnelSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(summary.provider, systemImage: "lock.shield")
+                    .labelStyle(.titleAndIcon)
+                    .font(.headline)
+                Spacer()
+                Text(summary.status)
+                    .font(.subheadline)
+                    .foregroundColor(summary.status.lowercased().contains("error") ? .orange : .secondary)
+            }
+            if let hostname = summary.hostname {
+                HStack {
+                    Text(hostname)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Copy hostname") { viewModel.copyTunnelHostname() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            } else {
+                Text("No hostname reported yet.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Text("From feature \(summary.workFeature)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding()
     }
 }
 

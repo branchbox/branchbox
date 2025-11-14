@@ -157,6 +157,7 @@ enum CLICompat {
         let updatedAt: Date?
         let tunnelStatus: String?
         let tunnelProvider: String?
+        let tunnelHostname: String?
         let moduleOutcomes: [ModuleOutcomeRecord]?
         let adapter: AdapterRecord?
         let devcontainerOutdated: Bool?
