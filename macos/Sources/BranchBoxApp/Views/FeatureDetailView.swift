@@ -162,6 +162,7 @@ struct FlowLayout<Content: View>: View {
         FlowLayoutLayout(spacing: spacing) {
             content
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
