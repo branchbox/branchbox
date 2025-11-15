@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 -
 
+## [0.4.0] - 2025-11-15
+
+### Added
+- Introduced the BranchBox agent daemon (`branchbox-agent`) with its own crate, control-plane HTTP drain, durable ack tracking, and a CLI bridge (`branchbox agent status`) so long-running workflows can keep syncing even when the CLI exits.
+- Added a gRPC surface consumed by both the CLI and a redesigned SwiftUI macOS preview app; the app now shows adapter metadata, control-plane diagnostics, tunnel health, and one-click feature actions from the home dashboard and menu bar.
+- Demo/devcontainer tooling now forwards agent/control plane ports inside the devcontainer, includes a teaser harness for quick recordings, and keeps macOS packaging reproducible even when the Rust toolchain is unavailable.
+
+### Changed
+- Refreshed README, architecture docs, and milestone plans to highlight the agent milestone, macOS app loop, and end-to-end telemetry expectations before tagging releases.
+- The macOS experience received a full visual overhaul (shell, active cards, error states, background sync indicators) so testers can validate the agent/control-plane loop without diving into logs.
+
+### Fixed
+- `branchbox feature start` no longer rewrites devcontainer configs when nothing changed and the demo harness copies fallback assets when `rsync` is missing.
+- Agent + macOS IPC defaults now correctly gate Unix-only mechanisms on Windows, trim helper output, and keep CLI fallbacks optional so the UI keeps running even when the CLI binary is absent.
+- Devcontainer + tunnel scripts gained better permission handling (rsync fallback, Cloudflared defaults) and we fixed multiple regressions surfaced by the teaser/demo harness runs.
+
+### Documentation
+- Added a macOS developer README plus packaging instructions, refreshed the release guide with milestone expectations, and documented the 60s teaser workflow for future recordings.
+- Expanded manual CLI E2E docs with verbose/pretend modes across stacks, clarified the PATH refresh requirement after install, and noted default agent scope for Unix platforms.
+
+### Testing
+- Added SwiftUI view helper tests that cover devcontainer status fallback logic and extended CI to install the Swift toolchain/macOS targets so the preview app keeps building in pull requests.
+- Demo harness scripts now run under CI with Dracula-themed VHS recordings to confirm CLI output remains stable.
+
 ## [0.3.0] - 2025-11-09
 
 ### Added
