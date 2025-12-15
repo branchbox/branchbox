@@ -461,13 +461,12 @@ impl FeatureWorkflow {
         // Tunnel provisioning is handled by the workflow (provider-based) rather than the legacy
         // tunnel module. Avoid surfacing the tunnel module as "skipped" in summaries unless the
         // user explicitly asked to skip it.
-        if !policy_enforced.contains("tunnel") {
-            if !module_skip
+        if !policy_enforced.contains("tunnel")
+            && !module_skip
                 .iter()
                 .any(|name| name.eq_ignore_ascii_case("tunnel"))
-            {
-                module_skip.push("tunnel".to_string());
-            }
+        {
+            module_skip.push("tunnel".to_string());
         }
 
         let modules::ModulePlan {

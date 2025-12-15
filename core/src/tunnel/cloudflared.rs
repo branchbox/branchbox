@@ -352,7 +352,10 @@ mod tests {
     use crate::config::CloudflaredConfig;
     use mockito::{Matcher, Server};
     use std::fs;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
+
+    static CLOUDFLARE_API_BASE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     #[test]
     fn manual_outcome_when_credentials_missing() {
@@ -373,6 +376,10 @@ mod tests {
 
     #[test]
     fn automated_outcome_with_valid_credentials() {
+        let _guard = CLOUDFLARE_API_BASE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
         let mut config = CloudflaredConfig {
             manual_instructions: false,
             account_id: Some("acct".into()),
@@ -519,6 +526,10 @@ mod tests {
 
     #[test]
     fn existing_tunnel_preserves_token_path() {
+        let _guard = CLOUDFLARE_API_BASE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
         let mut config = CloudflaredConfig {
             manual_instructions: false,
             account_id: Some("acct".into()),

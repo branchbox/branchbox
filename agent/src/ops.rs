@@ -95,6 +95,7 @@ pub fn build_teardown_request(
         work_feature,
         branch_prefix,
         delete_branch,
+        force_delete_branch: false,
         force_remove,
         force_remove_modules: force_remove,
         complete_spec,
