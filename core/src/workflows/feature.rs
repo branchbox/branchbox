@@ -1679,6 +1679,29 @@ impl FeatureWorkflow {
             }
         };
 
+        if provider_name.eq_ignore_ascii_case("cloudflared") {
+            if let Ok(token) = std::env::var("CLOUDFLARE_TUNNEL_TOKEN") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    self.write_feature_tunnel_env(feature_dir, hostname, token)?;
+                    let state = FeatureTunnelState {
+                        provider: provider_name.clone(),
+                        hostname: Some(hostname.to_string()),
+                        status: FeatureTunnelStatus::Active,
+                        descriptor: None,
+                        instructions: None,
+                        notes: Some(
+                            "Tunnel token provided via CLOUDFLARE_TUNNEL_TOKEN; skipping API provisioning"
+                                .to_string(),
+                        ),
+                        last_updated: Utc::now(),
+                        removed_at: None,
+                    };
+                    return Ok((Some(state), warnings));
+                }
+            }
+        }
+
         let (mut state, mut provider_warnings, provision_token) = self.invoke_tunnel_provider(
             &provider_name,
             work_feature,

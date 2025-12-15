@@ -538,12 +538,30 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         telemetry,
     };
 
-    maybe_prompt_force_delete_branch(&repo_path, &config, &mut request)?;
+    // Only prompt on interactive shells; in non-interactive contexts we surface a failure if the
+    // branch cannot be deleted without force so callers can retry with `--force`.
+    if Term::stdout().is_term() {
+        maybe_prompt_force_delete_branch(&repo_path, &config, &mut request)?;
+    }
 
     let summary = match workflow.teardown(request.clone()) {
         Ok(summary) => summary,
         Err(err) => handle_teardown_error(err, &workflow, &mut request)?,
     };
+
+    if !Term::stdout().is_term() && request.delete_branch && !summary.branch_deleted {
+        let branch_name =
+            build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
+        if local_branch_exists(&repo_path, &branch_name)
+            && !request.force_remove
+            && !request.force_delete_branch
+        {
+            bail!(
+                "Branch '{}' could not be deleted without force; rerun with `--force-delete-branch` (or `--force`).",
+                branch_name
+            );
+        }
+    }
 
     print_teardown_summary(&summary);
 
