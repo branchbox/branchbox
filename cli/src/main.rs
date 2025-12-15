@@ -8,6 +8,7 @@ use commands::agent::AgentCommands;
 use commands::devcontainer::{self, DevcontainerCommands};
 use commands::feature::{self, FeatureCommands};
 use commands::init::{self, InitArgs};
+use commands::tunnel::{self, TunnelCommands};
 use std::path::PathBuf;
 use worktree_core::bootstrap::Bootstrap;
 
@@ -48,6 +49,10 @@ enum Commands {
     /// Manage feature worktrees
     #[command(subcommand)]
     Feature(FeatureCommands),
+
+    /// Manage tunnels for existing features
+    #[command(subcommand)]
+    Tunnel(TunnelCommands),
 }
 
 #[derive(Subcommand)]
@@ -121,6 +126,10 @@ fn main() -> Result<()> {
 
         Commands::Feature(feature_cmd) => {
             feature::execute(feature_cmd)?;
+        }
+
+        Commands::Tunnel(tunnel_cmd) => {
+            tunnel::execute(tunnel_cmd)?;
         }
 
         Commands::Name(name_cmd) => match name_cmd {

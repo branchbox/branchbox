@@ -212,6 +212,8 @@ pub struct TeardownRequest {
     pub work_feature: String,
     pub branch_prefix: Option<String>,
     pub delete_branch: bool,
+    /// Force branch deletion (`git branch -D`) when the branch is not fully merged.
+    pub force_delete_branch: bool,
     pub force_remove: bool,
     /// Override module dirty checks even if --force was not provided.
     pub force_remove_modules: bool,
@@ -303,12 +305,30 @@ impl FeatureWorkflow {
         self.ensure_host_environment()?;
 
         let work_feature = self.resolve_work_feature(&request)?;
-        let branch_name = build_branch_name(request.branch_prefix.as_deref(), &work_feature);
+        let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_default();
+        let branch_prefix = request
+            .branch_prefix
+            .clone()
+            .or_else(|| Some(config.feature.branch_prefix.clone()));
+        let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
         let mut branch_exists = self.git.branch_exists(&branch_name)?;
         let worktree_exists = worktree_path.exists();
         let base_branch = request.base_branch.clone();
         let mut warnings = Vec::new();
+        let mut reuse_existing = request.reuse_existing;
+
+        if !reuse_existing && branch_exists && !worktree_exists {
+            if let Ok(Some(metadata)) = self.state.get_feature(&work_feature) {
+                if metadata.status == FeatureStatus::Removed || !metadata.worktree_path.exists() {
+                    reuse_existing = true;
+                    warnings.push(format!(
+                        "Branch '{}' already exists; recreating worktree from existing branch.",
+                        branch_name
+                    ));
+                }
+            }
+        }
 
         if request.telemetry {
             std::env::set_var("BRANCHBOX_EMIT_TELEMETRY", "1");
@@ -316,11 +336,11 @@ impl FeatureWorkflow {
             std::env::remove_var("BRANCHBOX_EMIT_TELEMETRY");
         }
 
-        if worktree_exists && !request.reuse_existing {
+        if worktree_exists && !reuse_existing {
             return Err(Error::WorktreeExists(worktree_path));
         }
 
-        if request.reuse_existing && !branch_exists {
+        if reuse_existing && !branch_exists {
             for remote in self.git.list_remotes()? {
                 if self.git.remote_branch_exists(&remote, &branch_name)? {
                     self.git.create_branch_from_remote(&branch_name, &remote)?;
@@ -335,11 +355,11 @@ impl FeatureWorkflow {
             }
         }
 
-        if !request.reuse_existing && branch_exists {
+        if !reuse_existing && branch_exists {
             return Err(Error::BranchExists(branch_name.clone()));
         }
 
-        if request.reuse_existing && !branch_exists {
+        if reuse_existing && !branch_exists {
             return Err(Error::validation(format!(
                 "Cannot reuse feature branch '{}' because it does not exist locally. Fetch or create it before retrying.",
                 branch_name
@@ -347,12 +367,12 @@ impl FeatureWorkflow {
         }
 
         if worktree_exists {
-            if request.reuse_existing {
+            if reuse_existing {
                 tracing::info!("Using existing worktree at {}", worktree_path.display());
             } else {
                 return Err(Error::WorktreeExists(worktree_path));
             }
-        } else if request.reuse_existing {
+        } else if reuse_existing {
             tracing::info!(
                 "Recreating missing worktree for existing branch {}",
                 branch_name
@@ -370,7 +390,7 @@ impl FeatureWorkflow {
             warnings.push(format!("Git worktree path fix failed: {}", err));
         }
 
-        let stash_state = if !request.reuse_existing {
+        let stash_state = if !reuse_existing {
             match self.capture_stash(&work_feature) {
                 Ok(state) => state,
                 Err(err) => {
@@ -384,7 +404,7 @@ impl FeatureWorkflow {
 
         self.ensure_spec_for_start(&work_feature, &worktree_path, &branch_name, &mut warnings);
 
-        let adapter_copy_allowed = !request.reuse_existing;
+        let adapter_copy_allowed = !reuse_existing;
         let adapter_summary = match self.prepare_adapter(&worktree_path, adapter_copy_allowed) {
             Ok(summary) => Some(summary),
             Err(err) => {
@@ -416,35 +436,6 @@ impl FeatureWorkflow {
             }
         }
 
-        if let Ok(config) = BranchBoxConfig::load(&self.repo_root) {
-            let provider_is_cloudflared = config
-                .tunnel
-                .default_provider
-                .as_deref()
-                .map(|name| name.eq_ignore_ascii_case("cloudflared"))
-                .unwrap_or(true);
-
-            if config.tunnel.enabled && provider_is_cloudflared {
-                if let Some(cloudflared) = config.tunnel.providers.cloudflared.as_ref() {
-                    let has_credentials = cloudflared.api_token_path.is_some()
-                        && cloudflared
-                            .account_id
-                            .as_ref()
-                            .map(|value| !value.trim().is_empty())
-                            .unwrap_or(false);
-
-                    if !has_credentials || cloudflared.manual_instructions {
-                        register_module_skip(
-                            &mut module_skip,
-                            &mut skip_records,
-                            "tunnel",
-                            ModuleSkipReason::Auto,
-                        );
-                    }
-                }
-            }
-        }
-
         let policy_enforced = load_policy_enforced_modules();
         if !policy_enforced.is_empty() {
             skip_records.retain(|record| {
@@ -461,6 +452,23 @@ impl FeatureWorkflow {
             module_skip.retain(|module| !policy_enforced.contains(module));
         }
 
+        let skip_tunnel_provisioning = !policy_enforced.contains("tunnel")
+            && request
+                .skip_modules
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("tunnel"));
+
+        // Tunnel provisioning is handled by the workflow (provider-based) rather than the legacy
+        // tunnel module. Avoid surfacing the tunnel module as "skipped" in summaries unless the
+        // user explicitly asked to skip it.
+        if !policy_enforced.contains("tunnel")
+            && !module_skip
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("tunnel"))
+        {
+            module_skip.push("tunnel".to_string());
+        }
+
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
@@ -475,7 +483,7 @@ impl FeatureWorkflow {
             &worktree_path,
             &work_feature,
             &branch_name,
-            request.reuse_existing,
+            reuse_existing,
             &mut warnings,
         )?;
         if env_outcome.skipped {
@@ -511,7 +519,7 @@ impl FeatureWorkflow {
             });
         }
         let module_reports = setup_outcome.reports;
-        if !request.reuse_existing {
+        if !reuse_existing {
             let stash_warnings = self.apply_stash_to_worktree(&stash_state, &worktree_path);
             if !stash_warnings.is_empty() {
                 warnings.extend(stash_warnings);
@@ -527,7 +535,7 @@ impl FeatureWorkflow {
             .map(|summary| summary.service_url.clone())
             .unwrap_or_else(|| "web:3000".to_string());
         let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
-            &module_skip,
+            skip_tunnel_provisioning,
             &work_feature,
             &worktree_path,
             feature_url.as_deref(),
@@ -536,6 +544,21 @@ impl FeatureWorkflow {
         if !tunnel_warnings.is_empty() {
             warnings.append(&mut tunnel_warnings);
         }
+
+        // Record tunnel provisioning as a module outcome so `feature list --json` can surface
+        // consistent health signals (and the manual CLI harness can assert expected behavior).
+        module_outcomes.retain(|outcome| !outcome.module.eq_ignore_ascii_case("tunnel"));
+        let tunnel_outcome_status = match tunnel_state.as_ref() {
+            Some(state) if state.status == FeatureTunnelStatus::Active => ModuleStatus::Success,
+            _ => ModuleStatus::Skipped,
+        };
+        module_outcomes.push(ModuleOutcome {
+            module: "tunnel".to_string(),
+            status: tunnel_outcome_status,
+            duration_ms: 0,
+            notes: Vec::new(),
+            forced: false,
+        });
 
         let color = Some(generate_feature_color(&work_feature));
         let summary_color = color.clone();
@@ -624,6 +647,7 @@ impl FeatureWorkflow {
             work_feature,
             branch_prefix,
             delete_branch,
+            force_delete_branch,
             force_remove,
             force_remove_modules,
             complete_spec,
@@ -634,6 +658,8 @@ impl FeatureWorkflow {
             return Err(Error::InvalidFeatureName(work_feature));
         }
 
+        let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_default();
+        let branch_prefix = branch_prefix.or_else(|| Some(config.feature.branch_prefix.clone()));
         let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
         let worktree_exists = worktree_path.exists();
@@ -764,7 +790,10 @@ impl FeatureWorkflow {
 
         let mut branch_deleted = false;
         if delete_branch {
-            match self.git.delete_branch(&branch_name, force_remove) {
+            match self
+                .git
+                .delete_branch(&branch_name, force_remove || force_delete_branch)
+            {
                 Ok(_) => {
                     branch_deleted = true;
                 }
@@ -1564,7 +1593,7 @@ impl FeatureWorkflow {
 
     fn prepare_tunnel_state(
         &self,
-        skip_modules: &[String],
+        skip_tunnel: bool,
         work_feature: &str,
         feature_dir: &Path,
         hostname: Option<&str>,
@@ -1578,10 +1607,7 @@ impl FeatureWorkflow {
             service_url
         };
 
-        if skip_modules
-            .iter()
-            .any(|module| module.eq_ignore_ascii_case("tunnel"))
-        {
+        if skip_tunnel {
             warnings.push("Tunnel provisioning skipped (--skip-module tunnel)".to_string());
             let state =
                 FeatureTunnelState::disabled(None, "Tunnel module skipped for this feature");
@@ -1626,6 +1652,55 @@ impl FeatureWorkflow {
                 return Ok((Some(state), warnings));
             }
         };
+
+        if provider_name.eq_ignore_ascii_case("cloudflared") {
+            if let Ok(token) = std::env::var("CLOUDFLARE_TUNNEL_TOKEN") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    self.write_feature_tunnel_env(feature_dir, hostname, token)?;
+                    let state = FeatureTunnelState {
+                        provider: provider_name.clone(),
+                        hostname: Some(hostname.to_string()),
+                        status: FeatureTunnelStatus::Active,
+                        descriptor: None,
+                        instructions: None,
+                        notes: Some(
+                            "Tunnel token provided via CLOUDFLARE_TUNNEL_TOKEN; skipping API provisioning"
+                                .to_string(),
+                        ),
+                        last_updated: Utc::now(),
+                        removed_at: None,
+                    };
+                    return Ok((Some(state), warnings));
+                }
+            }
+        }
+
+        if provider_name.eq_ignore_ascii_case("cloudflared") {
+            let configured = config
+                .tunnel
+                .providers
+                .cloudflared
+                .as_ref()
+                .map(|cloudflared| {
+                    !cloudflared.manual_instructions
+                        && cloudflared.api_token_path.is_some()
+                        && cloudflared
+                            .account_id
+                            .as_ref()
+                            .map(|value| !value.trim().is_empty())
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
+            if !configured {
+                let state = FeatureTunnelState::disabled(
+                    Some(provider_name.clone()),
+                    "Tunnel provisioning disabled until Cloudflare credentials are configured",
+                );
+                return Ok((Some(state), warnings));
+            }
+        }
 
         let (mut state, mut provider_warnings, provision_token) = self.invoke_tunnel_provider(
             &provider_name,
@@ -3756,13 +3831,28 @@ mod tests {
         assert_eq!(adapter.name, "Generic");
         assert_eq!(adapter.service_url, "http://dev:3000");
         assert!(adapter.warnings.is_empty());
+        let tunnel = summary.tunnel.as_ref().expect("tunnel state present");
+        assert_eq!(tunnel.status, FeatureTunnelStatus::Disabled);
+        assert_eq!(tunnel.provider, "cloudflared");
         assert!(
+            tunnel
+                .notes
+                .as_deref()
+                .unwrap_or_default()
+                .contains("disabled until Cloudflare credentials are configured"),
+            "expected disabled tunnel notes, got {:?}",
+            tunnel.notes
+        );
+        assert!(
+            summary.module_outcomes.iter().any(
+                |outcome| outcome.module == "tunnel" && outcome.status == ModuleStatus::Skipped
+            ),
+            "expected tunnel module outcome skipped, got {:?}",
             summary
-                .warnings
+                .module_outcomes
                 .iter()
-                .any(|warn| warn.contains("Tunnel requires manual setup")),
-            "expected manual tunnel warning, got {:?}",
-            summary.warnings
+                .map(|outcome| (&outcome.module, outcome.status))
+                .collect::<Vec<_>>()
         );
 
         // The generated devcontainer compose file must keep the canonical workspace mount and shared config volumes.
@@ -3857,6 +3947,7 @@ mod tests {
                 work_feature: summary.work_feature.clone(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -3904,6 +3995,7 @@ mod tests {
                 work_feature: summary.work_feature,
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -3936,6 +4028,7 @@ mod tests {
                 work_feature: "cleanup".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -3965,6 +4058,69 @@ mod tests {
             .find(|item| item.get("work_feature").unwrap() == "cleanup")
             .unwrap();
         assert_eq!(entry.get("status").unwrap(), "removed");
+    }
+
+    #[test]
+    fn feature_start_reuses_existing_branch_after_teardown_without_delete() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let first = workflow
+            .start(StartRequest {
+                name: Some("restart".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let torn_down = workflow
+            .teardown(TeardownRequest {
+                work_feature: "restart".to_string(),
+                branch_prefix: None,
+                delete_branch: false,
+                force_delete_branch: false,
+                force_remove: true,
+                force_remove_modules: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+        assert!(torn_down.worktree_removed);
+        assert!(!torn_down.branch_deleted);
+
+        let resumed = workflow
+            .start(StartRequest {
+                name: Some("restart".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        assert_eq!(resumed.branch_name, first.branch_name);
+        assert!(resumed.worktree_path.exists());
+        assert!(
+            resumed
+                .warnings
+                .iter()
+                .any(|warn| warn.contains("recreating worktree")),
+            "expected warning about recreating worktree from existing branch, got {:?}",
+            resumed.warnings
+        );
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: "restart".to_string(),
+                branch_prefix: None,
+                delete_branch: true,
+                force_delete_branch: false,
+                force_remove: true,
+                force_remove_modules: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
     }
 
     #[test]
@@ -4002,6 +4158,7 @@ mod tests {
                 work_feature: "feature-one".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -4021,6 +4178,7 @@ mod tests {
                 work_feature: "feature-two".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -4060,6 +4218,7 @@ mod tests {
                 work_feature: "dirty".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: false,
                 force_remove_modules: false,
                 complete_spec: false,
@@ -4108,6 +4267,7 @@ mod tests {
                 work_feature: "dirty-devcontainer".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: false,
                 force_remove_modules: false,
                 complete_spec: false,
@@ -4132,6 +4292,7 @@ mod tests {
                 work_feature: "dirty-devcontainer".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -4166,6 +4327,7 @@ mod tests {
                 work_feature: "ghost".to_string(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,
@@ -4233,6 +4395,7 @@ mod tests {
                 work_feature: summary.work_feature.clone(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: true,
@@ -4284,6 +4447,7 @@ mod tests {
                 work_feature: summary.work_feature.clone(),
                 branch_prefix: None,
                 delete_branch: true,
+                force_delete_branch: false,
                 force_remove: true,
                 force_remove_modules: true,
                 complete_spec: false,

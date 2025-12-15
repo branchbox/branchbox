@@ -1,6 +1,9 @@
 [package]
 name = "branchbox-agent"
-version = "0.4.0"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 edition = "2021"
 
 [dependencies]

@@ -11,6 +11,7 @@ use std::{
     process::Command,
 };
 use worktree_core::{
+    config::BranchBoxConfig,
     workflows::feature::{
         FeatureMetadata, FeatureStatus, FeatureTunnelStatus, FeatureWorkflow, ModuleOutcome,
         ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus, StartMode, StartRequest, StartSummary,
@@ -106,13 +107,21 @@ pub struct FeatureTeardownArgs {
     #[arg(long)]
     pub repo: Option<PathBuf>,
 
-    /// Delete the git branch after removing the worktree
+    /// Keep the git branch after removing the worktree (default is to delete it)
     #[arg(long)]
+    pub keep_branch: bool,
+
+    /// Delete the git branch after removing the worktree
+    #[arg(long, conflicts_with = "keep_branch")]
     pub delete_branch: bool,
 
     /// Force removal even with local changes
     #[arg(long)]
     pub force: bool,
+
+    /// Force-delete the git branch even if it is not fully merged (`git branch -D`)
+    #[arg(long)]
+    pub force_delete_branch: bool,
 
     /// Move spec to completed during teardown
     #[arg(long)]
@@ -497,8 +506,10 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         name,
         branch_prefix,
         repo,
+        keep_branch,
         delete_branch,
         force,
+        force_delete_branch,
         complete_spec,
         telemetry,
     } = args;
@@ -506,20 +517,51 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
+    let config = BranchBoxConfig::load(workflow.repo_root()).unwrap_or_default();
+    let default_delete_branch = config.feature.teardown.delete_branch_by_default;
+
+    let delete_branch = if keep_branch {
+        false
+    } else if delete_branch {
+        true
+    } else {
+        default_delete_branch
+    };
     let mut request = TeardownRequest {
         work_feature: name,
-        branch_prefix,
+        branch_prefix: branch_prefix.or_else(|| Some(config.feature.branch_prefix.clone())),
         delete_branch,
+        force_delete_branch,
         force_remove: force,
         force_remove_modules: force,
         complete_spec,
         telemetry,
     };
 
+    // Only prompt on interactive shells; in non-interactive contexts we surface a failure if the
+    // branch cannot be deleted without force so callers can retry with `--force`.
+    if Term::stdout().is_term() {
+        maybe_prompt_force_delete_branch(&repo_path, &config, &mut request)?;
+    }
+
     let summary = match workflow.teardown(request.clone()) {
         Ok(summary) => summary,
         Err(err) => handle_teardown_error(err, &workflow, &mut request)?,
     };
+
+    if !Term::stdout().is_term() && request.delete_branch && !summary.branch_deleted {
+        let branch_name =
+            build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
+        if local_branch_exists(&repo_path, &branch_name)
+            && !request.force_remove
+            && !request.force_delete_branch
+        {
+            bail!(
+                "Branch '{}' could not be deleted without force; rerun with `--force-delete-branch` (or `--force`).",
+                branch_name
+            );
+        }
+    }
 
     print_teardown_summary(&summary);
 
@@ -569,8 +611,120 @@ fn handle_dirty_worktree(
         anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
     }
 
+    request.force_remove = true;
     request.force_remove_modules = true;
     Ok(workflow.teardown(request.clone())?)
+}
+
+fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
+    let prefix = prefix.unwrap_or("feature").trim_end_matches('/');
+    if prefix.is_empty() {
+        work_feature.to_string()
+    } else {
+        format!("{}/{}", prefix, work_feature)
+    }
+}
+
+fn local_branch_exists(repo_root: &Path, branch_name: &str) -> bool {
+    let ref_name = format!("refs/heads/{}", branch_name);
+    Command::new("git")
+        .current_dir(repo_root)
+        .args(["show-ref", "--verify", "--quiet", &ref_name])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn local_branch_is_merged(repo_root: &Path, branch_name: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["branch", "--merged"])
+        .output()
+        .context("failed to run `git branch --merged`")?;
+
+    if !output.status.success() {
+        bail!(
+            "git branch --merged failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let merged = stdout.lines().any(|line| {
+        let normalized = line.trim().trim_start_matches('*').trim();
+        normalized == branch_name
+    });
+    Ok(merged)
+}
+
+fn maybe_prompt_force_delete_branch(
+    repo_path: &Path,
+    config: &BranchBoxConfig,
+    request: &mut TeardownRequest,
+) -> Result<()> {
+    if !request.delete_branch || request.force_delete_branch {
+        return Ok(());
+    }
+
+    let force_by_default = config.feature.teardown.force_delete_unmerged_by_default;
+    let prompt = config.feature.teardown.prompt_force_delete_unmerged;
+
+    if !Term::stdout().is_term() {
+        // Non-interactive: we cannot prompt, so only force-delete when explicitly allowed.
+        let branch_name =
+            build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
+        if local_branch_exists(repo_path, &branch_name)
+            && !local_branch_is_merged(repo_path, &branch_name)?
+        {
+            if request.force_remove || force_by_default {
+                request.force_delete_branch = true;
+                return Ok(());
+            }
+
+            bail!(
+                "Branch '{}' is not fully merged; rerun with `--force-delete-branch` (or `--force`) to delete it.",
+                branch_name
+            );
+        }
+        return Ok(());
+    }
+
+    let branch_name = build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
+    if !local_branch_exists(repo_path, &branch_name) {
+        return Ok(());
+    }
+
+    if local_branch_is_merged(repo_path, &branch_name)? {
+        return Ok(());
+    }
+
+    if force_by_default {
+        request.force_delete_branch = true;
+        return Ok(());
+    }
+
+    if !prompt {
+        request.delete_branch = false;
+        println!("ℹ️  Keeping branch '{}' (not fully merged).", branch_name);
+        return Ok(());
+    }
+
+    let proceed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Branch '{}' is not fully merged. Force delete it with -D?",
+            branch_name
+        ))
+        .default(false)
+        .interact()?;
+
+    if proceed {
+        request.force_delete_branch = true;
+        return Ok(());
+    }
+
+    request.delete_branch = false;
+    println!("ℹ️  Keeping branch '{}' (not fully merged).", branch_name);
+    Ok(())
 }
 
 fn print_start_summary(
@@ -986,6 +1140,12 @@ fn print_teardown_summary(summary: &TeardownSummary) {
         "  Branch deleted: {}",
         if summary.branch_deleted { "yes" } else { "no" }
     );
+    if !summary.branch_deleted {
+        println!(
+            "  Branch kept: {} (delete manually with `git branch -d {}` or `git branch -D {}`)",
+            summary.branch_name, summary.branch_name, summary.branch_name
+        );
+    }
     if !summary.adapter_cleanup_warnings.is_empty() {
         println!();
         println!("Adapter:");

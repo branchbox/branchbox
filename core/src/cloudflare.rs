@@ -290,23 +290,26 @@ impl From<TunnelSummaryInternal> for TunnelSummary {
 #[derive(Debug, Deserialize)]
 struct ApiResponse<T> {
     success: bool,
+    #[serde(default)]
     errors: Vec<ApiError>,
     #[serde(bound(deserialize = "T: DeserializeOwned"))]
-    result: T,
+    result: Option<T>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ApiListResponse<T> {
     success: bool,
+    #[serde(default)]
     errors: Vec<ApiError>,
     #[serde(bound(deserialize = "T: DeserializeOwned"))]
-    result: Vec<T>,
+    result: Option<Vec<T>>,
 }
 
 impl<T> ApiResponse<T> {
     fn into_result(self) -> Result<T> {
         if self.success {
-            Ok(self.result)
+            self.result
+                .ok_or_else(|| Error::validation("Cloudflare API response missing `result` field"))
         } else {
             Err(Error::validation(format_api_errors(self.errors)))
         }
@@ -316,7 +319,8 @@ impl<T> ApiResponse<T> {
 impl<T> ApiListResponse<T> {
     fn into_result(self) -> Result<Vec<T>> {
         if self.success {
-            Ok(self.result)
+            self.result
+                .ok_or_else(|| Error::validation("Cloudflare API response missing `result` field"))
         } else {
             Err(Error::validation(format_api_errors(self.errors)))
         }
@@ -686,6 +690,36 @@ mod tests {
         assert!(err_str.contains("Invalid request"));
         assert!(err_str.contains("[1003]"));
         assert!(err_str.contains("Another error"));
+        mock.assert();
+    }
+
+    #[test]
+    fn test_api_error_response_without_result_field() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/accounts/test-account/cfd_tunnel")
+            .match_query(mockito::Matcher::UrlEncoded("name".into(), "test".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "success": false,
+                "errors": [
+                    {"code": 10000, "message": "Authentication error"}
+                ]
+            }"#,
+            )
+            .create();
+
+        let client =
+            CloudflareClient::with_base_url("test_token", "test-account", server.url()).unwrap();
+        let result = client.find_tunnel_by_name("test");
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Authentication error"));
         mock.assert();
     }
 
