@@ -1636,32 +1636,6 @@ impl FeatureWorkflow {
             .clone()
             .unwrap_or_else(|| "cloudflared".to_string());
 
-        if provider_name.eq_ignore_ascii_case("cloudflared") {
-            let configured = config
-                .tunnel
-                .providers
-                .cloudflared
-                .as_ref()
-                .map(|cloudflared| {
-                    !cloudflared.manual_instructions
-                        && cloudflared.api_token_path.is_some()
-                        && cloudflared
-                            .account_id
-                            .as_ref()
-                            .map(|value| !value.trim().is_empty())
-                            .unwrap_or(false)
-                })
-                .unwrap_or(false);
-
-            if !configured {
-                let state = FeatureTunnelState::disabled(
-                    Some(provider_name.clone()),
-                    "Tunnel provisioning disabled until Cloudflare credentials are configured",
-                );
-                return Ok((Some(state), warnings));
-            }
-        }
-
         let hostname = match hostname {
             Some(value) if !value.is_empty() => value,
             _ => {
@@ -1699,6 +1673,32 @@ impl FeatureWorkflow {
                     };
                     return Ok((Some(state), warnings));
                 }
+            }
+        }
+
+        if provider_name.eq_ignore_ascii_case("cloudflared") {
+            let configured = config
+                .tunnel
+                .providers
+                .cloudflared
+                .as_ref()
+                .map(|cloudflared| {
+                    !cloudflared.manual_instructions
+                        && cloudflared.api_token_path.is_some()
+                        && cloudflared
+                            .account_id
+                            .as_ref()
+                            .map(|value| !value.trim().is_empty())
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
+            if !configured {
+                let state = FeatureTunnelState::disabled(
+                    Some(provider_name.clone()),
+                    "Tunnel provisioning disabled until Cloudflare credentials are configured",
+                );
+                return Ok((Some(state), warnings));
             }
         }
 
