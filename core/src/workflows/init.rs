@@ -1024,6 +1024,11 @@ impl InitWorkflow {
             if self.options.verbose {
                 println!("✓ BranchBox registry already exists");
             }
+            // Even if the registry already exists (e.g., from older init runs), ensure the repo
+            // `.gitignore` still contains the expected BranchBox entries.
+            if !self.options.dry_run {
+                self.update_gitignore(path)?;
+            }
             return Ok(false);
         }
 
@@ -1068,6 +1073,7 @@ impl InitWorkflow {
                 if self.options.verbose {
                     println!("✓ BranchBox registry already exists");
                 }
+                self.update_gitignore(path)?;
                 Ok(false)
             }
             Err(e) => Err(e.into()),
@@ -1089,7 +1095,10 @@ impl InitWorkflow {
         let entries = vec![
             ".branchbox/registry.json",
             ".branchbox/secure/",
+            ".branchbox/secure/tunnels/",
             ".devcontainer/.branchbox.env",
+            ".devcontainer/.cloudflared.env",
+            ".branchbox.env",
             ".env",
             ".env.local",
         ];
@@ -1539,6 +1548,36 @@ mod tests {
         let summary = update_workflow.execute().unwrap();
 
         assert!(summary.workspace_path.exists());
+    }
+
+    #[test]
+    fn test_execute_update_mode_repairs_gitignore_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        fs::create_dir_all(repo_path.join(".branchbox")).unwrap();
+        fs::write(
+            repo_path.join(".branchbox/registry.json"),
+            "{\"version\":\"1\",\"features\":[]}\n",
+        )
+        .unwrap();
+        fs::write(repo_path.join(".gitignore"), "target/\n").unwrap();
+
+        let update_options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            update: true,
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(update_options);
+        workflow.execute().unwrap();
+
+        let gitignore = fs::read_to_string(repo_path.join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".branchbox/registry.json"));
+        assert!(gitignore.contains(".branchbox/secure/"));
+        assert!(gitignore.contains(".devcontainer/.branchbox.env"));
+        assert!(gitignore.contains(".devcontainer/.cloudflared.env"));
     }
 
     #[test]

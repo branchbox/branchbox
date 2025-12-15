@@ -22,6 +22,9 @@ pub struct BranchBoxConfig {
 
     #[serde(default)]
     pub editor: EditorSettings,
+
+    #[serde(default)]
+    pub feature: FeatureSettings,
 }
 
 impl Default for BranchBoxConfig {
@@ -30,6 +33,7 @@ impl Default for BranchBoxConfig {
             version: CONFIG_VERSION.to_string(),
             tunnel: TunnelSettings::default(),
             editor: EditorSettings::default(),
+            feature: FeatureSettings::default(),
         }
     }
 }
@@ -93,6 +97,64 @@ pub struct EditorSettings {
     /// Hide the auxiliary/right sidebar if it was previously visible.
     #[serde(default)]
     pub hide_secondary_sidebar: bool,
+}
+
+/// Feature workflow defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FeatureSettings {
+    /// Default branch prefix when creating worktrees (defaults to `feature`).
+    #[serde(default = "default_feature_branch_prefix")]
+    pub branch_prefix: String,
+
+    #[serde(default)]
+    pub teardown: FeatureTeardownSettings,
+}
+
+impl Default for FeatureSettings {
+    fn default() -> Self {
+        Self {
+            branch_prefix: default_feature_branch_prefix(),
+            teardown: FeatureTeardownSettings::default(),
+        }
+    }
+}
+
+fn default_feature_branch_prefix() -> String {
+    "feature".to_string()
+}
+
+/// Teardown defaults for features.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FeatureTeardownSettings {
+    /// Delete the feature branch by default during teardown.
+    #[serde(default = "default_teardown_delete_branch")]
+    pub delete_branch_by_default: bool,
+
+    /// Force-delete unmerged branches by default (`git branch -D`).
+    #[serde(default)]
+    pub force_delete_unmerged_by_default: bool,
+
+    /// Prompt before force-deleting an unmerged branch (interactive shells only).
+    #[serde(default = "default_teardown_prompt_force_delete")]
+    pub prompt_force_delete_unmerged: bool,
+}
+
+impl Default for FeatureTeardownSettings {
+    fn default() -> Self {
+        Self {
+            delete_branch_by_default: default_teardown_delete_branch(),
+            force_delete_unmerged_by_default: false,
+            prompt_force_delete_unmerged: default_teardown_prompt_force_delete(),
+        }
+    }
+}
+
+fn default_teardown_delete_branch() -> bool {
+    true
+}
+
+fn default_teardown_prompt_force_delete() -> bool {
+    true
 }
 
 /// Global tunnel settings for the project.
@@ -228,5 +290,14 @@ mod tests {
     fn editor_settings_defaults_to_noop() {
         let config = BranchBoxConfig::default();
         assert_eq!(EditorSettings::default(), config.editor);
+    }
+
+    #[test]
+    fn feature_settings_defaults_are_stable() {
+        let config = BranchBoxConfig::default();
+        assert_eq!(config.feature.branch_prefix, "feature");
+        assert!(config.feature.teardown.delete_branch_by_default);
+        assert!(!config.feature.teardown.force_delete_unmerged_by_default);
+        assert!(config.feature.teardown.prompt_force_delete_unmerged);
     }
 }
