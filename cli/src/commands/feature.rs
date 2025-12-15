@@ -652,21 +652,21 @@ fn maybe_prompt_force_delete_branch(
     let prompt = config.feature.teardown.prompt_force_delete_unmerged;
 
     if !Term::stdout().is_term() {
-        // Non-interactive: never force-delete branches unless the user explicitly asked.
+        // Non-interactive: we cannot prompt, so only force-delete when explicitly allowed.
         let branch_name =
             build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
         if local_branch_exists(repo_path, &branch_name)
             && !local_branch_is_merged(repo_path, &branch_name)?
         {
-            if force_by_default {
+            if request.force_remove || force_by_default {
                 request.force_delete_branch = true;
-            } else {
-                eprintln!(
-                    "⚠️  Keeping branch '{}' because it is not fully merged (pass --force-delete-branch to delete it).",
-                    branch_name
-                );
-                request.delete_branch = false;
+                return Ok(());
             }
+
+            bail!(
+                "Branch '{}' is not fully merged; rerun with `--force-delete-branch` (or `--force`) to delete it.",
+                branch_name
+            );
         }
         return Ok(());
     }
