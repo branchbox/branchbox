@@ -3821,10 +3821,9 @@ mod tests {
             tunnel.notes
         );
         assert!(
-            summary
-                .module_outcomes
-                .iter()
-                .any(|outcome| outcome.module == "tunnel" && outcome.status == ModuleStatus::Skipped),
+            summary.module_outcomes.iter().any(
+                |outcome| outcome.module == "tunnel" && outcome.status == ModuleStatus::Skipped
+            ),
             "expected tunnel module outcome skipped, got {:?}",
             summary
                 .module_outcomes
