@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Fix `branchbox init --update` to always repair `.gitignore` entries for `.branchbox/` and devcontainer tunnel/env files.
-- Fix teardown `--force` prompt to actually force-remove the worktree; teardown now deletes the feature branch by default with a safe force-delete prompt for unmerged branches.
-- Fix Cloudflare client error parsing when API responses omit the `result` field (now surfaces the Cloudflare error message).
-- Add `branchbox tunnel open/remove` commands and new `.branchbox/config.json` `feature.*` defaults (branch prefix + teardown policy).
-
 ## [0.4.1] - 2025-12-15
 
 ### Fixed
