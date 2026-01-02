@@ -1138,13 +1138,13 @@ impl InitWorkflow {
             })
             .interact_text()?;
 
-        // Build tunnel name - use {prefix}-main for consistency with feature branches
-        // Feature tunnels are {prefix}-{feature}, so main follows the same pattern
-        let tunnel_prefix = cloudflared
+        // Build tunnel name - use prefix directly for main branch
+        // Tunnel name matches the subdomain: {prefix}.{zone}
+        // Feature tunnels follow: {prefix}-{feature}.{zone}
+        let tunnel_name = cloudflared
             .tunnel_name_prefix
             .clone()
             .unwrap_or_else(|| "branchbox".to_string());
-        let tunnel_name = format!("{}-main", tunnel_prefix);
         let account_id = cloudflared.account_id.clone().unwrap_or_default();
 
         self.provision_main_tunnel(
@@ -1220,8 +1220,8 @@ impl InitWorkflow {
         if devcontainer_dir.exists() {
             let env_path = devcontainer_dir.join(".cloudflared.env");
             let hostname_line = dns_zone
-                .map(|zone| format!("DEV_HOSTNAME=main.{}", zone))
-                .unwrap_or_else(|| "# DEV_HOSTNAME=main.your-domain.com".to_string());
+                .map(|zone| format!("DEV_HOSTNAME={}.{}", tunnel_name, zone))
+                .unwrap_or_else(|| "# DEV_HOSTNAME=prefix.your-domain.com".to_string());
 
             let env_content = format!(
                 "# Cloudflare Tunnel Configuration for main\n\
@@ -1241,7 +1241,7 @@ impl InitWorkflow {
 
         // Configure tunnel ingress if dns_zone is set
         if let Some(zone) = dns_zone {
-            let hostname = format!("main.{}", zone);
+            let hostname = format!("{}.{}", tunnel_name, zone);
             if let Err(e) = client.configure_tunnel(&tunnel_id, &hostname, service_url) {
                 println!("⚠ Failed to configure tunnel ingress: {}", e);
                 tracing::warn!("Failed to configure tunnel ingress: {}", e);
