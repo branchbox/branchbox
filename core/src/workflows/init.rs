@@ -1194,7 +1194,10 @@ impl InitWorkflow {
         }
 
         let provision = client.create_tunnel(tunnel_name)?;
-        println!("✓ Created tunnel '{}' (id: {})", provision.name, provision.id);
+        println!(
+            "✓ Created tunnel '{}' (id: {})",
+            provision.name, provision.id
+        );
         tracing::info!("Created tunnel '{}' (id: {})", provision.name, provision.id);
 
         // Write the tunnel token to .cloudflared.env
