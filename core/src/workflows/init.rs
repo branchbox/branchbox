@@ -1044,6 +1044,26 @@ impl InitWorkflow {
             config.save(workspace_path)?;
         }
 
+        // If tunnels are enabled, add cloudflared service to compose file
+        if config.tunnel.enabled && !self.options.skip_devcontainer {
+            let devcontainer_dir = workspace_path.join(".devcontainer");
+            if devcontainer_dir.exists() {
+                let cloudflared_outcome =
+                    crate::modules::add_cloudflared_service(&devcontainer_dir, None)?;
+
+                if !cloudflared_outcome.changes.is_empty() {
+                    if self.options.verbose {
+                        println!("Added tunnel support to devcontainer:");
+                        for change in &cloudflared_outcome.changes {
+                            println!("  - {}", change);
+                        }
+                    } else {
+                        println!("✓ Added cloudflared tunnel service");
+                    }
+                }
+            }
+        }
+
         Ok(warning)
     }
 

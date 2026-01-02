@@ -348,6 +348,193 @@ fn find_compose_file(devcontainer_dir: &Path, config: &JsonValue) -> Option<Path
     None
 }
 
+/// Result of adding cloudflared service
+#[derive(Debug, Default)]
+pub struct CloudflaredOutcome {
+    /// Whether compose file was modified
+    pub compose_modified: bool,
+    /// Whether cloudflared.env was created
+    pub env_created: bool,
+    /// List of changes made
+    pub changes: Vec<String>,
+}
+
+/// Add cloudflared tunnel service to the compose file.
+///
+/// This adds a cloudflared service that:
+/// - Uses the official cloudflare/cloudflared image
+/// - Reads configuration from .cloudflared.env
+/// - Runs the tunnel command
+///
+/// Also creates a template .cloudflared.env file if it doesn't exist.
+///
+/// # Arguments
+///
+/// * `devcontainer_dir` - Path to the .devcontainer directory
+/// * `main_service_name` - Optional name of the main service to add depends_on (auto-detected if None)
+///
+/// # Returns
+///
+/// Returns a `CloudflaredOutcome` describing what changes were made.
+pub fn add_cloudflared_service(
+    devcontainer_dir: &Path,
+    main_service_name: Option<&str>,
+) -> Result<CloudflaredOutcome> {
+    let mut outcome = CloudflaredOutcome::default();
+
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(outcome);
+    }
+
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+        Some(path) => path,
+        None => return Ok(outcome), // No compose file, nothing to do
+    };
+
+    let compose_filename = compose_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("compose.yaml");
+
+    let compose_contents = std::fs::read_to_string(&compose_path)?;
+    let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+        Error::validation(format!(
+            "Failed to parse {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    let mut compose_updated = false;
+
+    if let Some(root) = compose.as_mapping_mut() {
+        let services_key = YamlValue::String("services".to_string());
+
+        // Check if cloudflared service already exists
+        if let Some(services) = root.get(&services_key).and_then(|v| v.as_mapping()) {
+            let cloudflared_key = YamlValue::String("cloudflared".to_string());
+            if services.contains_key(&cloudflared_key) {
+                tracing::info!("cloudflared service already exists in {}", compose_filename);
+                return Ok(outcome);
+            }
+        }
+
+        // Find the main service name (first service with a build context, or explicitly provided)
+        let detected_main_service = if let Some(name) = main_service_name {
+            Some(name.to_string())
+        } else if let Some(services) = root.get(&services_key).and_then(|v| v.as_mapping()) {
+            // Find first service with a build section (likely the main app)
+            services.iter().find_map(|(key, value)| {
+                if let (Some(name), Some(service_map)) = (key.as_str(), value.as_mapping()) {
+                    let build_key = YamlValue::String("build".to_string());
+                    if service_map.contains_key(&build_key) {
+                        return Some(name.to_string());
+                    }
+                }
+                None
+            })
+        } else {
+            None
+        };
+
+        // Create cloudflared service
+        let cloudflared_service = serde_yaml::from_str::<YamlValue>(
+            r#"
+image: cloudflare/cloudflared:latest
+restart: unless-stopped
+env_file:
+  - .cloudflared.env
+command: ["tunnel", "--no-autoupdate", "run"]
+"#,
+        )
+        .expect("hardcoded YAML is valid");
+
+        // Add cloudflared service to services
+        if let Some(services) = root.get_mut(&services_key).and_then(|v| v.as_mapping_mut()) {
+            services.insert(
+                YamlValue::String("cloudflared".to_string()),
+                cloudflared_service,
+            );
+            compose_updated = true;
+            outcome
+                .changes
+                .push(format!("{}: added cloudflared service", compose_filename));
+
+            // Add depends_on to main service if we found one
+            if let Some(main_name) = detected_main_service {
+                let main_key = YamlValue::String(main_name.clone());
+                if let Some(main_service) = services.get_mut(&main_key) {
+                    if let Some(service_map) = main_service.as_mapping_mut() {
+                        let depends_key = YamlValue::String("depends_on".to_string());
+
+                        // Get or create depends_on array
+                        let depends_on = service_map
+                            .entry(depends_key.clone())
+                            .or_insert_with(|| YamlValue::Sequence(vec![]));
+
+                        if let Some(deps) = depends_on.as_sequence_mut() {
+                            let cloudflared_dep = YamlValue::String("cloudflared".to_string());
+                            if !deps.contains(&cloudflared_dep) {
+                                deps.push(cloudflared_dep);
+                                outcome.changes.push(format!(
+                                    "{}: added cloudflared to {} depends_on",
+                                    compose_filename, main_name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if compose_updated {
+        let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+            Error::validation(format!(
+                "Failed to serialize {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
+        if serialized.starts_with("---\n") {
+            serialized = serialized.split_off(4);
+        }
+        if !serialized.ends_with('\n') {
+            serialized.push('\n');
+        }
+        std::fs::write(&compose_path, serialized)?;
+        outcome.compose_modified = true;
+        tracing::info!("Added cloudflared service to {}", compose_filename);
+    }
+
+    // Create .cloudflared.env template if it doesn't exist
+    let env_path = devcontainer_dir.join(".cloudflared.env");
+    if !env_path.exists() {
+        let env_template = r#"# Cloudflare Tunnel Configuration
+# See: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/
+
+# Tunnel token from Cloudflare Zero Trust dashboard
+# Get this from: Access → Tunnels → Create a tunnel → Copy token
+TUNNEL_TOKEN=
+
+# Optional: Hostname for this development environment
+# DEV_HOSTNAME=feature-name.your-domain.com
+"#;
+        std::fs::write(&env_path, env_template)?;
+        outcome.env_created = true;
+        outcome
+            .changes
+            .push("created .cloudflared.env template".to_string());
+        tracing::info!("Created .cloudflared.env template");
+    }
+
+    Ok(outcome)
+}
+
 /// Configure devcontainer workspace settings for worktree compatibility.
 ///
 /// This ensures the devcontainer.json and compose.yaml are configured correctly
@@ -1143,5 +1330,111 @@ volumes:
         assert!(outcome.devcontainer_modified);
         // No compose file to update
         assert!(!outcome.compose_modified);
+    }
+
+    #[test]
+    fn test_add_cloudflared_service() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  rails-app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ../..:/workspaces:cached
+  postgres:
+    image: postgres:15
+"#,
+        )
+        .unwrap();
+
+        let outcome = add_cloudflared_service(&devcontainer_dir, None).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert!(outcome.env_created);
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("added cloudflared service")));
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("added cloudflared to rails-app depends_on")));
+
+        // Verify compose file has cloudflared service
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(compose.contains("cloudflared:"));
+        assert!(compose.contains("cloudflare/cloudflared:latest"));
+        assert!(compose.contains(".cloudflared.env"));
+
+        // Verify .cloudflared.env was created
+        assert!(devcontainer_dir.join(".cloudflared.env").exists());
+        let env_content =
+            std::fs::read_to_string(devcontainer_dir.join(".cloudflared.env")).unwrap();
+        assert!(env_content.contains("TUNNEL_TOKEN="));
+    }
+
+    #[test]
+    fn test_add_cloudflared_service_already_exists() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // Compose file already has cloudflared
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build: .
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+"#,
+        )
+        .unwrap();
+
+        let outcome = add_cloudflared_service(&devcontainer_dir, None).unwrap();
+
+        // Should not modify since cloudflared already exists
+        assert!(!outcome.compose_modified);
+        assert!(outcome.changes.is_empty() || outcome.env_created);
+    }
+
+    #[test]
+    fn test_add_cloudflared_service_no_compose() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // No compose file, only Dockerfile
+        std::fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+
+        let outcome = add_cloudflared_service(&devcontainer_dir, None).unwrap();
+
+        // Should not modify anything
+        assert!(!outcome.compose_modified);
+        assert!(!outcome.env_created);
     }
 }

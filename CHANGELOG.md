@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `branchbox init` now automatically configures devcontainer.json and compose.yaml for git worktree compatibility, ensuring `workspaceFolder` uses dynamic `${localWorkspaceFolderBasename}` and compose mounts use `../..:/workspaces:cached`.
 - `branchbox init` generates `docs/BRANCHBOX.md` quickstart guide for new projects.
 - Init next steps now suggest committing the BranchBox configuration with a ready-to-use git command.
+- `branchbox init` automatically adds cloudflared tunnel service to compose file when tunnels are enabled, with `.cloudflared.env` template for configuration.
+- Compose file name detection now reads `dockerComposeFile` from devcontainer.json and falls back to common names (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`).
 
 ### Changed
 - Parent structure (`use_parent_structure`) is now the default for `branchbox init`, creating worktrees as siblings (project/main/, project/feature-x/). Use `--no-parent-structure` to opt out.
