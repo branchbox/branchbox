@@ -1239,15 +1239,26 @@ impl InitWorkflow {
             }
         }
 
-        // Configure tunnel ingress if dns_zone is set
+        // Configure tunnel ingress and DNS if dns_zone is set
         if let Some(zone) = dns_zone {
             let hostname = format!("{}.{}", tunnel_name, zone);
+
+            // Configure tunnel ingress routing
             if let Err(e) = client.configure_tunnel(&tunnel_id, &hostname, service_url) {
                 println!("⚠ Failed to configure tunnel ingress: {}", e);
                 tracing::warn!("Failed to configure tunnel ingress: {}", e);
             } else {
                 println!("✓ Configured tunnel ingress for {}", hostname);
                 tracing::info!("Configured tunnel ingress for {}", hostname);
+            }
+
+            // Create DNS CNAME record pointing to the tunnel
+            if let Err(e) = client.ensure_cname_record(&hostname, zone, &tunnel_id) {
+                println!("⚠ Failed to create DNS record: {}", e);
+                tracing::warn!("Failed to create DNS record for {}: {}", hostname, e);
+            } else {
+                println!("✓ Created DNS record for {}", hostname);
+                tracing::info!("Created DNS CNAME record for {}", hostname);
             }
         }
 
