@@ -175,6 +175,16 @@ impl CloudflareClient {
         resp.into_result().map(|_| ())
     }
 
+    /// Get the token for an existing tunnel.
+    pub fn get_tunnel_token(&self, tunnel_id: &str) -> Result<String> {
+        let url = format!(
+            "{}/accounts/{}/cfd_tunnel/{}/token",
+            self.api_base, self.account_id, tunnel_id
+        );
+        let resp: ApiResponse<String> = self.http.get(url).send()?.json()?;
+        resp.into_result()
+    }
+
     /// Delete DNS records matching the hostname. Returns true if a record was deleted.
     pub fn delete_dns_record(&self, hostname: &str, base_domain: &str) -> Result<bool> {
         let Some(zone_id) = self.lookup_zone_id(base_domain)? else {

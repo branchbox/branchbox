@@ -1138,13 +1138,13 @@ impl InitWorkflow {
             })
             .interact_text()?;
 
-        // Build tunnel name - for main branch, just use the prefix (no suffix needed)
-        // The prefix already identifies the project (e.g., "rida-mbp-pdfsight")
+        // Build tunnel name - use {prefix}-main for consistency with feature branches
+        // Feature tunnels are {prefix}-{feature}, so main follows the same pattern
         let tunnel_prefix = cloudflared
             .tunnel_name_prefix
             .clone()
             .unwrap_or_else(|| "branchbox".to_string());
-        let tunnel_name = tunnel_prefix.clone();
+        let tunnel_name = format!("{}-main", tunnel_prefix);
         let account_id = cloudflared.account_id.clone().unwrap_or_default();
 
         self.provision_main_tunnel(
@@ -1176,26 +1176,44 @@ impl InitWorkflow {
         tracing::info!("Provisioning tunnel '{}'...", tunnel_name);
 
         let client = CloudflareClient::new(api_token.to_string(), account_id.to_string())?;
-        if let Some(existing) = client.find_tunnel_by_name(tunnel_name)? {
-            println!(
-                "⚠ Tunnel '{}' already exists (id: {})",
-                tunnel_name, existing.id
-            );
-            println!("  You'll need to get the token from the Cloudflare dashboard");
-            tracing::warn!(
-                "Tunnel '{}' already exists (id: {})",
-                tunnel_name,
-                existing.id
-            );
-            return Ok(());
-        }
 
-        let provision = client.create_tunnel(tunnel_name)?;
-        println!(
-            "✓ Created tunnel '{}' (id: {})",
-            provision.name, provision.id
-        );
-        tracing::info!("Created tunnel '{}' (id: {})", provision.name, provision.id);
+        // Check if tunnel already exists, or create a new one
+        let (tunnel_id, tunnel_token) =
+            if let Some(existing) = client.find_tunnel_by_name(tunnel_name)? {
+                println!(
+                    "ℹ Tunnel '{}' already exists (id: {}), fetching token...",
+                    tunnel_name, existing.id
+                );
+                tracing::info!(
+                    "Tunnel '{}' already exists (id: {}), fetching token",
+                    tunnel_name,
+                    existing.id
+                );
+
+                // Fetch the token for the existing tunnel
+                match client.get_tunnel_token(&existing.id) {
+                    Ok(token) => {
+                        println!("✓ Retrieved token for existing tunnel");
+                        tracing::info!("Retrieved token for existing tunnel '{}'", tunnel_name);
+                        (existing.id, token)
+                    }
+                    Err(e) => {
+                        println!("⚠ Failed to retrieve tunnel token: {}", e);
+                        println!("  You may need to get the token from the Cloudflare dashboard");
+                        tracing::warn!("Failed to retrieve tunnel token: {}", e);
+                        return Ok(());
+                    }
+                }
+            } else {
+                // Create a new tunnel
+                let provision = client.create_tunnel(tunnel_name)?;
+                println!(
+                    "✓ Created tunnel '{}' (id: {})",
+                    provision.name, provision.id
+                );
+                tracing::info!("Created tunnel '{}' (id: {})", provision.name, provision.id);
+                (provision.id, provision.token)
+            };
 
         // Write the tunnel token to .cloudflared.env
         let devcontainer_dir = workspace_path.join(".devcontainer");
@@ -1209,7 +1227,7 @@ impl InitWorkflow {
                 "# Cloudflare Tunnel Configuration for main\n\
                  # Provisioned by branchbox init\n\n\
                  TUNNEL_TOKEN={}\n{}\n",
-                provision.token, hostname_line
+                tunnel_token, hostname_line
             );
 
             if let Err(e) = fs::write(&env_path, env_content) {
@@ -1224,7 +1242,7 @@ impl InitWorkflow {
         // Configure tunnel ingress if dns_zone is set
         if let Some(zone) = dns_zone {
             let hostname = format!("main.{}", zone);
-            if let Err(e) = client.configure_tunnel(&provision.id, &hostname, service_url) {
+            if let Err(e) = client.configure_tunnel(&tunnel_id, &hostname, service_url) {
                 println!("⚠ Failed to configure tunnel ingress: {}", e);
                 tracing::warn!("Failed to configure tunnel ingress: {}", e);
             } else {
