@@ -1138,16 +1138,13 @@ impl InitWorkflow {
             })
             .interact_text()?;
 
-        // Build tunnel name
-        let project_name = workspace_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project");
+        // Build tunnel name - for main branch, just use the prefix (no suffix needed)
+        // The prefix already identifies the project (e.g., "rida-mbp-pdfsight")
         let tunnel_prefix = cloudflared
             .tunnel_name_prefix
             .clone()
             .unwrap_or_else(|| "branchbox".to_string());
-        let tunnel_name = format!("{}-{}-main", tunnel_prefix, project_name);
+        let tunnel_name = tunnel_prefix.clone();
         let account_id = cloudflared.account_id.clone().unwrap_or_default();
 
         self.provision_main_tunnel(
