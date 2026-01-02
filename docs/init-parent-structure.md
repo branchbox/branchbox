@@ -1,8 +1,10 @@
-# In-Place Parent Structure Reorganization
+# Parent Structure (Default)
 
 ## Overview
 
-The `branchbox init --use-parent-structure` flag enables in-place reorganization of a git repository into an optimal worktree-parent structure. This is the recommended approach for organizing BranchBox projects.
+BranchBox's `branchbox init` command uses parent structure by default, reorganizing a git repository into an optimal worktree-parent structure. This is the recommended approach for organizing BranchBox projects.
+
+To opt-out, use `--no-parent-structure`.
 
 ## The Problem
 
@@ -26,11 +28,11 @@ When you want to use BranchBox for isolated feature development, you need a stru
 
 ## The Solution
 
-The `--use-parent-structure` flag reorganizes your repository in-place without moving it to a different location:
+By default, `branchbox init` reorganizes your repository in-place:
 
 ```bash
 cd /path/to/my-project
-branchbox init --reorganize --use-parent-structure
+branchbox init --reorganize
 ```
 
 ### What Happens
@@ -58,8 +60,8 @@ The tool uses a safe "rename dance" to avoid collisions:
 # Navigate to your existing repository
 cd ~/my-rails-app
 
-# Initialize with parent structure
-branchbox init --reorganize --use-parent-structure
+# Initialize with parent structure (default)
+branchbox init --reorganize
 
 # Result:
 #   ~/my-rails-app/main/  (your repository is now here)
@@ -70,7 +72,7 @@ branchbox init --reorganize --use-parent-structure
 Preview what will happen without making changes:
 
 ```bash
-branchbox init --reorganize --use-parent-structure --dry-run
+branchbox init --reorganize --dry-run
 ```
 
 Output:
@@ -89,7 +91,7 @@ Output:
 Skip confirmation prompts (useful for scripts):
 
 ```bash
-branchbox init --reorganize --use-parent-structure -y
+branchbox init --reorganize -y
 ```
 
 ### Verbose Output
@@ -97,7 +99,7 @@ branchbox init --reorganize --use-parent-structure -y
 See detailed progress during reorganization:
 
 ```bash
-branchbox init --reorganize --use-parent-structure -v
+branchbox init --reorganize -v
 ```
 
 Output:
@@ -115,6 +117,16 @@ Starting safe reorganization:
   Repository is now at: /home/user/my-rails-app/main/
   Container directory: /home/user/my-rails-app/
 ```
+
+## Opting Out
+
+If you prefer not to use parent structure, use `--no-parent-structure`:
+
+```bash
+branchbox init --reorganize --no-parent-structure
+```
+
+This moves the repository to a different location (default: `~/projects/`).
 
 ## Benefits
 
@@ -161,50 +173,50 @@ Each worktree gets:
 - Isolated database (if configured)
 - Unique Cloudflare tunnel URL (if configured)
 
-## Comparison with Standard Reorganization
+## Comparison of Modes
 
-### Standard (`--reorganize`)
-Moves repository to a different location (default: `~/projects/`)
+### Default (Parent Structure)
+Reorganizes in current location with parent/child structure (recommended)
 
 ```bash
 branchbox init --reorganize
 
 # Before: /current/location/my-app/
-# After:  ~/projects/my-app/
+# After:  /current/location/my-app/main/
 ```
 
-### In-Place Parent Structure (`--reorganize --use-parent-structure`)
-Reorganizes in current location with parent/child structure
+### Non-Parent Structure (`--no-parent-structure`)
+Moves repository to a different location (default: `~/projects/`)
 
 ```bash
-branchbox init --reorganize --use-parent-structure
+branchbox init --reorganize --no-parent-structure
 
 # Before: /current/location/my-app/
-# After:  /current/location/my-app/main/
+# After:  ~/projects/my-app/
 ```
 
 ## Git State Preservation
 
 The reorganization preserves all git state:
 
-- ✅ All commits and commit history
-- ✅ All branches (local and remote)
-- ✅ All tags
-- ✅ All stashes
-- ✅ Current working tree changes
-- ✅ Git configuration
-- ✅ Remote URLs
+- All commits and commit history
+- All branches (local and remote)
+- All tags
+- All stashes
+- Current working tree changes
+- Git configuration
+- Remote URLs
 
-## When to Use
+## When to Use Each Mode
 
-### ✅ Use In-Place Parent Structure When:
+### Use Parent Structure (Default) When:
 
 - You want to keep your repository in its current location
 - You have multiple repositories in a specific location
 - You're working in a team environment with established paths
 - You want the cleanest worktree organization
 
-### ❌ Use Standard Reorganization When:
+### Use `--no-parent-structure` When:
 
 - Repository is in a temporary location (`/tmp/`, `~/Downloads/`)
 - You want all projects in a central location (`~/projects/`)
