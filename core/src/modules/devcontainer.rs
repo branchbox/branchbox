@@ -444,7 +444,7 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
                                     .changes
                                     .push(format!("compose.yaml: added {}", desired));
                             }
-                            break;
+                            // Continue to next service (don't break - multi-service support)
                         }
                     }
                 }
@@ -887,6 +887,80 @@ mod tests {
         let compose = std::fs::read_to_string(target.join(".devcontainer/compose.yaml")).unwrap();
         assert!(compose.contains("- ../..:/workspaces:cached"));
         assert!(!compose.contains("- ..:/workspaces:cached"));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_multi_service_compose() {
+        // Test that all services in a multi-service compose file are updated
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // Create a compose file with multiple services, each with volumes
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    image: node:20
+    volumes:
+      - ..:/workspaces:cached
+      - app-data:/data
+  db:
+    image: postgres:15
+    volumes:
+      - ..:/workspaces:cached
+      - db-data:/var/lib/postgresql/data
+  redis:
+    image: redis:7
+    volumes:
+      - ..:/workspaces:cached
+volumes:
+  app-data: null
+  db-data: null
+"#,
+        )
+        .unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        // Should have updated all three services
+        assert!(outcome.compose_modified);
+        // Check that we have 3 changes for the 3 services
+        let compose_changes: Vec<_> = outcome
+            .changes
+            .iter()
+            .filter(|c| c.contains("compose.yaml"))
+            .collect();
+        assert_eq!(
+            compose_changes.len(),
+            3,
+            "Expected 3 compose changes for 3 services, got: {:?}",
+            compose_changes
+        );
+
+        // Verify the file was actually updated correctly
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+
+        // Count occurrences of the correct mount
+        let correct_mount_count = compose.matches("../..:/workspaces:cached").count();
+        assert_eq!(
+            correct_mount_count, 3,
+            "Expected 3 correct mounts, got {}. Compose:\n{}",
+            correct_mount_count, compose
+        );
+
+        // Ensure no old mounts remain
+        assert!(
+            !compose.contains("- ..:/workspaces:cached"),
+            "Old mount still present in compose:\n{}",
+            compose
+        );
     }
 
     #[test]
