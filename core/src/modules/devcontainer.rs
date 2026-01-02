@@ -68,6 +68,7 @@ impl DevcontainerModule {
             exclude: vec![
                 ".env".to_string(),
                 ".branchbox.env".to_string(),
+                ".cloudflared.env".to_string(),
                 ".gitignore".to_string(),
             ],
         }
