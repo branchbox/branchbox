@@ -442,12 +442,14 @@ pub fn add_cloudflared_service(
         };
 
         // Create cloudflared service
+        // Use required: false so compose doesn't fail if env file is missing
         let cloudflared_service = serde_yaml::from_str::<YamlValue>(
             r#"
 image: cloudflare/cloudflared:latest
 restart: unless-stopped
 env_file:
-  - .cloudflared.env
+  - path: .cloudflared.env
+    required: false
 command: ["tunnel", "--no-autoupdate", "run"]
 "#,
         )

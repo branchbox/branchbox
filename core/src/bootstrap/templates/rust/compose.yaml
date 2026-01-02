@@ -14,8 +14,10 @@ services:
       - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
     command: sleep infinity
     env_file:
-      - ../.env
-      - .branchbox.env
+      - path: ../.env
+        required: false
+      - path: .branchbox.env
+        required: false
     environment:
       DOCKER_CONTAINER: 'true'
       RUST_BACKTRACE: '1'
