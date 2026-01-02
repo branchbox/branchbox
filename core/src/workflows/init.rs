@@ -1121,6 +1121,21 @@ impl InitWorkflow {
             .with_prompt("Service URL for tunnel ingress (e.g., http://flask-app:5000)")
             .with_initial_text(&default_service_url)
             .allow_empty(false)
+            .validate_with(|input: &String| -> std::result::Result<(), &str> {
+                let trimmed = input.trim();
+                if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                    return Err("URL must start with http:// or https://");
+                }
+                // Basic format check: should have host after protocol
+                let without_protocol = trimmed
+                    .strip_prefix("http://")
+                    .or_else(|| trimmed.strip_prefix("https://"))
+                    .unwrap_or("");
+                if without_protocol.is_empty() || without_protocol.starts_with('/') {
+                    return Err("URL must include a host (e.g., http://app:3000)");
+                }
+                Ok(())
+            })
             .interact_text()?;
 
         // Build tunnel name
@@ -1160,20 +1175,26 @@ impl InitWorkflow {
         dns_zone: Option<&str>,
         workspace_path: &Path,
     ) -> Result<()> {
+        println!("Provisioning tunnel '{}'...", tunnel_name);
         tracing::info!("Provisioning tunnel '{}'...", tunnel_name);
 
         let client = CloudflareClient::new(api_token.to_string(), account_id.to_string())?;
         if let Some(existing) = client.find_tunnel_by_name(tunnel_name)? {
+            println!(
+                "⚠ Tunnel '{}' already exists (id: {})",
+                tunnel_name, existing.id
+            );
+            println!("  You'll need to get the token from the Cloudflare dashboard");
             tracing::warn!(
                 "Tunnel '{}' already exists (id: {})",
                 tunnel_name,
                 existing.id
             );
-            tracing::warn!("You'll need to get the token from the Cloudflare dashboard");
             return Ok(());
         }
 
         let provision = client.create_tunnel(tunnel_name)?;
+        println!("✓ Created tunnel '{}' (id: {})", provision.name, provision.id);
         tracing::info!("Created tunnel '{}' (id: {})", provision.name, provision.id);
 
         // Write the tunnel token to .cloudflared.env
@@ -1192,8 +1213,10 @@ impl InitWorkflow {
             );
 
             if let Err(e) = fs::write(&env_path, env_content) {
+                println!("⚠ Failed to write .cloudflared.env: {}", e);
                 tracing::warn!("Failed to write .cloudflared.env: {}", e);
             } else {
+                println!("✓ Saved tunnel token to .cloudflared.env");
                 tracing::info!("Saved tunnel token to .cloudflared.env");
             }
         }
@@ -1202,8 +1225,10 @@ impl InitWorkflow {
         if let Some(zone) = dns_zone {
             let hostname = format!("main.{}", zone);
             if let Err(e) = client.configure_tunnel(&provision.id, &hostname, service_url) {
+                println!("⚠ Failed to configure tunnel ingress: {}", e);
                 tracing::warn!("Failed to configure tunnel ingress: {}", e);
             } else {
+                println!("✓ Configured tunnel ingress for {}", hostname);
                 tracing::info!("Configured tunnel ingress for {}", hostname);
             }
         }
