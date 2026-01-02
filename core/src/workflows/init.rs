@@ -40,6 +40,7 @@ use crate::bootstrap::{Bootstrap, Stack};
 use crate::cloudflare::CloudflareClient;
 use crate::config::{BranchBoxConfig, CloudflaredConfig};
 use crate::git::GitWorktree;
+use crate::modules::{default_port_for_stack, detect_main_service};
 use crate::{Error, Result};
 use dialoguer::console::Term;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password};
@@ -1048,6 +1049,30 @@ impl InitWorkflow {
                         .interact()?;
 
                     if provision_now {
+                        // Detect service info from compose file
+                        let devcontainer_dir = workspace_path.join(".devcontainer");
+                        let service_info = if devcontainer_dir.exists() {
+                            detect_main_service(&devcontainer_dir, None).ok()
+                        } else {
+                            None
+                        };
+
+                        let default_service_url = service_info
+                            .as_ref()
+                            .map(|s| s.service_url.clone())
+                            .unwrap_or_else(|| {
+                                format!("http://dev:{}", default_port_for_stack(None))
+                            });
+
+                        // Prompt user to confirm/edit the service URL
+                        let service_url: String = Input::with_theme(&theme)
+                            .with_prompt("Service URL for tunnel ingress (e.g., http://flask-app:5000)")
+                            .with_initial_text(&default_service_url)
+                            .allow_empty(false)
+                            .interact_text()?;
+
+                        let service_url = service_url.trim().to_string();
+
                         // Get project name from workspace path
                         let project_name = workspace_path
                             .file_name()
@@ -1130,13 +1155,11 @@ TUNNEL_TOKEN={}
                                                 // Configure tunnel ingress if dns_zone is set
                                                 if let Some(zone) = &cloudflared.dns_zone {
                                                     let hostname = format!("main.{}", zone);
-                                                    // Default service URL for Rails/web apps
-                                                    let service_url = "http://localhost:3000";
 
                                                     if let Err(e) = client.configure_tunnel(
                                                         &provision.id,
                                                         &hostname,
-                                                        service_url,
+                                                        &service_url,
                                                     ) {
                                                         tracing::warn!(
                                                             "Failed to configure tunnel ingress: {}",

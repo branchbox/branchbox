@@ -22,8 +22,9 @@ pub mod tunnel;
 pub use compose::ComposeModule;
 pub use database::{DatabaseEngine, DatabaseModule};
 pub use devcontainer::{
-    add_cloudflared_service, configure_workspace_settings, CloudflaredOutcome, ConfigureOutcome,
-    DevcontainerModule, SyncStrategy,
+    add_cloudflared_service, configure_workspace_settings, default_port_for_stack,
+    detect_main_service, CloudflaredOutcome, ConfigureOutcome, DevcontainerModule, ServiceInfo,
+    SyncStrategy,
 };
 pub use specs::{SpecStatus, SpecsModule};
 pub use tunnel::TunnelModule;

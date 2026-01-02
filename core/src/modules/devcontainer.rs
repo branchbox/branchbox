@@ -367,6 +367,153 @@ pub struct CloudflaredOutcome {
 /// - Runs the tunnel command
 ///
 /// Also creates a template .cloudflared.env file if it doesn't exist.
+/// Detected service information from compose file.
+#[derive(Debug, Clone, Default)]
+pub struct ServiceInfo {
+    /// Name of the main service (e.g., "rails-app", "flask-app", "dev")
+    pub name: Option<String>,
+    /// Detected or default port for the service
+    pub port: u16,
+    /// Full service URL for tunnel ingress (e.g., "http://flask-app:5000")
+    pub service_url: String,
+}
+
+/// Default ports by stack/framework type.
+pub fn default_port_for_stack(stack_hint: Option<&str>) -> u16 {
+    match stack_hint {
+        Some(s) if s.contains("flask") || s.contains("python") || s.contains("django") => 5000,
+        Some(s) if s.contains("rails") || s.contains("ruby") => 3000,
+        Some(s) if s.contains("node") || s.contains("express") || s.contains("next") => 3000,
+        Some(s) if s.contains("rust") || s.contains("actix") || s.contains("axum") => 8080,
+        Some(s) if s.contains("go") || s.contains("gin") => 8080,
+        Some(s) if s.contains("php") || s.contains("laravel") => 8000,
+        _ => 3000, // Default fallback
+    }
+}
+
+/// Detect the main service name and port from compose file.
+///
+/// This function reads the compose file and extracts:
+/// - The main service name (first service with a build section)
+/// - The port (from exposed ports, or guessed from stack type)
+///
+/// # Arguments
+///
+/// * `devcontainer_dir` - Path to the .devcontainer directory
+/// * `stack_hint` - Optional hint about the stack type (e.g., "flask", "rails")
+///
+/// # Returns
+///
+/// Returns `ServiceInfo` with detected values, falling back to sensible defaults.
+pub fn detect_main_service(
+    devcontainer_dir: &Path,
+    stack_hint: Option<&str>,
+) -> Result<ServiceInfo> {
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        let port = default_port_for_stack(stack_hint);
+        return Ok(ServiceInfo {
+            name: Some("dev".to_string()),
+            port,
+            service_url: format!("http://dev:{}", port),
+        });
+    }
+
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+        Some(p) => p,
+        None => {
+            let port = default_port_for_stack(stack_hint);
+            return Ok(ServiceInfo {
+                name: Some("dev".to_string()),
+                port,
+                service_url: format!("http://dev:{}", port),
+            });
+        }
+    };
+
+    let compose_contents = std::fs::read_to_string(&compose_path)?;
+    let compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+        Error::validation(format!(
+            "Failed to parse {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    let mut service_name: Option<String> = None;
+    let mut detected_port: Option<u16> = None;
+
+    if let Some(root) = compose.as_mapping() {
+        let services_key = YamlValue::String("services".to_string());
+
+        if let Some(services) = root.get(&services_key).and_then(|v| v.as_mapping()) {
+            // Find main service (first with build section, excluding cloudflared/postgres/redis)
+            for (key, value) in services.iter() {
+                if let Some(name) = key.as_str() {
+                    // Skip infrastructure services
+                    let skip_services = ["cloudflared", "postgres", "redis", "mysql", "mongodb", "db"];
+                    if skip_services.contains(&name) {
+                        continue;
+                    }
+
+                    if let Some(service_map) = value.as_mapping() {
+                        let build_key = YamlValue::String("build".to_string());
+                        if service_map.contains_key(&build_key) {
+                            service_name = Some(name.to_string());
+
+                            // Try to detect port from ports section
+                            let ports_key = YamlValue::String("ports".to_string());
+                            if let Some(ports) = service_map.get(&ports_key).and_then(|v| v.as_sequence()) {
+                                for port_entry in ports {
+                                    if let Some(port_str) = port_entry.as_str() {
+                                        // Parse "8080:8080" or "3000:3000" format
+                                        if let Some(container_port) = port_str
+                                            .split(':')
+                                            .last()
+                                            .and_then(|p| p.split('/').next())
+                                            .and_then(|p| p.parse::<u16>().ok())
+                                        {
+                                            detected_port = Some(container_port);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If no service with build, take first non-infrastructure service
+            if service_name.is_none() {
+                for (key, _) in services.iter() {
+                    if let Some(name) = key.as_str() {
+                        let skip_services = ["cloudflared", "postgres", "redis", "mysql", "mongodb", "db"];
+                        if !skip_services.contains(&name) {
+                            service_name = Some(name.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let port = detected_port.unwrap_or_else(|| default_port_for_stack(stack_hint));
+    let name = service_name.unwrap_or_else(|| "dev".to_string());
+    let service_url = format!("http://{}:{}", name, port);
+
+    Ok(ServiceInfo {
+        name: Some(name),
+        port,
+        service_url,
+    })
+}
+
 ///
 /// # Arguments
 ///
@@ -1438,5 +1585,158 @@ volumes:
         // Should not modify anything
         assert!(!outcome.compose_modified);
         assert!(!outcome.env_created);
+    }
+
+    #[test]
+    fn test_default_port_for_stack() {
+        assert_eq!(default_port_for_stack(Some("flask")), 5000);
+        assert_eq!(default_port_for_stack(Some("python")), 5000);
+        assert_eq!(default_port_for_stack(Some("django")), 5000);
+        assert_eq!(default_port_for_stack(Some("rails")), 3000);
+        assert_eq!(default_port_for_stack(Some("ruby")), 3000);
+        assert_eq!(default_port_for_stack(Some("node")), 3000);
+        assert_eq!(default_port_for_stack(Some("express")), 3000);
+        assert_eq!(default_port_for_stack(Some("next")), 3000);
+        assert_eq!(default_port_for_stack(Some("rust")), 8080);
+        assert_eq!(default_port_for_stack(Some("actix")), 8080);
+        assert_eq!(default_port_for_stack(Some("go")), 8080);
+        assert_eq!(default_port_for_stack(Some("php")), 8000);
+        assert_eq!(default_port_for_stack(Some("laravel")), 8000);
+        assert_eq!(default_port_for_stack(None), 3000); // Default fallback
+        assert_eq!(default_port_for_stack(Some("unknown")), 3000);
+    }
+
+    #[test]
+    fn test_detect_main_service_rails() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  rails-app:
+    build:
+      context: ..
+    ports:
+      - "3000:3000"
+  postgres:
+    image: postgres:15
+"#,
+        )
+        .unwrap();
+
+        let info = detect_main_service(&devcontainer_dir, None).unwrap();
+        assert_eq!(info.name, Some("rails-app".to_string()));
+        assert_eq!(info.port, 3000);
+        assert_eq!(info.service_url, "http://rails-app:3000");
+    }
+
+    #[test]
+    fn test_detect_main_service_flask() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  flask-app:
+    build:
+      context: ..
+    ports:
+      - "5000:5000"
+  redis:
+    image: redis:7
+"#,
+        )
+        .unwrap();
+
+        let info = detect_main_service(&devcontainer_dir, None).unwrap();
+        assert_eq!(info.name, Some("flask-app".to_string()));
+        assert_eq!(info.port, 5000);
+        assert_eq!(info.service_url, "http://flask-app:5000");
+    }
+
+    #[test]
+    fn test_detect_main_service_no_ports() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  dev:
+    build:
+      context: ..
+"#,
+        )
+        .unwrap();
+
+        // Without ports, should fall back to default port (3000)
+        let info = detect_main_service(&devcontainer_dir, None).unwrap();
+        assert_eq!(info.name, Some("dev".to_string()));
+        assert_eq!(info.port, 3000);
+        assert_eq!(info.service_url, "http://dev:3000");
+    }
+
+    #[test]
+    fn test_detect_main_service_with_stack_hint() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build:
+      context: ..
+"#,
+        )
+        .unwrap();
+
+        // With flask stack hint, should use port 5000
+        let info = detect_main_service(&devcontainer_dir, Some("flask")).unwrap();
+        assert_eq!(info.name, Some("app".to_string()));
+        assert_eq!(info.port, 5000);
+        assert_eq!(info.service_url, "http://app:5000");
+    }
+
+    #[test]
+    fn test_detect_main_service_no_devcontainer() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        // Don't create the directory
+
+        let info = detect_main_service(&devcontainer_dir, Some("flask")).unwrap();
+        assert_eq!(info.name, Some("dev".to_string()));
+        assert_eq!(info.port, 5000);
+        assert_eq!(info.service_url, "http://dev:5000");
     }
 }
