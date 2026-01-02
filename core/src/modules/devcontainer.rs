@@ -31,6 +31,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+const SKIP_INFRA_SERVICES: [&str; 6] =
+    ["cloudflared", "postgres", "redis", "mysql", "mongodb", "db"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncStrategy {
     /// Copy files (default - allows per-feature customization)
@@ -311,25 +314,22 @@ pub struct ConfigureOutcome {
 /// or falling back to common compose file names.
 fn find_compose_file(devcontainer_dir: &Path, config: &JsonValue) -> Option<PathBuf> {
     // Try to read dockerComposeFile from devcontainer.json (can be string or array)
-    let from_config = config.get("dockerComposeFile").and_then(|v| {
-        let files: Vec<&str> = match v {
-            JsonValue::String(s) => vec![s.as_str()],
-            JsonValue::Array(arr) => arr.iter().filter_map(|f| f.as_str()).collect(),
-            _ => vec![],
-        };
-        files
-            .into_iter()
-            .map(|f| devcontainer_dir.join(f))
-            .find(|p| p.exists())
-    });
+    let explicit_files: Vec<&str> = match config.get("dockerComposeFile") {
+        Some(JsonValue::String(s)) => vec![s.as_str()],
+        Some(JsonValue::Array(arr)) => arr.iter().filter_map(|f| f.as_str()).collect(),
+        _ => vec![],
+    };
 
-    // Return from config if found, otherwise check common compose file names
-    from_config.or_else(|| {
-        ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"]
-            .iter()
-            .map(|name| devcontainer_dir.join(name))
-            .find(|p| p.exists())
-    })
+    explicit_files
+        .into_iter()
+        .chain([
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ])
+        .map(|name| devcontainer_dir.join(name))
+        .find(|path| path.exists())
 }
 
 /// Result of adding cloudflared service
@@ -375,6 +375,43 @@ pub fn default_port_for_stack(stack_hint: Option<&str>) -> u16 {
     }
 }
 
+fn default_service_info(stack_hint: Option<&str>) -> ServiceInfo {
+    let port = default_port_for_stack(stack_hint);
+    ServiceInfo {
+        name: Some("app".to_string()),
+        port,
+        service_url: format!("http://app:{}", port),
+    }
+}
+
+fn detect_main_service_name(services: &serde_yaml::Mapping) -> Option<String> {
+    let build_key = YamlValue::String("build".to_string());
+
+    for (key, value) in services.iter() {
+        if let Some(name) = key.as_str() {
+            if SKIP_INFRA_SERVICES.contains(&name) {
+                continue;
+            }
+
+            if let Some(service_map) = value.as_mapping() {
+                if service_map.contains_key(&build_key) {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    for (key, _) in services.iter() {
+        if let Some(name) = key.as_str() {
+            if !SKIP_INFRA_SERVICES.contains(&name) {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 /// Detect the main service name and port from compose file.
 ///
 /// This function reads the compose file and extracts:
@@ -395,12 +432,7 @@ pub fn detect_main_service(
 ) -> Result<ServiceInfo> {
     let config_path = devcontainer_dir.join("devcontainer.json");
     if !config_path.exists() {
-        let port = default_port_for_stack(stack_hint);
-        return Ok(ServiceInfo {
-            name: Some("app".to_string()),
-            port,
-            service_url: format!("http://app:{}", port),
-        });
+        return Ok(default_service_info(stack_hint));
     }
 
     let config_contents = std::fs::read_to_string(&config_path)?;
@@ -409,12 +441,7 @@ pub fn detect_main_service(
     let compose_path = match find_compose_file(devcontainer_dir, &config) {
         Some(p) => p,
         None => {
-            let port = default_port_for_stack(stack_hint);
-            return Ok(ServiceInfo {
-                name: Some("app".to_string()),
-                port,
-                service_url: format!("http://app:{}", port),
-            });
+            return Ok(default_service_info(stack_hint));
         }
     };
 
@@ -438,8 +465,7 @@ pub fn detect_main_service(
             for (key, value) in services.iter() {
                 if let Some(name) = key.as_str() {
                     // Skip infrastructure services
-                    let skip_services = ["cloudflared", "postgres", "redis", "mysql", "mongodb", "db"];
-                    if skip_services.contains(&name) {
+                    if SKIP_INFRA_SERVICES.contains(&name) {
                         continue;
                     }
 
@@ -450,7 +476,9 @@ pub fn detect_main_service(
 
                             // Try to detect port from ports section
                             let ports_key = YamlValue::String("ports".to_string());
-                            if let Some(ports) = service_map.get(&ports_key).and_then(|v| v.as_sequence()) {
+                            if let Some(ports) =
+                                service_map.get(&ports_key).and_then(|v| v.as_sequence())
+                            {
                                 for port_entry in ports {
                                     if let Some(port_str) = port_entry.as_str() {
                                         // Parse "8080:8080" or "3000:3000" format
@@ -476,8 +504,7 @@ pub fn detect_main_service(
             if service_name.is_none() {
                 for (key, _) in services.iter() {
                     if let Some(name) = key.as_str() {
-                        let skip_services = ["cloudflared", "postgres", "redis", "mysql", "mongodb", "db"];
-                        if !skip_services.contains(&name) {
+                        if !SKIP_INFRA_SERVICES.contains(&name) {
                             service_name = Some(name.to_string());
                             break;
                         }
@@ -617,8 +644,7 @@ command: ["tunnel", "--no-autoupdate", "run"]
                                 .or_insert_with(|| YamlValue::Sequence(vec![]));
 
                             if let Some(deps) = depends_on.as_sequence_mut() {
-                                let cloudflared_dep =
-                                    YamlValue::String("cloudflared".to_string());
+                                let cloudflared_dep = YamlValue::String("cloudflared".to_string());
                                 if !deps.contains(&cloudflared_dep) {
                                     deps.push(cloudflared_dep);
                                     outcome.changes.push(format!(
@@ -683,7 +709,7 @@ TUNNEL_TOKEN=
 /// for git worktrees by:
 /// - Setting `workspaceFolder` to `/workspaces/${localWorkspaceFolderBasename}`
 /// - Setting `workspaceMount` to use the dynamic folder basename
-/// - Updating compose.yaml volume mounts to use `../..:/workspaces:cached`
+/// - Updating compose.yaml volume mount for the main app service to use `../..:/workspaces:cached`
 ///
 /// This function is called both during `branchbox init` (to configure newly generated
 /// or existing devcontainers) and during `branchbox feature start` (via DevcontainerModule).
@@ -788,39 +814,42 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
                 .get_mut(&services_key)
                 .and_then(|value| value.as_mapping_mut())
             {
-                for service in services.values_mut() {
-                    if let Some(service_map) = service.as_mapping_mut() {
-                        let volumes_key = YamlValue::String("volumes".to_string());
-                        if let Some(volumes) = service_map
-                            .get_mut(&volumes_key)
-                            .and_then(|value| value.as_sequence_mut())
-                        {
-                            let mut found_desired = false;
-                            for entry in volumes.iter_mut() {
-                                let raw = entry.as_str().map(ToString::to_string);
-                                if let Some(raw) = raw {
-                                    if raw == alternate {
-                                        *entry = YamlValue::String(desired.to_string());
-                                        compose_updated = true;
-                                        found_desired = true; // We just set it to desired
-                                        outcome.changes.push(format!(
-                                            "{}: {} → {}",
-                                            compose_filename, alternate, desired
-                                        ));
-                                    } else if raw == desired {
-                                        found_desired = true;
+                let main_service_name = detect_main_service_name(services);
+                if let Some(main_name) = main_service_name {
+                    let main_key = YamlValue::String(main_name);
+                    if let Some(service) = services.get_mut(&main_key) {
+                        if let Some(service_map) = service.as_mapping_mut() {
+                            let volumes_key = YamlValue::String("volumes".to_string());
+                            if let Some(volumes) = service_map
+                                .get_mut(&volumes_key)
+                                .and_then(|value| value.as_sequence_mut())
+                            {
+                                let mut found_desired = false;
+                                for entry in volumes.iter_mut() {
+                                    let raw = entry.as_str().map(ToString::to_string);
+                                    if let Some(raw) = raw {
+                                        if raw == alternate {
+                                            *entry = YamlValue::String(desired.to_string());
+                                            compose_updated = true;
+                                            found_desired = true; // We just set it to desired
+                                            outcome.changes.push(format!(
+                                                "{}: {} → {}",
+                                                compose_filename, alternate, desired
+                                            ));
+                                        } else if raw == desired {
+                                            found_desired = true;
+                                        }
                                     }
                                 }
-                            }
 
-                            if !found_desired {
-                                volumes.insert(0, YamlValue::String(desired.to_string()));
-                                compose_updated = true;
-                                outcome
-                                    .changes
-                                    .push(format!("{}: added {}", compose_filename, desired));
+                                if !found_desired {
+                                    volumes.insert(0, YamlValue::String(desired.to_string()));
+                                    compose_updated = true;
+                                    outcome
+                                        .changes
+                                        .push(format!("{}: added {}", compose_filename, desired));
+                                }
                             }
-                            // Continue to next service (don't break - multi-service support)
                         }
                     }
                 }
@@ -1267,7 +1296,7 @@ mod tests {
 
     #[test]
     fn test_configure_workspace_settings_multi_service_compose() {
-        // Test that all services in a multi-service compose file are updated
+        // Test that only the main app service is updated in a multi-service compose file
         let temp = TempDir::new().unwrap();
         let devcontainer_dir = temp.path().join(".devcontainer");
         std::fs::create_dir_all(&devcontainer_dir).unwrap();
@@ -1278,7 +1307,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create a compose file with multiple services, each with volumes
+        // Create a compose file with multiple services
         std::fs::write(
             devcontainer_dir.join("compose.yaml"),
             r#"services:
@@ -1290,24 +1319,23 @@ mod tests {
   db:
     image: postgres:15
     volumes:
-      - ..:/workspaces:cached
       - db-data:/var/lib/postgresql/data
   redis:
     image: redis:7
     volumes:
-      - ..:/workspaces:cached
+      - redis-data:/data
 volumes:
   app-data: null
   db-data: null
+  redis-data: null
 "#,
         )
         .unwrap();
 
         let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
 
-        // Should have updated all three services
+        // Should have updated the main app service only
         assert!(outcome.compose_modified);
-        // Check that we have 3 changes for the 3 services
         let compose_changes: Vec<_> = outcome
             .changes
             .iter()
@@ -1315,8 +1343,8 @@ volumes:
             .collect();
         assert_eq!(
             compose_changes.len(),
-            3,
-            "Expected 3 compose changes for 3 services, got: {:?}",
+            1,
+            "Expected 1 compose change for main service, got: {:?}",
             compose_changes
         );
 
@@ -1326,8 +1354,8 @@ volumes:
         // Count occurrences of the correct mount
         let correct_mount_count = compose.matches("../..:/workspaces:cached").count();
         assert_eq!(
-            correct_mount_count, 3,
-            "Expected 3 correct mounts, got {}. Compose:\n{}",
+            correct_mount_count, 1,
+            "Expected 1 correct mount, got {}. Compose:\n{}",
             correct_mount_count, compose
         );
 
