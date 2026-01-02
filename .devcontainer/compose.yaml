@@ -19,8 +19,10 @@ services:
     - "8787:8787"
     command: sleep infinity
     env_file:
-    - ../.env
-    - .branchbox.env
+      - path: ../.env
+        required: false
+      - path: .branchbox.env
+        required: false
     environment:
       DOCKER_CONTAINER: 'true'
       RUST_BACKTRACE: '1'

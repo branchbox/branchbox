@@ -26,7 +26,7 @@ Set `BRANCHBOX_SKIP_HOST_VALIDATION=1` while running these steps so the workflow
      ```bash
      BRANCHBOX_SKIP_HOST_VALIDATION=1 \
      BRANCHBOX_PROJECTS_DIR="$BRANCHBOX_PROJECTS_DIR" \
-     branchbox init --stack rust --reorganize --use-parent-structure -y
+     branchbox init --stack rust --reorganize -y
      ```
    - Expect a `main/` worktree to appear under the projects directory, `.devcontainer/` to be generated, `.env.sample` to be stamped, and `.branchbox/registry.json` to exist.
 

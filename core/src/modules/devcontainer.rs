@@ -31,6 +31,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+const SKIP_INFRA_SERVICES: [&str; 6] =
+    ["cloudflared", "postgres", "redis", "mysql", "mongodb", "db"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncStrategy {
     /// Copy files (default - allows per-feature customization)
@@ -65,6 +68,7 @@ impl DevcontainerModule {
             exclude: vec![
                 ".env".to_string(),
                 ".branchbox.env".to_string(),
+                ".cloudflared.env".to_string(),
                 ".gitignore".to_string(),
             ],
         }
@@ -256,7 +260,7 @@ impl Module for DevcontainerModule {
         if matches!(self.strategy, SyncStrategy::Symlink) {
             tracing::info!("Skipping workspace configuration (symlink strategy in use)");
         } else {
-            self.configure_workspace_settings(feature_dir)?;
+            self.configure_workspace_settings_impl(feature_dir)?;
         }
         tracing::info!(
             "Synced {} devcontainer files ({:?})",
@@ -283,82 +287,537 @@ impl Module for DevcontainerModule {
 }
 
 impl DevcontainerModule {
-    fn configure_workspace_settings(&self, feature_dir: &Path) -> Result<()> {
-        let config_path = feature_dir.join(".devcontainer/devcontainer.json");
-        if !config_path.exists() {
-            return Ok(());
+    fn configure_workspace_settings_impl(&self, feature_dir: &Path) -> Result<()> {
+        let devcontainer_dir = feature_dir.join(".devcontainer");
+        configure_workspace_settings(&devcontainer_dir)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct SyncOutcome {
+    pub synced_files: Vec<String>,
+    pub strategy: SyncStrategy,
+}
+
+/// Result of configuring workspace settings
+#[derive(Debug, Default)]
+pub struct ConfigureOutcome {
+    /// Whether devcontainer.json was modified
+    pub devcontainer_modified: bool,
+    /// Whether compose.yaml was modified
+    pub compose_modified: bool,
+    /// List of changes made
+    pub changes: Vec<String>,
+}
+
+/// Find the compose file path by reading dockerComposeFile from devcontainer.json
+/// or falling back to common compose file names.
+fn find_compose_file(devcontainer_dir: &Path, config: &JsonValue) -> Option<PathBuf> {
+    // Try to read dockerComposeFile from devcontainer.json (can be string or array)
+    let explicit_files: Vec<&str> = match config.get("dockerComposeFile") {
+        Some(JsonValue::String(s)) => vec![s.as_str()],
+        Some(JsonValue::Array(arr)) => arr.iter().filter_map(|f| f.as_str()).collect(),
+        _ => vec![],
+    };
+
+    explicit_files
+        .into_iter()
+        .chain([
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ])
+        .map(|name| devcontainer_dir.join(name))
+        .find(|path| path.exists())
+}
+
+/// Result of adding cloudflared service
+#[derive(Debug, Default)]
+pub struct CloudflaredOutcome {
+    /// Whether compose file was modified
+    pub compose_modified: bool,
+    /// Whether cloudflared.env was created
+    pub env_created: bool,
+    /// List of changes made
+    pub changes: Vec<String>,
+}
+
+/// Add cloudflared tunnel service to the compose file.
+///
+/// This adds a cloudflared service that:
+/// - Uses the official cloudflare/cloudflared image
+/// - Reads configuration from .cloudflared.env
+/// - Runs the tunnel command
+///
+/// Also creates a template .cloudflared.env file if it doesn't exist.
+/// Detected service information from compose file.
+#[derive(Debug, Clone, Default)]
+pub struct ServiceInfo {
+    /// Name of the main service (e.g., "rails-app", "flask-app", "app")
+    pub name: Option<String>,
+    /// Detected or default port for the service
+    pub port: u16,
+    /// Full service URL for tunnel ingress (e.g., "http://flask-app:5000")
+    pub service_url: String,
+}
+
+/// Default ports by stack/framework type.
+pub fn default_port_for_stack(stack_hint: Option<&str>) -> u16 {
+    match stack_hint {
+        Some(s) if s.contains("flask") || s.contains("python") || s.contains("django") => 5000,
+        Some(s) if s.contains("rails") || s.contains("ruby") => 3000,
+        Some(s) if s.contains("node") || s.contains("express") || s.contains("next") => 3000,
+        Some(s) if s.contains("rust") || s.contains("actix") || s.contains("axum") => 8080,
+        Some(s) if s.contains("go") || s.contains("gin") => 8080,
+        Some(s) if s.contains("php") || s.contains("laravel") => 8000,
+        _ => 3000, // Default fallback
+    }
+}
+
+fn default_service_info(stack_hint: Option<&str>) -> ServiceInfo {
+    let port = default_port_for_stack(stack_hint);
+    ServiceInfo {
+        name: Some("app".to_string()),
+        port,
+        service_url: format!("http://app:{}", port),
+    }
+}
+
+fn detect_main_service_name(services: &serde_yaml::Mapping) -> Option<String> {
+    let build_key = YamlValue::String("build".to_string());
+    let mut first_non_infra_service = None;
+
+    for (key, value) in services.iter() {
+        if let Some(name) = key.as_str() {
+            if SKIP_INFRA_SERVICES.contains(&name) {
+                continue;
+            }
+
+            // Track first non-infrastructure service as fallback
+            if first_non_infra_service.is_none() {
+                first_non_infra_service = Some(name.to_string());
+            }
+
+            // Prefer service with build section
+            if let Some(service_map) = value.as_mapping() {
+                if service_map.contains_key(&build_key) {
+                    return Some(name.to_string());
+                }
+            }
         }
+    }
 
-        let compose_path = feature_dir.join(".devcontainer/compose.yaml");
-        let config_contents = std::fs::read_to_string(&config_path)?;
-        let mut config = parse_json_with_comments(&config_contents, &config_path)?;
+    first_non_infra_service
+}
 
-        let workspace_folder = "/workspaces/${localWorkspaceFolderBasename}";
-        let workspace_mount =
-            "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached";
+/// Detect the main service name and port from compose file.
+///
+/// This function reads the compose file and extracts:
+/// - The main service name (first service with a build section)
+/// - The port (from exposed ports, or guessed from stack type)
+///
+/// # Arguments
+///
+/// * `devcontainer_dir` - Path to the .devcontainer directory
+/// * `stack_hint` - Optional hint about the stack type (e.g., "flask", "rails")
+///
+/// # Returns
+///
+/// Returns `ServiceInfo` with detected values, falling back to sensible defaults.
+pub fn detect_main_service(
+    devcontainer_dir: &Path,
+    stack_hint: Option<&str>,
+) -> Result<ServiceInfo> {
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(default_service_info(stack_hint));
+    }
 
-        let mut needs_update = false;
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let config = parse_json_with_comments(&config_contents, &config_path)?;
 
-        match config.as_object_mut() {
-            Some(map) => {
-                let folder_value = JsonValue::String(workspace_folder.to_string());
-                if map
+    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+        Some(p) => p,
+        None => {
+            return Ok(default_service_info(stack_hint));
+        }
+    };
+
+    let compose_contents = std::fs::read_to_string(&compose_path)?;
+    let compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+        Error::validation(format!(
+            "Failed to parse {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    let mut service_name: Option<String> = None;
+    let mut detected_port: Option<u16> = None;
+
+    if let Some(root) = compose.as_mapping() {
+        let services_key = YamlValue::String("services".to_string());
+
+        if let Some(services) = root.get(&services_key).and_then(|v| v.as_mapping()) {
+            // Find main service (first with build section, excluding cloudflared/postgres/redis)
+            for (key, value) in services.iter() {
+                if let Some(name) = key.as_str() {
+                    // Skip infrastructure services
+                    if SKIP_INFRA_SERVICES.contains(&name) {
+                        continue;
+                    }
+
+                    if let Some(service_map) = value.as_mapping() {
+                        let build_key = YamlValue::String("build".to_string());
+                        if service_map.contains_key(&build_key) {
+                            service_name = Some(name.to_string());
+
+                            // Try to detect port from ports section
+                            let ports_key = YamlValue::String("ports".to_string());
+                            if let Some(ports) =
+                                service_map.get(&ports_key).and_then(|v| v.as_sequence())
+                            {
+                                for port_entry in ports {
+                                    if let Some(port_str) = port_entry.as_str() {
+                                        // Parse "8080:8080" or "3000:3000" format
+                                        if let Some(container_port) = port_str
+                                            .split(':')
+                                            .next_back()
+                                            .and_then(|p| p.split('/').next())
+                                            .and_then(|p| p.parse::<u16>().ok())
+                                        {
+                                            detected_port = Some(container_port);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If no service with build, take first non-infrastructure service
+            if service_name.is_none() {
+                for (key, _) in services.iter() {
+                    if let Some(name) = key.as_str() {
+                        if !SKIP_INFRA_SERVICES.contains(&name) {
+                            service_name = Some(name.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let port = detected_port.unwrap_or_else(|| default_port_for_stack(stack_hint));
+    let name = service_name.unwrap_or_else(|| "app".to_string());
+    let service_url = format!("http://{}:{}", name, port);
+
+    Ok(ServiceInfo {
+        name: Some(name),
+        port,
+        service_url,
+    })
+}
+
+///
+/// # Arguments
+///
+/// * `devcontainer_dir` - Path to the .devcontainer directory
+/// * `main_service_name` - Optional name of the main service to add depends_on (auto-detected if None)
+///
+/// # Returns
+///
+/// Returns a `CloudflaredOutcome` describing what changes were made.
+pub fn add_cloudflared_service(
+    devcontainer_dir: &Path,
+    main_service_name: Option<&str>,
+) -> Result<CloudflaredOutcome> {
+    let mut outcome = CloudflaredOutcome::default();
+
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(outcome);
+    }
+
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+        Some(path) => path,
+        None => return Ok(outcome), // No compose file, nothing to do
+    };
+
+    let compose_filename = compose_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("compose.yaml");
+
+    let compose_contents = std::fs::read_to_string(&compose_path)?;
+    let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+        Error::validation(format!(
+            "Failed to parse {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    let mut compose_updated = false;
+
+    if let Some(root) = compose.as_mapping_mut() {
+        let services_key = YamlValue::String("services".to_string());
+
+        // Check if cloudflared service already exists
+        let cloudflared_exists =
+            if let Some(services) = root.get(&services_key).and_then(|v| v.as_mapping()) {
+                let cloudflared_key = YamlValue::String("cloudflared".to_string());
+                if services.contains_key(&cloudflared_key) {
+                    tracing::info!("cloudflared service already exists in {}", compose_filename);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+        // Find the main service name (first service with a build context, or explicitly provided)
+        let detected_main_service = if let Some(name) = main_service_name {
+            Some(name.to_string())
+        } else if let Some(services) = root.get(&services_key).and_then(|v| v.as_mapping()) {
+            // Find first service with a build section (likely the main app)
+            services.iter().find_map(|(key, value)| {
+                if let (Some(name), Some(service_map)) = (key.as_str(), value.as_mapping()) {
+                    let build_key = YamlValue::String("build".to_string());
+                    if service_map.contains_key(&build_key) {
+                        return Some(name.to_string());
+                    }
+                }
+                None
+            })
+        } else {
+            None
+        };
+
+        // Only add cloudflared service if it doesn't already exist
+        if !cloudflared_exists {
+            // Create cloudflared service
+            // Use required: false so compose doesn't fail if env file is missing
+            let cloudflared_service = serde_yaml::from_str::<YamlValue>(
+                r#"
+image: cloudflare/cloudflared:latest
+restart: unless-stopped
+env_file:
+  - path: .cloudflared.env
+    required: false
+command: ["tunnel", "--no-autoupdate", "run"]
+"#,
+            )
+            .expect("hardcoded YAML is valid");
+
+            // Add cloudflared service to services
+            if let Some(services) = root.get_mut(&services_key).and_then(|v| v.as_mapping_mut()) {
+                services.insert(
+                    YamlValue::String("cloudflared".to_string()),
+                    cloudflared_service,
+                );
+                compose_updated = true;
+                outcome
+                    .changes
+                    .push(format!("{}: added cloudflared service", compose_filename));
+
+                // Add depends_on to main service if we found one
+                if let Some(main_name) = detected_main_service {
+                    let main_key = YamlValue::String(main_name.clone());
+                    if let Some(main_service) = services.get_mut(&main_key) {
+                        if let Some(service_map) = main_service.as_mapping_mut() {
+                            let depends_key = YamlValue::String("depends_on".to_string());
+
+                            // Get or create depends_on array
+                            let depends_on = service_map
+                                .entry(depends_key.clone())
+                                .or_insert_with(|| YamlValue::Sequence(vec![]));
+
+                            if let Some(deps) = depends_on.as_sequence_mut() {
+                                let cloudflared_dep = YamlValue::String("cloudflared".to_string());
+                                if !deps.contains(&cloudflared_dep) {
+                                    deps.push(cloudflared_dep);
+                                    outcome.changes.push(format!(
+                                        "{}: added cloudflared to {} depends_on",
+                                        compose_filename, main_name
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if compose_updated {
+        let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+            Error::validation(format!(
+                "Failed to serialize {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
+        if serialized.starts_with("---\n") {
+            serialized = serialized.split_off(4);
+        }
+        if !serialized.ends_with('\n') {
+            serialized.push('\n');
+        }
+        std::fs::write(&compose_path, serialized)?;
+        outcome.compose_modified = true;
+        tracing::info!("Added cloudflared service to {}", compose_filename);
+    }
+
+    // Create .cloudflared.env template if it doesn't exist
+    let env_path = devcontainer_dir.join(".cloudflared.env");
+    if !env_path.exists() {
+        let env_template = r#"# Cloudflare Tunnel Configuration
+# See: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/
+
+# Tunnel token from Cloudflare Zero Trust dashboard
+# Get this from: Access → Tunnels → Create a tunnel → Copy token
+TUNNEL_TOKEN=
+
+# Optional: Hostname for this development environment
+# DEV_HOSTNAME=feature-name.your-domain.com
+"#;
+        std::fs::write(&env_path, env_template)?;
+        outcome.env_created = true;
+        outcome
+            .changes
+            .push("created .cloudflared.env template".to_string());
+        tracing::info!("Created .cloudflared.env template");
+    }
+
+    Ok(outcome)
+}
+
+/// Configure devcontainer workspace settings for worktree compatibility.
+///
+/// This ensures the devcontainer.json and compose.yaml are configured correctly
+/// for git worktrees by:
+/// - Setting `workspaceFolder` to `/workspaces/${localWorkspaceFolderBasename}`
+/// - Setting `workspaceMount` to use the dynamic folder basename
+/// - Updating compose.yaml volume mount for the main app service to use `../..:/workspaces:cached`
+///
+/// This function is called both during `branchbox init` (to configure newly generated
+/// or existing devcontainers) and during `branchbox feature start` (via DevcontainerModule).
+///
+/// # Arguments
+///
+/// * `devcontainer_dir` - Path to the .devcontainer directory
+///
+/// # Returns
+///
+/// Returns a `ConfigureOutcome` describing what changes were made.
+pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<ConfigureOutcome> {
+    let mut outcome = ConfigureOutcome::default();
+
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(outcome);
+    }
+
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let mut config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    // Determine compose file path from devcontainer.json or fallback to common names
+    let compose_path = find_compose_file(devcontainer_dir, &config);
+
+    let workspace_folder = "/workspaces/${localWorkspaceFolderBasename}";
+    let workspace_mount =
+        "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached";
+
+    let mut devcontainer_needs_update = false;
+
+    match config.as_object_mut() {
+        Some(map) => {
+            let folder_value = JsonValue::String(workspace_folder.to_string());
+            if map
+                .get("workspaceFolder")
+                .map(|value| value != &folder_value)
+                .unwrap_or(true)
+            {
+                let old_value = map
                     .get("workspaceFolder")
-                    .map(|value| value != &folder_value)
-                    .unwrap_or(true)
-                {
-                    map.insert("workspaceFolder".to_string(), folder_value);
-                    needs_update = true;
-                }
-
-                let mount_value = JsonValue::String(workspace_mount.to_string());
-                if map
-                    .get("workspaceMount")
-                    .map(|value| value != &mount_value)
-                    .unwrap_or(true)
-                {
-                    map.insert("workspaceMount".to_string(), mount_value);
-                    needs_update = true;
-                }
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                outcome.changes.push(format!(
+                    "workspaceFolder: {} → {}",
+                    old_value, workspace_folder
+                ));
+                map.insert("workspaceFolder".to_string(), folder_value);
+                devcontainer_needs_update = true;
             }
-            None => {
-                return Err(Error::validation(format!(
-                    "{} is not a JSON object",
-                    config_path.display()
-                )))
+
+            let mount_value = JsonValue::String(workspace_mount.to_string());
+            if map
+                .get("workspaceMount")
+                .map(|value| value != &mount_value)
+                .unwrap_or(true)
+            {
+                outcome
+                    .changes
+                    .push("workspaceMount: updated for worktree compatibility".to_string());
+                map.insert("workspaceMount".to_string(), mount_value);
+                devcontainer_needs_update = true;
             }
         }
-
-        if !needs_update {
-            return Ok(());
+        None => {
+            return Err(Error::validation(format!(
+                "{} is not a JSON object",
+                config_path.display()
+            )))
         }
+    }
 
+    if devcontainer_needs_update {
         let mut formatted = serde_json::to_string_pretty(&config)?;
         formatted.push('\n');
         std::fs::write(&config_path, formatted)?;
+        outcome.devcontainer_modified = true;
+        tracing::info!("Updated devcontainer.json for worktree compatibility");
+    }
 
-        if compose_path.exists() {
-            let compose_contents = std::fs::read_to_string(&compose_path)?;
-            let mut compose: YamlValue =
-                serde_yaml::from_str(&compose_contents).map_err(|err| {
-                    Error::validation(format!(
-                        "Failed to parse {}: {}",
-                        compose_path.display(),
-                        err
-                    ))
-                })?;
+    if let Some(compose_path) = compose_path {
+        let compose_contents = std::fs::read_to_string(&compose_path)?;
+        let compose_filename = compose_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("compose.yaml");
+        let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+            Error::validation(format!(
+                "Failed to parse {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
 
-            let desired = "../..:/workspaces:cached";
-            let alternate = "..:/workspaces:cached";
+        let desired = "../..:/workspaces:cached";
+        let alternate = "..:/workspaces:cached";
 
-            let mut updated = false;
-            if let Some(root) = compose.as_mapping_mut() {
-                let services_key = YamlValue::String("services".to_string());
-                if let Some(services) = root
-                    .get_mut(&services_key)
-                    .and_then(|value| value.as_mapping_mut())
-                {
-                    for service in services.values_mut() {
+        let mut compose_updated = false;
+        if let Some(root) = compose.as_mapping_mut() {
+            let services_key = YamlValue::String("services".to_string());
+            if let Some(services) = root
+                .get_mut(&services_key)
+                .and_then(|value| value.as_mapping_mut())
+            {
+                let main_service_name = detect_main_service_name(services);
+                if let Some(main_name) = main_service_name {
+                    let main_key = YamlValue::String(main_name);
+                    if let Some(service) = services.get_mut(&main_key) {
                         if let Some(service_map) = service.as_mapping_mut() {
                             let volumes_key = YamlValue::String("volumes".to_string());
                             if let Some(volumes) = service_map
@@ -371,9 +830,13 @@ impl DevcontainerModule {
                                     if let Some(raw) = raw {
                                         if raw == alternate {
                                             *entry = YamlValue::String(desired.to_string());
-                                            updated = true;
-                                        }
-                                        if raw == desired {
+                                            compose_updated = true;
+                                            found_desired = true; // We just set it to desired
+                                            outcome.changes.push(format!(
+                                                "{}: {} → {}",
+                                                compose_filename, alternate, desired
+                                            ));
+                                        } else if raw == desired {
                                             found_desired = true;
                                         }
                                     }
@@ -381,41 +844,39 @@ impl DevcontainerModule {
 
                                 if !found_desired {
                                     volumes.insert(0, YamlValue::String(desired.to_string()));
-                                    updated = true;
+                                    compose_updated = true;
+                                    outcome
+                                        .changes
+                                        .push(format!("{}: added {}", compose_filename, desired));
                                 }
-                                break;
                             }
                         }
                     }
                 }
             }
-
-            if updated {
-                let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
-                    Error::validation(format!(
-                        "Failed to serialize {}: {}",
-                        compose_path.display(),
-                        err
-                    ))
-                })?;
-                if serialized.starts_with("---\n") {
-                    serialized = serialized.split_off(4);
-                }
-                if !serialized.ends_with('\n') {
-                    serialized.push('\n');
-                }
-                std::fs::write(&compose_path, serialized)?;
-            }
         }
 
-        Ok(())
+        if compose_updated {
+            let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+                Error::validation(format!(
+                    "Failed to serialize {}: {}",
+                    compose_path.display(),
+                    err
+                ))
+            })?;
+            if serialized.starts_with("---\n") {
+                serialized = serialized.split_off(4);
+            }
+            if !serialized.ends_with('\n') {
+                serialized.push('\n');
+            }
+            std::fs::write(&compose_path, serialized)?;
+            outcome.compose_modified = true;
+            tracing::info!("Updated {} for worktree compatibility", compose_filename);
+        }
     }
-}
 
-#[derive(Debug)]
-pub struct SyncOutcome {
-    pub synced_files: Vec<String>,
-    pub strategy: SyncStrategy,
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -834,6 +1295,79 @@ mod tests {
     }
 
     #[test]
+    fn test_configure_workspace_settings_multi_service_compose() {
+        // Test that only the main app service is updated in a multi-service compose file
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // Create a compose file with multiple services
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    image: node:20
+    volumes:
+      - ..:/workspaces:cached
+      - app-data:/data
+  db:
+    image: postgres:15
+    volumes:
+      - db-data:/var/lib/postgresql/data
+  redis:
+    image: redis:7
+    volumes:
+      - redis-data:/data
+volumes:
+  app-data: null
+  db-data: null
+  redis-data: null
+"#,
+        )
+        .unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        // Should have updated the main app service only
+        assert!(outcome.compose_modified);
+        let compose_changes: Vec<_> = outcome
+            .changes
+            .iter()
+            .filter(|c| c.contains("compose.yaml"))
+            .collect();
+        assert_eq!(
+            compose_changes.len(),
+            1,
+            "Expected 1 compose change for main service, got: {:?}",
+            compose_changes
+        );
+
+        // Verify the file was actually updated correctly
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+
+        // Count occurrences of the correct mount
+        let correct_mount_count = compose.matches("../..:/workspaces:cached").count();
+        assert_eq!(
+            correct_mount_count, 1,
+            "Expected 1 correct mount, got {}. Compose:\n{}",
+            correct_mount_count, compose
+        );
+
+        // Ensure no old mounts remain
+        assert!(
+            !compose.contains("- ..:/workspaces:cached"),
+            "Old mount still present in compose:\n{}",
+            compose
+        );
+    }
+
+    #[test]
     fn test_workspace_configuration_skips_for_symlink_strategy() {
         let _guard = env_guard();
         let temp = TempDir::new().unwrap();
@@ -875,5 +1409,361 @@ mod tests {
 
         assert_eq!(feature_config, main_config);
         assert!(main_config.contains("\"/workspaces\""));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_docker_compose_yml() {
+        // Test that docker-compose.yml is detected and updated
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "docker-compose.yml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("docker-compose.yml"),
+            r#"services:
+  app:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("docker-compose.yml")));
+
+        let compose = std::fs::read_to_string(devcontainer_dir.join("docker-compose.yml")).unwrap();
+        assert!(compose.contains("../..:/workspaces:cached"));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_fallback_compose_names() {
+        // Test fallback when dockerComposeFile is not specified
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        // No dockerComposeFile specified, but docker-compose.yaml exists
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("docker-compose.yaml"),
+            r#"services:
+  app:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("docker-compose.yaml")));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_dockerfile_only() {
+        // Test Dockerfile-only setup (no compose file)
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "workspaceFolder": "/workspaces"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        // devcontainer.json should be updated
+        assert!(outcome.devcontainer_modified);
+        // No compose file to update
+        assert!(!outcome.compose_modified);
+    }
+
+    #[test]
+    fn test_add_cloudflared_service() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  rails-app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ../..:/workspaces:cached
+  postgres:
+    image: postgres:15
+"#,
+        )
+        .unwrap();
+
+        let outcome = add_cloudflared_service(&devcontainer_dir, None).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert!(outcome.env_created);
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("added cloudflared service")));
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("added cloudflared to rails-app depends_on")));
+
+        // Verify compose file has cloudflared service
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(compose.contains("cloudflared:"));
+        assert!(compose.contains("cloudflare/cloudflared:latest"));
+        assert!(compose.contains(".cloudflared.env"));
+
+        // Verify .cloudflared.env was created
+        assert!(devcontainer_dir.join(".cloudflared.env").exists());
+        let env_content =
+            std::fs::read_to_string(devcontainer_dir.join(".cloudflared.env")).unwrap();
+        assert!(env_content.contains("TUNNEL_TOKEN="));
+    }
+
+    #[test]
+    fn test_add_cloudflared_service_already_exists() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // Compose file already has cloudflared
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build: .
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+"#,
+        )
+        .unwrap();
+
+        let outcome = add_cloudflared_service(&devcontainer_dir, None).unwrap();
+
+        // Should not modify compose since cloudflared already exists
+        assert!(!outcome.compose_modified);
+
+        // But should still create .cloudflared.env if it doesn't exist (P2 bug fix)
+        assert!(outcome.env_created);
+        assert!(devcontainer_dir.join(".cloudflared.env").exists());
+        let env_content =
+            std::fs::read_to_string(devcontainer_dir.join(".cloudflared.env")).unwrap();
+        assert!(env_content.contains("TUNNEL_TOKEN="));
+    }
+
+    #[test]
+    fn test_add_cloudflared_service_no_compose() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // No compose file, only Dockerfile
+        std::fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+
+        let outcome = add_cloudflared_service(&devcontainer_dir, None).unwrap();
+
+        // Should not modify anything
+        assert!(!outcome.compose_modified);
+        assert!(!outcome.env_created);
+    }
+
+    #[test]
+    fn test_default_port_for_stack() {
+        assert_eq!(default_port_for_stack(Some("flask")), 5000);
+        assert_eq!(default_port_for_stack(Some("python")), 5000);
+        assert_eq!(default_port_for_stack(Some("django")), 5000);
+        assert_eq!(default_port_for_stack(Some("rails")), 3000);
+        assert_eq!(default_port_for_stack(Some("ruby")), 3000);
+        assert_eq!(default_port_for_stack(Some("node")), 3000);
+        assert_eq!(default_port_for_stack(Some("express")), 3000);
+        assert_eq!(default_port_for_stack(Some("next")), 3000);
+        assert_eq!(default_port_for_stack(Some("rust")), 8080);
+        assert_eq!(default_port_for_stack(Some("actix")), 8080);
+        assert_eq!(default_port_for_stack(Some("go")), 8080);
+        assert_eq!(default_port_for_stack(Some("php")), 8000);
+        assert_eq!(default_port_for_stack(Some("laravel")), 8000);
+        assert_eq!(default_port_for_stack(None), 3000); // Default fallback
+        assert_eq!(default_port_for_stack(Some("unknown")), 3000);
+    }
+
+    #[test]
+    fn test_detect_main_service_rails() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  rails-app:
+    build:
+      context: ..
+    ports:
+      - "3000:3000"
+  postgres:
+    image: postgres:15
+"#,
+        )
+        .unwrap();
+
+        let info = detect_main_service(&devcontainer_dir, None).unwrap();
+        assert_eq!(info.name, Some("rails-app".to_string()));
+        assert_eq!(info.port, 3000);
+        assert_eq!(info.service_url, "http://rails-app:3000");
+    }
+
+    #[test]
+    fn test_detect_main_service_flask() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  flask-app:
+    build:
+      context: ..
+    ports:
+      - "5000:5000"
+  redis:
+    image: redis:7
+"#,
+        )
+        .unwrap();
+
+        let info = detect_main_service(&devcontainer_dir, None).unwrap();
+        assert_eq!(info.name, Some("flask-app".to_string()));
+        assert_eq!(info.port, 5000);
+        assert_eq!(info.service_url, "http://flask-app:5000");
+    }
+
+    #[test]
+    fn test_detect_main_service_no_ports() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  web:
+    build:
+      context: ..
+"#,
+        )
+        .unwrap();
+
+        // Without ports, should fall back to default port (3000)
+        let info = detect_main_service(&devcontainer_dir, None).unwrap();
+        assert_eq!(info.name, Some("web".to_string()));
+        assert_eq!(info.port, 3000);
+        assert_eq!(info.service_url, "http://web:3000");
+    }
+
+    #[test]
+    fn test_detect_main_service_with_stack_hint() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "compose.yaml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build:
+      context: ..
+"#,
+        )
+        .unwrap();
+
+        // With flask stack hint, should use port 5000
+        let info = detect_main_service(&devcontainer_dir, Some("flask")).unwrap();
+        assert_eq!(info.name, Some("app".to_string()));
+        assert_eq!(info.port, 5000);
+        assert_eq!(info.service_url, "http://app:5000");
+    }
+
+    #[test]
+    fn test_detect_main_service_no_devcontainer() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        // Don't create the directory
+
+        let info = detect_main_service(&devcontainer_dir, Some("flask")).unwrap();
+        assert_eq!(info.name, Some("app".to_string()));
+        assert_eq!(info.port, 5000);
+        assert_eq!(info.service_url, "http://app:5000");
     }
 }

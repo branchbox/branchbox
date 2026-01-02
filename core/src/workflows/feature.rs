@@ -530,10 +530,9 @@ impl FeatureWorkflow {
         let feature_url = env_outcome.feature_url.clone();
         let compose_project_name = env_outcome.compose_project_name.clone();
 
-        let service_url_for_tunnel = adapter_summary
-            .as_ref()
-            .map(|summary| summary.service_url.clone())
-            .unwrap_or_else(|| "web:3000".to_string());
+        // Service URL priority: cloudflared config > adapter detection > default
+        let service_url_for_tunnel = self
+            .resolve_tunnel_service_url(adapter_summary.as_ref().map(|s| s.service_url.as_str()));
         let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
             skip_tunnel_provisioning,
             &work_feature,
@@ -1082,6 +1081,72 @@ impl FeatureWorkflow {
         Ok(slug)
     }
 
+    /// Resolve the service URL for tunnel ingress.
+    ///
+    /// Priority: cloudflared config > adapter detection > default
+    fn resolve_tunnel_service_url(&self, adapter_service_url: Option<&str>) -> String {
+        // Try cloudflared config first (centralized source of truth)
+        if let Ok(config) = BranchBoxConfig::load(&self.repo_root) {
+            if let Some(cloudflared) = &config.tunnel.providers.cloudflared {
+                if let Some(url) = &cloudflared.service_url {
+                    if !url.is_empty() {
+                        tracing::info!("Using service URL from cloudflared config: {}", url);
+                        return url.clone();
+                    }
+                }
+            }
+        }
+
+        // Fall back to adapter detection
+        if let Some(url) = adapter_service_url {
+            tracing::info!("Using service URL from adapter: {}", url);
+            return url.to_string();
+        }
+
+        // Default fallback
+        "web:3000".to_string()
+    }
+
+    /// Derive the feature URL from cloudflared config (preferred) or APP_URL (fallback).
+    ///
+    /// When cloudflared is configured with `dns_zone` and `tunnel_name_prefix`, the feature
+    /// URL is derived as `{tunnel_name_prefix}-{work_feature}.{dns_zone}`.
+    ///
+    /// Falls back to parsing APP_URL from .env and using `naming::generate_feature_url()`.
+    fn derive_feature_url(&self, source_env: &Path, work_feature: &str) -> Option<String> {
+        // Try cloudflared config first (centralized source of truth)
+        if let Ok(config) = BranchBoxConfig::load(&self.repo_root) {
+            if let Some(cloudflared) = &config.tunnel.providers.cloudflared {
+                if let (Some(prefix), Some(zone)) =
+                    (&cloudflared.tunnel_name_prefix, &cloudflared.dns_zone)
+                {
+                    if !prefix.is_empty() && !zone.is_empty() {
+                        let url = format!("{}-{}.{}", prefix, work_feature, zone);
+                        tracing::info!("Derived feature URL from cloudflared config: {}", url);
+                        return Some(url);
+                    }
+                }
+            }
+        }
+
+        // Fallback to APP_URL from .env
+        match AppUrl::from_env_file(source_env) {
+            Ok(app_url) => {
+                let url = naming::generate_feature_url(&app_url.url, work_feature);
+                tracing::info!("Derived feature URL from APP_URL: {}", url);
+                Some(url)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to derive feature URL from {}: {}",
+                    source_env.display(),
+                    err
+                );
+                None
+            }
+        }
+    }
+
     fn prepare_env(
         &self,
         worktree_path: &Path,
@@ -1127,35 +1192,29 @@ impl FeatureWorkflow {
         let app_slug = self.resolve_app_slug(&source_env)?;
         std::env::set_var("BASE_PREFIX", &app_slug);
 
-        match AppUrl::from_env_file(&source_env) {
-            Ok(app_url) => {
-                let url = naming::generate_feature_url(&app_url.url, work_feature);
-                let compose_name = format!("{}-{}", app_slug, work_feature);
-                std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
-                std::env::set_var("DEVCONTAINER_NAME", &compose_name);
-                let mut file = OpenOptions::new().append(true).open(&dest_env)?;
-                ensure_trailing_newline(&mut file)?;
-                writeln!(
-                    file,
-                    "# Feature-specific configuration (managed by branchbox)"
-                )?;
-                writeln!(file, "WORK_FEATURE={}", work_feature)?;
-                writeln!(file, "APP_URL={}", url)?;
-                writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
-                writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
-                writeln!(file, "GIT_BRANCH={}", branch_name)?;
+        // Try to derive feature URL from cloudflared config first (centralized source of truth)
+        // Falls back to APP_URL if cloudflared dns_zone is not configured
+        let url = self.derive_feature_url(&source_env, work_feature);
 
-                feature_url = Some(url);
-                compose_project_name = Some(compose_name.clone());
-                devcontainer_name = Some(compose_name);
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "Failed to parse APP_URL from {}: {}",
-                    source_env.display(),
-                    err
-                );
-            }
+        if let Some(url) = url {
+            let compose_name = format!("{}-{}", app_slug, work_feature);
+            std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
+            std::env::set_var("DEVCONTAINER_NAME", &compose_name);
+            let mut file = OpenOptions::new().append(true).open(&dest_env)?;
+            ensure_trailing_newline(&mut file)?;
+            writeln!(
+                file,
+                "# Feature-specific configuration (managed by branchbox)"
+            )?;
+            writeln!(file, "WORK_FEATURE={}", work_feature)?;
+            writeln!(file, "APP_URL={}", url)?;
+            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
+            writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
+            writeln!(file, "GIT_BRANCH={}", branch_name)?;
+
+            feature_url = Some(url);
+            compose_project_name = Some(compose_name.clone());
+            devcontainer_name = Some(compose_name);
         }
 
         self.link_env_into_devcontainer(worktree_path)?;
@@ -1636,48 +1695,14 @@ impl FeatureWorkflow {
             .clone()
             .unwrap_or_else(|| "cloudflared".to_string());
 
-        let hostname = match hostname {
-            Some(value) if !value.is_empty() => value,
-            _ => {
-                warnings.push(
-                    "Tunnel provisioning skipped; feature hostname unavailable. Configure APP_URL before enabling tunnels."
-                        .to_string(),
-                );
-                let state = FeatureTunnelState::manual(
-                    provider_name.clone(),
-                    None,
-                    "Feature hostname unavailable; manual setup required.",
-                    Vec::new(),
-                );
-                return Ok((Some(state), warnings));
-            }
-        };
+        // Check if cloudflared is configured (via env var or config file) before checking hostname
+        let has_env_token = provider_name.eq_ignore_ascii_case("cloudflared")
+            && std::env::var("CLOUDFLARE_TUNNEL_TOKEN")
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
 
-        if provider_name.eq_ignore_ascii_case("cloudflared") {
-            if let Ok(token) = std::env::var("CLOUDFLARE_TUNNEL_TOKEN") {
-                let token = token.trim();
-                if !token.is_empty() {
-                    self.write_feature_tunnel_env(feature_dir, hostname, token)?;
-                    let state = FeatureTunnelState {
-                        provider: provider_name.clone(),
-                        hostname: Some(hostname.to_string()),
-                        status: FeatureTunnelStatus::Active,
-                        descriptor: None,
-                        instructions: None,
-                        notes: Some(
-                            "Tunnel token provided via CLOUDFLARE_TUNNEL_TOKEN; skipping API provisioning"
-                                .to_string(),
-                        ),
-                        last_updated: Utc::now(),
-                        removed_at: None,
-                    };
-                    return Ok((Some(state), warnings));
-                }
-            }
-        }
-
-        if provider_name.eq_ignore_ascii_case("cloudflared") {
-            let configured = config
+        let has_api_config = if provider_name.eq_ignore_ascii_case("cloudflared") {
+            config
                 .tunnel
                 .providers
                 .cloudflared
@@ -1691,15 +1716,54 @@ impl FeatureWorkflow {
                             .map(|value| !value.trim().is_empty())
                             .unwrap_or(false)
                 })
-                .unwrap_or(false);
+                .unwrap_or(false)
+        } else {
+            false
+        };
 
-            if !configured {
+        // If cloudflared provider has no credentials at all, return disabled early
+        if provider_name.eq_ignore_ascii_case("cloudflared") && !has_env_token && !has_api_config {
+            let state = FeatureTunnelState::disabled(
+                Some(provider_name.clone()),
+                "Tunnel provisioning disabled until Cloudflare credentials are configured",
+            );
+            return Ok((Some(state), warnings));
+        }
+
+        let hostname = match hostname {
+            Some(value) if !value.is_empty() => value,
+            _ => {
+                warnings.push(
+                    "Tunnel provisioning skipped; feature hostname unavailable. Configure APP_URL before enabling tunnels."
+                        .to_string(),
+                );
                 let state = FeatureTunnelState::disabled(
                     Some(provider_name.clone()),
-                    "Tunnel provisioning disabled until Cloudflare credentials are configured",
+                    "Feature hostname unavailable; configure APP_URL to enable tunnels.",
                 );
                 return Ok((Some(state), warnings));
             }
+        };
+
+        // If env token is present, use it directly
+        if has_env_token {
+            let token = std::env::var("CLOUDFLARE_TUNNEL_TOKEN").unwrap();
+            self.write_feature_tunnel_env(feature_dir, hostname, token.trim())?;
+            let state = FeatureTunnelState {
+                provider: provider_name.clone(),
+                hostname: Some(hostname.to_string()),
+                service_url: Some(service_url.to_string()),
+                status: FeatureTunnelStatus::Active,
+                descriptor: None,
+                instructions: None,
+                notes: Some(
+                    "Tunnel token provided via CLOUDFLARE_TUNNEL_TOKEN; skipping API provisioning"
+                        .to_string(),
+                ),
+                last_updated: Utc::now(),
+                removed_at: None,
+            };
+            return Ok((Some(state), warnings));
         }
 
         let (mut state, mut provider_warnings, provision_token) = self.invoke_tunnel_provider(
@@ -1859,7 +1923,10 @@ impl FeatureWorkflow {
 
                 match provider.provision(&intent) {
                     Ok(ProvisioningOutcome::Automated { descriptor, token }) => {
-                        let state = FeatureTunnelState::automated(descriptor);
+                        let state = FeatureTunnelState::automated(
+                            descriptor,
+                            Some(service_url.to_string()),
+                        );
                         Ok((state, warnings, token))
                     }
                     Ok(ProvisioningOutcome::Manual(instructions)) => {
@@ -1870,6 +1937,7 @@ impl FeatureWorkflow {
                         let state = FeatureTunnelState::manual(
                             provider.name().to_string(),
                             Some(hostname.to_string()),
+                            Some(service_url.to_string()),
                             instructions.reason,
                             instructions.steps,
                         );
@@ -1890,6 +1958,7 @@ impl FeatureWorkflow {
                         let state = FeatureTunnelState::manual(
                             provider.name().to_string(),
                             Some(hostname.to_string()),
+                            Some(service_url.to_string()),
                             "Tunnel provisioning failed; follow manual setup instructions.",
                             Vec::new(),
                         );
@@ -2787,6 +2856,9 @@ pub struct FeatureTunnelState {
     pub provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// Service URL the tunnel routes to (e.g., `http://app:5001`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_url: Option<String>,
     pub status: FeatureTunnelStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub descriptor: Option<StoredTunnelDescriptor>,
@@ -2803,12 +2875,14 @@ impl FeatureTunnelState {
     fn manual(
         provider: impl Into<String>,
         hostname: Option<String>,
+        service_url: Option<String>,
         reason: impl Into<String>,
         steps: Vec<String>,
     ) -> Self {
         Self {
             provider: provider.into(),
             hostname,
+            service_url,
             status: FeatureTunnelStatus::Manual,
             descriptor: None,
             instructions: if steps.is_empty() { None } else { Some(steps) },
@@ -2822,6 +2896,7 @@ impl FeatureTunnelState {
         Self {
             provider: provider.unwrap_or_else(|| "manual".to_string()),
             hostname: None,
+            service_url: None,
             status: FeatureTunnelStatus::Disabled,
             descriptor: None,
             instructions: None,
@@ -2831,10 +2906,11 @@ impl FeatureTunnelState {
         }
     }
 
-    fn automated(descriptor: TunnelDescriptor) -> Self {
+    fn automated(descriptor: TunnelDescriptor, service_url: Option<String>) -> Self {
         Self {
             provider: descriptor.provider.clone(),
             hostname: Some(descriptor.hostname.clone()),
+            service_url,
             status: FeatureTunnelStatus::Pending,
             descriptor: Some(StoredTunnelDescriptor {
                 tunnel_name: descriptor.tunnel_name.clone(),

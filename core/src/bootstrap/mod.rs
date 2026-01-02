@@ -169,6 +169,21 @@ impl Bootstrap {
             tracing::info!("Skipped (already exists): {}", branchbox_env_path.display());
         }
 
+        // Generate BranchBox quickstart docs
+        let docs_dir = self.project_path.join("docs");
+        fs::create_dir_all(&docs_dir)?;
+        let branchbox_docs = self.generate_branchbox_docs()?;
+        let branchbox_docs_path = docs_dir.join("BRANCHBOX.md");
+        if !branchbox_docs_path.exists() {
+            fs::write(&branchbox_docs_path, branchbox_docs)?;
+            tracing::info!("Created: {}", branchbox_docs_path.display());
+        } else {
+            tracing::info!(
+                "Skipped (already exists): {}",
+                branchbox_docs_path.display()
+            );
+        }
+
         tracing::info!("✓ Bootstrap complete for {} stack", stack.as_str());
         tracing::info!("  Next steps:");
         tracing::info!("  1. Open project in VS Code/Cursor");
@@ -201,6 +216,11 @@ impl Bootstrap {
     /// Generate .branchbox.env placeholder
     fn generate_branchbox_env(&self) -> Result<String> {
         templates::branchbox_env()
+    }
+
+    /// Generate docs/BRANCHBOX.md quickstart guide
+    fn generate_branchbox_docs(&self) -> Result<String> {
+        templates::branchbox_docs()
     }
 }
 

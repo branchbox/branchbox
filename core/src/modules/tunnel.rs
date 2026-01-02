@@ -6,6 +6,7 @@
 //! - DNS record management
 //! - Tunnel cleanup during teardown
 
+use super::devcontainer::{default_port_for_stack, detect_main_service};
 use super::Module;
 use crate::{
     cloudflare::{CloudflareClient, TunnelProvision, TunnelSummary},
@@ -251,9 +252,18 @@ impl Module for TunnelModule {
             }
         }
 
-        // Get service URL from environment or use default
-        self.service_url =
-            std::env::var("SERVICE_URL").unwrap_or_else(|_| "rails-app:3000".to_string());
+        // Get service URL from environment, or detect from compose, or use default
+        self.service_url = std::env::var("SERVICE_URL").unwrap_or_else(|_| {
+            // Try to detect from compose file
+            let devcontainer_dir = feature_dir.join(".devcontainer");
+            if devcontainer_dir.exists() {
+                if let Ok(service_info) = detect_main_service(&devcontainer_dir, None) {
+                    return service_info.service_url;
+                }
+            }
+            // Fallback to generic default
+            format!("http://app:{}", default_port_for_stack(None))
+        });
 
         tracing::info!("Initialized tunnel: {}", self.tunnel_name);
         tracing::info!("Feature URL: https://{}", self.feature_url);

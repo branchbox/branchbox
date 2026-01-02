@@ -37,8 +37,10 @@
 //! ```
 
 use crate::bootstrap::{Bootstrap, Stack};
+use crate::cloudflare::CloudflareClient;
 use crate::config::{BranchBoxConfig, CloudflaredConfig};
 use crate::git::GitWorktree;
+use crate::modules::{default_port_for_stack, detect_main_service};
 use crate::{Error, Result};
 use dialoguer::console::Term;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password};
@@ -119,7 +121,7 @@ impl Default for InitOptions {
             skip_devcontainer: false,
             skip_env: false,
             reorganize: false,
-            use_parent_structure: false,
+            use_parent_structure: true, // Default to parent structure for worktree compatibility
             update: false,
             validate_only: false,
             dry_run: false,
@@ -861,6 +863,16 @@ impl InitWorkflow {
             let bootstrap = Bootstrap::new(path);
             bootstrap.generate(stack)?;
 
+            // Configure workspace settings for worktree compatibility
+            // (our templates should already be correct, but this ensures consistency)
+            let configure_outcome =
+                crate::modules::configure_workspace_settings(&devcontainer_dir)?;
+            if !configure_outcome.changes.is_empty() && self.options.verbose {
+                for change in &configure_outcome.changes {
+                    println!("  - {}", change);
+                }
+            }
+
             if !self.options.verbose {
                 println!("✓ Created devcontainer configuration");
             }
@@ -868,9 +880,31 @@ impl InitWorkflow {
             return Ok(DevcontainerStatus::Created);
         }
 
-        // Existing devcontainer - validate
+        // Existing devcontainer - validate and configure for worktree compatibility
+        if self.options.dry_run {
+            if self.options.verbose {
+                println!("✓ Devcontainer configuration exists");
+            }
+            return Ok(DevcontainerStatus::Valid);
+        }
+
+        // Configure existing devcontainer for worktree compatibility
+        let configure_outcome = crate::modules::configure_workspace_settings(&devcontainer_dir)?;
+
+        if !configure_outcome.changes.is_empty() {
+            if self.options.verbose {
+                println!("Enhanced devcontainer for worktree compatibility:");
+                for change in &configure_outcome.changes {
+                    println!("  - {}", change);
+                }
+            }
+            return Ok(DevcontainerStatus::Enhanced {
+                changes: configure_outcome.changes,
+            });
+        }
+
         if self.options.verbose {
-            println!("✓ Devcontainer configuration exists");
+            println!("✓ Devcontainer configuration valid");
         }
 
         Ok(DevcontainerStatus::Valid)
@@ -955,6 +989,16 @@ impl InitWorkflow {
                     .interact_text()?;
                 cloudflared.tunnel_name_prefix = Some(prefix.trim().to_string());
 
+                let current_zone = cloudflared.dns_zone.clone().unwrap_or_default();
+                let dns_zone: String = Input::with_theme(&theme)
+                    .with_prompt("DNS zone for tunnel hostnames (e.g., example.com)")
+                    .with_initial_text(current_zone)
+                    .allow_empty(true)
+                    .interact_text()?;
+                if !dns_zone.trim().is_empty() {
+                    cloudflared.dns_zone = Some(dns_zone.trim().to_string());
+                }
+
                 let has_credentials = Confirm::with_theme(&theme)
                     .with_prompt(
                         "Provide Cloudflare API credentials now for automatic provisioning?",
@@ -976,13 +1020,52 @@ impl InitWorkflow {
                         .interact_text()?;
                     cloudflared.account_id = Some(account_id.trim().to_string());
 
-                    let api_token = Password::with_theme(&theme)
-                        .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
-                        .with_confirmation("Confirm API token", "Tokens did not match")
-                        .allow_empty_password(false)
-                        .interact()?;
-
                     let secure_path = CloudflaredConfig::default_credentials_path(workspace_path);
+
+                    // Check for existing token
+                    let existing_token = if secure_path.exists() {
+                        fs::read_to_string(&secure_path)
+                            .ok()
+                            .and_then(|content| {
+                                content
+                                    .lines()
+                                    .find(|line| line.starts_with("CLOUDFLARE_API_TOKEN="))
+                                    .map(|line| {
+                                        line.trim_start_matches("CLOUDFLARE_API_TOKEN=")
+                                            .trim()
+                                            .to_string()
+                                    })
+                            })
+                            .filter(|t| !t.is_empty())
+                    } else {
+                        None
+                    };
+
+                    let api_token = if let Some(ref existing) = existing_token {
+                        // Show masked token and ask if user wants to keep it
+                        let masked = if existing.len() > 8 {
+                            format!("{}...{}", &existing[..4], &existing[existing.len() - 4..])
+                        } else {
+                            "****".to_string()
+                        };
+
+                        let keep_existing = Confirm::with_theme(&theme)
+                            .with_prompt(format!(
+                                "Keep existing API token ({})? (No to enter new token)",
+                                masked
+                            ))
+                            .default(true)
+                            .interact()?;
+
+                        if keep_existing {
+                            existing.clone()
+                        } else {
+                            Self::prompt_for_api_token(&theme)?
+                        }
+                    } else {
+                        Self::prompt_for_api_token(&theme)?
+                    };
+
                     if let Some(parent) = secure_path.parent() {
                         fs::create_dir_all(parent)?;
                     }
@@ -997,6 +1080,23 @@ impl InitWorkflow {
                     cloudflared.api_token_path =
                         Some(PathBuf::from(".branchbox/secure/cloudflared.env"));
                     cloudflared.manual_instructions = false;
+
+                    // Offer to provision the tunnel for main right now
+                    let provision_now = Confirm::with_theme(&theme)
+                        .with_prompt("Provision tunnel for 'main' branch now?")
+                        .default(true)
+                        .interact()?;
+
+                    if provision_now {
+                        if let Err(err) = self.prompt_and_provision_main_tunnel(
+                            &theme,
+                            cloudflared,
+                            api_token.trim(),
+                            workspace_path,
+                        ) {
+                            tracing::warn!("Failed to provision main tunnel: {}", err);
+                        }
+                    }
                 } else {
                     cloudflared.api_token_path = None;
                     cloudflared.manual_instructions = true;
@@ -1012,7 +1112,207 @@ impl InitWorkflow {
             config.save(workspace_path)?;
         }
 
+        // If tunnels are enabled, add cloudflared service to compose file
+        if config.tunnel.enabled && !self.options.skip_devcontainer {
+            let devcontainer_dir = workspace_path.join(".devcontainer");
+            if devcontainer_dir.exists() {
+                let cloudflared_outcome =
+                    crate::modules::add_cloudflared_service(&devcontainer_dir, None)?;
+
+                if !cloudflared_outcome.changes.is_empty() {
+                    if self.options.verbose {
+                        println!("Added tunnel support to devcontainer:");
+                        for change in &cloudflared_outcome.changes {
+                            println!("  - {}", change);
+                        }
+                    } else {
+                        println!("✓ Added cloudflared tunnel service");
+                    }
+                }
+            }
+        }
+
         Ok(warning)
+    }
+
+    fn prompt_for_api_token(theme: &ColorfulTheme) -> Result<String> {
+        Ok(Password::with_theme(theme)
+            .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
+            .with_confirmation("Confirm API token", "Tokens did not match")
+            .allow_empty_password(false)
+            .interact()?)
+    }
+
+    fn prompt_and_provision_main_tunnel(
+        &self,
+        theme: &ColorfulTheme,
+        cloudflared: &mut CloudflaredConfig,
+        api_token: &str,
+        workspace_path: &Path,
+    ) -> Result<()> {
+        // Detect service info from compose file
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        let service_info = if devcontainer_dir.exists() {
+            detect_main_service(&devcontainer_dir, None).ok()
+        } else {
+            None
+        };
+
+        let default_service_url = service_info
+            .as_ref()
+            .map(|s| s.service_url.clone())
+            .unwrap_or_else(|| format!("http://app:{}", default_port_for_stack(None)));
+
+        // Prompt user to confirm/edit the service URL
+        let service_url: String = Input::with_theme(theme)
+            .with_prompt("Service URL for tunnel ingress (e.g., http://flask-app:5000)")
+            .with_initial_text(&default_service_url)
+            .allow_empty(false)
+            .validate_with(|input: &String| -> std::result::Result<(), &str> {
+                let trimmed = input.trim();
+                if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                    return Err("URL must start with http:// or https://");
+                }
+                // Basic format check: should have host after protocol
+                let without_protocol = trimmed
+                    .strip_prefix("http://")
+                    .or_else(|| trimmed.strip_prefix("https://"))
+                    .unwrap_or("");
+                if without_protocol.is_empty() || without_protocol.starts_with('/') {
+                    return Err("URL must include a host (e.g., http://app:3000)");
+                }
+                Ok(())
+            })
+            .interact_text()?;
+
+        // Store the service URL in config for feature tunnels to use
+        cloudflared.service_url = Some(service_url.trim().to_string());
+
+        // Build tunnel name - use prefix directly for main branch
+        // Tunnel name matches the subdomain: {prefix}.{zone}
+        // Feature tunnels follow: {prefix}-{feature}.{zone}
+        let tunnel_name = cloudflared
+            .tunnel_name_prefix
+            .clone()
+            .unwrap_or_else(|| "branchbox".to_string());
+        let account_id = cloudflared.account_id.clone().unwrap_or_default();
+
+        self.provision_main_tunnel(
+            api_token.trim(),
+            &account_id,
+            &tunnel_name,
+            service_url.trim(),
+            cloudflared.dns_zone.as_deref(),
+            workspace_path,
+        )?;
+
+        Ok(())
+    }
+
+    /// Provision a Cloudflare tunnel for the main branch.
+    ///
+    /// This creates the tunnel, saves the token to .cloudflared.env, and
+    /// optionally configures the tunnel ingress if a DNS zone is specified.
+    fn provision_main_tunnel(
+        &self,
+        api_token: &str,
+        account_id: &str,
+        tunnel_name: &str,
+        service_url: &str,
+        dns_zone: Option<&str>,
+        workspace_path: &Path,
+    ) -> Result<()> {
+        println!("Provisioning tunnel '{}'...", tunnel_name);
+        tracing::info!("Provisioning tunnel '{}'...", tunnel_name);
+
+        let client = CloudflareClient::new(api_token.to_string(), account_id.to_string())?;
+
+        // Check if tunnel already exists, or create a new one
+        let (tunnel_id, tunnel_token) =
+            if let Some(existing) = client.find_tunnel_by_name(tunnel_name)? {
+                println!(
+                    "ℹ Tunnel '{}' already exists (id: {}), fetching token...",
+                    tunnel_name, existing.id
+                );
+                tracing::info!(
+                    "Tunnel '{}' already exists (id: {}), fetching token",
+                    tunnel_name,
+                    existing.id
+                );
+
+                // Fetch the token for the existing tunnel
+                match client.get_tunnel_token(&existing.id) {
+                    Ok(token) => {
+                        println!("✓ Retrieved token for existing tunnel");
+                        tracing::info!("Retrieved token for existing tunnel '{}'", tunnel_name);
+                        (existing.id, token)
+                    }
+                    Err(e) => {
+                        println!("⚠ Failed to retrieve tunnel token: {}", e);
+                        println!("  You may need to get the token from the Cloudflare dashboard");
+                        tracing::warn!("Failed to retrieve tunnel token: {}", e);
+                        return Ok(());
+                    }
+                }
+            } else {
+                // Create a new tunnel
+                let provision = client.create_tunnel(tunnel_name)?;
+                println!(
+                    "✓ Created tunnel '{}' (id: {})",
+                    provision.name, provision.id
+                );
+                tracing::info!("Created tunnel '{}' (id: {})", provision.name, provision.id);
+                (provision.id, provision.token)
+            };
+
+        // Write the tunnel token to .cloudflared.env
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        if devcontainer_dir.exists() {
+            let env_path = devcontainer_dir.join(".cloudflared.env");
+            let hostname_line = dns_zone
+                .map(|zone| format!("DEV_HOSTNAME={}.{}", tunnel_name, zone))
+                .unwrap_or_else(|| "# DEV_HOSTNAME=prefix.your-domain.com".to_string());
+
+            let env_content = format!(
+                "# Cloudflare Tunnel Configuration for main\n\
+                 # Provisioned by branchbox init\n\n\
+                 TUNNEL_TOKEN={}\n{}\n",
+                tunnel_token, hostname_line
+            );
+
+            if let Err(e) = fs::write(&env_path, env_content) {
+                println!("⚠ Failed to write .cloudflared.env: {}", e);
+                tracing::warn!("Failed to write .cloudflared.env: {}", e);
+            } else {
+                println!("✓ Saved tunnel token to .cloudflared.env");
+                tracing::info!("Saved tunnel token to .cloudflared.env");
+            }
+        }
+
+        // Configure tunnel ingress and DNS if dns_zone is set
+        if let Some(zone) = dns_zone {
+            let hostname = format!("{}.{}", tunnel_name, zone);
+
+            // Configure tunnel ingress routing
+            if let Err(e) = client.configure_tunnel(&tunnel_id, &hostname, service_url) {
+                println!("⚠ Failed to configure tunnel ingress: {}", e);
+                tracing::warn!("Failed to configure tunnel ingress: {}", e);
+            } else {
+                println!("✓ Configured tunnel ingress for {}", hostname);
+                tracing::info!("Configured tunnel ingress for {}", hostname);
+            }
+
+            // Create DNS CNAME record pointing to the tunnel
+            if let Err(e) = client.ensure_cname_record(&hostname, zone, &tunnel_id) {
+                println!("⚠ Failed to create DNS record: {}", e);
+                tracing::warn!("Failed to create DNS record for {}: {}", hostname, e);
+            } else {
+                println!("✓ Created DNS record for {}", hostname);
+                tracing::info!("Created DNS CNAME record for {}", hostname);
+            }
+        }
+
+        Ok(())
     }
 
     fn initialize_registry(&self, path: &Path) -> Result<bool> {
@@ -1143,6 +1443,17 @@ impl InitWorkflow {
 
         if summary.reorganized {
             steps.push(format!("cd {}", summary.workspace_path.display()));
+        }
+
+        // Suggest committing the BranchBox configuration
+        if matches!(
+            summary.devcontainer_status,
+            DevcontainerStatus::Created | DevcontainerStatus::Enhanced { .. }
+        ) {
+            steps.push(
+                "git add .devcontainer docs/BRANCHBOX.md && git commit -m \"chore: add BranchBox devcontainer configuration\""
+                    .to_string(),
+            );
         }
 
         steps.push("Open in VS Code/Cursor and reopen in container".to_string());
@@ -2137,6 +2448,155 @@ mod tests {
             summary.stack,
             Stack::Generic,
             "Forced stack should override auto-detection"
+        );
+    }
+
+    #[test]
+    fn test_init_configures_existing_devcontainer_for_worktrees() {
+        // Test that init updates an existing devcontainer with incorrect workspace settings
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create existing devcontainer with incorrect (hardcoded) settings
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces/hardcoded-name",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/hardcoded-name,type=bind"
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should detect and report enhanced status
+        assert!(
+            matches!(
+                summary.devcontainer_status,
+                DevcontainerStatus::Enhanced { .. }
+            ),
+            "Expected Enhanced status, got {:?}",
+            summary.devcontainer_status
+        );
+
+        // Verify devcontainer.json was updated
+        let devcontainer_json =
+            fs::read_to_string(devcontainer_dir.join("devcontainer.json")).unwrap();
+        assert!(
+            devcontainer_json.contains("/workspaces/${localWorkspaceFolderBasename}"),
+            "workspaceFolder should use dynamic variable"
+        );
+        assert!(
+            devcontainer_json.contains("target=/workspaces/${localWorkspaceFolderBasename}"),
+            "workspaceMount should use dynamic variable"
+        );
+
+        // Verify compose.yaml was updated to use ../.. mount
+        let compose_yaml = fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(
+            compose_yaml.contains("../..:/workspaces:cached"),
+            "compose.yaml should use ../..:/workspaces:cached for worktree compatibility"
+        );
+    }
+
+    #[test]
+    fn test_init_preserves_valid_devcontainer_settings() {
+        // Test that init doesn't modify a devcontainer that already has correct settings
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create existing devcontainer with correct settings
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let correct_json = r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
+}
+"#;
+        fs::write(devcontainer_dir.join("devcontainer.json"), correct_json).unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    volumes:
+      - ../..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should report Valid (not Enhanced)
+        assert!(
+            matches!(summary.devcontainer_status, DevcontainerStatus::Valid),
+            "Expected Valid status for correctly configured devcontainer, got {:?}",
+            summary.devcontainer_status
+        );
+    }
+
+    #[test]
+    fn test_init_generated_devcontainer_has_correct_workspace_settings() {
+        // Test that newly generated devcontainers have correct workspace settings
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should report Created
+        assert!(
+            matches!(summary.devcontainer_status, DevcontainerStatus::Created),
+            "Expected Created status, got {:?}",
+            summary.devcontainer_status
+        );
+
+        // Verify generated devcontainer.json has correct settings
+        let devcontainer_json =
+            fs::read_to_string(repo_path.join(".devcontainer/devcontainer.json")).unwrap();
+        assert!(
+            devcontainer_json.contains("/workspaces/${localWorkspaceFolderBasename}"),
+            "Generated devcontainer.json should have dynamic workspaceFolder"
+        );
+
+        // Verify generated compose.yaml has correct mount
+        let compose_yaml =
+            fs::read_to_string(repo_path.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(
+            compose_yaml.contains("../..:/workspaces:cached"),
+            "Generated compose.yaml should use ../..:/workspaces:cached"
         );
     }
 }

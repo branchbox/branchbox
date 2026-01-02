@@ -44,7 +44,7 @@ Options:
       --skip-devcontainer     Skip devcontainer setup
       --skip-env              Skip environment setup
       --reorganize            Force reorganization into worktree structure
-      --use-parent-structure  Use in-place parent structure (reorganize as container/main/)
+      --no-parent-structure   Opt-out of parent structure (move to ~/projects/ instead)
       --update                Update existing setup without restructuring
       --validate              Validate only (no modifications)
       --dry-run               Dry run (show what would happen)

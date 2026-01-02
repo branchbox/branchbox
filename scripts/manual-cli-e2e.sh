@@ -370,12 +370,12 @@ seed_sample_project
 (cd "$SOURCE_DIR" && git init -b main >/dev/null)
 (cd "$SOURCE_DIR" && git add . >/dev/null && git commit -m "Seed sample project" >/dev/null)
 
-log "Running branchbox init (forcing reorganize + parent structure)"
+log "Running branchbox init (forcing reorganize, parent structure is default)"
 INIT_LOG="$LOG_DIR/init.log"
 if [[ "$PRETEND" == "1" ]]; then
-  pretend_step "BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR=$TARGET_PARENT $BRANCHBOX_BIN init --stack $STACK --reorganize --use-parent-structure -y"
+  pretend_step "BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR=$TARGET_PARENT $BRANCHBOX_BIN init --stack $STACK --reorganize -y"
 else
-  if ! (cd "$SOURCE_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR="$TARGET_PARENT" "$BRANCHBOX_BIN" init --stack "$STACK" --reorganize --use-parent-structure -y) | tee "$INIT_LOG"; then
+  if ! (cd "$SOURCE_DIR" && BRANCHBOX_SKIP_HOST_VALIDATION=1 BRANCHBOX_PROJECTS_DIR="$TARGET_PARENT" "$BRANCHBOX_BIN" init --stack "$STACK" --reorganize -y) | tee "$INIT_LOG"; then
     fatal "branchbox init failed (see $INIT_LOG)"
   fi
 fi
