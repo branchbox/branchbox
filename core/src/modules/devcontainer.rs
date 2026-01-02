@@ -307,6 +307,47 @@ pub struct ConfigureOutcome {
     pub changes: Vec<String>,
 }
 
+/// Find the compose file path by reading dockerComposeFile from devcontainer.json
+/// or falling back to common compose file names.
+fn find_compose_file(devcontainer_dir: &Path, config: &JsonValue) -> Option<PathBuf> {
+    // First, try to read dockerComposeFile from devcontainer.json
+    // It can be a string or an array of strings
+    if let Some(compose_file) = config.get("dockerComposeFile") {
+        let compose_files: Vec<&str> = if let Some(file) = compose_file.as_str() {
+            vec![file]
+        } else if let Some(files) = compose_file.as_array() {
+            files.iter().filter_map(|f| f.as_str()).collect()
+        } else {
+            vec![]
+        };
+
+        // Use the first compose file that exists
+        for file in compose_files {
+            let path = devcontainer_dir.join(file);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    // Fallback: check common compose file names
+    let common_names = [
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+    ];
+
+    for name in common_names {
+        let path = devcontainer_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 /// Configure devcontainer workspace settings for worktree compatibility.
 ///
 /// This ensures the devcontainer.json and compose.yaml are configured correctly
@@ -333,9 +374,11 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
         return Ok(outcome);
     }
 
-    let compose_path = devcontainer_dir.join("compose.yaml");
     let config_contents = std::fs::read_to_string(&config_path)?;
     let mut config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    // Determine compose file path from devcontainer.json or fallback to common names
+    let compose_path = find_compose_file(devcontainer_dir, &config);
 
     let workspace_folder = "/workspaces/${localWorkspaceFolderBasename}";
     let workspace_mount =
@@ -392,8 +435,12 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
         tracing::info!("Updated devcontainer.json for worktree compatibility");
     }
 
-    if compose_path.exists() {
+    if let Some(compose_path) = compose_path {
         let compose_contents = std::fs::read_to_string(&compose_path)?;
+        let compose_filename = compose_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("compose.yaml");
         let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
             Error::validation(format!(
                 "Failed to parse {}: {}",
@@ -428,8 +475,8 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
                                         compose_updated = true;
                                         found_desired = true; // We just set it to desired
                                         outcome.changes.push(format!(
-                                            "compose.yaml: {} → {}",
-                                            alternate, desired
+                                            "{}: {} → {}",
+                                            compose_filename, alternate, desired
                                         ));
                                     } else if raw == desired {
                                         found_desired = true;
@@ -442,7 +489,7 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
                                 compose_updated = true;
                                 outcome
                                     .changes
-                                    .push(format!("compose.yaml: added {}", desired));
+                                    .push(format!("{}: added {}", compose_filename, desired));
                             }
                             // Continue to next service (don't break - multi-service support)
                         }
@@ -467,7 +514,7 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
             }
             std::fs::write(&compose_path, serialized)?;
             outcome.compose_modified = true;
-            tracing::info!("Updated compose.yaml for worktree compatibility");
+            tracing::info!("Updated {} for worktree compatibility", compose_filename);
         }
     }
 
@@ -1005,5 +1052,96 @@ volumes:
 
         assert_eq!(feature_config, main_config);
         assert!(main_config.contains("\"/workspaces\""));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_docker_compose_yml() {
+        // Test that docker-compose.yml is detected and updated
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "dockerComposeFile": "docker-compose.yml"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("docker-compose.yml"),
+            r#"services:
+  app:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("docker-compose.yml")));
+
+        let compose = std::fs::read_to_string(devcontainer_dir.join("docker-compose.yml")).unwrap();
+        assert!(compose.contains("../..:/workspaces:cached"));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_fallback_compose_names() {
+        // Test fallback when dockerComposeFile is not specified
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        // No dockerComposeFile specified, but docker-compose.yaml exists
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("docker-compose.yaml"),
+            r#"services:
+  app:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|c| c.contains("docker-compose.yaml")));
+    }
+
+    #[test]
+    fn test_configure_workspace_settings_dockerfile_only() {
+        // Test Dockerfile-only setup (no compose file)
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "workspaceFolder": "/workspaces"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+
+        let outcome = configure_workspace_settings(&devcontainer_dir).unwrap();
+
+        // devcontainer.json should be updated
+        assert!(outcome.devcontainer_modified);
+        // No compose file to update
+        assert!(!outcome.compose_modified);
     }
 }
