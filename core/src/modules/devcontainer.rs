@@ -387,6 +387,7 @@ fn default_service_info(stack_hint: Option<&str>) -> ServiceInfo {
 
 fn detect_main_service_name(services: &serde_yaml::Mapping) -> Option<String> {
     let build_key = YamlValue::String("build".to_string());
+    let mut first_non_infra_service = None;
 
     for (key, value) in services.iter() {
         if let Some(name) = key.as_str() {
@@ -394,6 +395,12 @@ fn detect_main_service_name(services: &serde_yaml::Mapping) -> Option<String> {
                 continue;
             }
 
+            // Track first non-infrastructure service as fallback
+            if first_non_infra_service.is_none() {
+                first_non_infra_service = Some(name.to_string());
+            }
+
+            // Prefer service with build section
             if let Some(service_map) = value.as_mapping() {
                 if service_map.contains_key(&build_key) {
                     return Some(name.to_string());
@@ -402,15 +409,7 @@ fn detect_main_service_name(services: &serde_yaml::Mapping) -> Option<String> {
         }
     }
 
-    for (key, _) in services.iter() {
-        if let Some(name) = key.as_str() {
-            if !SKIP_INFRA_SERVICES.contains(&name) {
-                return Some(name.to_string());
-            }
-        }
-    }
-
-    None
+    first_non_infra_service
 }
 
 /// Detect the main service name and port from compose file.

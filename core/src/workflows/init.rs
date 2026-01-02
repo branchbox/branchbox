@@ -1060,18 +1060,10 @@ impl InitWorkflow {
                         if keep_existing {
                             existing.clone()
                         } else {
-                            Password::with_theme(&theme)
-                                .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
-                                .with_confirmation("Confirm API token", "Tokens did not match")
-                                .allow_empty_password(false)
-                                .interact()?
+                            Self::prompt_for_api_token(&theme)?
                         }
                     } else {
-                        Password::with_theme(&theme)
-                            .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
-                            .with_confirmation("Confirm API token", "Tokens did not match")
-                            .allow_empty_password(false)
-                            .interact()?
+                        Self::prompt_for_api_token(&theme)?
                     };
 
                     if let Some(parent) = secure_path.parent() {
@@ -1141,6 +1133,14 @@ impl InitWorkflow {
         }
 
         Ok(warning)
+    }
+
+    fn prompt_for_api_token(theme: &ColorfulTheme) -> Result<String> {
+        Ok(Password::with_theme(theme)
+            .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
+            .with_confirmation("Confirm API token", "Tokens did not match")
+            .allow_empty_password(false)
+            .interact()?)
     }
 
     fn prompt_and_provision_main_tunnel(
