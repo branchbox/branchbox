@@ -987,8 +987,15 @@ fn build_tunnel_row(summary: &StartSummary) -> ChecklistRow {
     match summary.tunnel.as_ref() {
         Some(state) => {
             let mut detail = state.provider.clone();
-            if let Some(host) = state.hostname.as_ref() {
-                detail = format!("{detail} ({host})");
+            // Show routing info: hostname → service_url
+            match (state.hostname.as_ref(), state.service_url.as_ref()) {
+                (Some(host), Some(svc)) => {
+                    detail = format!("{detail} ({host} → {svc})");
+                }
+                (Some(host), None) => {
+                    detail = format!("{detail} ({host})");
+                }
+                _ => {}
             }
             match state.status {
                 FeatureTunnelStatus::Active => ChecklistRow::new("Tunnel", "✅", "online", detail),

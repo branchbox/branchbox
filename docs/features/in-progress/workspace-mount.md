@@ -84,6 +84,50 @@ cargo test --package worktree-core -- test_init_preserves
 cargo test --package worktree-core -- test_init_generated
 ```
 
+## Additional Fix: Cloudflared Tunnel Configuration
+
+### Problem
+
+During testing, tunnel provisioning was using incorrect values:
+- **Hostname**: Derived from `APP_URL` in `.env` instead of cloudflared `dns_zone` from config
+- **Service URL**: From adapter detection (`http://rails-app:3000`) instead of configured value (`http://app:5001`)
+
+### Root Cause
+
+The `prepare_tunnel_state()` function in `feature.rs` was:
+1. Using `AppUrl::from_env_file()` to derive hostnames instead of cloudflared config
+2. Taking service URL from adapter detection without checking cloudflared config first
+3. The tunnel **module** (`modules/tunnel.rs`) is always skipped - actual provisioning is done by `prepare_tunnel_state()` in the workflow
+
+Key insight: `.branchbox/config.json` lives in the main worktree (e.g., `main/.branchbox/`) and feature worktrees load it correctly via `BranchBoxConfig::load(&self.repo_root)`.
+
+### Solution
+
+1. **Added `service_url` field to `CloudflaredConfig`** (`config.rs:228`):
+   - Stores the tunnel service URL configured during `branchbox init`
+
+2. **Updated `prompt_and_provision_main_tunnel()`** (`init.rs`):
+   - Changed to take `&mut CloudflaredConfig` to persist service_url
+   - Saves service URL after user input
+
+3. **Added `resolve_tunnel_service_url()`** (`feature.rs`):
+   - Priority: cloudflared config > adapter detection > default
+   - Uses centralized config as source of truth
+
+4. **Added `derive_feature_url()`** (`feature.rs`):
+   - Derives hostname from cloudflared `tunnel_name_prefix` + `dns_zone`
+   - Falls back to APP_URL if cloudflared not configured
+
+5. **Added `service_url` to `FeatureTunnelState`** and CLI output:
+   - Shows routing info in feature start output: `hostname → service_url`
+
+### Files Modified
+
+- `core/src/config.rs`: Added `service_url` field
+- `core/src/workflows/init.rs`: Store service_url during init
+- `core/src/workflows/feature.rs`: Added helper functions, updated constructors
+- `cli/src/commands/feature.rs`: Updated tunnel row to show routing
+
 ## Related
 
 - GitHub Issue: https://github.com/branchbox/branchbox/issues/41

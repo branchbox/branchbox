@@ -1146,7 +1146,7 @@ impl InitWorkflow {
     fn prompt_and_provision_main_tunnel(
         &self,
         theme: &ColorfulTheme,
-        cloudflared: &CloudflaredConfig,
+        cloudflared: &mut CloudflaredConfig,
         api_token: &str,
         workspace_path: &Path,
     ) -> Result<()> {
@@ -1184,6 +1184,9 @@ impl InitWorkflow {
                 Ok(())
             })
             .interact_text()?;
+
+        // Store the service URL in config for feature tunnels to use
+        cloudflared.service_url = Some(service_url.trim().to_string());
 
         // Build tunnel name - use prefix directly for main branch
         // Tunnel name matches the subdomain: {prefix}.{zone}

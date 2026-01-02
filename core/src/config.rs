@@ -223,6 +223,10 @@ pub struct CloudflaredConfig {
     #[serde(default)]
     pub dns_zone: Option<String>,
 
+    /// Service URL for tunnel ingress (e.g., `http://app:5001`).
+    #[serde(default)]
+    pub service_url: Option<String>,
+
     #[serde(default)]
     pub manual_instructions: bool,
 }
@@ -234,6 +238,7 @@ impl Default for CloudflaredConfig {
             api_token_path: None,
             tunnel_name_prefix: Some("branchbox".to_string()),
             dns_zone: None,
+            service_url: None,
             manual_instructions: true,
         }
     }
