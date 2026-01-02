@@ -1071,122 +1071,25 @@ impl InitWorkflow {
                             .allow_empty(false)
                             .interact_text()?;
 
-                        let service_url = service_url.trim().to_string();
-
-                        // Get project name from workspace path
+                        // Build tunnel name
                         let project_name = workspace_path
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("project");
-
                         let tunnel_prefix = cloudflared
                             .tunnel_name_prefix
                             .clone()
                             .unwrap_or_else(|| "branchbox".to_string());
                         let tunnel_name = format!("{}-{}-main", tunnel_prefix, project_name);
 
-                        println!("Provisioning tunnel '{}'...", tunnel_name);
-
-                        match CloudflareClient::new(
-                            api_token.trim().to_string(),
-                            cloudflared.account_id.clone().unwrap_or_default(),
-                        ) {
-                            Ok(client) => {
-                                // Check if tunnel already exists
-                                match client.find_tunnel_by_name(&tunnel_name) {
-                                    Ok(Some(existing)) => {
-                                        println!(
-                                            "⚠ Tunnel '{}' already exists (id: {})",
-                                            tunnel_name, existing.id
-                                        );
-                                        println!(
-                                            "  You'll need to get the token from the Cloudflare dashboard"
-                                        );
-                                    }
-                                    Ok(None) => {
-                                        // Create new tunnel
-                                        match client.create_tunnel(&tunnel_name) {
-                                            Ok(provision) => {
-                                                println!(
-                                                    "✓ Created tunnel '{}' (id: {})",
-                                                    provision.name, provision.id
-                                                );
-
-                                                // Write the tunnel token to .cloudflared.env
-                                                let devcontainer_dir =
-                                                    workspace_path.join(".devcontainer");
-                                                if devcontainer_dir.exists() {
-                                                    let env_path =
-                                                        devcontainer_dir.join(".cloudflared.env");
-
-                                                    // Get hostname from dns_zone if available
-                                                    let hostname_line =
-                                                        if let Some(zone) = &cloudflared.dns_zone {
-                                                            format!("DEV_HOSTNAME=main.{}", zone)
-                                                        } else {
-                                                            "# DEV_HOSTNAME=main.your-domain.com"
-                                                                .to_string()
-                                                        };
-
-                                                    let env_content = format!(
-                                                        r#"# Cloudflare Tunnel Configuration for main
-# Provisioned by branchbox init
-
-TUNNEL_TOKEN={}
-{}
-"#,
-                                                        provision.token, hostname_line
-                                                    );
-
-                                                    if let Err(e) =
-                                                        fs::write(&env_path, env_content)
-                                                    {
-                                                        tracing::warn!(
-                                                            "Failed to write .cloudflared.env: {}",
-                                                            e
-                                                        );
-                                                    } else {
-                                                        println!(
-                                                            "✓ Saved tunnel token to .cloudflared.env"
-                                                        );
-                                                    }
-                                                }
-
-                                                // Configure tunnel ingress if dns_zone is set
-                                                if let Some(zone) = &cloudflared.dns_zone {
-                                                    let hostname = format!("main.{}", zone);
-
-                                                    if let Err(e) = client.configure_tunnel(
-                                                        &provision.id,
-                                                        &hostname,
-                                                        &service_url,
-                                                    ) {
-                                                        tracing::warn!(
-                                                            "Failed to configure tunnel ingress: {}",
-                                                            e
-                                                        );
-                                                    } else {
-                                                        println!(
-                                                            "✓ Configured tunnel ingress for {}",
-                                                            hostname
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                println!("⚠ Failed to create tunnel: {}", e);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("⚠ Failed to check for existing tunnel: {}", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                println!("⚠ Failed to initialize Cloudflare client: {}", e);
-                            }
-                        }
+                        self.provision_main_tunnel(
+                            api_token.trim(),
+                            &cloudflared.account_id.clone().unwrap_or_default(),
+                            &tunnel_name,
+                            service_url.trim(),
+                            cloudflared.dns_zone.as_deref(),
+                            workspace_path,
+                        );
                     }
                 } else {
                     cloudflared.api_token_path = None;
@@ -1224,6 +1127,75 @@ TUNNEL_TOKEN={}
         }
 
         Ok(warning)
+    }
+
+    /// Provision a Cloudflare tunnel for the main branch.
+    ///
+    /// This creates the tunnel, saves the token to .cloudflared.env, and
+    /// optionally configures the tunnel ingress if a DNS zone is specified.
+    fn provision_main_tunnel(
+        &self,
+        api_token: &str,
+        account_id: &str,
+        tunnel_name: &str,
+        service_url: &str,
+        dns_zone: Option<&str>,
+        workspace_path: &Path,
+    ) {
+        println!("Provisioning tunnel '{}'...", tunnel_name);
+
+        match CloudflareClient::new(api_token.to_string(), account_id.to_string()) {
+            Ok(client) => {
+                match client.find_tunnel_by_name(tunnel_name) {
+                    Ok(Some(existing)) => {
+                        println!("⚠ Tunnel '{}' already exists (id: {})", tunnel_name, existing.id);
+                        println!("  You'll need to get the token from the Cloudflare dashboard");
+                    }
+                    Ok(None) => {
+                        match client.create_tunnel(tunnel_name) {
+                            Ok(provision) => {
+                                println!("✓ Created tunnel '{}' (id: {})", provision.name, provision.id);
+
+                                // Write the tunnel token to .cloudflared.env
+                                let devcontainer_dir = workspace_path.join(".devcontainer");
+                                if devcontainer_dir.exists() {
+                                    let env_path = devcontainer_dir.join(".cloudflared.env");
+                                    let hostname_line = dns_zone
+                                        .map(|zone| format!("DEV_HOSTNAME=main.{}", zone))
+                                        .unwrap_or_else(|| "# DEV_HOSTNAME=main.your-domain.com".to_string());
+
+                                    let env_content = format!(
+                                        "# Cloudflare Tunnel Configuration for main\n\
+                                         # Provisioned by branchbox init\n\n\
+                                         TUNNEL_TOKEN={}\n{}\n",
+                                        provision.token, hostname_line
+                                    );
+
+                                    if let Err(e) = fs::write(&env_path, env_content) {
+                                        tracing::warn!("Failed to write .cloudflared.env: {}", e);
+                                    } else {
+                                        println!("✓ Saved tunnel token to .cloudflared.env");
+                                    }
+                                }
+
+                                // Configure tunnel ingress if dns_zone is set
+                                if let Some(zone) = dns_zone {
+                                    let hostname = format!("main.{}", zone);
+                                    if let Err(e) = client.configure_tunnel(&provision.id, &hostname, service_url) {
+                                        tracing::warn!("Failed to configure tunnel ingress: {}", e);
+                                    } else {
+                                        println!("✓ Configured tunnel ingress for {}", hostname);
+                                    }
+                                }
+                            }
+                            Err(e) => println!("⚠ Failed to create tunnel: {}", e),
+                        }
+                    }
+                    Err(e) => println!("⚠ Failed to check for existing tunnel: {}", e),
+                }
+            }
+            Err(e) => println!("⚠ Failed to initialize Cloudflare client: {}", e),
+        }
     }
 
     fn initialize_registry(&self, path: &Path) -> Result<bool> {
