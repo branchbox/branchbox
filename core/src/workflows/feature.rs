@@ -1636,48 +1636,14 @@ impl FeatureWorkflow {
             .clone()
             .unwrap_or_else(|| "cloudflared".to_string());
 
-        let hostname = match hostname {
-            Some(value) if !value.is_empty() => value,
-            _ => {
-                warnings.push(
-                    "Tunnel provisioning skipped; feature hostname unavailable. Configure APP_URL before enabling tunnels."
-                        .to_string(),
-                );
-                let state = FeatureTunnelState::manual(
-                    provider_name.clone(),
-                    None,
-                    "Feature hostname unavailable; manual setup required.",
-                    Vec::new(),
-                );
-                return Ok((Some(state), warnings));
-            }
-        };
+        // Check if cloudflared is configured (via env var or config file) before checking hostname
+        let has_env_token = provider_name.eq_ignore_ascii_case("cloudflared")
+            && std::env::var("CLOUDFLARE_TUNNEL_TOKEN")
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
 
-        if provider_name.eq_ignore_ascii_case("cloudflared") {
-            if let Ok(token) = std::env::var("CLOUDFLARE_TUNNEL_TOKEN") {
-                let token = token.trim();
-                if !token.is_empty() {
-                    self.write_feature_tunnel_env(feature_dir, hostname, token)?;
-                    let state = FeatureTunnelState {
-                        provider: provider_name.clone(),
-                        hostname: Some(hostname.to_string()),
-                        status: FeatureTunnelStatus::Active,
-                        descriptor: None,
-                        instructions: None,
-                        notes: Some(
-                            "Tunnel token provided via CLOUDFLARE_TUNNEL_TOKEN; skipping API provisioning"
-                                .to_string(),
-                        ),
-                        last_updated: Utc::now(),
-                        removed_at: None,
-                    };
-                    return Ok((Some(state), warnings));
-                }
-            }
-        }
-
-        if provider_name.eq_ignore_ascii_case("cloudflared") {
-            let configured = config
+        let has_api_config = if provider_name.eq_ignore_ascii_case("cloudflared") {
+            config
                 .tunnel
                 .providers
                 .cloudflared
@@ -1691,15 +1657,53 @@ impl FeatureWorkflow {
                             .map(|value| !value.trim().is_empty())
                             .unwrap_or(false)
                 })
-                .unwrap_or(false);
+                .unwrap_or(false)
+        } else {
+            false
+        };
 
-            if !configured {
+        // If cloudflared provider has no credentials at all, return disabled early
+        if provider_name.eq_ignore_ascii_case("cloudflared") && !has_env_token && !has_api_config {
+            let state = FeatureTunnelState::disabled(
+                Some(provider_name.clone()),
+                "Tunnel provisioning disabled until Cloudflare credentials are configured",
+            );
+            return Ok((Some(state), warnings));
+        }
+
+        let hostname = match hostname {
+            Some(value) if !value.is_empty() => value,
+            _ => {
+                warnings.push(
+                    "Tunnel provisioning skipped; feature hostname unavailable. Configure APP_URL before enabling tunnels."
+                        .to_string(),
+                );
                 let state = FeatureTunnelState::disabled(
                     Some(provider_name.clone()),
-                    "Tunnel provisioning disabled until Cloudflare credentials are configured",
+                    "Feature hostname unavailable; configure APP_URL to enable tunnels.",
                 );
                 return Ok((Some(state), warnings));
             }
+        };
+
+        // If env token is present, use it directly
+        if has_env_token {
+            let token = std::env::var("CLOUDFLARE_TUNNEL_TOKEN").unwrap();
+            self.write_feature_tunnel_env(feature_dir, hostname, token.trim())?;
+            let state = FeatureTunnelState {
+                provider: provider_name.clone(),
+                hostname: Some(hostname.to_string()),
+                status: FeatureTunnelStatus::Active,
+                descriptor: None,
+                instructions: None,
+                notes: Some(
+                    "Tunnel token provided via CLOUDFLARE_TUNNEL_TOKEN; skipping API provisioning"
+                        .to_string(),
+                ),
+                last_updated: Utc::now(),
+                removed_at: None,
+            };
+            return Ok((Some(state), warnings));
         }
 
         let (mut state, mut provider_warnings, provision_token) = self.invoke_tunnel_provider(
