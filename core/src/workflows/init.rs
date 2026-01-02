@@ -119,7 +119,7 @@ impl Default for InitOptions {
             skip_devcontainer: false,
             skip_env: false,
             reorganize: false,
-            use_parent_structure: false,
+            use_parent_structure: true, // Default to parent structure for worktree compatibility
             update: false,
             validate_only: false,
             dry_run: false,
@@ -861,6 +861,16 @@ impl InitWorkflow {
             let bootstrap = Bootstrap::new(path);
             bootstrap.generate(stack)?;
 
+            // Configure workspace settings for worktree compatibility
+            // (our templates should already be correct, but this ensures consistency)
+            let configure_outcome =
+                crate::modules::configure_workspace_settings(&devcontainer_dir)?;
+            if !configure_outcome.changes.is_empty() && self.options.verbose {
+                for change in &configure_outcome.changes {
+                    println!("  - {}", change);
+                }
+            }
+
             if !self.options.verbose {
                 println!("✓ Created devcontainer configuration");
             }
@@ -868,9 +878,31 @@ impl InitWorkflow {
             return Ok(DevcontainerStatus::Created);
         }
 
-        // Existing devcontainer - validate
+        // Existing devcontainer - validate and configure for worktree compatibility
+        if self.options.dry_run {
+            if self.options.verbose {
+                println!("✓ Devcontainer configuration exists");
+            }
+            return Ok(DevcontainerStatus::Valid);
+        }
+
+        // Configure existing devcontainer for worktree compatibility
+        let configure_outcome = crate::modules::configure_workspace_settings(&devcontainer_dir)?;
+
+        if !configure_outcome.changes.is_empty() {
+            if self.options.verbose {
+                println!("Enhanced devcontainer for worktree compatibility:");
+                for change in &configure_outcome.changes {
+                    println!("  - {}", change);
+                }
+            }
+            return Ok(DevcontainerStatus::Enhanced {
+                changes: configure_outcome.changes,
+            });
+        }
+
         if self.options.verbose {
-            println!("✓ Devcontainer configuration exists");
+            println!("✓ Devcontainer configuration valid");
         }
 
         Ok(DevcontainerStatus::Valid)
@@ -1143,6 +1175,17 @@ impl InitWorkflow {
 
         if summary.reorganized {
             steps.push(format!("cd {}", summary.workspace_path.display()));
+        }
+
+        // Suggest committing the BranchBox configuration
+        if matches!(
+            summary.devcontainer_status,
+            DevcontainerStatus::Created | DevcontainerStatus::Enhanced { .. }
+        ) {
+            steps.push(
+                "git add .devcontainer docs/BRANCHBOX.md && git commit -m \"chore: add BranchBox devcontainer configuration\""
+                    .to_string(),
+            );
         }
 
         steps.push("Open in VS Code/Cursor and reopen in container".to_string());
@@ -2137,6 +2180,155 @@ mod tests {
             summary.stack,
             Stack::Generic,
             "Forced stack should override auto-detection"
+        );
+    }
+
+    #[test]
+    fn test_init_configures_existing_devcontainer_for_worktrees() {
+        // Test that init updates an existing devcontainer with incorrect workspace settings
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create existing devcontainer with incorrect (hardcoded) settings
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces/hardcoded-name",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/hardcoded-name,type=bind"
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    volumes:
+      - ..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should detect and report enhanced status
+        assert!(
+            matches!(
+                summary.devcontainer_status,
+                DevcontainerStatus::Enhanced { .. }
+            ),
+            "Expected Enhanced status, got {:?}",
+            summary.devcontainer_status
+        );
+
+        // Verify devcontainer.json was updated
+        let devcontainer_json =
+            fs::read_to_string(devcontainer_dir.join("devcontainer.json")).unwrap();
+        assert!(
+            devcontainer_json.contains("/workspaces/${localWorkspaceFolderBasename}"),
+            "workspaceFolder should use dynamic variable"
+        );
+        assert!(
+            devcontainer_json.contains("target=/workspaces/${localWorkspaceFolderBasename}"),
+            "workspaceMount should use dynamic variable"
+        );
+
+        // Verify compose.yaml was updated to use ../.. mount
+        let compose_yaml = fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(
+            compose_yaml.contains("../..:/workspaces:cached"),
+            "compose.yaml should use ../..:/workspaces:cached for worktree compatibility"
+        );
+    }
+
+    #[test]
+    fn test_init_preserves_valid_devcontainer_settings() {
+        // Test that init doesn't modify a devcontainer that already has correct settings
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        // Create existing devcontainer with correct settings
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let correct_json = r#"{
+  "name": "Test",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
+}
+"#;
+        fs::write(devcontainer_dir.join("devcontainer.json"), correct_json).unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    volumes:
+      - ../..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should report Valid (not Enhanced)
+        assert!(
+            matches!(summary.devcontainer_status, DevcontainerStatus::Valid),
+            "Expected Valid status for correctly configured devcontainer, got {:?}",
+            summary.devcontainer_status
+        );
+    }
+
+    #[test]
+    fn test_init_generated_devcontainer_has_correct_workspace_settings() {
+        // Test that newly generated devcontainers have correct workspace settings
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            ..Default::default()
+        };
+
+        let mut workflow = InitWorkflow::new(options);
+        let summary = workflow.execute().unwrap();
+
+        // Should report Created
+        assert!(
+            matches!(summary.devcontainer_status, DevcontainerStatus::Created),
+            "Expected Created status, got {:?}",
+            summary.devcontainer_status
+        );
+
+        // Verify generated devcontainer.json has correct settings
+        let devcontainer_json =
+            fs::read_to_string(repo_path.join(".devcontainer/devcontainer.json")).unwrap();
+        assert!(
+            devcontainer_json.contains("/workspaces/${localWorkspaceFolderBasename}"),
+            "Generated devcontainer.json should have dynamic workspaceFolder"
+        );
+
+        // Verify generated compose.yaml has correct mount
+        let compose_yaml =
+            fs::read_to_string(repo_path.join(".devcontainer/compose.yaml")).unwrap();
+        assert!(
+            compose_yaml.contains("../..:/workspaces:cached"),
+            "Generated compose.yaml should use ../..:/workspaces:cached"
         );
     }
 }

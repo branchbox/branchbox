@@ -58,6 +58,11 @@ pub fn branchbox_env() -> Result<String> {
     Ok(include_str!("templates/branchbox.env").to_string())
 }
 
+/// Generate the BranchBox quickstart documentation
+pub fn branchbox_docs() -> Result<String> {
+    Ok(include_str!("templates/BRANCHBOX.md").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

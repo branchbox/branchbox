@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `branchbox init` now automatically configures devcontainer.json and compose.yaml for git worktree compatibility, ensuring `workspaceFolder` uses dynamic `${localWorkspaceFolderBasename}` and compose mounts use `../..:/workspaces:cached`.
+- `branchbox init` generates `docs/BRANCHBOX.md` quickstart guide for new projects.
+- Init next steps now suggest committing the BranchBox configuration with a ready-to-use git command.
+
+### Changed
+- Parent structure (`use_parent_structure`) is now the default for `branchbox init`, creating worktrees as siblings (project/main/, project/feature-x/). Use `--no-parent-structure` to opt out.
+
+### Fixed
+- Fixed duplicate volume mount entries in compose.yaml when transforming `..:/workspaces:cached` to `../..:/workspaces:cached`.
+
 ## [0.4.1] - 2025-12-15
 
 ### Fixed

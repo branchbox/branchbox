@@ -21,7 +21,9 @@ pub mod tunnel;
 
 pub use compose::ComposeModule;
 pub use database::{DatabaseEngine, DatabaseModule};
-pub use devcontainer::{DevcontainerModule, SyncStrategy};
+pub use devcontainer::{
+    configure_workspace_settings, ConfigureOutcome, DevcontainerModule, SyncStrategy,
+};
 pub use specs::{SpecStatus, SpecsModule};
 pub use tunnel::TunnelModule;
 

@@ -256,7 +256,7 @@ impl Module for DevcontainerModule {
         if matches!(self.strategy, SyncStrategy::Symlink) {
             tracing::info!("Skipping workspace configuration (symlink strategy in use)");
         } else {
-            self.configure_workspace_settings(feature_dir)?;
+            self.configure_workspace_settings_impl(feature_dir)?;
         }
         tracing::info!(
             "Synced {} devcontainer files ({:?})",
@@ -283,131 +283,9 @@ impl Module for DevcontainerModule {
 }
 
 impl DevcontainerModule {
-    fn configure_workspace_settings(&self, feature_dir: &Path) -> Result<()> {
-        let config_path = feature_dir.join(".devcontainer/devcontainer.json");
-        if !config_path.exists() {
-            return Ok(());
-        }
-
-        let compose_path = feature_dir.join(".devcontainer/compose.yaml");
-        let config_contents = std::fs::read_to_string(&config_path)?;
-        let mut config = parse_json_with_comments(&config_contents, &config_path)?;
-
-        let workspace_folder = "/workspaces/${localWorkspaceFolderBasename}";
-        let workspace_mount =
-            "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached";
-
-        let mut needs_update = false;
-
-        match config.as_object_mut() {
-            Some(map) => {
-                let folder_value = JsonValue::String(workspace_folder.to_string());
-                if map
-                    .get("workspaceFolder")
-                    .map(|value| value != &folder_value)
-                    .unwrap_or(true)
-                {
-                    map.insert("workspaceFolder".to_string(), folder_value);
-                    needs_update = true;
-                }
-
-                let mount_value = JsonValue::String(workspace_mount.to_string());
-                if map
-                    .get("workspaceMount")
-                    .map(|value| value != &mount_value)
-                    .unwrap_or(true)
-                {
-                    map.insert("workspaceMount".to_string(), mount_value);
-                    needs_update = true;
-                }
-            }
-            None => {
-                return Err(Error::validation(format!(
-                    "{} is not a JSON object",
-                    config_path.display()
-                )))
-            }
-        }
-
-        if !needs_update {
-            return Ok(());
-        }
-
-        let mut formatted = serde_json::to_string_pretty(&config)?;
-        formatted.push('\n');
-        std::fs::write(&config_path, formatted)?;
-
-        if compose_path.exists() {
-            let compose_contents = std::fs::read_to_string(&compose_path)?;
-            let mut compose: YamlValue =
-                serde_yaml::from_str(&compose_contents).map_err(|err| {
-                    Error::validation(format!(
-                        "Failed to parse {}: {}",
-                        compose_path.display(),
-                        err
-                    ))
-                })?;
-
-            let desired = "../..:/workspaces:cached";
-            let alternate = "..:/workspaces:cached";
-
-            let mut updated = false;
-            if let Some(root) = compose.as_mapping_mut() {
-                let services_key = YamlValue::String("services".to_string());
-                if let Some(services) = root
-                    .get_mut(&services_key)
-                    .and_then(|value| value.as_mapping_mut())
-                {
-                    for service in services.values_mut() {
-                        if let Some(service_map) = service.as_mapping_mut() {
-                            let volumes_key = YamlValue::String("volumes".to_string());
-                            if let Some(volumes) = service_map
-                                .get_mut(&volumes_key)
-                                .and_then(|value| value.as_sequence_mut())
-                            {
-                                let mut found_desired = false;
-                                for entry in volumes.iter_mut() {
-                                    let raw = entry.as_str().map(ToString::to_string);
-                                    if let Some(raw) = raw {
-                                        if raw == alternate {
-                                            *entry = YamlValue::String(desired.to_string());
-                                            updated = true;
-                                        }
-                                        if raw == desired {
-                                            found_desired = true;
-                                        }
-                                    }
-                                }
-
-                                if !found_desired {
-                                    volumes.insert(0, YamlValue::String(desired.to_string()));
-                                    updated = true;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if updated {
-                let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
-                    Error::validation(format!(
-                        "Failed to serialize {}: {}",
-                        compose_path.display(),
-                        err
-                    ))
-                })?;
-                if serialized.starts_with("---\n") {
-                    serialized = serialized.split_off(4);
-                }
-                if !serialized.ends_with('\n') {
-                    serialized.push('\n');
-                }
-                std::fs::write(&compose_path, serialized)?;
-            }
-        }
-
+    fn configure_workspace_settings_impl(&self, feature_dir: &Path) -> Result<()> {
+        let devcontainer_dir = feature_dir.join(".devcontainer");
+        configure_workspace_settings(&devcontainer_dir)?;
         Ok(())
     }
 }
@@ -416,6 +294,184 @@ impl DevcontainerModule {
 pub struct SyncOutcome {
     pub synced_files: Vec<String>,
     pub strategy: SyncStrategy,
+}
+
+/// Result of configuring workspace settings
+#[derive(Debug, Default)]
+pub struct ConfigureOutcome {
+    /// Whether devcontainer.json was modified
+    pub devcontainer_modified: bool,
+    /// Whether compose.yaml was modified
+    pub compose_modified: bool,
+    /// List of changes made
+    pub changes: Vec<String>,
+}
+
+/// Configure devcontainer workspace settings for worktree compatibility.
+///
+/// This ensures the devcontainer.json and compose.yaml are configured correctly
+/// for git worktrees by:
+/// - Setting `workspaceFolder` to `/workspaces/${localWorkspaceFolderBasename}`
+/// - Setting `workspaceMount` to use the dynamic folder basename
+/// - Updating compose.yaml volume mounts to use `../..:/workspaces:cached`
+///
+/// This function is called both during `branchbox init` (to configure newly generated
+/// or existing devcontainers) and during `branchbox feature start` (via DevcontainerModule).
+///
+/// # Arguments
+///
+/// * `devcontainer_dir` - Path to the .devcontainer directory
+///
+/// # Returns
+///
+/// Returns a `ConfigureOutcome` describing what changes were made.
+pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<ConfigureOutcome> {
+    let mut outcome = ConfigureOutcome::default();
+
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(outcome);
+    }
+
+    let compose_path = devcontainer_dir.join("compose.yaml");
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let mut config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    let workspace_folder = "/workspaces/${localWorkspaceFolderBasename}";
+    let workspace_mount =
+        "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached";
+
+    let mut devcontainer_needs_update = false;
+
+    match config.as_object_mut() {
+        Some(map) => {
+            let folder_value = JsonValue::String(workspace_folder.to_string());
+            if map
+                .get("workspaceFolder")
+                .map(|value| value != &folder_value)
+                .unwrap_or(true)
+            {
+                let old_value = map
+                    .get("workspaceFolder")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>");
+                outcome.changes.push(format!(
+                    "workspaceFolder: {} → {}",
+                    old_value, workspace_folder
+                ));
+                map.insert("workspaceFolder".to_string(), folder_value);
+                devcontainer_needs_update = true;
+            }
+
+            let mount_value = JsonValue::String(workspace_mount.to_string());
+            if map
+                .get("workspaceMount")
+                .map(|value| value != &mount_value)
+                .unwrap_or(true)
+            {
+                outcome
+                    .changes
+                    .push("workspaceMount: updated for worktree compatibility".to_string());
+                map.insert("workspaceMount".to_string(), mount_value);
+                devcontainer_needs_update = true;
+            }
+        }
+        None => {
+            return Err(Error::validation(format!(
+                "{} is not a JSON object",
+                config_path.display()
+            )))
+        }
+    }
+
+    if devcontainer_needs_update {
+        let mut formatted = serde_json::to_string_pretty(&config)?;
+        formatted.push('\n');
+        std::fs::write(&config_path, formatted)?;
+        outcome.devcontainer_modified = true;
+        tracing::info!("Updated devcontainer.json for worktree compatibility");
+    }
+
+    if compose_path.exists() {
+        let compose_contents = std::fs::read_to_string(&compose_path)?;
+        let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+            Error::validation(format!(
+                "Failed to parse {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
+
+        let desired = "../..:/workspaces:cached";
+        let alternate = "..:/workspaces:cached";
+
+        let mut compose_updated = false;
+        if let Some(root) = compose.as_mapping_mut() {
+            let services_key = YamlValue::String("services".to_string());
+            if let Some(services) = root
+                .get_mut(&services_key)
+                .and_then(|value| value.as_mapping_mut())
+            {
+                for service in services.values_mut() {
+                    if let Some(service_map) = service.as_mapping_mut() {
+                        let volumes_key = YamlValue::String("volumes".to_string());
+                        if let Some(volumes) = service_map
+                            .get_mut(&volumes_key)
+                            .and_then(|value| value.as_sequence_mut())
+                        {
+                            let mut found_desired = false;
+                            for entry in volumes.iter_mut() {
+                                let raw = entry.as_str().map(ToString::to_string);
+                                if let Some(raw) = raw {
+                                    if raw == alternate {
+                                        *entry = YamlValue::String(desired.to_string());
+                                        compose_updated = true;
+                                        found_desired = true; // We just set it to desired
+                                        outcome.changes.push(format!(
+                                            "compose.yaml: {} → {}",
+                                            alternate, desired
+                                        ));
+                                    } else if raw == desired {
+                                        found_desired = true;
+                                    }
+                                }
+                            }
+
+                            if !found_desired {
+                                volumes.insert(0, YamlValue::String(desired.to_string()));
+                                compose_updated = true;
+                                outcome
+                                    .changes
+                                    .push(format!("compose.yaml: added {}", desired));
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if compose_updated {
+            let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+                Error::validation(format!(
+                    "Failed to serialize {}: {}",
+                    compose_path.display(),
+                    err
+                ))
+            })?;
+            if serialized.starts_with("---\n") {
+                serialized = serialized.split_off(4);
+            }
+            if !serialized.ends_with('\n') {
+                serialized.push('\n');
+            }
+            std::fs::write(&compose_path, serialized)?;
+            outcome.compose_modified = true;
+            tracing::info!("Updated compose.yaml for worktree compatibility");
+        }
+    }
+
+    Ok(outcome)
 }
 
 #[cfg(test)]

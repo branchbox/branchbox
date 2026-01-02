@@ -33,9 +33,9 @@ pub struct InitArgs {
     #[arg(long)]
     pub reorganize: bool,
 
-    /// Use in-place parent structure (reorganize as container/main/)
+    /// Disable parent structure (keep flat layout instead of container/main/)
     #[arg(long)]
-    pub use_parent_structure: bool,
+    pub no_parent_structure: bool,
 
     /// Update existing setup without restructuring
     #[arg(long)]
@@ -90,7 +90,7 @@ pub fn execute(args: InitArgs) -> Result<()> {
         skip_devcontainer: args.skip_devcontainer,
         skip_env: args.skip_env,
         reorganize: args.reorganize,
-        use_parent_structure: args.use_parent_structure,
+        use_parent_structure: !args.no_parent_structure, // Default is true (parent structure)
         update: args.update,
         validate_only: args.validate,
         dry_run: args.dry_run,
