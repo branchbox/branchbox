@@ -484,7 +484,7 @@ pub fn detect_main_service(
                                         // Parse "8080:8080" or "3000:3000" format
                                         if let Some(container_port) = port_str
                                             .split(':')
-                                            .last()
+                                            .next_back()
                                             .and_then(|p| p.split('/').next())
                                             .and_then(|p| p.parse::<u16>().ok())
                                         {

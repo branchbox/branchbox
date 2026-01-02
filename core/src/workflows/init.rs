@@ -1163,17 +1163,14 @@ impl InitWorkflow {
         tracing::info!("Provisioning tunnel '{}'...", tunnel_name);
 
         let client = CloudflareClient::new(api_token.to_string(), account_id.to_string())?;
-        match client.find_tunnel_by_name(tunnel_name)? {
-            Some(existing) => {
-                tracing::warn!(
-                    "Tunnel '{}' already exists (id: {})",
-                    tunnel_name,
-                    existing.id
-                );
-                tracing::warn!("You'll need to get the token from the Cloudflare dashboard");
-                return Ok(());
-            }
-            None => {}
+        if let Some(existing) = client.find_tunnel_by_name(tunnel_name)? {
+            tracing::warn!(
+                "Tunnel '{}' already exists (id: {})",
+                tunnel_name,
+                existing.id
+            );
+            tracing::warn!("You'll need to get the token from the Cloudflare dashboard");
+            return Ok(());
         }
 
         let provision = client.create_tunnel(tunnel_name)?;
