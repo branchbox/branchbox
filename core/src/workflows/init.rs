@@ -1020,13 +1020,60 @@ impl InitWorkflow {
                         .interact_text()?;
                     cloudflared.account_id = Some(account_id.trim().to_string());
 
-                    let api_token = Password::with_theme(&theme)
-                        .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
-                        .with_confirmation("Confirm API token", "Tokens did not match")
-                        .allow_empty_password(false)
-                        .interact()?;
-
                     let secure_path = CloudflaredConfig::default_credentials_path(workspace_path);
+
+                    // Check for existing token
+                    let existing_token = if secure_path.exists() {
+                        fs::read_to_string(&secure_path)
+                            .ok()
+                            .and_then(|content| {
+                                content
+                                    .lines()
+                                    .find(|line| line.starts_with("CLOUDFLARE_API_TOKEN="))
+                                    .map(|line| {
+                                        line.trim_start_matches("CLOUDFLARE_API_TOKEN=")
+                                            .trim()
+                                            .to_string()
+                                    })
+                            })
+                            .filter(|t| !t.is_empty())
+                    } else {
+                        None
+                    };
+
+                    let api_token = if let Some(ref existing) = existing_token {
+                        // Show masked token and ask if user wants to keep it
+                        let masked = if existing.len() > 8 {
+                            format!("{}...{}", &existing[..4], &existing[existing.len() - 4..])
+                        } else {
+                            "****".to_string()
+                        };
+
+                        let keep_existing = Confirm::with_theme(&theme)
+                            .with_prompt(format!(
+                                "Keep existing API token ({})? (No to enter new token)",
+                                masked
+                            ))
+                            .default(true)
+                            .interact()?;
+
+                        if keep_existing {
+                            existing.clone()
+                        } else {
+                            Password::with_theme(&theme)
+                                .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
+                                .with_confirmation("Confirm API token", "Tokens did not match")
+                                .allow_empty_password(false)
+                                .interact()?
+                        }
+                    } else {
+                        Password::with_theme(&theme)
+                            .with_prompt("Cloudflare API token (stored in .branchbox/secure)")
+                            .with_confirmation("Confirm API token", "Tokens did not match")
+                            .allow_empty_password(false)
+                            .interact()?
+                    };
+
                     if let Some(parent) = secure_path.parent() {
                         fs::create_dir_all(parent)?;
                     }
