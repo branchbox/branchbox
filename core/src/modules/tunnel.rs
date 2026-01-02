@@ -262,7 +262,7 @@ impl Module for TunnelModule {
                 }
             }
             // Fallback to generic default
-            format!("http://dev:{}", default_port_for_stack(None))
+            format!("http://app:{}", default_port_for_stack(None))
         });
 
         tracing::info!("Initialized tunnel: {}", self.tunnel_name);

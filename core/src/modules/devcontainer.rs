@@ -370,7 +370,7 @@ pub struct CloudflaredOutcome {
 /// Detected service information from compose file.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceInfo {
-    /// Name of the main service (e.g., "rails-app", "flask-app", "dev")
+    /// Name of the main service (e.g., "rails-app", "flask-app", "app")
     pub name: Option<String>,
     /// Detected or default port for the service
     pub port: u16,
@@ -413,9 +413,9 @@ pub fn detect_main_service(
     if !config_path.exists() {
         let port = default_port_for_stack(stack_hint);
         return Ok(ServiceInfo {
-            name: Some("dev".to_string()),
+            name: Some("app".to_string()),
             port,
-            service_url: format!("http://dev:{}", port),
+            service_url: format!("http://app:{}", port),
         });
     }
 
@@ -427,9 +427,9 @@ pub fn detect_main_service(
         None => {
             let port = default_port_for_stack(stack_hint);
             return Ok(ServiceInfo {
-                name: Some("dev".to_string()),
+                name: Some("app".to_string()),
                 port,
-                service_url: format!("http://dev:{}", port),
+                service_url: format!("http://app:{}", port),
             });
         }
     };
@@ -504,7 +504,7 @@ pub fn detect_main_service(
     }
 
     let port = detected_port.unwrap_or_else(|| default_port_for_stack(stack_hint));
-    let name = service_name.unwrap_or_else(|| "dev".to_string());
+    let name = service_name.unwrap_or_else(|| "app".to_string());
     let service_url = format!("http://{}:{}", name, port);
 
     Ok(ServiceInfo {
@@ -1685,7 +1685,7 @@ volumes:
         std::fs::write(
             devcontainer_dir.join("compose.yaml"),
             r#"services:
-  dev:
+  web:
     build:
       context: ..
 "#,
@@ -1694,9 +1694,9 @@ volumes:
 
         // Without ports, should fall back to default port (3000)
         let info = detect_main_service(&devcontainer_dir, None).unwrap();
-        assert_eq!(info.name, Some("dev".to_string()));
+        assert_eq!(info.name, Some("web".to_string()));
         assert_eq!(info.port, 3000);
-        assert_eq!(info.service_url, "http://dev:3000");
+        assert_eq!(info.service_url, "http://web:3000");
     }
 
     #[test]
@@ -1735,8 +1735,8 @@ volumes:
         // Don't create the directory
 
         let info = detect_main_service(&devcontainer_dir, Some("flask")).unwrap();
-        assert_eq!(info.name, Some("dev".to_string()));
+        assert_eq!(info.name, Some("app".to_string()));
         assert_eq!(info.port, 5000);
-        assert_eq!(info.service_url, "http://dev:5000");
+        assert_eq!(info.service_url, "http://app:5000");
     }
 }

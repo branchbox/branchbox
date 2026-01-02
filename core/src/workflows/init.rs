@@ -1061,7 +1061,7 @@ impl InitWorkflow {
                             .as_ref()
                             .map(|s| s.service_url.clone())
                             .unwrap_or_else(|| {
-                                format!("http://dev:{}", default_port_for_stack(None))
+                                format!("http://app:{}", default_port_for_stack(None))
                             });
 
                         // Prompt user to confirm/edit the service URL
