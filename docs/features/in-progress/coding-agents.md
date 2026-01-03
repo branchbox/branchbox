@@ -1,10 +1,8 @@
 ---
-
 branch: feature/coding-agents
 created: 2026-01-03
 status: in-progress
 work_feature: coding-agents
-worktree: /Users/rbarazi/projects/branchbox-suite/branchbox/coding-agents
 ---
 # Share AI Coding Agent Settings Across Worktrees
 
@@ -63,6 +61,17 @@ volumes:
   worktree container directory).
 - **Worktree Compatibility**: Settings are shared at the worktree parent level,
   so all feature worktrees share the same credentials.
+
+### First-Time Setup
+
+The `.claude.json` file is created automatically when you first authenticate
+with Claude Code. If you haven't used Claude Code yet, the mount will work
+correctly once you run `claude` inside the container and complete
+authentication.
+
+> **Note**: Docker will create the mount target as a directory if the source
+> file doesn't exist. This is expected behavior - Claude Code will create the
+> file on first authentication, replacing the empty directory.
 
 ## Benefits
 
