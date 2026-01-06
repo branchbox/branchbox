@@ -959,7 +959,7 @@ fn parse_dockerfile_user(contents: &str) -> Option<String> {
         if trimmed.to_uppercase().starts_with("USER ") {
             let user_part = trimmed[5..].trim();
             // Handle "USER username" and "USER username:group" formats
-            let username = user_part.split(':').next().unwrap_or(user_part);
+            let username = user_part.split(':').next().unwrap();
             // Handle ARG substitution - if it contains ${}, skip it
             if !username.contains("${") {
                 last_user = Some(username.to_string());
@@ -1097,9 +1097,12 @@ pub fn inject_coding_agent_mounts(devcontainer_dir: &Path) -> Result<CodingAgent
 
                             for entry in &mount_entries {
                                 // Check if mount already exists by target path
-                                let target = entry.split(':').nth(1).unwrap_or("");
+                                // Use next_back() because source may contain colons (e.g., ${VAR:-default})
+                                let target_path = entry.split(':').next_back().unwrap_or("");
                                 let already_exists = existing.iter().any(|e| {
-                                    e.split(':').nth(1).map(|t| t == target).unwrap_or(false)
+                                    // Check if any part matches the target path
+                                    // This handles both "source:target" and "source:target:options"
+                                    e.split(':').any(|part| part == target_path)
                                 });
 
                                 if !already_exists {

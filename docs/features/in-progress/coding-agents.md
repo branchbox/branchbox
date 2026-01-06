@@ -80,13 +80,19 @@ For non-worktree setups, edit `.branchbox.env` and change to `SHARED_CONFIG_DIR=
 ### First-Time Setup
 
 The `.claude.json` file is created automatically when you first authenticate
-with Claude Code. If you haven't used Claude Code yet, the mount will work
-correctly once you run `claude` inside the container and complete
-authentication.
+with Claude Code **on the host machine**. For proper container operation:
 
-> **Note**: Docker will create the mount target as a directory if the source
-> file doesn't exist. This is expected behavior - Claude Code will create the
-> file on first authentication, replacing the empty directory.
+1. **Recommended**: Run `claude` once on your host machine to create
+   `~/.claude.json` before starting devcontainers
+2. **Alternative**: Create an empty file manually:
+   ```bash
+   touch ~/.claude.json
+   ```
+
+> **Important**: If the source file doesn't exist when Docker starts, it will
+> create a **directory** at the mount target instead of a file. This will cause
+> Claude Code to fail inside the container. Ensure the file exists on the host
+> before starting your devcontainer.
 
 ## Benefits
 
