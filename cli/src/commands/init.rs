@@ -56,6 +56,10 @@ pub struct InitArgs {
     /// Verbose output
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Disable AI coding agent mounts (.codex, .claude, .gh)
+    #[arg(long)]
+    pub no_coding_agents: bool,
 }
 
 pub fn execute(args: InitArgs) -> Result<()> {
@@ -96,6 +100,7 @@ pub fn execute(args: InitArgs) -> Result<()> {
         dry_run: args.dry_run,
         non_interactive: args.yes,
         verbose: args.verbose,
+        coding_agents: !args.no_coding_agents, // Default is true (coding agents enabled)
     };
 
     // Execute workflow

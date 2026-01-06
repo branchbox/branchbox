@@ -51,14 +51,29 @@ volumes:
   - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
 ```
 
+### Environment Variable Configuration
+
+The `SHARED_CONFIG_DIR` variable is set in `.devcontainer/.branchbox.env`, which is
+auto-generated during `branchbox init`:
+
+```bash
+# In .branchbox.env (auto-managed by BranchBox)
+SHARED_CONFIG_DIR=../..
+```
+
+This keeps BranchBox infrastructure separate from application configuration in `.env`.
+For non-worktree setups, edit `.branchbox.env` and change to `SHARED_CONFIG_DIR=..`.
+
 ### Key Implementation Details
 
 - **Claude Code Authentication**: Claude Code requires both `~/.claude/`
   directory AND `~/.claude.json` file for proper authentication. Both are now
   mounted.
-- **SHARED_CONFIG_DIR**: Environment variable allows customization of the
-  shared config location. Defaults to `../..` (parent of parent, which is the
-  worktree container directory).
+- **SHARED_CONFIG_DIR**: Explicitly set in `.branchbox.env` and `.env.sample`.
+  Defaults to `../..` (worktree parent directory).
+- **Container User Detection**: When injecting mounts into existing projects,
+  BranchBox parses the Dockerfile to detect the container user and uses the
+  correct home path (e.g., `/home/node`, `/root`).
 - **Worktree Compatibility**: Settings are shared at the worktree parent level,
   so all feature worktrees share the same credentials.
 

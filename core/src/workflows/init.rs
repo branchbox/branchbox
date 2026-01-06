@@ -28,6 +28,7 @@
 //!     dry_run: false,
 //!     non_interactive: false,
 //!     verbose: false,
+//!     coding_agents: true,
 //! };
 //!
 //! let mut workflow = InitWorkflow::new(options);
@@ -110,6 +111,9 @@ pub struct InitOptions {
 
     /// Verbose output
     pub verbose: bool,
+
+    /// Configure shared AI coding agent mounts (enabled by default)
+    pub coding_agents: bool,
 }
 
 impl Default for InitOptions {
@@ -127,6 +131,7 @@ impl Default for InitOptions {
             dry_run: false,
             non_interactive: false,
             verbose: false,
+            coding_agents: true, // Default to enabled for AI coding agent mounts
         }
     }
 }
@@ -891,15 +896,49 @@ impl InitWorkflow {
         // Configure existing devcontainer for worktree compatibility
         let configure_outcome = crate::modules::configure_workspace_settings(&devcontainer_dir)?;
 
+        // Inject AI coding agent mounts if enabled
+        let coding_agent_outcome = if self.options.coding_agents {
+            let outcome = crate::modules::inject_coding_agent_mounts(&devcontainer_dir)?;
+            if !outcome.changes.is_empty() {
+                if self.options.verbose {
+                    println!("Configured AI coding agent mounts:");
+                    if let Some(ref user) = outcome.container_user {
+                        println!(
+                            "  - Detected container user: {} ({})",
+                            user.username, user.home_path
+                        );
+                    }
+                    for change in &outcome.changes {
+                        println!("  - {}", change);
+                    }
+                } else {
+                    println!("✓ Configured AI coding agent shared mounts");
+                }
+            }
+            outcome
+        } else {
+            crate::modules::CodingAgentOutcome::default()
+        };
+
+        // Print workspace configuration changes if any
         if !configure_outcome.changes.is_empty() {
             if self.options.verbose {
                 println!("Enhanced devcontainer for worktree compatibility:");
                 for change in &configure_outcome.changes {
                     println!("  - {}", change);
                 }
+            } else {
+                println!("✓ Enhanced devcontainer for worktree compatibility");
             }
+        }
+
+        // Combine changes from both operations
+        let mut all_changes = configure_outcome.changes;
+        all_changes.extend(coding_agent_outcome.changes);
+
+        if !all_changes.is_empty() {
             return Ok(DevcontainerStatus::Enhanced {
-                changes: configure_outcome.changes,
+                changes: all_changes,
             });
         }
 
@@ -2524,7 +2563,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_path = create_test_repo(&temp_dir);
 
-        // Create existing devcontainer with correct settings
+        // Create existing devcontainer with correct settings (including coding agent mounts)
         let devcontainer_dir = repo_path.join(".devcontainer");
         fs::create_dir_all(&devcontainer_dir).unwrap();
         let correct_json = r#"{
@@ -2540,7 +2579,17 @@ mod tests {
   app:
     volumes:
       - ../..:/workspaces:cached
+      - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
+      - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
+      - ${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json
+      - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
 "#,
+        )
+        .unwrap();
+        // Add .branchbox.env with SHARED_CONFIG_DIR already set
+        fs::write(
+            devcontainer_dir.join(".branchbox.env"),
+            "SHARED_CONFIG_DIR=../..\n",
         )
         .unwrap();
 
