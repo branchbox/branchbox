@@ -1,0 +1,16 @@
+<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark mode version - enhanced colors for dark backgrounds -->
+
+  <!-- Outer box with slightly brighter purple -->
+  <rect x="2" y="2" width="28" height="28" rx="4" stroke="#a78bfa" stroke-width="2"/>
+
+  <!-- Branch lines (representing git worktrees) -->
+  <path d="M8 10h6" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
+  <path d="M8 16h10" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
+  <path d="M8 22h6" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Dots (representing isolated environments) - brighter for dark mode -->
+  <circle cx="22" cy="10" r="2" fill="#4ade80"/>
+  <circle cx="22" cy="16" r="2" fill="#a78bfa"/>
+  <circle cx="22" cy="22" r="2" fill="#22d3ee"/>
+</svg>
