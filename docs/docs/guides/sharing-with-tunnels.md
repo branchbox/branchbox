@@ -128,7 +128,7 @@ cd ../redesign-user-profile
 docker compose up -d
 
 # Check the tunnel URL
-branchbox feature list --json | jq '.[] | select(.work_feature == "redesign-user-profile") | .tunnel'
+branchbox feature list
 
 # Share with PM
 # "Hey, check out the new profile page: https://redesign-abc123.trycloudflare.com/users/profile"

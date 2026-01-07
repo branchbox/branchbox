@@ -33,7 +33,7 @@ cd ../payment-refactor
 Don't switch branches. Just create a new isolated workspace:
 
 ```bash
-cd ../main  # Back to your main worktree
+cd ../<your-project>  # Back to your main worktree
 branchbox feature start "Fix auth bug"
 cd ../fix-auth-bug
 # Fix the bug here...
@@ -126,13 +126,13 @@ cd ../user-dashboard-redesign
 # Work on dashboard...
 
 # Afternoon: Urgent security fix
-cd ../main
+cd ../<your-project>  # Back to main worktree
 branchbox feature start "Patch XSS vulnerability"
 cd ../patch-xss-vulnerability
 # Fix, test, commit, push
 
 # Evening: Quick experiment
-cd ../main
+cd ../<your-project>  # Back to main worktree
 branchbox feature start "Try new caching strategy" --minimal
 cd ../try-new-caching-strategy
 # Experiment freely without affecting anything

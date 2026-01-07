@@ -25,7 +25,7 @@ const config: Config = {
   organizationName: 'branchbox', // Usually your GitHub org/user name.
   projectName: 'branchbox', // Usually your repo name.
 
-  onBrokenLinks: 'warn', // Changed to warn for development
+  onBrokenLinks: process.env.CI ? 'throw' : 'warn',
   onBrokenMarkdownLinks: 'warn',
 
   // Even if you don't use internationalization, you can use this field to set

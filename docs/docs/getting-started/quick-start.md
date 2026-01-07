@@ -67,6 +67,8 @@ You'll see output like:
 
 ## Work in Your Isolated Environment
 
+As shown in the output, the new workspace is created in the parent directory. Change into it:
+
 ```bash
 cd ../add-user-authentication
 ```

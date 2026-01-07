@@ -114,9 +114,12 @@ BranchBox:
 1. **Runs module teardown** (in reverse order)
    - Specs: Optionally moves spec to `completed/`
    - Tunnel: Removes tunnel configuration
-   - Database: (No-op currently, DB persists)
    - Compose: (No-op, containers stop when worktree removed)
    - Devcontainer: (No-op)
+
+:::note[Database Persistence]
+The database module does **not** automatically delete databases on teardown. Feature databases persist to prevent accidental data loss. To clean them up, manually drop the database or use your database admin tools.
+:::
 2. **Removes the git worktree** at `../add-oauth/`
 3. **Optionally deletes the branch** (prompts if unmerged)
 4. **Updates the registry** to mark feature as `Removed`

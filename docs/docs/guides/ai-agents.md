@@ -168,8 +168,8 @@ git diff
 # If good, commit and merge
 git add . && git commit -m "Extract service objects from OrderController"
 
-# If bad, just tear it down
-cd ../main
+# If bad, return to your main worktree and tear it down
+cd ../<your-project>  # Your main worktree
 branchbox feature teardown agent-refactor-extract-service-objects --force
 ```
 
