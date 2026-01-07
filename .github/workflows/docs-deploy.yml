@@ -1,12 +1,12 @@
-name: Docs Pages
+name: Deploy Site
 
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
-      - 'README.md'
-      - 'DEVELOPMENT.md'
+      - 'website/**'
+      - 'scripts/build-site.sh'
       - '.github/workflows/docs-deploy.yml'
   workflow_dispatch:
 
@@ -19,12 +19,9 @@ concurrency:
   group: 'pages'
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build:
-    name: Build Docusaurus
+    name: Build Site
     runs-on: ubuntu-latest
 
     steps:
@@ -38,16 +35,31 @@ jobs:
           cache: 'npm'
           cache-dependency-path: docs/package-lock.json
 
-      - name: Install dependencies
-        run: cd docs && npm ci
+      - name: Build combined site
+        run: |
+          # Create build directory
+          mkdir -p build
 
-      - name: Build site
-        run: cd docs && npm run build
+          # 1. Copy landing page to root
+          cp -r website/* build/
+
+          # 2. Build Docusaurus docs
+          cd docs
+          npm ci
+          npm run build
+          cd ..
+
+          # 3. Copy docs to /docs/ subpath
+          mkdir -p build/docs
+          cp -r docs/build/* build/docs/
+
+          # 4. Ensure .nojekyll exists
+          touch build/.nojekyll
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/build
+          path: build
 
   deploy:
     name: Deploy to GitHub Pages
