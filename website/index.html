@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BranchBox - Parallel Development for Humans and AI Agents</title>
+    <meta name="description" content="Isolated, fully provisioned development environments for every feature. Real environments, zero collisions. Built for the agentic era.">
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="BranchBox - Parallel Development for Humans and AI Agents">
+    <meta property="og:description" content="Isolated, fully provisioned development environments for every feature. Real environments, zero collisions.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://branchbox.dev">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="BranchBox">
+    <meta name="twitter:description" content="Parallel development for humans and AI agents. Real environments, zero collisions.">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="logo.svg">
+
+    <link rel="stylesheet" href="styles.css">
+
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "BranchBox",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS, Linux",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        },
+        "description": "Isolated development environments for parallel feature work and AI coding agents",
+        "license": "https://opensource.org/licenses/MIT"
+    }
+    </script>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">
+                <svg class="logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" stroke-width="2"/>
+                    <path d="M8 10h6M8 16h10M8 22h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <circle cx="22" cy="10" r="2" fill="currentColor"/>
+                    <circle cx="22" cy="16" r="2" fill="currentColor"/>
+                    <circle cx="22" cy="22" r="2" fill="currentColor"/>
+                </svg>
+                <span class="logo-text">BranchBox</span>
+            </a>
+            <div class="nav-links">
+                <a href="https://branchbox.github.io/branchbox/" class="nav-link">Docs</a>
+                <a href="https://github.com/branchbox/branchbox" class="nav-link">GitHub</a>
+                <a href="https://github.com/branchbox/branchbox/releases" class="nav-link">Releases</a>
+            </div>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Mobile Menu -->
+    <div class="mobile-menu">
+        <button class="mobile-menu-close" aria-label="Close menu">&times;</button>
+        <a href="https://branchbox.github.io/branchbox/">Documentation</a>
+        <a href="https://github.com/branchbox/branchbox">GitHub</a>
+        <a href="https://github.com/branchbox/branchbox/releases">Releases</a>
+    </div>
+
+    <!-- Hero Section -->
+    <header class="hero">
+        <div class="hero-container">
+            <div class="hero-badge">
+                <span class="badge-icon">&#9733;</span>
+                Open Source &middot; MIT License &middot; Built in Rust
+            </div>
+            <h1 class="hero-title">
+                <span class="hero-title-gradient">Parallel development</span>
+                <span class="hero-title-sub">for humans and AI agents</span>
+            </h1>
+            <p class="hero-tagline">
+                Every feature gets its own <strong>fully isolated environment</strong>.<br>
+                Real devcontainers. Real databases. Zero collisions.
+            </p>
+
+            <!-- Install Cards -->
+            <div class="install-cards">
+                <div class="install-card">
+                    <div class="install-label">macOS (Homebrew)</div>
+                    <div class="install-command">
+                        <code>brew install branchbox/tap/branchbox</code>
+                        <button class="copy-btn" data-copy="brew install branchbox/tap/branchbox">
+                            <span class="copy-icon">&#128203;</span>
+                            <span class="copy-text">Copy</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="install-card">
+                    <div class="install-label">Linux / macOS (Script)</div>
+                    <div class="install-command">
+                        <code>curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash</code>
+                        <button class="copy-btn" data-copy="curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash">
+                            <span class="copy-icon">&#128203;</span>
+                            <span class="copy-text">Copy</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Problem / Solution Section -->
+    <section class="problem-solution">
+        <div class="container">
+            <div class="ps-grid">
+                <article class="ps-card ps-problem">
+                    <h2 class="ps-title">
+                        <span class="ps-icon">&#9888;</span>
+                        The Collision Problem
+                    </h2>
+                    <p class="ps-intro">Modern engineering means parallel work. Multiple features. Multiple agents. Multiple contexts. But nothing was built for this.</p>
+                    <ul class="ps-list">
+                        <li><span class="ps-x">&#10005;</span> Git branches collide when you switch contexts</li>
+                        <li><span class="ps-x">&#10005;</span> Docker ports & networks conflict</li>
+                        <li><span class="ps-x">&#10005;</span> Databases leak data across features</li>
+                        <li><span class="ps-x">&#10005;</span> AI agents break your main workspace</li>
+                        <li><span class="ps-x">&#10005;</span> Devcontainers drift out of sync</li>
+                        <li><span class="ps-x">&#10005;</span> Credentials scattered across environments</li>
+                    </ul>
+                    <div class="ps-code">
+                        <pre><code><span class="code-comment"># The nightmare scenario</span>
+<span class="code-prompt">$</span> docker compose up
+<span class="code-error">ERROR: port 3000 already in use</span>
+
+<span class="code-prompt">$</span> rails db:migrate
+<span class="code-error">ERROR: production data corrupted</span>
+
+<span class="code-prompt">$</span> claude "refactor auth"
+<span class="code-error">Agent modified wrong branch :(</span></code></pre>
+                    </div>
+                </article>
+
+                <article class="ps-card ps-solution">
+                    <h2 class="ps-title">
+                        <span class="ps-icon">&#10003;</span>
+                        The BranchBox Fix
+                    </h2>
+                    <p class="ps-intro">One command creates a complete, isolated workspace. Every feature exists in its own universe. Nothing touches anything else.</p>
+                    <ul class="ps-list">
+                        <li><span class="ps-check">&#10003;</span> Dedicated git worktree & branch</li>
+                        <li><span class="ps-check">&#10003;</span> Isolated Docker network & ports</li>
+                        <li><span class="ps-check">&#10003;</span> Separate database per feature</li>
+                        <li><span class="ps-check">&#10003;</span> Safe sandbox for AI agents</li>
+                        <li><span class="ps-check">&#10003;</span> Auto-synced devcontainer configs</li>
+                        <li><span class="ps-check">&#10003;</span> Shared credentials mounted everywhere</li>
+                    </ul>
+                    <div class="ps-code">
+                        <pre><code><span class="code-comment"># One command. Complete isolation.</span>
+<span class="code-prompt">$</span> branchbox feature start <span class="code-string">"Add OAuth"</span>
+
+<span class="code-success">&#10003; Worktree created</span>
+<span class="code-success">&#10003; Devcontainer ready</span>
+<span class="code-success">&#10003; Database isolated</span>
+<span class="code-success">&#10003; Tunnel provisioned</span>
+<span class="code-success">&#10003; Agent launched</span></code></pre>
+                    </div>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- The Magic Section -->
+    <section class="magic">
+        <div class="container">
+            <h2 class="section-title">See the magic</h2>
+            <p class="section-subtitle">Watch BranchBox create a complete isolated environment in seconds</p>
+
+            <div class="terminal">
+                <div class="terminal-header">
+                    <span class="terminal-dot red"></span>
+                    <span class="terminal-dot yellow"></span>
+                    <span class="terminal-dot green"></span>
+                    <span class="terminal-title">Terminal</span>
+                </div>
+                <div class="terminal-body">
+                    <pre><code><span class="code-comment"># Initialize BranchBox in your repo</span>
+<span class="code-prompt">$</span> branchbox init
+<span class="code-dim">&#10003; Initialized BranchBox (Rails project)</span>
+
+<span class="code-comment"># Start an isolated feature workspace</span>
+<span class="code-prompt">$</span> branchbox feature start <span class="code-string">"OAuth Integration"</span>
+
+<span class="code-output">&#128640; Feature workspace ready (full)
+  Feature: oauth-integration
+
++------------------+------------+------------------------------------------+
+| Step             | Result     | Details                                  |
++------------------+------------+------------------------------------------+
+| Worktree         | &#10003; ready    | ../oauth-integration                     |
+| Branch           | &#10003; ready    | feature/oauth-integration                |
+| Adapter          | &#10003; detected | Rails &middot; http://localhost:3000            |
+| Feature URL      | &#10003; ready    | https://oauth-integration.example.com   |
+| Compose project  | &#10003; isolated | branchbox-oauth-integration              |
+| .env             | &#10003; copied   | ../oauth-integration/.env                |
+| Tunnel           | &#10003; online   | cloudflared (*.trycloudflare.com)       |
+| Modules          | &#10003; ready    | 4 ok                                     |
+| Default agent    | &#10003; ready    | Will launch claude via `claude`          |
++------------------+------------+------------------------------------------+</span>
+
+<span class="code-comment"># Work in your isolated environment</span>
+<span class="code-prompt">$</span> cd ../oauth-integration
+<span class="code-prompt">oauth-integration$</span> <span class="code-cursor">_</span></code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Workflow Section -->
+    <section class="workflow">
+        <div class="container">
+            <h2 class="section-title">The workflow</h2>
+            <p class="section-subtitle">From idea to isolated environment in one command</p>
+
+            <div class="workflow-steps">
+                <div class="workflow-step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>Initialize</h3>
+                        <code>branchbox init</code>
+                        <p>One-time setup. Detects your stack (Rails, Node, Rust, etc.) and prepares the registry.</p>
+                    </div>
+                </div>
+                <div class="workflow-arrow">&#8594;</div>
+                <div class="workflow-step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>Start</h3>
+                        <code>branchbox feature start "..."</code>
+                        <p>Creates worktree, devcontainer, database, network, tunnel. Everything isolated.</p>
+                    </div>
+                </div>
+                <div class="workflow-arrow">&#8594;</div>
+                <div class="workflow-step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3>Work</h3>
+                        <code>cd ../feature-name</code>
+                        <p>Code, test, debug. Your AI agents work here safely. Main stays pristine.</p>
+                    </div>
+                </div>
+                <div class="workflow-arrow">&#8594;</div>
+                <div class="workflow-step">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h3>Teardown</h3>
+                        <code>branchbox feature teardown</code>
+                        <p>Clean removal of worktree, containers, tunnel. Optional branch deletion.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Grid -->
+    <section class="features">
+        <div class="container">
+            <h2 class="section-title">What you get</h2>
+            <p class="section-subtitle">Real development environments, not sandboxes</p>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">&#128230;</div>
+                    <h3>True Isolation</h3>
+                    <p>Every feature gets its own git worktree, Docker network, ports, database, and environment variables. Zero shared state.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#128187;</div>
+                    <h3>Real Dev Environments</h3>
+                    <p>Full devcontainers with Docker Compose. Rails, Node.js, Python, Rust&mdash;if it runs locally, BranchBox isolates it.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#9889;</div>
+                    <h3>Parallel Workflows</h3>
+                    <p>Run 5 features at once. 5 containers. 5 devcontainers. 5 databases. Zero mental overhead.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#129302;</div>
+                    <h3>Agent-Ready</h3>
+                    <p>Built for Claude, Copilot, Cursor. Auto-launch agents, capture prompts, share credentials. Safe rooms for LLMs.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#127760;</div>
+                    <h3>Tunnels Built In</h3>
+                    <p>Cloudflare tunnels for external access. Share your feature with reviewers before it&rsquo;s merged.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#128736;</div>
+                    <h3>Minimal Mode</h3>
+                    <p>Use <code>--minimal</code> for quick spikes. Skip heavyweight modules. Sync devcontainers later when ready.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Agent Section -->
+    <section class="agents">
+        <div class="container">
+            <div class="agents-content">
+                <div class="agents-text">
+                    <h2>Built for the agentic era</h2>
+                    <p class="agents-intro">AI coding agents are powerful but dangerous in shared environments. BranchBox gives each agent its own safe room to operate.</p>
+                    <ul class="agents-list">
+                        <li>
+                            <span class="agents-check">&#10003;</span>
+                            <strong>Auto-launch agents</strong> &mdash; Set <code>BRANCHBOX_DEFAULT_AGENT_CMD</code> to spawn your agent automatically
+                        </li>
+                        <li>
+                            <span class="agents-check">&#10003;</span>
+                            <strong>Capture context</strong> &mdash; Use <code>--prompt</code> to store agent hand-off instructions
+                        </li>
+                        <li>
+                            <span class="agents-check">&#10003;</span>
+                            <strong>Shared credentials</strong> &mdash; <code>.gh</code>, <code>.claude</code>, <code>.codex</code> mounted across all worktrees
+                        </li>
+                        <li>
+                            <span class="agents-check">&#10003;</span>
+                            <strong>JSON output</strong> &mdash; <code>--json</code> flag for scripting and automation pipelines
+                        </li>
+                    </ul>
+                </div>
+                <div class="agents-code">
+                    <pre><code><span class="code-comment"># Configure your default agent</span>
+<span class="code-prompt">$</span> export BRANCHBOX_DEFAULT_AGENT_CMD=<span class="code-string">"claude"</span>
+
+<span class="code-comment"># Start feature with agent context</span>
+<span class="code-prompt">$</span> branchbox feature start <span class="code-string">"Fix auth bug"</span> \
+    --prompt <span class="code-string">"Investigate login failures in auth.rs"</span>
+
+<span class="code-output">&#128640; Feature workspace ready (full)
+  Feature: fix-auth-bug
+  ...
+&#129302; Launching claude via `claude`
+   (cwd: ../fix-auth-bug)</span>
+
+<span class="code-comment"># Agent works safely in isolated env</span></code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CLI Reference -->
+    <section class="cli-ref">
+        <div class="container">
+            <h2 class="section-title">Full CLI reference</h2>
+            <p class="section-subtitle">Everything you need to manage parallel feature development</p>
+
+            <div class="cli-grid">
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox init</div>
+                    <p>Initialize project with devcontainer and BranchBox registry. Detects stack automatically.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox feature start &lt;name&gt;</div>
+                    <p>Create isolated worktree with devcontainer, database, network, and optional tunnel.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox feature list</div>
+                    <p>Show all features with status, tunnel info, devcontainer sync state, and agent readiness.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox feature teardown &lt;name&gt;</div>
+                    <p>Clean removal of worktree, containers, and tunnel. Handles dirty worktree detection.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox devcontainer sync</div>
+                    <p>Propagate devcontainer changes from main worktree to all active features.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox tunnel open &lt;name&gt;</div>
+                    <p>Provision or re-provision a Cloudflare tunnel for external feature access.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox detect</div>
+                    <p>Show detected stack, adapter, and enabled modules for the current project.</p>
+                </div>
+                <div class="cli-card">
+                    <div class="cli-cmd">branchbox agent status</div>
+                    <p>Show control plane connection status and telemetry for the background agent.</p>
+                </div>
+            </div>
+
+            <div class="cli-flags">
+                <h3>Key flags</h3>
+                <div class="flags-grid">
+                    <div class="flag"><code>--minimal</code> <span>Skip heavyweight modules for quick spikes</span></div>
+                    <div class="flag"><code>--prompt "..."</code> <span>Store agent hand-off context</span></div>
+                    <div class="flag"><code>--json</code> <span>Machine-readable output for automation</span></div>
+                    <div class="flag"><code>--complete-spec</code> <span>Move spec to completed on teardown</span></div>
+                    <div class="flag"><code>--skip-module &lt;mod&gt;</code> <span>Skip specific modules</span></div>
+                    <div class="flag"><code>--force</code> <span>Force teardown with local changes</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta">
+        <div class="container">
+            <h2>Start building in parallel</h2>
+            <p>Install BranchBox and create your first isolated feature workspace in under a minute.</p>
+            <div class="cta-install">
+                <code>brew install branchbox/tap/branchbox</code>
+                <button class="copy-btn copy-btn-cta" data-copy="brew install branchbox/tap/branchbox">
+                    <span class="copy-icon">&#128203;</span>
+                    <span class="copy-text">Copy</span>
+                </button>
+            </div>
+            <div class="cta-links">
+                <a href="https://branchbox.github.io/branchbox/" class="cta-btn cta-btn-primary">Read the Docs</a>
+                <a href="https://github.com/branchbox/branchbox" class="cta-btn cta-btn-secondary">View on GitHub</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="footer-logo">BranchBox</span>
+                    <p>Parallel development for humans and AI agents.</p>
+                    <p class="footer-copy">&copy; 2025 BranchBox Contributors. MIT License.</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-col">
+                        <h4>Resources</h4>
+                        <a href="https://branchbox.github.io/branchbox/">Documentation</a>
+                        <a href="https://github.com/branchbox/branchbox">GitHub</a>
+                        <a href="https://github.com/branchbox/branchbox/releases">Releases</a>
+                    </div>
+                    <div class="footer-col">
+                        <h4>Community</h4>
+                        <a href="https://github.com/branchbox/branchbox/issues">Issues</a>
+                        <a href="https://github.com/branchbox/branchbox/discussions">Discussions</a>
+                        <a href="https://github.com/branchbox/branchbox/blob/main/CONTRIBUTING.md">Contributing</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Copy to clipboard functionality
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const text = btn.dataset.copy;
+                try {
+                    await navigator.clipboard.writeText(text);
+                    const textEl = btn.querySelector('.copy-text');
+                    const original = textEl.textContent;
+                    textEl.textContent = 'Copied!';
+                    setTimeout(() => textEl.textContent = original, 2000);
+                } catch (err) {
+                    console.error('Copy failed:', err);
+                }
+            });
+        });
+
+        // Mobile menu toggle
+        const navToggle = document.querySelector('.nav-toggle');
+        const mobileMenu = document.querySelector('.mobile-menu');
+        const mobileClose = document.querySelector('.mobile-menu-close');
+
+        navToggle.addEventListener('click', () => {
+            mobileMenu.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+
+        mobileClose.addEventListener('click', () => {
+            mobileMenu.classList.remove('active');
+            document.body.style.overflow = '';
+        });
+
+        mobileMenu.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+                mobileMenu.classList.remove('active');
+                document.body.style.overflow = '';
+            });
+        });
+    </script>
+</body>
+</html>
