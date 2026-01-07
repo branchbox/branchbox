@@ -44,12 +44,13 @@ Options:
       --skip-devcontainer     Skip devcontainer setup
       --skip-env              Skip environment setup
       --reorganize            Force reorganization into worktree structure
-      --no-parent-structure   Opt-out of parent structure (move to ~/projects/ instead)
+      --no-parent-structure   Disable parent structure (keep flat layout instead of container/main/)
       --update                Update existing setup without restructuring
       --validate              Validate only (no modifications)
       --dry-run               Dry run (show what would happen)
   -y, --yes                   Non-interactive mode (use defaults, answer yes to prompts)
   -v, --verbose               Verbose output
+      --no-coding-agents      Disable AI coding agent mounts (.codex, .claude, .gh)
   -h, --help                  Print help
 ```
 
