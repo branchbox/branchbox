@@ -79,12 +79,12 @@ const config: Config = {
       logo: {
         alt: 'BranchBox Logo',
         src: 'img/logo.svg',
-        href: '/',  // Link logo back to landing page
+        href: 'https://branchbox.dev/',  // Absolute URL to bypass baseUrl
         target: '_self',
       },
       items: [
         {
-          href: '/',
+          href: 'https://branchbox.dev/',  // Absolute URL to bypass baseUrl
           label: 'Home',
           position: 'left',
           target: '_self',
@@ -159,7 +159,7 @@ const config: Config = {
           items: [
             {
               label: 'Website',
-              href: '/',
+              href: 'https://branchbox.dev/',
             },
             {
               label: 'GitHub',
