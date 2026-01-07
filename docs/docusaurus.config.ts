@@ -79,8 +79,16 @@ const config: Config = {
       logo: {
         alt: 'BranchBox Logo',
         src: 'img/logo.svg',
+        href: '/',  // Link logo back to landing page
+        target: '_self',
       },
       items: [
+        {
+          href: '/',
+          label: 'Home',
+          position: 'left',
+          target: '_self',
+        },
         {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
@@ -149,6 +157,10 @@ const config: Config = {
         {
           title: 'Community',
           items: [
+            {
+              label: 'Website',
+              href: '/',
+            },
             {
               label: 'GitHub',
               href: 'https://github.com/branchbox/branchbox',
