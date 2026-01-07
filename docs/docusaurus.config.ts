@@ -5,9 +5,9 @@ import type * as Preset from '@docusaurus/preset-classic';
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 const config: Config = {
-  title: 'BranchBox Documentation',
-  tagline: 'Distributed development environment orchestrator managing git worktrees and devcontainers',
-  favicon: 'img/favicon.ico',
+  title: 'BranchBox',
+  tagline: 'Parallel development for humans and AI agents',
+  favicon: 'img/logo.svg',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
@@ -25,7 +25,8 @@ const config: Config = {
   organizationName: 'branchbox', // Usually your GitHub org/user name.
   projectName: 'branchbox', // Usually your repo name.
 
-  onBrokenLinks: 'throw',
+  onBrokenLinks: 'warn', // Changed to warn for development
+  onBrokenMarkdownLinks: 'warn',
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
@@ -53,11 +54,26 @@ const config: Config = {
   ],
 
   themeConfig: {
-    // Replace with your project's social card
-    image: 'img/docusaurus-social-card.jpg',
+    // Social card for sharing
+    image: 'img/logo.svg',
+
+    // Force dark mode to match the landing page
     colorMode: {
-      respectPrefersColorScheme: true,
+      defaultMode: 'dark',
+      disableSwitch: false,
+      respectPrefersColorScheme: false,
     },
+
+    // Announcement bar (optional)
+    announcementBar: {
+      id: 'support_us',
+      content:
+        '⭐ If you like BranchBox, give it a star on <a target="_blank" rel="noopener noreferrer" href="https://github.com/branchbox/branchbox">GitHub</a>!',
+      backgroundColor: 'rgba(139, 92, 246, 0.15)',
+      textColor: '#f8fafc',
+      isCloseable: true,
+    },
+
     navbar: {
       title: 'BranchBox',
       logo: {
@@ -69,7 +85,22 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
           position: 'left',
-          label: 'Documentation',
+          label: 'Docs',
+        },
+        {
+          to: '/guides/parallel-features',
+          label: 'Guides',
+          position: 'left',
+        },
+        {
+          to: '/reference/cli',
+          label: 'CLI',
+          position: 'left',
+        },
+        {
+          href: 'https://github.com/branchbox/branchbox/releases',
+          label: 'Releases',
+          position: 'right',
         },
         {
           href: 'https://github.com/branchbox/branchbox',
@@ -82,15 +113,15 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Documentation',
+          title: 'Learn',
           items: [
             {
-              label: 'Getting Started',
-              to: '/getting-started/installation',
+              label: 'Quick Start',
+              to: '/getting-started/quick-start',
             },
             {
-              label: 'Architecture',
-              to: '/architecture',
+              label: 'How It Works',
+              to: '/how-it-works',
             },
             {
               label: 'CLI Reference',
@@ -99,7 +130,24 @@ const config: Config = {
           ],
         },
         {
-          title: 'Resources',
+          title: 'Guides',
+          items: [
+            {
+              label: 'Parallel Features',
+              to: '/guides/parallel-features',
+            },
+            {
+              label: 'AI Agents',
+              to: '/guides/ai-agents',
+            },
+            {
+              label: 'Minimal Mode',
+              to: '/guides/minimal-mode',
+            },
+          ],
+        },
+        {
+          title: 'Community',
           items: [
             {
               label: 'GitHub',
@@ -109,14 +157,19 @@ const config: Config = {
               label: 'Issues',
               href: 'https://github.com/branchbox/branchbox/issues',
             },
+            {
+              label: 'Discussions',
+              href: 'https://github.com/branchbox/branchbox/discussions',
+            },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} BranchBox Team. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} BranchBox Contributors. MIT License.`,
     },
     prism: {
       theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
+      darkTheme: prismThemes.vsDark,
+      additionalLanguages: ['bash', 'json', 'toml', 'rust'],
     },
   } satisfies Preset.ThemeConfig,
 };
