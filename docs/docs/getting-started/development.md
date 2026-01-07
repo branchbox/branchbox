@@ -269,7 +269,7 @@ Before submitting a PR:
 ## Architecture Documentation
 
 For detailed architecture information, see:
-- [Architecture Overview](/architecture) - System design and components
+- [Architecture Overview](../internals/architecture.md) - System design and components
 - [PROTOCOL.md](https://github.com/branchbox/branchbox/blob/main/docs/PROTOCOL.md) - Communication protocols (gRPC, REST)
 - [CLAUDE.md](https://github.com/branchbox/branchbox/blob/main/CLAUDE.md) - AI agent development guidelines
 - [AGENTS.md](https://github.com/branchbox/branchbox/blob/main/AGENTS.md) - Repository guidelines and patterns
