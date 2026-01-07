@@ -12,15 +12,20 @@ ICON_SIZES = [16, 32, 48, 64, 128, 256, 512]
 # Profile picture sizes (GitHub recommends 500x500)
 PROFILE_SIZES = [200, 460, 500]
 
-def convert_svg_to_png(svg_path: Path, output_path: Path, size: int):
-    """Convert SVG to PNG at specified size."""
-    cairosvg.svg2png(
-        url=str(svg_path),
-        write_to=str(output_path),
-        output_width=size,
-        output_height=size,
-    )
-    print(f"  Created: {output_path.name} ({size}x{size})")
+def convert_svg_to_png(svg_path: Path, output_path: Path, size: int) -> bool:
+    """Convert SVG to PNG at specified size. Returns True on success."""
+    try:
+        cairosvg.svg2png(
+            url=str(svg_path),
+            write_to=str(output_path),
+            output_width=size,
+            output_height=size,
+        )
+        print(f"  Created: {output_path.name} ({size}x{size})")
+        return True
+    except Exception as e:
+        print(f"  ERROR: Failed to create {output_path.name}: {e}")
+        return False
 
 def main():
     output_dir = SCRIPT_DIR / "png"
@@ -37,15 +42,17 @@ def main():
         ("=== Generating Profile Picture PNGs (transparent) ===", "Circular icons with transparent background:", circle_transparent_svg, "logo-darkmode-circle-transparent", PROFILE_SIZES),
     ]
 
+    generated_count = 0
     for title, subtitle, svg_path, name_base, sizes in configs:
         print(f"\n{title}")
         print(subtitle)
         for size in sizes:
             output_path = output_dir / f"{name_base}-{size}x{size}.png"
-            convert_svg_to_png(svg_path, output_path, size)
+            if convert_svg_to_png(svg_path, output_path, size):
+                generated_count += 1
 
     print("\n=== Summary ===")
-    print(f"Generated {len(list(output_dir.glob('*.png')))} PNG files in {output_dir}/")
+    print(f"Generated {generated_count} PNG files in {output_dir}/")
     print("\nRecommended for GitHub:")
     print("  - Profile picture: logo-darkmode-circle-500x500.png")
     print("  - Organization avatar: logo-darkmode-circle-500x500.png")
