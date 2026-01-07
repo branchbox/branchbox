@@ -75,3 +75,6 @@ docs/node_modules/
 
 .branchbox/secure/tunnels/
 .branchbox.env
+
+# Build artifacts
+build/
