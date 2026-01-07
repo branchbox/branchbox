@@ -46,10 +46,9 @@ Dark mode logo variants for GitHub profiles, favicons, and other uses.
 
 ```bash
 cd assets/icons
+pip install -r requirements.txt
 python3 generate-pngs.py
 ```
-
-Requires: `pip install cairosvg`
 
 ## Color Palette (Dark Mode)
 

@@ -2,7 +2,6 @@
 """Generate PNG icons from SVG source files at various sizes for GitHub."""
 
 import cairosvg
-import os
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -32,23 +31,18 @@ def main():
     circle_svg = SCRIPT_DIR / "logo-darkmode-circle.svg"
     circle_transparent_svg = SCRIPT_DIR / "logo-darkmode-circle-transparent.svg"
 
-    print("\n=== Generating Dark Mode Icon PNGs ===")
-    print("Square icons (for favicons, app icons, etc.):")
-    for size in ICON_SIZES:
-        output_path = output_dir / f"logo-darkmode-{size}x{size}.png"
-        convert_svg_to_png(darkmode_svg, output_path, size)
+    configs = [
+        ("=== Generating Dark Mode Icon PNGs ===", "Square icons (for favicons, app icons, etc.):", darkmode_svg, "logo-darkmode", ICON_SIZES),
+        ("=== Generating Profile Picture PNGs (with dark background) ===", "Circular icons with dark background (for GitHub profile):", circle_svg, "logo-darkmode-circle", PROFILE_SIZES),
+        ("=== Generating Profile Picture PNGs (transparent) ===", "Circular icons with transparent background:", circle_transparent_svg, "logo-darkmode-circle-transparent", PROFILE_SIZES),
+    ]
 
-    print("\n=== Generating Profile Picture PNGs (with dark background) ===")
-    print("Circular icons with dark background (for GitHub profile):")
-    for size in PROFILE_SIZES:
-        output_path = output_dir / f"logo-darkmode-circle-{size}x{size}.png"
-        convert_svg_to_png(circle_svg, output_path, size)
-
-    print("\n=== Generating Profile Picture PNGs (transparent) ===")
-    print("Circular icons with transparent background:")
-    for size in PROFILE_SIZES:
-        output_path = output_dir / f"logo-darkmode-circle-transparent-{size}x{size}.png"
-        convert_svg_to_png(circle_transparent_svg, output_path, size)
+    for title, subtitle, svg_path, name_base, sizes in configs:
+        print(f"\n{title}")
+        print(subtitle)
+        for size in sizes:
+            output_path = output_dir / f"{name_base}-{size}x{size}.png"
+            convert_svg_to_png(svg_path, output_path, size)
 
     print("\n=== Summary ===")
     print(f"Generated {len(list(output_dir.glob('*.png')))} PNG files in {output_dir}/")
