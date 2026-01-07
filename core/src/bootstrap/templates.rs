@@ -77,6 +77,7 @@ mod tests {
         for shared in [
             "${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex",
             "${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude",
+            "${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json",
             "${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh",
         ] {
             assert!(

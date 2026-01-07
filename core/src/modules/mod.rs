@@ -23,7 +23,8 @@ pub use compose::ComposeModule;
 pub use database::{DatabaseEngine, DatabaseModule};
 pub use devcontainer::{
     add_cloudflared_service, configure_workspace_settings, default_port_for_stack,
-    detect_main_service, CloudflaredOutcome, ConfigureOutcome, DevcontainerModule, ServiceInfo,
+    detect_container_user, detect_main_service, inject_coding_agent_mounts, CloudflaredOutcome,
+    CodingAgentOutcome, ConfigureOutcome, ContainerUser, DevcontainerModule, ServiceInfo,
     SyncStrategy,
 };
 pub use specs::{SpecStatus, SpecsModule};

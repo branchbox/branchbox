@@ -879,6 +879,327 @@ pub fn configure_workspace_settings(devcontainer_dir: &Path) -> Result<Configure
     Ok(outcome)
 }
 
+// ============================================================================
+// Coding Agent Mount Injection
+// ============================================================================
+
+/// Detected container user information for AI coding agent mounts.
+#[derive(Debug, Clone)]
+pub struct ContainerUser {
+    /// Username (e.g., "vscode", "root", "node")
+    pub username: String,
+    /// Home directory path (e.g., "/home/vscode", "/root")
+    pub home_path: String,
+}
+
+impl Default for ContainerUser {
+    fn default() -> Self {
+        Self {
+            username: "vscode".to_string(),
+            home_path: "/home/vscode".to_string(),
+        }
+    }
+}
+
+/// Result of injecting coding agent mounts.
+#[derive(Debug, Default)]
+pub struct CodingAgentOutcome {
+    /// Whether compose file was modified
+    pub compose_modified: bool,
+    /// List of changes made
+    pub changes: Vec<String>,
+    /// Detected container user
+    pub container_user: Option<ContainerUser>,
+}
+
+/// Find Dockerfile path based on devcontainer.json configuration.
+fn find_dockerfile(devcontainer_dir: &Path, config: &JsonValue) -> Option<PathBuf> {
+    // Check for "build.dockerfile" in devcontainer.json
+    if let Some(build) = config.get("build") {
+        if let Some(dockerfile) = build.get("dockerfile").and_then(|d| d.as_str()) {
+            let path = devcontainer_dir.join(dockerfile);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    // Check for "dockerFile" (legacy) in devcontainer.json
+    if let Some(dockerfile) = config.get("dockerFile").and_then(|d| d.as_str()) {
+        let path = devcontainer_dir.join(dockerfile);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    // Try common names
+    for name in ["Dockerfile", "Dockerfile.dev", "dockerfile"] {
+        let path = devcontainer_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+/// Parse Dockerfile content to find the final USER directive.
+fn parse_dockerfile_user(contents: &str) -> Option<String> {
+    let mut last_user: Option<String> = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+
+        // Skip comments and empty lines
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Parse USER directive (case-insensitive for robustness)
+        if trimmed.to_uppercase().starts_with("USER ") {
+            let user_part = trimmed[5..].trim();
+            // Handle "USER username" and "USER username:group" formats
+            let username = user_part.split(':').next().unwrap();
+            // Handle ARG substitution - if it contains ${}, skip it
+            if !username.contains("${") {
+                last_user = Some(username.to_string());
+            }
+        }
+    }
+
+    last_user
+}
+
+/// Map username to home directory path.
+fn get_home_path_for_user(username: &str) -> String {
+    match username {
+        "root" => "/root".to_string(),
+        user => format!("/home/{}", user),
+    }
+}
+
+/// Detect the container user from Dockerfile.
+///
+/// Parses the Dockerfile to find the final USER directive.
+/// If no USER directive is found, defaults to "vscode".
+///
+/// # Arguments
+/// * `devcontainer_dir` - Path to .devcontainer directory
+/// * `config` - Parsed devcontainer.json
+///
+/// # Returns
+/// ContainerUser with detected username and home path
+pub fn detect_container_user(devcontainer_dir: &Path, config: &JsonValue) -> ContainerUser {
+    let dockerfile_path = find_dockerfile(devcontainer_dir, config);
+
+    if let Some(path) = dockerfile_path {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Some(user) = parse_dockerfile_user(&contents) {
+                return ContainerUser {
+                    username: user.clone(),
+                    home_path: get_home_path_for_user(&user),
+                };
+            }
+        }
+    }
+
+    ContainerUser::default()
+}
+
+/// Generate the shared config mount entries for AI coding agents.
+fn coding_agent_mount_entries(home_path: &str) -> Vec<String> {
+    let host_pattern = "${SHARED_CONFIG_DIR:-../..}";
+    vec![
+        format!("{}/.codex:{}/.codex", host_pattern, home_path),
+        format!("{}/.claude:{}/.claude", host_pattern, home_path),
+        format!("{}/.claude.json:{}/.claude.json", host_pattern, home_path),
+        format!("{}/.gh:{}/.config/gh", host_pattern, home_path),
+    ]
+}
+
+/// Inject shared AI coding agent volume mounts into compose file.
+///
+/// This function:
+/// 1. Detects the container user from Dockerfile
+/// 2. Adds volume mounts for .codex, .claude, .claude.json, .gh to main service
+/// 3. Is idempotent - won't add duplicate mounts
+///
+/// # Arguments
+/// * `devcontainer_dir` - Path to .devcontainer directory
+///
+/// # Returns
+/// CodingAgentOutcome describing changes made
+pub fn inject_coding_agent_mounts(devcontainer_dir: &Path) -> Result<CodingAgentOutcome> {
+    let mut outcome = CodingAgentOutcome::default();
+
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(outcome);
+    }
+
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    // Detect container user
+    let container_user = detect_container_user(devcontainer_dir, &config);
+    outcome.container_user = Some(container_user.clone());
+
+    // Find compose file
+    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+        Some(p) => p,
+        None => return Ok(outcome), // No compose file, nothing to do
+    };
+
+    let compose_filename = compose_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("compose.yaml");
+
+    let compose_contents = std::fs::read_to_string(&compose_path)?;
+    let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+        Error::validation(format!(
+            "Failed to parse {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    // Generate mount entries
+    let mount_entries = coding_agent_mount_entries(&container_user.home_path);
+
+    let mut compose_updated = false;
+
+    if let Some(root) = compose.as_mapping_mut() {
+        let services_key = YamlValue::String("services".to_string());
+
+        if let Some(services) = root.get_mut(&services_key).and_then(|v| v.as_mapping_mut()) {
+            // Find main service (skip infrastructure services)
+            let main_service_name = detect_main_service_name(services);
+
+            if let Some(main_name) = main_service_name {
+                let main_key = YamlValue::String(main_name.clone());
+
+                if let Some(service) = services.get_mut(&main_key) {
+                    if let Some(service_map) = service.as_mapping_mut() {
+                        let volumes_key = YamlValue::String("volumes".to_string());
+
+                        // Get or create volumes array
+                        let volumes = service_map
+                            .entry(volumes_key.clone())
+                            .or_insert_with(|| YamlValue::Sequence(vec![]));
+
+                        if let Some(volumes_seq) = volumes.as_sequence_mut() {
+                            // Check existing mounts to avoid duplicates
+                            let existing: HashSet<String> = volumes_seq
+                                .iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect();
+
+                            for entry in &mount_entries {
+                                // Check if mount already exists by target path
+                                // Use next_back() because source may contain colons (e.g., ${VAR:-default})
+                                let target_path = entry.split(':').next_back().unwrap_or("");
+                                let already_exists = existing.iter().any(|e| {
+                                    // Check if any part matches the target path
+                                    // This handles both "source:target" and "source:target:options"
+                                    e.split(':').any(|part| part == target_path)
+                                });
+
+                                if !already_exists {
+                                    volumes_seq.push(YamlValue::String(entry.clone()));
+                                    compose_updated = true;
+                                    outcome.changes.push(format!(
+                                        "{}: added mount {}",
+                                        compose_filename, entry
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if compose_updated {
+        let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+            Error::validation(format!(
+                "Failed to serialize {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
+        if serialized.starts_with("---\n") {
+            serialized = serialized.split_off(4);
+        }
+        if !serialized.ends_with('\n') {
+            serialized.push('\n');
+        }
+        std::fs::write(&compose_path, serialized)?;
+        outcome.compose_modified = true;
+        tracing::info!(
+            "Injected coding agent mounts into {} (user: {})",
+            compose_filename,
+            container_user.username
+        );
+    }
+
+    // Always ensure SHARED_CONFIG_DIR is set in .branchbox.env
+    // (even if compose mounts already existed from templates)
+    if let Some(change) = ensure_shared_config_dir(devcontainer_dir)? {
+        outcome.changes.push(change);
+    }
+
+    Ok(outcome)
+}
+
+/// Ensure SHARED_CONFIG_DIR is set in .branchbox.env file.
+///
+/// Returns a change description if the file was modified.
+fn ensure_shared_config_dir(devcontainer_dir: &Path) -> Result<Option<String>> {
+    let env_path = devcontainer_dir.join(".branchbox.env");
+    let shared_config_line = "SHARED_CONFIG_DIR=../..";
+
+    if env_path.exists() {
+        let contents = std::fs::read_to_string(&env_path)?;
+
+        // Check if SHARED_CONFIG_DIR is already set (not commented)
+        let has_shared_config = contents
+            .lines()
+            .any(|line| line.trim().starts_with("SHARED_CONFIG_DIR="));
+
+        if !has_shared_config {
+            // Append SHARED_CONFIG_DIR to existing file
+            let mut new_contents = contents;
+            if !new_contents.ends_with('\n') {
+                new_contents.push('\n');
+            }
+            new_contents.push_str("\n# Shared config directory for AI coding agent mounts\n");
+            new_contents.push_str(shared_config_line);
+            new_contents.push('\n');
+            std::fs::write(&env_path, new_contents)?;
+            return Ok(Some(
+                ".branchbox.env: added SHARED_CONFIG_DIR=../..".to_string(),
+            ));
+        }
+    } else {
+        // Create .branchbox.env with SHARED_CONFIG_DIR
+        let contents = format!(
+            "# BranchBox devcontainer overrides (auto-generated)\n\
+             # Shared config directory for AI coding agent mounts\n\
+             # This path is relative to the compose file location (.devcontainer/)\n\
+             {}\n",
+            shared_config_line
+        );
+        std::fs::write(&env_path, contents)?;
+        return Ok(Some(
+            ".branchbox.env: created with SHARED_CONFIG_DIR=../..".to_string(),
+        ));
+    }
+
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1765,5 +2086,362 @@ volumes:
         assert_eq!(info.name, Some("app".to_string()));
         assert_eq!(info.port, 5000);
         assert_eq!(info.service_url, "http://app:5000");
+    }
+
+    // ========================================================================
+    // Coding Agent Mount Injection Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_dockerfile_user_simple() {
+        let contents = "FROM ubuntu:22.04\nUSER vscode\n";
+        assert_eq!(parse_dockerfile_user(contents), Some("vscode".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_multiple() {
+        let contents = "FROM ubuntu:22.04\nUSER root\nRUN apt-get update\nUSER myuser\n";
+        assert_eq!(parse_dockerfile_user(contents), Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_with_group() {
+        let contents = "FROM ubuntu:22.04\nUSER developer:developers\n";
+        assert_eq!(
+            parse_dockerfile_user(contents),
+            Some("developer".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_none() {
+        let contents = "FROM ubuntu:22.04\nRUN echo hello\n";
+        assert_eq!(parse_dockerfile_user(contents), None);
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_root() {
+        let contents = "FROM ubuntu:22.04\nUSER root\n";
+        assert_eq!(parse_dockerfile_user(contents), Some("root".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_case_insensitive() {
+        let contents = "FROM ubuntu:22.04\nuser myuser\n";
+        assert_eq!(parse_dockerfile_user(contents), Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_with_arg_variable() {
+        // Skip ARG variables, return None
+        let contents = "FROM ubuntu:22.04\nUSER ${USERNAME:-vscode}\n";
+        assert_eq!(parse_dockerfile_user(contents), None);
+    }
+
+    #[test]
+    fn test_parse_dockerfile_user_skips_comments() {
+        let contents = "FROM ubuntu:22.04\n# USER commented_out\nUSER actual_user\n";
+        assert_eq!(
+            parse_dockerfile_user(contents),
+            Some("actual_user".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_home_path_for_user_root() {
+        assert_eq!(get_home_path_for_user("root"), "/root");
+    }
+
+    #[test]
+    fn test_get_home_path_for_user_vscode() {
+        assert_eq!(get_home_path_for_user("vscode"), "/home/vscode");
+    }
+
+    #[test]
+    fn test_get_home_path_for_user_node() {
+        assert_eq!(get_home_path_for_user("node"), "/home/node");
+    }
+
+    #[test]
+    fn test_coding_agent_mount_entries() {
+        let entries = coding_agent_mount_entries("/home/vscode");
+
+        assert_eq!(entries.len(), 4);
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".codex:/home/vscode/.codex")));
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".claude:/home/vscode/.claude")));
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".claude.json:/home/vscode/.claude.json")));
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".gh:/home/vscode/.config/gh")));
+    }
+
+    #[test]
+    fn test_coding_agent_mount_entries_root() {
+        let entries = coding_agent_mount_entries("/root");
+
+        assert!(entries.iter().any(|e| e.contains(".claude:/root/.claude")));
+        assert!(entries.iter().any(|e| e.contains(".gh:/root/.config/gh")));
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_no_devcontainer() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        // Don't create the directory
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+        assert!(!outcome.compose_modified);
+        assert!(outcome.changes.is_empty());
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_adds_mounts() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("Dockerfile"),
+            "FROM ubuntu:22.04\nUSER developer\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build: .
+    volumes:
+      - ../..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        // 4 mount changes + 1 for creating .branchbox.env with SHARED_CONFIG_DIR
+        assert_eq!(outcome.changes.len(), 5);
+        assert_eq!(
+            outcome.container_user.as_ref().unwrap().username,
+            "developer"
+        );
+
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(compose.contains(".codex:/home/developer/.codex"));
+        assert!(compose.contains(".claude:/home/developer/.claude"));
+        assert!(compose.contains(".claude.json:/home/developer/.claude.json"));
+        assert!(compose.contains(".gh:/home/developer/.config/gh"));
+
+        // Verify .branchbox.env was created with SHARED_CONFIG_DIR
+        let branchbox_env =
+            std::fs::read_to_string(devcontainer_dir.join(".branchbox.env")).unwrap();
+        assert!(branchbox_env.contains("SHARED_CONFIG_DIR=../.."));
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // Already has the mounts
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build: .
+    volumes:
+      - ../..:/workspaces:cached
+      - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
+      - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
+      - ${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json
+      - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
+"#,
+        )
+        .unwrap();
+
+        // Already has SHARED_CONFIG_DIR in .branchbox.env
+        std::fs::write(
+            devcontainer_dir.join(".branchbox.env"),
+            "SHARED_CONFIG_DIR=../..\n",
+        )
+        .unwrap();
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+
+        // Should not modify because mounts and env already exist
+        assert!(!outcome.compose_modified);
+        assert!(outcome.changes.is_empty());
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_skips_infrastructure_services() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  postgres:
+    image: postgres:15
+  redis:
+    image: redis:7
+  app:
+    build: .
+    volumes:
+      - ../..:/workspaces:cached
+"#,
+        )
+        .unwrap();
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+
+        // Should add to 'app' service, not postgres/redis
+        assert!(outcome.compose_modified);
+
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        // Verify mounts are in compose file (under app service)
+        assert!(compose.contains(".codex:/home/vscode/.codex"));
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_with_root_user() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("Dockerfile"),
+            "FROM ubuntu:22.04\nUSER root\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build: .
+"#,
+        )
+        .unwrap();
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert_eq!(outcome.container_user.as_ref().unwrap().home_path, "/root");
+
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(compose.contains(".claude:/root/.claude"));
+        assert!(compose.contains(".gh:/root/.config/gh"));
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_no_compose_file() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test"}"#,
+        )
+        .unwrap();
+
+        // No compose file, only Dockerfile
+        std::fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+
+        // Should not modify anything
+        assert!(!outcome.compose_modified);
+        assert!(outcome.changes.is_empty());
+    }
+
+    #[test]
+    fn test_inject_coding_agent_mounts_detects_dockerfile_from_build_config() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"name": "Test", "build": {"dockerfile": "Dockerfile.dev"}}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("Dockerfile.dev"),
+            "FROM node:20\nUSER node\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    build: .
+"#,
+        )
+        .unwrap();
+
+        let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
+
+        assert!(outcome.compose_modified);
+        assert_eq!(outcome.container_user.as_ref().unwrap().username, "node");
+
+        let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(compose.contains(".claude:/home/node/.claude"));
+    }
+
+    #[test]
+    fn test_detect_container_user_defaults_to_vscode() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        let config = serde_json::json!({"name": "Test"});
+        let user = detect_container_user(&devcontainer_dir, &config);
+
+        assert_eq!(user.username, "vscode");
+        assert_eq!(user.home_path, "/home/vscode");
+    }
+
+    #[test]
+    fn test_container_user_default() {
+        let user = ContainerUser::default();
+        assert_eq!(user.username, "vscode");
+        assert_eq!(user.home_path, "/home/vscode");
     }
 }
