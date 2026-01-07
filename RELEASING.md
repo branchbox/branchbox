@@ -92,32 +92,27 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
    cd ..
    ```
 
-3. **Run the manual CLI smoke harness (release-blocking):**
+3. **Update CHANGELOG.md and documentation:**
+   - Edit `CHANGELOG.md` to capture highlights for the version you're publishing
+   - Update end-user docs (`README.md`, `docs/docs/**`) if behavior changed
+   - If CLI flags changed, regenerate `docs/docs/reference/cli.md` using `branchbox --help`
+   - Commit documentation updates before tagging
+
+4. **Run the manual CLI smoke harness (recommended):**
    ```bash
-   ./scripts/manual-cli-e2e.sh
-   ./scripts/manual-cli-e2e.sh --mode verbose
+   # Quick pretend-mode validation (no Docker required)
    ./scripts/manual-cli-e2e.sh --mode pretend
+
+   # Full validation with Docker (if available)
+   ./scripts/manual-cli-e2e.sh
    STACK=generic ./scripts/manual-cli-e2e.sh
-   STACK=rails ./scripts/manual-cli-e2e.sh
-   STACK=node ./scripts/manual-cli-e2e.sh
    ```
 
-   Each run seeds a disposable repo, exercises init → multi-feature sync → tunnel permutations, and enforces the dirty teardown guard. See `docs/docs/getting-started/manual-cli-e2e.md` for troubleshooting tips. All six combinations must succeed before tagging.
-
-4. **Update release notes and docs:**
-   - Edit `CHANGELOG.md` to capture highlights for the version you’re publishing.
-   - Refresh `AGENTS.md` and `RELEASING.md` with any new expectations so future agents don’t rediscover the process.
-   - Update end-user docs (`README.md`, `docs/docs/**`) — especially the CLI reference and manual CLI E2E guide — to mirror new behavior.
-   - If CLI flags changed, regenerate `docs/docs/reference/cli.md` using `branchbox --help` and the relevant subcommands.
-   - Record any new manual steps or scripts inside `docs/docs/getting-started/manual-cli-e2e.md` plus `scripts/manual-cli-e2e.md`.
+   The harness exercises init → feature lifecycle → tunnel permutations → teardown. See `docs/docs/getting-started/manual-cli-e2e.md` for details. For major releases, run all stack/mode combinations.
 
 5. **Changelog preview (optional):**
    ```bash
-   # Generate changelog preview for unreleased changes
    git-cliff --unreleased
-
-   # If you want to manually edit CHANGELOG.md before release
-   # you can do so now
    ```
 
 ### Step 2: Create Version Tag
@@ -443,23 +438,28 @@ git push --follow-tags
 Use this checklist for each release:
 
 - [ ] Checkout main branch and pull latest changes
-- [ ] Run all quality checks (fmt, clippy, tests, docs)
-- [ ] Run `scripts/manual-cli-e2e.sh` in regular/verbose/pretend modes for rust, generic, rails, and node stacks
-- [ ] Update `CHANGELOG.md`, docs (`README.md`, `docs/docs/**`), and `AGENTS.md` to reflect release scope
-- [ ] Run dry-run: `cargo release --workspace --dry-run`
-- [ ] Execute release: `cargo release --workspace --execute`
-- [ ] Push tags: `git push --follow-tags`
-- [ ] Monitor workflow: `gh run watch`
+- [ ] Run quality checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+- [ ] Build docs: `cargo doc --no-deps && cd docs && npm run build`
+- [ ] Update `CHANGELOG.md` with release highlights
+- [ ] Update docs if CLI behavior changed
+- [ ] Run E2E harness: `./scripts/manual-cli-e2e.sh --mode pretend`
+- [ ] Dry-run: `cargo release --workspace --dry-run`
+- [ ] Execute: `cargo release --workspace --execute`
+- [ ] Push: `git push --follow-tags`
+- [ ] Monitor: `gh run watch`
 - [ ] Verify release artifacts on GitHub
-- [ ] Download and test binaries on each platform
-- [ ] Check that version badge is updated
-- [ ] Test basic commands with new binary
-- [ ] Announce release (if applicable)
+- [ ] Verify docs deployed: `gh run list --workflow docs-deploy`
 
 ## Version History
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| 0.5.0 | 2026-01-07 | Minor | Git worktree compatibility, Claude Code mounts |
+| 0.4.1 | 2025-12-15 | Patch | Init fixes, tunnel commands |
+| 0.4.0 | 2025-11-15 | Minor | Agent daemon, macOS app, gRPC |
+| 0.3.0 | 2025-11-09 | Minor | Default agent, specs automation |
+| 0.2.2 | 2025-11-08 | Patch | .branchbox.env seeding |
+| 0.2.0 | 2025-11-03 | Minor | Devcontainer module, Cloudflared |
 | 0.1.0 | 2025-10-27 | Initial | Core workflow orchestration |
 
 ## Questions?

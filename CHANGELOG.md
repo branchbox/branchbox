@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-01-07
+
 ### Added
 - `branchbox init` now automatically configures devcontainer.json and compose.yaml for git worktree compatibility, ensuring `workspaceFolder` uses dynamic `${localWorkspaceFolderBasename}` and compose mounts use `../..:/workspaces:cached`.
+- Compose templates now mount `.claude.json` file for Claude Code authentication alongside the existing `.claude/` directory mount, ensuring proper authentication across worktrees.
 - `branchbox init` generates `docs/BRANCHBOX.md` quickstart guide for new projects.
 - Init next steps now suggest committing the BranchBox configuration with a ready-to-use git command.
 - `branchbox init` automatically adds cloudflared tunnel service to compose file when tunnels are enabled, with `.cloudflared.env` template for configuration.
