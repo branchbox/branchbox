@@ -1,6 +1,12 @@
 ---
-sidebar_position: 3
+sidebar_position: 1
 ---
+
+# Architecture Deep Dive
+
+:::info For Contributors
+This document covers internal architecture details. For user-focused documentation, see [How It Works](../how-it-works.md).
+:::
 
 # BranchBox — Distributed Architecture
 

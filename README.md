@@ -6,6 +6,8 @@
 [![CI](https://github.com/branchbox/branchbox/workflows/CI/badge.svg)](https://github.com/branchbox/branchbox/actions)
 [![License](https://img.shields.io/github/license/branchbox/branchbox)](LICENSE)
 
+**[Website](https://branchbox.dev)** · **[Documentation](https://branchbox.dev/docs)** · **[GitHub](https://github.com/branchbox/branchbox)**
+
 BranchBox is an open-source engine for **isolated, fully provisioned development environments** designed for engineers working with AI coding agents, or anyone juggling multiple features at once.
 
 Every feature becomes its own **self-contained workspace** with:

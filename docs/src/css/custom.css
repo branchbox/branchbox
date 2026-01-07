@@ -1,30 +1,277 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * BranchBox Documentation Theme
+ * Matches the landing page aesthetics - dark theme with violet accents
  */
 
-/* You can override the default Infima variables here. */
+/* ============================================================================
+   Color Palette (matching website/styles.css)
+   ============================================================================ */
+
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
+  /* Primary violet palette */
+  --ifm-color-primary: #8b5cf6;
+  --ifm-color-primary-dark: #7c3aed;
+  --ifm-color-primary-darker: #6d28d9;
+  --ifm-color-primary-darkest: #5b21b6;
+  --ifm-color-primary-light: #a78bfa;
+  --ifm-color-primary-lighter: #c4b5fd;
+  --ifm-color-primary-lightest: #ddd6fe;
+
+  /* Code styling */
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --docusaurus-highlighted-code-line-bg: rgba(139, 92, 246, 0.15);
+
+  /* Typography */
+  --ifm-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --ifm-heading-font-weight: 600;
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* Dark mode - our primary theme */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  /* Violet accents */
+  --ifm-color-primary: #a78bfa;
+  --ifm-color-primary-dark: #8b5cf6;
+  --ifm-color-primary-darker: #7c3aed;
+  --ifm-color-primary-darkest: #6d28d9;
+  --ifm-color-primary-light: #c4b5fd;
+  --ifm-color-primary-lighter: #ddd6fe;
+  --ifm-color-primary-lightest: #ede9fe;
+
+  /* Background colors matching website */
+  --ifm-background-color: #0a0a1a;
+  --ifm-background-surface-color: #0d0d24;
+  --ifm-navbar-background-color: rgba(10, 10, 26, 0.85);
+  --ifm-footer-background-color: #0a0a1a;
+
+  /* Text colors */
+  --ifm-font-color-base: #f8fafc;
+  --ifm-font-color-secondary: #94a3b8;
+
+  /* Code blocks */
+  --docusaurus-highlighted-code-line-bg: rgba(139, 92, 246, 0.2);
+  --ifm-code-background: #12122e;
+
+  /* Cards and surfaces */
+  --ifm-card-background-color: rgba(20, 20, 50, 0.6);
+
+  /* Borders */
+  --ifm-toc-border-color: rgba(139, 92, 246, 0.2);
+  --ifm-hr-border-color: rgba(139, 92, 246, 0.2);
+}
+
+/* ============================================================================
+   Global Styles
+   ============================================================================ */
+
+/* Import Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* ============================================================================
+   Navbar Customization
+   ============================================================================ */
+
+[data-theme='dark'] .navbar {
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.navbar__title {
+  font-family: var(--ifm-font-family-monospace);
+  font-weight: 600;
+}
+
+.navbar__link:hover {
+  color: var(--ifm-color-primary-light);
+}
+
+/* ============================================================================
+   Sidebar Customization
+   ============================================================================ */
+
+[data-theme='dark'] .menu {
+  background: transparent;
+}
+
+[data-theme='dark'] .menu__link--active {
+  background: rgba(139, 92, 246, 0.15);
+  border-left: 3px solid var(--ifm-color-primary);
+}
+
+[data-theme='dark'] .menu__link:hover {
+  background: rgba(139, 92, 246, 0.1);
+}
+
+/* ============================================================================
+   Content Styling
+   ============================================================================ */
+
+/* Article content */
+.markdown h1:first-child {
+  font-size: 2.5rem;
+}
+
+.markdown h2 {
+  border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+  padding-bottom: 0.5rem;
+}
+
+/* Code blocks */
+[data-theme='dark'] pre {
+  background: #080818 !important;
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+[data-theme='dark'] code {
+  background: rgba(139, 92, 246, 0.15);
+  border: none;
+  color: var(--ifm-color-primary-light);
+}
+
+[data-theme='dark'] pre code {
+  background: transparent;
+  color: inherit;
+}
+
+/* Inline code in links */
+[data-theme='dark'] a code {
+  color: var(--ifm-color-primary-light);
+}
+
+/* ============================================================================
+   Admonitions / Callouts
+   ============================================================================ */
+
+[data-theme='dark'] .alert--info {
+  --ifm-alert-background-color: rgba(139, 92, 246, 0.1);
+  --ifm-alert-border-color: var(--ifm-color-primary);
+}
+
+[data-theme='dark'] .alert--success {
+  --ifm-alert-background-color: rgba(34, 197, 94, 0.1);
+  --ifm-alert-border-color: #22c55e;
+}
+
+[data-theme='dark'] .alert--warning {
+  --ifm-alert-background-color: rgba(245, 158, 11, 0.1);
+  --ifm-alert-border-color: #f59e0b;
+}
+
+[data-theme='dark'] .alert--danger {
+  --ifm-alert-background-color: rgba(239, 68, 68, 0.1);
+  --ifm-alert-border-color: #ef4444;
+}
+
+/* ============================================================================
+   Tables
+   ============================================================================ */
+
+[data-theme='dark'] table {
+  border-collapse: collapse;
+}
+
+[data-theme='dark'] table th {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.2);
+}
+
+[data-theme='dark'] table td {
+  border-color: rgba(139, 92, 246, 0.1);
+}
+
+[data-theme='dark'] table tr:nth-child(even) {
+  background: rgba(139, 92, 246, 0.05);
+}
+
+/* ============================================================================
+   Footer
+   ============================================================================ */
+
+[data-theme='dark'] .footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+[data-theme='dark'] .footer__title {
+  color: var(--ifm-font-color-base);
+}
+
+[data-theme='dark'] .footer__link-item {
+  color: var(--ifm-font-color-secondary);
+}
+
+[data-theme='dark'] .footer__link-item:hover {
+  color: var(--ifm-color-primary-light);
+}
+
+/* ============================================================================
+   TOC (Table of Contents)
+   ============================================================================ */
+
+[data-theme='dark'] .table-of-contents__link--active {
+  color: var(--ifm-color-primary-light);
+}
+
+[data-theme='dark'] .table-of-contents__link:hover {
+  color: var(--ifm-color-primary-light);
+}
+
+/* ============================================================================
+   Search
+   ============================================================================ */
+
+[data-theme='dark'] .DocSearch-Button {
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+[data-theme='dark'] .DocSearch-Button:hover {
+  background: rgba(139, 92, 246, 0.2);
+}
+
+/* ============================================================================
+   Pagination
+   ============================================================================ */
+
+[data-theme='dark'] .pagination-nav__link {
+  border-color: rgba(139, 92, 246, 0.2);
+}
+
+[data-theme='dark'] .pagination-nav__link:hover {
+  border-color: var(--ifm-color-primary);
+  background: rgba(139, 92, 246, 0.1);
+}
+
+/* ============================================================================
+   Custom Components
+   ============================================================================ */
+
+/* Terminal-style code blocks */
+.terminal-block {
+  background: #080818;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.terminal-block::before {
+  content: '';
+  display: block;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Success/check styling */
+.success-text {
+  color: #22c55e;
+}
+
+/* Error styling */
+.error-text {
+  color: #ef4444;
 }
