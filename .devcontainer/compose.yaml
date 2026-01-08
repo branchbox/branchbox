@@ -3,7 +3,7 @@ services:
   rust-dev:
     # Use pre-built image from GHCR (faster startup)
     # Falls back to local build if image unavailable
-    image: ghcr.io/rbarazi/branchbox/devcontainer:latest
+    image: ghcr.io/branchbox/branchbox/devcontainer:latest
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
