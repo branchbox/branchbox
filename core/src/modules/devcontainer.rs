@@ -1154,6 +1154,10 @@ pub fn inject_coding_agent_mounts(devcontainer_dir: &Path) -> Result<CodingAgent
         outcome.changes.push(change);
     }
 
+    // Ensure .ai-agents/ directory structure exists to prevent Docker
+    // from creating it as root (which causes permission issues during cleanup)
+    ensure_ai_agents_dir(devcontainer_dir)?;
+
     Ok(outcome)
 }
 
@@ -1202,6 +1206,59 @@ fn ensure_shared_config_dir(devcontainer_dir: &Path) -> Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+/// Ensure the `.ai-agents/` directory structure exists in the shared config directory.
+///
+/// This prevents Docker from creating the directories as root when mounting,
+/// which would cause permission issues during cleanup.
+///
+/// Creates:
+/// - `.ai-agents/codex/`
+/// - `.ai-agents/claude/`
+/// - `.ai-agents/claude.json` (minimal file)
+/// - `.ai-agents/gh/`
+fn ensure_ai_agents_dir(devcontainer_dir: &Path) -> Result<()> {
+    // Resolve shared config directory - read from .branchbox.env or use default
+    let shared_config_dir = {
+        let env_path = devcontainer_dir.join(".branchbox.env");
+        let relative_path = if env_path.exists() {
+            std::fs::read_to_string(&env_path)?
+                .lines()
+                .find(|line| line.trim().starts_with("SHARED_CONFIG_DIR="))
+                .and_then(|line| line.split('=').nth(1))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "../..".to_string())
+        } else {
+            "../..".to_string()
+        };
+
+        // Resolve relative to devcontainer directory
+        devcontainer_dir.join(&relative_path)
+    };
+
+    let ai_agents_dir = shared_config_dir.join(".ai-agents");
+
+    // Create the directory structure
+    for subdir in ["codex", "claude", "gh"] {
+        let dir_path = ai_agents_dir.join(subdir);
+        if !dir_path.exists() {
+            std::fs::create_dir_all(&dir_path)?;
+            tracing::debug!("Created AI agent config directory: {}", dir_path.display());
+        }
+    }
+
+    // Create minimal claude.json file to prevent Docker from creating it as a directory
+    let claude_json_path = ai_agents_dir.join("claude.json");
+    if !claude_json_path.exists() {
+        std::fs::write(&claude_json_path, "{}\n")?;
+        tracing::debug!(
+            "Created minimal claude.json file: {}",
+            claude_json_path.display()
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2246,11 +2303,19 @@ volumes:
         )
         .unwrap();
 
+        // Pre-create .branchbox.env with SHARED_CONFIG_DIR pointing to temp root
+        // so .ai-agents/ is created within the temp directory
+        std::fs::write(
+            devcontainer_dir.join(".branchbox.env"),
+            "SHARED_CONFIG_DIR=..\n",
+        )
+        .unwrap();
+
         let outcome = inject_coding_agent_mounts(&devcontainer_dir).unwrap();
 
         assert!(outcome.compose_modified);
-        // 4 mount changes + 1 for creating .branchbox.env with SHARED_CONFIG_DIR
-        assert_eq!(outcome.changes.len(), 5);
+        // 4 mount changes (no .branchbox.env change since it already exists with SHARED_CONFIG_DIR)
+        assert_eq!(outcome.changes.len(), 4);
         assert_eq!(
             outcome.container_user.as_ref().unwrap().username,
             "developer"
@@ -2262,10 +2327,60 @@ volumes:
         assert!(compose.contains(".ai-agents/claude.json:/home/developer/.claude.json"));
         assert!(compose.contains(".ai-agents/gh:/home/developer/.config/gh"));
 
-        // Verify .branchbox.env was created with SHARED_CONFIG_DIR
-        let branchbox_env =
-            std::fs::read_to_string(devcontainer_dir.join(".branchbox.env")).unwrap();
-        assert!(branchbox_env.contains("SHARED_CONFIG_DIR=../.."));
+        // Verify .ai-agents/ directory structure was created
+        let ai_agents_dir = temp.path().join(".ai-agents");
+        assert!(ai_agents_dir.join("codex").is_dir());
+        assert!(ai_agents_dir.join("claude").is_dir());
+        assert!(ai_agents_dir.join("gh").is_dir());
+        assert!(ai_agents_dir.join("claude.json").is_file());
+    }
+
+    #[test]
+    fn test_ensure_ai_agents_dir_creates_structure() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        // Create .branchbox.env with SHARED_CONFIG_DIR pointing to temp root
+        std::fs::write(
+            devcontainer_dir.join(".branchbox.env"),
+            "SHARED_CONFIG_DIR=..\n",
+        )
+        .unwrap();
+
+        ensure_ai_agents_dir(&devcontainer_dir).unwrap();
+
+        // Verify directory structure was created
+        let ai_agents_dir = temp.path().join(".ai-agents");
+        assert!(ai_agents_dir.join("codex").is_dir());
+        assert!(ai_agents_dir.join("claude").is_dir());
+        assert!(ai_agents_dir.join("gh").is_dir());
+        assert!(ai_agents_dir.join("claude.json").is_file());
+
+        // Verify claude.json has minimal content
+        let claude_json = std::fs::read_to_string(ai_agents_dir.join("claude.json")).unwrap();
+        assert_eq!(claude_json.trim(), "{}");
+    }
+
+    #[test]
+    fn test_ensure_ai_agents_dir_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        std::fs::write(
+            devcontainer_dir.join(".branchbox.env"),
+            "SHARED_CONFIG_DIR=..\n",
+        )
+        .unwrap();
+
+        // Run twice - should not fail
+        ensure_ai_agents_dir(&devcontainer_dir).unwrap();
+        ensure_ai_agents_dir(&devcontainer_dir).unwrap();
+
+        // Verify structure still exists
+        let ai_agents_dir = temp.path().join(".ai-agents");
+        assert!(ai_agents_dir.join("claude.json").is_file());
     }
 
     #[test]
