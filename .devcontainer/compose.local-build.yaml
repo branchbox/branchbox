@@ -1,0 +1,7 @@
+# Use this override to force local Dockerfile builds instead of pulling pre-built image
+# Usage: COMPOSE_FILE=compose.yaml:compose.local-build.yaml docker compose up
+# Or set DEVCONTAINER_PULL_POLICY=build in your .env file
+services:
+  rust-dev:
+    image: branchbox-devcontainer:local
+    pull_policy: build
