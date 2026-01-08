@@ -17,7 +17,7 @@ pub struct InitArgs {
     #[arg(short, long)]
     pub path: Option<PathBuf>,
 
-    /// Force specific stack (rails, nodejs, rust, generic)
+    /// Force specific stack (rails, nodejs, rust, python, generic)
     #[arg(short, long)]
     pub stack: Option<String>,
 
@@ -60,6 +60,26 @@ pub struct InitArgs {
     /// Disable AI coding agent mounts (.codex, .claude, .gh)
     #[arg(long)]
     pub no_coding_agents: bool,
+
+    /// Project name (detected from project files if not specified)
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Ruby version for Rails projects (detected from .ruby-version if not specified)
+    #[arg(long)]
+    pub ruby_version: Option<String>,
+
+    /// Node.js version (detected from .nvmrc if not specified)
+    #[arg(long)]
+    pub node_version: Option<String>,
+
+    /// Python version (detected from .python-version if not specified)
+    #[arg(long)]
+    pub python_version: Option<String>,
+
+    /// Application port
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 pub fn execute(args: InitArgs) -> Result<()> {
@@ -101,6 +121,11 @@ pub fn execute(args: InitArgs) -> Result<()> {
         non_interactive: args.yes,
         verbose: args.verbose,
         coding_agents: !args.no_coding_agents, // Default is true (coding agents enabled)
+        project_name: args.name,
+        ruby_version: args.ruby_version,
+        node_version: args.node_version,
+        python_version: args.python_version,
+        port: args.port,
     };
 
     // Execute workflow
@@ -121,13 +146,14 @@ pub fn execute(args: InitArgs) -> Result<()> {
 
 fn parse_stack(stack_str: &str) -> Result<Stack> {
     match stack_str.to_lowercase().as_str() {
-        "rails" => Ok(Stack::Rails),
-        "nodejs" | "node" => Ok(Stack::NodeJs),
+        "rails" | "ruby" => Ok(Stack::Rails),
+        "nodejs" | "node" | "javascript" | "js" => Ok(Stack::NodeJs),
         "rust" => Ok(Stack::Rust),
+        "python" | "django" | "flask" => Ok(Stack::Python),
         "generic" => Ok(Stack::Generic),
         _ => {
             anyhow::bail!(
-                "Unknown stack: {}\nValid stacks: rails, nodejs, rust, generic",
+                "Unknown stack: {}\nValid stacks: rails, nodejs, rust, python, generic",
                 stack_str
             );
         }

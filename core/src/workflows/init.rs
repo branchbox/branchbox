@@ -37,9 +37,10 @@
 //! println!("Initialized at: {}", summary.workspace_path.display());
 //! ```
 
-use crate::bootstrap::{Bootstrap, Stack};
+use crate::bootstrap::{Bootstrap, BootstrapOptions, Stack};
 use crate::cloudflare::CloudflareClient;
 use crate::config::{BranchBoxConfig, CloudflaredConfig};
+use crate::devcontainer::ProjectDetector;
 use crate::git::GitWorktree;
 use crate::modules::{default_port_for_stack, detect_main_service};
 use crate::{Error, Result};
@@ -114,6 +115,21 @@ pub struct InitOptions {
 
     /// Configure shared AI coding agent mounts (enabled by default)
     pub coding_agents: bool,
+
+    /// Custom project name (optional, detected from project files if not set)
+    pub project_name: Option<String>,
+
+    /// Ruby version for Rails projects (optional, detected from .ruby-version if not set)
+    pub ruby_version: Option<String>,
+
+    /// Node.js version (optional, detected from .nvmrc if not set)
+    pub node_version: Option<String>,
+
+    /// Python version (optional, detected from .python-version if not set)
+    pub python_version: Option<String>,
+
+    /// Application port (optional, uses stack default if not set)
+    pub port: Option<u16>,
 }
 
 impl Default for InitOptions {
@@ -132,6 +148,11 @@ impl Default for InitOptions {
             non_interactive: false,
             verbose: false,
             coding_agents: true, // Default to enabled for AI coding agent mounts
+            project_name: None,
+            ruby_version: None,
+            node_version: None,
+            python_version: None,
+            port: None,
         }
     }
 }
@@ -865,8 +886,11 @@ impl InitWorkflow {
                 return Ok(DevcontainerStatus::Created);
             }
 
+            // Build bootstrap options from init options and interactive prompts
+            let bootstrap_options = self.build_bootstrap_options(path, stack)?;
+
             let bootstrap = Bootstrap::new(path);
-            bootstrap.generate(stack)?;
+            bootstrap.generate_with_options(stack, bootstrap_options)?;
 
             // Configure workspace settings for worktree compatibility
             // (our templates should already be correct, but this ensures consistency)
@@ -1563,6 +1587,126 @@ impl InitWorkflow {
         } else {
             Ok(false)
         }
+    }
+
+    /// Build bootstrap options from init options and interactive prompts
+    ///
+    /// This method detects project configuration from existing files and
+    /// optionally prompts the user to confirm or customize values.
+    fn build_bootstrap_options(&self, path: &Path, stack: Stack) -> Result<BootstrapOptions> {
+        let detector = ProjectDetector::new(path);
+        let detected = detector.detect_all();
+
+        // Start with options from init config (command-line args take precedence)
+        let mut project_name = self.options.project_name.clone().or(detected.name);
+        let mut ruby_version = self.options.ruby_version.clone().or(detected.ruby_version);
+        let mut node_version = self.options.node_version.clone().or(detected.node_version);
+        let mut python_version = self.options.python_version.clone().or(detected.python_version);
+        let mut port = self.options.port.or(detected.default_port);
+
+        // Interactive mode: prompt for confirmation/customization
+        let interactive = !self.options.non_interactive && Term::stdout().is_term();
+        if interactive {
+            let theme = ColorfulTheme::default();
+
+            // Only prompt for relevant values based on stack
+            match stack {
+                Stack::Rails => {
+                    // Project name
+                    let detected_name = project_name.clone().unwrap_or_else(|| "my-app".to_string());
+                    let new_name: String = Input::with_theme(&theme)
+                        .with_prompt("Project name")
+                        .default(detected_name)
+                        .interact_text()?;
+                    project_name = Some(new_name);
+
+                    // Ruby version
+                    let detected_ruby = ruby_version.clone().unwrap_or_else(|| "3.3".to_string());
+                    let new_ruby: String = Input::with_theme(&theme)
+                        .with_prompt("Ruby version")
+                        .default(detected_ruby)
+                        .interact_text()?;
+                    ruby_version = Some(new_ruby);
+
+                    // Port
+                    let detected_port = port.unwrap_or(3000);
+                    let new_port: String = Input::with_theme(&theme)
+                        .with_prompt("Rails port")
+                        .default(detected_port.to_string())
+                        .interact_text()?;
+                    port = new_port.parse().ok();
+                }
+                Stack::NodeJs => {
+                    // Project name
+                    let detected_name = project_name.clone().unwrap_or_else(|| "my-app".to_string());
+                    let new_name: String = Input::with_theme(&theme)
+                        .with_prompt("Project name")
+                        .default(detected_name)
+                        .interact_text()?;
+                    project_name = Some(new_name);
+
+                    // Node version
+                    let detected_node = node_version.clone().unwrap_or_else(|| "20".to_string());
+                    let new_node: String = Input::with_theme(&theme)
+                        .with_prompt("Node.js version")
+                        .default(detected_node)
+                        .interact_text()?;
+                    node_version = Some(new_node);
+
+                    // Port
+                    let detected_port = port.unwrap_or(3000);
+                    let new_port: String = Input::with_theme(&theme)
+                        .with_prompt("Application port")
+                        .default(detected_port.to_string())
+                        .interact_text()?;
+                    port = new_port.parse().ok();
+                }
+                Stack::Python => {
+                    // Project name
+                    let detected_name = project_name.clone().unwrap_or_else(|| "my-app".to_string());
+                    let new_name: String = Input::with_theme(&theme)
+                        .with_prompt("Project name")
+                        .default(detected_name)
+                        .interact_text()?;
+                    project_name = Some(new_name);
+
+                    // Python version
+                    let detected_python = python_version.clone().unwrap_or_else(|| "3.12".to_string());
+                    let new_python: String = Input::with_theme(&theme)
+                        .with_prompt("Python version")
+                        .default(detected_python)
+                        .interact_text()?;
+                    python_version = Some(new_python);
+
+                    // Port
+                    let detected_port = port.unwrap_or(5000);
+                    let new_port: String = Input::with_theme(&theme)
+                        .with_prompt("Application port")
+                        .default(detected_port.to_string())
+                        .interact_text()?;
+                    port = new_port.parse().ok();
+                }
+                Stack::Rust | Stack::Generic => {
+                    // Project name only for these stacks
+                    let detected_name = project_name.clone().unwrap_or_else(|| "my-app".to_string());
+                    let new_name: String = Input::with_theme(&theme)
+                        .with_prompt("Project name")
+                        .default(detected_name)
+                        .interact_text()?;
+                    project_name = Some(new_name);
+                }
+            }
+        }
+
+        Ok(BootstrapOptions {
+            project_name,
+            ruby_version,
+            node_version,
+            python_version,
+            port,
+            with_database: matches!(stack, Stack::Rails),
+            coding_agents: self.options.coding_agents,
+        })
     }
 }
 

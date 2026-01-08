@@ -9,6 +9,7 @@
 //! - [`adapters`] - Auto-detect and configure for different stacks
 //! - [`modules`] - Composable feature components
 //! - [`bootstrap`] - Self-bootstrapping devcontainer system (meta!)
+//! - [`devcontainer`] - Modular devcontainer configuration system
 //! - [`git`] - Git worktree operations
 //! - [`error`] - Error types
 
@@ -16,6 +17,7 @@ pub mod adapters;
 pub mod bootstrap;
 pub mod cloudflare;
 pub mod config;
+pub mod devcontainer;
 pub mod error;
 pub mod git;
 pub mod modules;
