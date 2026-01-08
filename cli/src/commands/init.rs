@@ -3,7 +3,8 @@
 use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
-use worktree_core::bootstrap::Stack;
+use worktree_core::bootstrap::{Bootstrap, Stack};
+use worktree_core::devcontainer::ProjectDetector;
 use worktree_core::workflows::init::{
     DevcontainerStatus, InitOptions, InitSource, InitSummary, InitWorkflow, RepositoryState,
 };
@@ -80,9 +81,18 @@ pub struct InitArgs {
     /// Application port
     #[arg(long)]
     pub port: Option<u16>,
+
+    /// Show detected project settings without making changes
+    #[arg(long)]
+    pub show_detected: bool,
 }
 
 pub fn execute(args: InitArgs) -> Result<()> {
+    // Handle --show-detected: display detected values and exit
+    if args.show_detected {
+        return show_detected_settings(&args);
+    }
+
     // Parse source
     let source = if let Some(source_str) = args.source {
         // Determine if it's a URL or path
@@ -271,6 +281,144 @@ fn print_verbose_summary(summary: &InitSummary) -> Result<()> {
         println!("  Next steps:");
         for step in &summary.next_steps {
             println!("    {}", step);
+        }
+    }
+
+    println!();
+
+    Ok(())
+}
+
+/// Show detected project settings without making changes
+fn show_detected_settings(args: &InitArgs) -> Result<()> {
+    // Determine project path
+    let project_path = if let Some(ref source) = args.source {
+        if !source.starts_with("http://")
+            && !source.starts_with("https://")
+            && !source.starts_with("git@")
+            && !source.starts_with("git://")
+        {
+            PathBuf::from(source)
+        } else {
+            anyhow::bail!("Cannot detect settings from URL. Clone the repository first.");
+        }
+    } else {
+        std::env::current_dir()?
+    };
+
+    if !project_path.exists() {
+        anyhow::bail!("Path does not exist: {}", project_path.display());
+    }
+
+    // Detect stack
+    let bootstrap = Bootstrap::new(&project_path);
+    let stack = bootstrap.detect_stack()?;
+
+    // Detect project settings
+    let detector = ProjectDetector::new(&project_path);
+    let detected = detector.detect_all();
+
+    println!();
+    println!("Detected Project Settings");
+    println!("==========================");
+    println!();
+
+    // Stack
+    println!("  Stack:        {:?}", stack);
+
+    // Project name
+    if let Some(ref name) = detected.name {
+        println!("  Project name: {} (detected)", name);
+    } else {
+        let fallback = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        println!("  Project name: {} (from directory)", fallback);
+    }
+
+    // Stack-specific versions
+    match stack {
+        Stack::Rails => {
+            if let Some(ref version) = detected.ruby_version {
+                println!("  Ruby version: {} (detected)", version);
+            } else {
+                println!("  Ruby version: 3.3 (default)");
+            }
+        }
+        Stack::NodeJs => {
+            if let Some(ref version) = detected.node_version {
+                println!("  Node version: {} (detected)", version);
+            } else {
+                println!("  Node version: 20 (default)");
+            }
+        }
+        Stack::Python => {
+            if let Some(ref version) = detected.python_version {
+                println!("  Python version: {} (detected)", version);
+            } else {
+                println!("  Python version: 3.12 (default)");
+            }
+        }
+        Stack::Rust => {
+            if let Some(ref version) = detected.rust_version {
+                println!("  Rust version: {} (detected)", version);
+            } else {
+                println!("  Rust version: stable (default)");
+            }
+        }
+        Stack::Generic => {}
+    }
+
+    // Port
+    if let Some(port) = detected.default_port {
+        println!("  Default port: {} (detected)", port);
+    } else {
+        let default_port = match stack {
+            Stack::Rails => 3000,
+            Stack::NodeJs => 3000,
+            Stack::Python => 5000,
+            Stack::Rust => 8080,
+            Stack::Generic => 3000,
+        };
+        println!("  Default port: {} (stack default)", default_port);
+    }
+
+    // Check for existing devcontainer
+    let devcontainer_exists = project_path.join(".devcontainer").exists();
+    println!();
+    if devcontainer_exists {
+        println!("  ℹ Existing .devcontainer/ found");
+        println!("    Run `branchbox init` to enhance with BranchBox features");
+    } else {
+        println!("  ℹ No .devcontainer/ found");
+        println!("    Run `branchbox init` to generate one");
+    }
+
+    // Show detection sources
+    println!();
+    println!("Detection Sources:");
+    println!("------------------");
+
+    let sources = [
+        (".ruby-version", project_path.join(".ruby-version").exists()),
+        ("Gemfile", project_path.join("Gemfile").exists()),
+        (".nvmrc", project_path.join(".nvmrc").exists()),
+        (".node-version", project_path.join(".node-version").exists()),
+        ("package.json", project_path.join("package.json").exists()),
+        (".python-version", project_path.join(".python-version").exists()),
+        ("pyproject.toml", project_path.join("pyproject.toml").exists()),
+        (".tool-versions", project_path.join(".tool-versions").exists()),
+        ("Cargo.toml", project_path.join("Cargo.toml").exists()),
+        ("rust-toolchain.toml", project_path.join("rust-toolchain.toml").exists()),
+    ];
+
+    let found_sources: Vec<_> = sources.iter().filter(|(_, exists)| *exists).collect();
+    if found_sources.is_empty() {
+        println!("  (no version files found, using defaults)");
+    } else {
+        for (name, _) in found_sources {
+            println!("  ✓ {}", name);
         }
     }
 

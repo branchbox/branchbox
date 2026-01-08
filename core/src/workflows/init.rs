@@ -1598,16 +1598,23 @@ impl InitWorkflow {
         let detected = detector.detect_all();
 
         // Start with options from init config (command-line args take precedence)
-        let mut project_name = self.options.project_name.clone().or(detected.name);
-        let mut ruby_version = self.options.ruby_version.clone().or(detected.ruby_version);
-        let mut node_version = self.options.node_version.clone().or(detected.node_version);
-        let mut python_version = self.options.python_version.clone().or(detected.python_version);
+        let mut project_name = self.options.project_name.clone().or(detected.name.clone());
+        let mut ruby_version = self.options.ruby_version.clone().or(detected.ruby_version.clone());
+        let mut node_version = self.options.node_version.clone().or(detected.node_version.clone());
+        let mut python_version = self.options.python_version.clone().or(detected.python_version.clone());
         let mut port = self.options.port.or(detected.default_port);
 
         // Interactive mode: prompt for confirmation/customization
         let interactive = !self.options.non_interactive && Term::stdout().is_term();
         if interactive {
             let theme = ColorfulTheme::default();
+
+            // Show detected values summary before prompting
+            self.print_detected_summary(&detected, stack);
+
+            println!();
+            println!("Press Enter to accept defaults or type new values:");
+            println!();
 
             // Only prompt for relevant values based on stack
             match stack {
@@ -1707,6 +1714,67 @@ impl InitWorkflow {
             with_database: matches!(stack, Stack::Rails),
             coding_agents: self.options.coding_agents,
         })
+    }
+
+    /// Print a summary of detected project settings
+    fn print_detected_summary(&self, detected: &crate::devcontainer::DetectedProject, stack: Stack) {
+        println!();
+        println!("Detected project settings:");
+        println!("--------------------------");
+
+        // Project name
+        if let Some(ref name) = detected.name {
+            println!("  Project name:  {} (detected)", name);
+        } else {
+            println!("  Project name:  my-app (default)");
+        }
+
+        // Stack-specific version
+        match stack {
+            Stack::Rails => {
+                if let Some(ref version) = detected.ruby_version {
+                    println!("  Ruby version:  {} (detected)", version);
+                } else {
+                    println!("  Ruby version:  3.3 (default)");
+                }
+            }
+            Stack::NodeJs => {
+                if let Some(ref version) = detected.node_version {
+                    println!("  Node version:  {} (detected)", version);
+                } else {
+                    println!("  Node version:  20 (default)");
+                }
+            }
+            Stack::Python => {
+                if let Some(ref version) = detected.python_version {
+                    println!("  Python version: {} (detected)", version);
+                } else {
+                    println!("  Python version: 3.12 (default)");
+                }
+            }
+            Stack::Rust => {
+                if let Some(ref version) = detected.rust_version {
+                    println!("  Rust version:  {} (detected)", version);
+                } else {
+                    println!("  Rust version:  stable (default)");
+                }
+            }
+            Stack::Generic => {}
+        }
+
+        // Port
+        if let Some(port) = detected.default_port {
+            println!("  Default port:  {} (detected)", port);
+        } else {
+            let default_port = match stack {
+                Stack::Rails => 3000,
+                Stack::NodeJs => 3000,
+                Stack::Python => 5000,
+                Stack::Rust => 8080,
+                Stack::Generic => 3000,
+            };
+            println!("  Default port:  {} (stack default)", default_port);
+        }
     }
 }
 

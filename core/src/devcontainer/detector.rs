@@ -102,6 +102,22 @@ impl ProjectDetector {
         self.python_version().unwrap_or_else(|| "3.12".to_string())
     }
 
+    /// Detect Rust toolchain version from project files
+    ///
+    /// Priority order:
+    /// 1. rust-toolchain.toml file
+    /// 2. rust-toolchain file (legacy)
+    /// 3. None (use rustup default)
+    pub fn rust_version(&self) -> Option<String> {
+        self.rust_version_from_toolchain_toml()
+            .or_else(|| self.rust_version_from_toolchain_file())
+    }
+
+    /// Get Rust version with fallback to default (stable)
+    pub fn rust_version_or_default(&self) -> String {
+        self.rust_version().unwrap_or_else(|| "stable".to_string())
+    }
+
     /// Detect the default port for this project
     pub fn default_port(&self) -> Option<u16> {
         // Check package.json scripts for port hints
@@ -347,6 +363,42 @@ impl ProjectDetector {
         None
     }
 
+    fn rust_version_from_toolchain_toml(&self) -> Option<String> {
+        let path = self.project_path.join("rust-toolchain.toml");
+        let content = std::fs::read_to_string(path).ok()?;
+
+        // Look for [toolchain] channel = "1.75" or channel = "stable"
+        let mut in_toolchain = false;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed == "[toolchain]" {
+                in_toolchain = true;
+                continue;
+            }
+            if trimmed.starts_with('[') {
+                in_toolchain = false;
+                continue;
+            }
+            if in_toolchain && trimmed.starts_with("channel") {
+                if let Some(value) = trimmed.split('=').nth(1) {
+                    let channel = value.trim().trim_matches('"').trim_matches('\'');
+                    return Some(channel.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn rust_version_from_toolchain_file(&self) -> Option<String> {
+        let path = self.project_path.join("rust-toolchain");
+        let content = std::fs::read_to_string(path).ok()?;
+        let version = content.trim();
+        if !version.is_empty() {
+            return Some(version.to_string());
+        }
+        None
+    }
+
     fn version_from_tool_versions(&self, tool: &str) -> Option<String> {
         let path = self.project_path.join(".tool-versions");
         let content = std::fs::read_to_string(path).ok()?;
@@ -443,6 +495,9 @@ pub struct DetectedProject {
     /// Python version (if detected)
     pub python_version: Option<String>,
 
+    /// Rust toolchain version (if detected)
+    pub rust_version: Option<String>,
+
     /// Default port (if detected)
     pub default_port: Option<u16>,
 }
@@ -455,6 +510,7 @@ impl ProjectDetector {
             ruby_version: self.ruby_version(),
             node_version: self.node_version(),
             python_version: self.python_version(),
+            rust_version: self.rust_version(),
             default_port: self.default_port(),
         }
     }
@@ -613,5 +669,55 @@ ruby "~> 3.3"
         // No ruby version file
         let detector = ProjectDetector::new(temp.path());
         assert_eq!(detector.ruby_version_or_default(), "3.3".to_string());
+    }
+
+    #[test]
+    fn test_rust_version_from_toolchain_toml() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("rust-toolchain.toml"),
+            r#"
+[toolchain]
+channel = "1.75"
+components = ["rustfmt", "clippy"]
+"#,
+        )
+        .unwrap();
+
+        let detector = ProjectDetector::new(temp.path());
+        assert_eq!(detector.rust_version(), Some("1.75".to_string()));
+    }
+
+    #[test]
+    fn test_rust_version_from_toolchain_toml_stable() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("rust-toolchain.toml"),
+            r#"
+[toolchain]
+channel = "stable"
+"#,
+        )
+        .unwrap();
+
+        let detector = ProjectDetector::new(temp.path());
+        assert_eq!(detector.rust_version(), Some("stable".to_string()));
+    }
+
+    #[test]
+    fn test_rust_version_from_legacy_file() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("rust-toolchain"), "nightly").unwrap();
+
+        let detector = ProjectDetector::new(temp.path());
+        assert_eq!(detector.rust_version(), Some("nightly".to_string()));
+    }
+
+    #[test]
+    fn test_rust_version_or_default() {
+        let temp = TempDir::new().unwrap();
+        // No rust toolchain file
+        let detector = ProjectDetector::new(temp.path());
+        assert_eq!(detector.rust_version_or_default(), "stable".to_string());
     }
 }

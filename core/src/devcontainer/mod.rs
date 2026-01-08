@@ -41,5 +41,5 @@ pub use config::{
     DockerfileConfig, Feature, PortConfig, RunArg, VolumeMount, VscodeCustomizations,
     VscodeSettings,
 };
-pub use detector::ProjectDetector;
+pub use detector::{DetectedProject, ProjectDetector};
 pub use presets::StackPreset;
