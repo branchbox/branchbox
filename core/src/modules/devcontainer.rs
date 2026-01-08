@@ -23,6 +23,7 @@
 //! variable can remain as an override mechanism for backward compatibility.
 
 use super::Module;
+use crate::config::GitHubAuthSettings;
 use crate::{Error, Result};
 use jsonc_parser::{parse_to_serde_value, ParseOptions};
 use serde_json::Value as JsonValue;
@@ -1266,6 +1267,261 @@ fn ensure_ai_agents_dir(devcontainer_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Outcome of configuring GitHub authentication settings.
+#[derive(Debug, Default)]
+pub struct GitHubAuthOutcome {
+    /// List of changes made
+    pub changes: Vec<String>,
+    /// Whether compose file was modified
+    pub compose_modified: bool,
+    /// Whether devcontainer.json was modified
+    pub devcontainer_modified: bool,
+}
+
+/// Configure GitHub authentication mounts based on settings.
+///
+/// This function:
+/// 1. Adds/removes SSH key mount (~/.ssh:/home/vscode/.ssh:ro) based on strategy
+/// 2. Adds/removes gh CLI mount based on keep_gh_mount setting
+/// 3. Adds/removes SSH_AUTH_SOCK in remoteEnv in devcontainer.json
+///
+/// # Arguments
+/// * `devcontainer_dir` - Path to .devcontainer directory
+/// * `settings` - GitHub authentication settings to apply
+/// * `container_user` - Optional container user info (will be detected if not provided)
+///
+/// # Returns
+/// Outcome with list of changes made
+pub fn configure_github_auth(
+    devcontainer_dir: &Path,
+    settings: &GitHubAuthSettings,
+) -> Result<GitHubAuthOutcome> {
+    let mut outcome = GitHubAuthOutcome::default();
+
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    if !config_path.exists() {
+        return Ok(outcome);
+    }
+
+    let config_contents = std::fs::read_to_string(&config_path)?;
+    let mut config = parse_json_with_comments(&config_contents, &config_path)?;
+
+    // Detect container user
+    let container_user = detect_container_user(devcontainer_dir, &config);
+
+    // Find compose file
+    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+        Some(p) => p,
+        None => return Ok(outcome), // No compose file, nothing to do
+    };
+
+    let compose_filename = compose_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("compose.yaml");
+
+    let compose_contents = std::fs::read_to_string(&compose_path)?;
+    let mut compose: YamlValue = serde_yaml::from_str(&compose_contents).map_err(|err| {
+        Error::validation(format!(
+            "Failed to parse {}: {}",
+            compose_path.display(),
+            err
+        ))
+    })?;
+
+    let mut compose_updated = false;
+
+    // SSH mount path
+    let ssh_mount = format!("~/.ssh:{}/.ssh:ro", container_user.home_path);
+
+    // gh CLI mount path
+    let gh_mount = format!(
+        "${{SHARED_CONFIG_DIR:-../..}}/.gh:{}/.config/gh",
+        container_user.home_path
+    );
+
+    if let Some(root) = compose.as_mapping_mut() {
+        let services_key = YamlValue::String("services".to_string());
+
+        if let Some(services) = root.get_mut(&services_key).and_then(|v| v.as_mapping_mut()) {
+            let main_service_name = detect_main_service_name(services);
+
+            if let Some(main_name) = main_service_name {
+                let main_key = YamlValue::String(main_name.clone());
+
+                if let Some(service) = services.get_mut(&main_key) {
+                    if let Some(service_map) = service.as_mapping_mut() {
+                        let volumes_key = YamlValue::String("volumes".to_string());
+
+                        if let Some(volumes) = service_map.get_mut(&volumes_key) {
+                            if let Some(volumes_seq) = volumes.as_sequence_mut() {
+                                // Handle SSH mount
+                                let has_ssh_mount = volumes_seq
+                                    .iter()
+                                    .any(|v| v.as_str().map_or(false, |s| s.contains("/.ssh")));
+
+                                if settings.uses_ssh() && settings.mount_ssh_dir && !has_ssh_mount {
+                                    // Add SSH mount
+                                    volumes_seq.push(YamlValue::String(ssh_mount.clone()));
+                                    compose_updated = true;
+                                    outcome
+                                        .changes
+                                        .push(format!("{}: added SSH mount", compose_filename));
+                                } else if !settings.uses_ssh() && has_ssh_mount {
+                                    // Remove SSH mount
+                                    volumes_seq.retain(|v| {
+                                        !v.as_str().map_or(false, |s| s.contains("/.ssh"))
+                                    });
+                                    compose_updated = true;
+                                    outcome
+                                        .changes
+                                        .push(format!("{}: removed SSH mount", compose_filename));
+                                }
+
+                                // Handle gh CLI mount
+                                let has_gh_mount = volumes_seq.iter().any(|v| {
+                                    v.as_str().map_or(false, |s| s.contains("/.gh:"))
+                                });
+
+                                if settings.include_gh_mount() && !has_gh_mount {
+                                    // Add gh mount
+                                    volumes_seq.push(YamlValue::String(gh_mount.clone()));
+                                    compose_updated = true;
+                                    outcome
+                                        .changes
+                                        .push(format!("{}: added gh CLI mount", compose_filename));
+                                } else if !settings.include_gh_mount() && has_gh_mount {
+                                    // Remove gh mount
+                                    volumes_seq.retain(|v| {
+                                        !v.as_str().map_or(false, |s| s.contains("/.gh:"))
+                                    });
+                                    compose_updated = true;
+                                    outcome.changes.push(format!(
+                                        "{}: removed gh CLI mount",
+                                        compose_filename
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Write compose file if updated
+    if compose_updated {
+        let mut serialized = serde_yaml::to_string(&compose).map_err(|err| {
+            Error::validation(format!(
+                "Failed to serialize {}: {}",
+                compose_path.display(),
+                err
+            ))
+        })?;
+        if serialized.starts_with("---\n") {
+            serialized = serialized.split_off(4);
+        }
+        if !serialized.ends_with('\n') {
+            serialized.push('\n');
+        }
+        std::fs::write(&compose_path, serialized)?;
+        outcome.compose_modified = true;
+    }
+
+    // Update devcontainer.json for SSH agent forwarding
+    let mut devcontainer_updated = false;
+
+    if let Some(obj) = config.as_object_mut() {
+        // Handle remoteEnv for SSH_AUTH_SOCK
+        let remote_env_key = "remoteEnv";
+
+        if settings.uses_ssh() {
+            // Ensure remoteEnv exists and has SSH_AUTH_SOCK
+            let remote_env = obj
+                .entry(remote_env_key)
+                .or_insert_with(|| serde_json::json!({}));
+
+            if let Some(env_obj) = remote_env.as_object_mut() {
+                if !env_obj.contains_key("SSH_AUTH_SOCK") {
+                    if let Some(sock_value) = settings.ssh_auth_sock_value() {
+                        env_obj.insert(
+                            "SSH_AUTH_SOCK".to_string(),
+                            serde_json::Value::String(sock_value),
+                        );
+                        devcontainer_updated = true;
+                        outcome
+                            .changes
+                            .push("devcontainer.json: added SSH_AUTH_SOCK".to_string());
+                    }
+                }
+            }
+        } else {
+            // Remove SSH_AUTH_SOCK if not using SSH
+            if let Some(remote_env) = obj.get_mut(remote_env_key) {
+                if let Some(env_obj) = remote_env.as_object_mut() {
+                    if env_obj.remove("SSH_AUTH_SOCK").is_some() {
+                        devcontainer_updated = true;
+                        outcome
+                            .changes
+                            .push("devcontainer.json: removed SSH_AUTH_SOCK".to_string());
+                    }
+                    // Remove empty remoteEnv
+                    if env_obj.is_empty() {
+                        obj.remove(remote_env_key);
+                    }
+                }
+            }
+        }
+
+        // Handle postStartCommand for ssh-keyscan
+        let post_start_key = "postStartCommand";
+        let ssh_keyscan_cmd = "mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true";
+
+        if settings.uses_ssh() {
+            // Check if postStartCommand exists and contains ssh-keyscan
+            let has_ssh_keyscan = obj
+                .get(post_start_key)
+                .and_then(|v| v.as_str())
+                .map_or(false, |s| s.contains("ssh-keyscan"));
+
+            if !has_ssh_keyscan {
+                // Add or update postStartCommand
+                if let Some(existing) = obj.get(post_start_key).and_then(|v| v.as_str()) {
+                    // Append to existing command
+                    let new_cmd = format!("{}; {}", existing, ssh_keyscan_cmd);
+                    obj.insert(
+                        post_start_key.to_string(),
+                        serde_json::Value::String(new_cmd),
+                    );
+                } else {
+                    obj.insert(
+                        post_start_key.to_string(),
+                        serde_json::Value::String(ssh_keyscan_cmd.to_string()),
+                    );
+                }
+                devcontainer_updated = true;
+                outcome
+                    .changes
+                    .push("devcontainer.json: added ssh-keyscan to postStartCommand".to_string());
+            }
+        }
+    }
+
+    // Write devcontainer.json if updated
+    if devcontainer_updated {
+        let serialized = serde_json::to_string_pretty(&config).map_err(|err| {
+            Error::validation(format!(
+                "Failed to serialize devcontainer.json: {}",
+                err
+            ))
+        })?;
+        std::fs::write(&config_path, format!("{}\n", serialized))?;
+        outcome.devcontainer_modified = true;
+    }
+
+    Ok(outcome)
 }
 
 #[cfg(test)]

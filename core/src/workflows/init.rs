@@ -930,6 +930,24 @@ impl InitWorkflow {
             crate::modules::CodingAgentOutcome::default()
         };
 
+        // Configure GitHub authentication if settings provided
+        let github_auth_outcome = if let Some(ref settings) = self.options.github_auth {
+            let outcome = crate::modules::configure_github_auth(&devcontainer_dir, settings)?;
+            if !outcome.changes.is_empty() {
+                if self.options.verbose {
+                    println!("Configured GitHub authentication ({}):", settings.strategy);
+                    for change in &outcome.changes {
+                        println!("  - {}", change);
+                    }
+                } else {
+                    println!("✓ Configured GitHub authentication ({})", settings.strategy);
+                }
+            }
+            outcome
+        } else {
+            crate::modules::GitHubAuthOutcome::default()
+        };
+
         // Print workspace configuration changes if any
         if !configure_outcome.changes.is_empty() {
             if self.options.verbose {
@@ -942,9 +960,10 @@ impl InitWorkflow {
             }
         }
 
-        // Combine changes from both operations
+        // Combine changes from all operations
         let mut all_changes = configure_outcome.changes;
         all_changes.extend(coding_agent_outcome.changes);
+        all_changes.extend(github_auth_outcome.changes);
 
         if !all_changes.is_empty() {
             return Ok(DevcontainerStatus::Enhanced {
