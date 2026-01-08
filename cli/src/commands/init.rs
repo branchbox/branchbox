@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 use worktree_core::bootstrap::Stack;
+use worktree_core::config::{GitHubAuthStrategy, SshAgentProvider};
 use worktree_core::workflows::init::{
     DevcontainerStatus, InitOptions, InitSource, InitSummary, InitWorkflow, RepositoryState,
 };
@@ -60,9 +61,32 @@ pub struct InitArgs {
     /// Disable AI coding agent mounts (.codex, .claude, .gh)
     #[arg(long)]
     pub no_coding_agents: bool,
+
+    /// GitHub authentication strategy: ssh (default), gh-cli, or none
+    #[arg(long, value_name = "STRATEGY")]
+    pub github_auth: Option<String>,
+
+    /// Use SSH key authentication (default, same as --github-auth=ssh)
+    #[arg(long, conflicts_with_all = ["gh_auth", "no_github_auth"])]
+    pub ssh_auth: bool,
+
+    /// Use gh CLI token authentication (legacy, same as --github-auth=gh-cli)
+    #[arg(long, conflicts_with_all = ["ssh_auth", "no_github_auth"])]
+    pub gh_auth: bool,
+
+    /// Disable GitHub authentication mounts entirely
+    #[arg(long, conflicts_with_all = ["ssh_auth", "gh_auth"])]
+    pub no_github_auth: bool,
+
+    /// Use 1Password SSH agent instead of system agent
+    #[arg(long = "1password", visible_alias = "op")]
+    pub onepassword: bool,
 }
 
 pub fn execute(args: InitArgs) -> Result<()> {
+    // Parse GitHub auth settings first (before moving fields from args)
+    let github_auth = parse_github_auth(&args)?;
+
     // Parse source
     let source = if let Some(source_str) = args.source {
         // Determine if it's a URL or path
@@ -101,6 +125,7 @@ pub fn execute(args: InitArgs) -> Result<()> {
         non_interactive: args.yes,
         verbose: args.verbose,
         coding_agents: !args.no_coding_agents, // Default is true (coding agents enabled)
+        github_auth,
     };
 
     // Execute workflow
@@ -132,6 +157,43 @@ fn parse_stack(stack_str: &str) -> Result<Stack> {
             );
         }
     }
+}
+
+fn parse_github_auth(
+    args: &InitArgs,
+) -> Result<Option<worktree_core::config::GitHubAuthSettings>> {
+    use worktree_core::config::GitHubAuthSettings;
+
+    // Determine strategy from flags
+    let strategy = if args.no_github_auth {
+        GitHubAuthStrategy::None
+    } else if args.gh_auth {
+        GitHubAuthStrategy::GhCli
+    } else if args.ssh_auth {
+        GitHubAuthStrategy::Ssh
+    } else if let Some(ref strategy_str) = args.github_auth {
+        strategy_str.parse()?
+    } else {
+        // No explicit flag - return None to use defaults
+        if !args.onepassword {
+            return Ok(None);
+        }
+        GitHubAuthStrategy::Ssh
+    };
+
+    // Build settings
+    let mut settings = GitHubAuthSettings::default();
+    settings.strategy = strategy;
+
+    // Handle 1Password flag
+    if args.onepassword {
+        if strategy != GitHubAuthStrategy::Ssh {
+            anyhow::bail!("--1password requires SSH auth (remove --gh-auth or --no-github-auth)");
+        }
+        settings.ssh_agent_provider = SshAgentProvider::OnePassword;
+    }
+
+    Ok(Some(settings))
 }
 
 fn print_summary(summary: &InitSummary) -> Result<()> {

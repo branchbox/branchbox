@@ -29,6 +29,7 @@
 //!     non_interactive: false,
 //!     verbose: false,
 //!     coding_agents: true,
+//!     github_auth: None,
 //! };
 //!
 //! let mut workflow = InitWorkflow::new(options);
@@ -39,7 +40,7 @@
 
 use crate::bootstrap::{Bootstrap, Stack};
 use crate::cloudflare::CloudflareClient;
-use crate::config::{BranchBoxConfig, CloudflaredConfig};
+use crate::config::{BranchBoxConfig, CloudflaredConfig, GitHubAuthSettings};
 use crate::git::GitWorktree;
 use crate::modules::{default_port_for_stack, detect_main_service};
 use crate::{Error, Result};
@@ -114,6 +115,9 @@ pub struct InitOptions {
 
     /// Configure shared AI coding agent mounts (enabled by default)
     pub coding_agents: bool,
+
+    /// GitHub authentication settings (SSH keys by default)
+    pub github_auth: Option<GitHubAuthSettings>,
 }
 
 impl Default for InitOptions {
@@ -132,6 +136,7 @@ impl Default for InitOptions {
             non_interactive: false,
             verbose: false,
             coding_agents: true, // Default to enabled for AI coding agent mounts
+            github_auth: None,   // Use default SSH-based auth
         }
     }
 }

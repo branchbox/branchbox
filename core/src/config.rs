@@ -25,6 +25,9 @@ pub struct BranchBoxConfig {
 
     #[serde(default)]
     pub feature: FeatureSettings,
+
+    #[serde(default)]
+    pub github_auth: GitHubAuthSettings,
 }
 
 impl Default for BranchBoxConfig {
@@ -34,6 +37,7 @@ impl Default for BranchBoxConfig {
             tunnel: TunnelSettings::default(),
             editor: EditorSettings::default(),
             feature: FeatureSettings::default(),
+            github_auth: GitHubAuthSettings::default(),
         }
     }
 }
@@ -97,6 +101,155 @@ pub struct EditorSettings {
     /// Hide the auxiliary/right sidebar if it was previously visible.
     #[serde(default)]
     pub hide_secondary_sidebar: bool,
+}
+
+/// GitHub authentication strategy for devcontainers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubAuthStrategy {
+    /// Mount ~/.ssh directory and forward SSH agent (default, recommended)
+    #[default]
+    Ssh,
+    /// Use gh CLI token authentication only (legacy)
+    GhCli,
+    /// Disable GitHub authentication mounts entirely
+    None,
+}
+
+impl std::fmt::Display for GitHubAuthStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GitHubAuthStrategy::Ssh => write!(f, "ssh"),
+            GitHubAuthStrategy::GhCli => write!(f, "gh-cli"),
+            GitHubAuthStrategy::None => write!(f, "none"),
+        }
+    }
+}
+
+impl std::str::FromStr for GitHubAuthStrategy {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "ssh" => Ok(GitHubAuthStrategy::Ssh),
+            "gh" | "gh-cli" | "ghcli" => Ok(GitHubAuthStrategy::GhCli),
+            "none" | "skip" | "disabled" => Ok(GitHubAuthStrategy::None),
+            _ => Err(crate::Error::Config(format!(
+                "Unknown auth strategy: {}\nValid options: ssh, gh-cli, none",
+                s
+            ))),
+        }
+    }
+}
+
+/// SSH agent provider configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SshAgentProvider {
+    /// Use the system default SSH agent (SSH_AUTH_SOCK from host)
+    #[default]
+    System,
+    /// Use 1Password SSH agent
+    OnePassword,
+    /// Custom SSH agent socket path (set via custom_socket_path)
+    Custom,
+}
+
+impl std::fmt::Display for SshAgentProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SshAgentProvider::System => write!(f, "system"),
+            SshAgentProvider::OnePassword => write!(f, "1password"),
+            SshAgentProvider::Custom => write!(f, "custom"),
+        }
+    }
+}
+
+/// GitHub authentication settings for devcontainers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitHubAuthSettings {
+    /// Authentication strategy (ssh, gh-cli, or none)
+    #[serde(default)]
+    pub strategy: GitHubAuthStrategy,
+
+    /// SSH agent provider (system, 1password, or custom)
+    #[serde(default)]
+    pub ssh_agent_provider: SshAgentProvider,
+
+    /// Custom SSH agent socket path (only used when ssh_agent_provider is Custom)
+    #[serde(default)]
+    pub custom_socket_path: Option<String>,
+
+    /// Mount ~/.ssh directory into container (read-only)
+    #[serde(default = "default_mount_ssh_dir")]
+    pub mount_ssh_dir: bool,
+
+    /// Keep gh CLI mount even when using SSH (useful for PRs/issues)
+    #[serde(default = "default_keep_gh_mount")]
+    pub keep_gh_mount: bool,
+}
+
+impl Default for GitHubAuthSettings {
+    fn default() -> Self {
+        Self {
+            strategy: GitHubAuthStrategy::Ssh,
+            ssh_agent_provider: SshAgentProvider::System,
+            custom_socket_path: None,
+            mount_ssh_dir: true,
+            keep_gh_mount: true,
+        }
+    }
+}
+
+fn default_mount_ssh_dir() -> bool {
+    true
+}
+
+fn default_keep_gh_mount() -> bool {
+    true
+}
+
+impl GitHubAuthSettings {
+    /// Returns the SSH agent socket path based on the provider.
+    ///
+    /// For devcontainer.json remoteEnv, this returns the template string
+    /// that references the host environment variable or fixed path.
+    pub fn ssh_auth_sock_value(&self) -> Option<String> {
+        if self.strategy != GitHubAuthStrategy::Ssh {
+            return None;
+        }
+
+        match self.ssh_agent_provider {
+            SshAgentProvider::System => Some("${localEnv:SSH_AUTH_SOCK}".to_string()),
+            SshAgentProvider::OnePassword => {
+                // 1Password uses different paths on different platforms
+                // We use the localEnv syntax to let the devcontainer resolve it
+                // The actual path is set in the container's SSH config
+                Some("${localEnv:SSH_AUTH_SOCK}".to_string())
+            }
+            SshAgentProvider::Custom => self.custom_socket_path.clone(),
+        }
+    }
+
+    /// Returns 1Password SSH agent socket path for the current platform.
+    pub fn onepassword_socket_path() -> String {
+        if cfg!(target_os = "macos") {
+            "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock".to_string()
+        } else {
+            // Linux and others
+            "~/.1password/agent.sock".to_string()
+        }
+    }
+
+    /// Check if SSH-based auth is enabled.
+    pub fn uses_ssh(&self) -> bool {
+        self.strategy == GitHubAuthStrategy::Ssh
+    }
+
+    /// Check if gh CLI mount should be included.
+    pub fn include_gh_mount(&self) -> bool {
+        self.strategy == GitHubAuthStrategy::GhCli || self.keep_gh_mount
+    }
 }
 
 /// Feature workflow defaults.
@@ -304,5 +457,90 @@ mod tests {
         assert!(config.feature.teardown.delete_branch_by_default);
         assert!(!config.feature.teardown.force_delete_unmerged_by_default);
         assert!(config.feature.teardown.prompt_force_delete_unmerged);
+    }
+
+    #[test]
+    fn github_auth_defaults_to_ssh() {
+        let config = BranchBoxConfig::default();
+        assert_eq!(config.github_auth.strategy, GitHubAuthStrategy::Ssh);
+        assert_eq!(
+            config.github_auth.ssh_agent_provider,
+            SshAgentProvider::System
+        );
+        assert!(config.github_auth.mount_ssh_dir);
+        assert!(config.github_auth.keep_gh_mount);
+    }
+
+    #[test]
+    fn github_auth_strategy_parsing() {
+        assert_eq!(
+            "ssh".parse::<GitHubAuthStrategy>().unwrap(),
+            GitHubAuthStrategy::Ssh
+        );
+        assert_eq!(
+            "gh-cli".parse::<GitHubAuthStrategy>().unwrap(),
+            GitHubAuthStrategy::GhCli
+        );
+        assert_eq!(
+            "none".parse::<GitHubAuthStrategy>().unwrap(),
+            GitHubAuthStrategy::None
+        );
+        assert!("invalid".parse::<GitHubAuthStrategy>().is_err());
+    }
+
+    #[test]
+    fn github_auth_ssh_socket_value() {
+        let settings = GitHubAuthSettings::default();
+        assert_eq!(
+            settings.ssh_auth_sock_value(),
+            Some("${localEnv:SSH_AUTH_SOCK}".to_string())
+        );
+
+        let mut gh_settings = GitHubAuthSettings::default();
+        gh_settings.strategy = GitHubAuthStrategy::GhCli;
+        assert_eq!(gh_settings.ssh_auth_sock_value(), None);
+    }
+
+    #[test]
+    fn github_auth_round_trip() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+
+        let mut config = BranchBoxConfig::default();
+        config.github_auth.strategy = GitHubAuthStrategy::GhCli;
+        config.github_auth.ssh_agent_provider = SshAgentProvider::OnePassword;
+        config.github_auth.mount_ssh_dir = false;
+
+        config.save(workspace).unwrap();
+
+        let loaded = BranchBoxConfig::load(workspace).unwrap();
+        assert_eq!(config.github_auth, loaded.github_auth);
+    }
+
+    #[test]
+    fn github_auth_uses_ssh_helper() {
+        let mut settings = GitHubAuthSettings::default();
+        assert!(settings.uses_ssh());
+
+        settings.strategy = GitHubAuthStrategy::GhCli;
+        assert!(!settings.uses_ssh());
+
+        settings.strategy = GitHubAuthStrategy::None;
+        assert!(!settings.uses_ssh());
+    }
+
+    #[test]
+    fn github_auth_include_gh_mount_helper() {
+        let mut settings = GitHubAuthSettings::default();
+        // SSH with keep_gh_mount=true (default) should include gh mount
+        assert!(settings.include_gh_mount());
+
+        // SSH with keep_gh_mount=false should not include gh mount
+        settings.keep_gh_mount = false;
+        assert!(!settings.include_gh_mount());
+
+        // GhCli always includes gh mount
+        settings.strategy = GitHubAuthStrategy::GhCli;
+        assert!(settings.include_gh_mount());
     }
 }
