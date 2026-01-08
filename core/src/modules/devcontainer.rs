@@ -2190,10 +2190,17 @@ volumes:
     fn test_coding_agent_mount_entries_root() {
         let entries = coding_agent_mount_entries("/root");
 
+        assert_eq!(entries.len(), 4);
         // Verify .ai-agents/ prefix is used with root paths
         assert!(entries
             .iter()
+            .any(|e| e.contains(".ai-agents/codex:/root/.codex")));
+        assert!(entries
+            .iter()
             .any(|e| e.contains(".ai-agents/claude:/root/.claude")));
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".ai-agents/claude.json:/root/.claude.json")));
         assert!(entries
             .iter()
             .any(|e| e.contains(".ai-agents/gh:/root/.config/gh")));
@@ -2373,7 +2380,9 @@ volumes:
         assert_eq!(outcome.container_user.as_ref().unwrap().home_path, "/root");
 
         let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        assert!(compose.contains(".ai-agents/codex:/root/.codex"));
         assert!(compose.contains(".ai-agents/claude:/root/.claude"));
+        assert!(compose.contains(".ai-agents/claude.json:/root/.claude.json"));
         assert!(compose.contains(".ai-agents/gh:/root/.config/gh"));
     }
 
