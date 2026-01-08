@@ -88,6 +88,37 @@ mod tests {
     }
 
     #[test]
+    fn compose_template_includes_prebuilt_image_config() {
+        for (stack, image_suffix) in [
+            (Stack::Rust, "devcontainer-rust"),
+            (Stack::Rails, "devcontainer-rails"),
+            (Stack::NodeJs, "devcontainer-nodejs"),
+            (Stack::Generic, "devcontainer-generic"),
+        ] {
+            let compose = compose_yaml(stack).expect("compose template");
+            // Verify pre-built image with env var override
+            assert!(
+                compose.contains("${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/"),
+                "compose template missing DEVCONTAINER_IMAGE env var: {compose}"
+            );
+            assert!(
+                compose.contains(image_suffix),
+                "compose template missing image suffix {image_suffix}: {compose}"
+            );
+            // Verify pull_policy with env var
+            assert!(
+                compose.contains("pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}"),
+                "compose template missing pull_policy: {compose}"
+            );
+            // Verify build fallback is still present
+            assert!(
+                compose.contains("dockerfile: .devcontainer/Dockerfile"),
+                "compose template missing Dockerfile build fallback: {compose}"
+            );
+        }
+    }
+
+    #[test]
     fn branchbox_env_placeholder_has_expected_defaults() {
         let env = branchbox_env().expect("branchbox env template");
         for needle in [
