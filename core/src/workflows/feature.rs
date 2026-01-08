@@ -3953,6 +3953,7 @@ mod tests {
         for shared in [
             "${SHARED_CONFIG_DIR:-../..}/.ai-agents/codex:/home/vscode/.codex",
             "${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json",
             "${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh",
         ] {
             assert!(
