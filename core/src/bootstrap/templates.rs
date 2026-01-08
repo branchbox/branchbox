@@ -74,11 +74,12 @@ mod tests {
             compose.contains("../..:/workspaces:cached"),
             "compose template missing workspace bind: {compose}"
         );
+        // AI agent configs are encapsulated under .ai-agents/ directory
         for shared in [
-            "${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex",
-            "${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude",
-            "${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json",
-            "${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/codex:/home/vscode/.codex",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh",
         ] {
             assert!(
                 compose.contains(shared),

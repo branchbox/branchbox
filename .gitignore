@@ -51,9 +51,14 @@ macos/screenshots/
 # Logs
 *.log
 
-# Tool configs (normally in parent dir via volume mounts, but excluded if created here)
+# AI agent configs (encapsulated under .ai-agents/ for Docker mount compatibility)
+.ai-agents/
+
+# Legacy tool configs (normally in parent dir via volume mounts, but excluded if created here)
 .codex/
 .claude-code/
+.claude/
+.claude.json
 .gh/
 tools/
 

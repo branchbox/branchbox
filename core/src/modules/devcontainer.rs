@@ -1007,13 +1007,17 @@ pub fn detect_container_user(devcontainer_dir: &Path, config: &JsonValue) -> Con
 }
 
 /// Generate the shared config mount entries for AI coding agents.
+///
+/// All AI agent configs are encapsulated under `.ai-agents/` directory to:
+/// 1. Keep all AI agent configs organized in one place
+/// 2. Ensure file mounts like `claude.json` exist (prevents Docker from creating as directory)
 fn coding_agent_mount_entries(home_path: &str) -> Vec<String> {
-    let host_pattern = "${SHARED_CONFIG_DIR:-../..}";
+    let host_pattern = "${SHARED_CONFIG_DIR:-../..}/.ai-agents";
     vec![
-        format!("{}/.codex:{}/.codex", host_pattern, home_path),
-        format!("{}/.claude:{}/.claude", host_pattern, home_path),
-        format!("{}/.claude.json:{}/.claude.json", host_pattern, home_path),
-        format!("{}/.gh:{}/.config/gh", host_pattern, home_path),
+        format!("{}/codex:{}/.codex", host_pattern, home_path),
+        format!("{}/claude:{}/.claude", host_pattern, home_path),
+        format!("{}/claude.json:{}/.claude.json", host_pattern, home_path),
+        format!("{}/gh:{}/.config/gh", host_pattern, home_path),
     ]
 }
 
@@ -2167,26 +2171,32 @@ volumes:
         let entries = coding_agent_mount_entries("/home/vscode");
 
         assert_eq!(entries.len(), 4);
+        // Verify .ai-agents/ prefix is used
         assert!(entries
             .iter()
-            .any(|e| e.contains(".codex:/home/vscode/.codex")));
+            .any(|e| e.contains(".ai-agents/codex:/home/vscode/.codex")));
         assert!(entries
             .iter()
-            .any(|e| e.contains(".claude:/home/vscode/.claude")));
+            .any(|e| e.contains(".ai-agents/claude:/home/vscode/.claude")));
         assert!(entries
             .iter()
-            .any(|e| e.contains(".claude.json:/home/vscode/.claude.json")));
+            .any(|e| e.contains(".ai-agents/claude.json:/home/vscode/.claude.json")));
         assert!(entries
             .iter()
-            .any(|e| e.contains(".gh:/home/vscode/.config/gh")));
+            .any(|e| e.contains(".ai-agents/gh:/home/vscode/.config/gh")));
     }
 
     #[test]
     fn test_coding_agent_mount_entries_root() {
         let entries = coding_agent_mount_entries("/root");
 
-        assert!(entries.iter().any(|e| e.contains(".claude:/root/.claude")));
-        assert!(entries.iter().any(|e| e.contains(".gh:/root/.config/gh")));
+        // Verify .ai-agents/ prefix is used with root paths
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".ai-agents/claude:/root/.claude")));
+        assert!(entries
+            .iter()
+            .any(|e| e.contains(".ai-agents/gh:/root/.config/gh")));
     }
 
     #[test]
@@ -2240,10 +2250,10 @@ volumes:
         );
 
         let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
-        assert!(compose.contains(".codex:/home/developer/.codex"));
-        assert!(compose.contains(".claude:/home/developer/.claude"));
-        assert!(compose.contains(".claude.json:/home/developer/.claude.json"));
-        assert!(compose.contains(".gh:/home/developer/.config/gh"));
+        assert!(compose.contains(".ai-agents/codex:/home/developer/.codex"));
+        assert!(compose.contains(".ai-agents/claude:/home/developer/.claude"));
+        assert!(compose.contains(".ai-agents/claude.json:/home/developer/.claude.json"));
+        assert!(compose.contains(".ai-agents/gh:/home/developer/.config/gh"));
 
         // Verify .branchbox.env was created with SHARED_CONFIG_DIR
         let branchbox_env =
@@ -2263,7 +2273,7 @@ volumes:
         )
         .unwrap();
 
-        // Already has the mounts
+        // Already has the mounts (with .ai-agents/ prefix)
         std::fs::write(
             devcontainer_dir.join("compose.yaml"),
             r#"services:
@@ -2271,10 +2281,10 @@ volumes:
     build: .
     volumes:
       - ../..:/workspaces:cached
-      - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
-      - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
-      - ${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json
-      - ${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh
+      - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/codex:/home/vscode/.codex
+      - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude
+      - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json
+      - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh
 "#,
         )
         .unwrap();
@@ -2326,8 +2336,8 @@ volumes:
         assert!(outcome.compose_modified);
 
         let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
-        // Verify mounts are in compose file (under app service)
-        assert!(compose.contains(".codex:/home/vscode/.codex"));
+        // Verify mounts are in compose file (under app service) with .ai-agents/ prefix
+        assert!(compose.contains(".ai-agents/codex:/home/vscode/.codex"));
     }
 
     #[test]
@@ -2363,8 +2373,8 @@ volumes:
         assert_eq!(outcome.container_user.as_ref().unwrap().home_path, "/root");
 
         let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
-        assert!(compose.contains(".claude:/root/.claude"));
-        assert!(compose.contains(".gh:/root/.config/gh"));
+        assert!(compose.contains(".ai-agents/claude:/root/.claude"));
+        assert!(compose.contains(".ai-agents/gh:/root/.config/gh"));
     }
 
     #[test]
@@ -2422,7 +2432,7 @@ volumes:
         assert_eq!(outcome.container_user.as_ref().unwrap().username, "node");
 
         let compose = std::fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
-        assert!(compose.contains(".claude:/home/node/.claude"));
+        assert!(compose.contains(".ai-agents/claude:/home/node/.claude"));
     }
 
     #[test]

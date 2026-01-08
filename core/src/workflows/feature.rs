@@ -3951,9 +3951,9 @@ mod tests {
             volumes
         );
         for shared in [
-            "${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex",
-            "${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude",
-            "${SHARED_CONFIG_DIR:-../..}/.gh:/home/vscode/.config/gh",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/codex:/home/vscode/.codex",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude",
+            "${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh",
         ] {
             assert!(
                 volumes.contains(&shared),
