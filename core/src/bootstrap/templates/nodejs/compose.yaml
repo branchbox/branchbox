@@ -19,9 +19,13 @@ services:
       - dind-data:/var/lib/docker
       - mise-cache:/home/vscode/.local/share/mise
       - npm-cache:/home/vscode/.npm
+      # SSH keys for GitHub authentication (read-only for security)
+      - ~/.ssh:/home/vscode/.ssh:ro
+      # AI agent configs (encapsulated under .ai-agents/ directory)
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/codex:/home/vscode/.codex
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json
+      # Optional: gh CLI for PRs/issues (not required for git operations with SSH)
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh
     command: sleep infinity
     env_file:

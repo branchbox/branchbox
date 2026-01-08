@@ -8,6 +8,9 @@
     "DOCKER_CONTAINER": "true",
     "PATH": "/home/vscode/.local/share/mise/shims:/home/vscode/.local/bin:${containerEnv:PATH}"
   },
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+  },
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": "false"
@@ -17,6 +20,7 @@
   },
   "forwardPorts": [3000],
   "postCreateCommand": "mise trust --all && mise install && mise exec -- npm install",
+  "postStartCommand": "mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true",
   "runArgs": [
     "--env-file",
     "../.env",

@@ -4,6 +4,9 @@
     "DOCKER_CONTAINER": "true",
     "RUST_BACKTRACE": "1"
   },
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -40,6 +43,7 @@
   ],
   "name": "Rust Project",
   "postCreateCommand": "cargo --version && rustc --version",
+  "postStartCommand": "mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true",
   "runArgs": [
     "--ipc=host",
     "--init"

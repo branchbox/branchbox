@@ -3,6 +3,9 @@
     "DOCKER_CONTAINER": "true",
     "RUST_BACKTRACE": "1"
   },
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -48,7 +51,7 @@
   ],
   "name": "Worktree Manager",
   "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version && echo \"SwiftUI builds run on macOS hosts; skipping swift package resolve\"'",
-  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh'",
+  "postStartCommand": "bash -c 'mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null; cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh'",
   "service": "rust-dev",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"

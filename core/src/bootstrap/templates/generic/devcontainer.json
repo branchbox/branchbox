@@ -2,6 +2,9 @@
   "containerEnv": {
     "DOCKER_CONTAINER": "true"
   },
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+  },
   "dockerComposeFile": "compose.yaml",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
@@ -14,6 +17,7 @@
     "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
   },
   "name": "Development Container",
+  "postStartCommand": "mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true",
   "runArgs": [
     "--init"
   ],

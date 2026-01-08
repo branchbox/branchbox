@@ -74,6 +74,11 @@ mod tests {
             compose.contains("../..:/workspaces:cached"),
             "compose template missing workspace bind: {compose}"
         );
+        // SSH keys mount (read-only for security)
+        assert!(
+            compose.contains("~/.ssh:/home/vscode/.ssh:ro"),
+            "compose template missing SSH keys mount: {compose}"
+        );
         // AI agent configs are encapsulated under .ai-agents/ directory
         for shared in [
             "${SHARED_CONFIG_DIR:-../..}/.ai-agents/codex:/home/vscode/.codex",
@@ -84,6 +89,30 @@ mod tests {
             assert!(
                 compose.contains(shared),
                 "compose template missing shared config volume {shared}: {compose}"
+            );
+        }
+    }
+
+    #[test]
+    fn devcontainer_template_includes_ssh_agent_forwarding() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let config = devcontainer_json(stack).expect("devcontainer template");
+            assert!(
+                config.contains(r#""SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}""#),
+                "devcontainer template for {:?} missing SSH agent forwarding: {config}",
+                stack
+            );
+        }
+    }
+
+    #[test]
+    fn compose_template_includes_ssh_mount_for_all_stacks() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let compose = compose_yaml(stack).expect("compose template");
+            assert!(
+                compose.contains("~/.ssh:/home/vscode/.ssh:ro"),
+                "compose template for {:?} missing SSH keys mount: {compose}",
+                stack
             );
         }
     }
