@@ -4,9 +4,13 @@
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use serde::Serialize;
 use std::io::Write;
 use std::path::PathBuf;
-use worktree_core::modules::{DevcontainerModule, Module};
+use worktree_core::modules::{
+    add_cloudflared_service, configure_workspace_settings, detect_container_user,
+    detect_main_service, inject_coding_agent_mounts, DevcontainerModule, Module,
+};
 use worktree_core::workflows::feature::{FeatureStatus, FeatureWorkflow};
 
 #[derive(Subcommand)]
@@ -25,6 +29,58 @@ pub enum DevcontainerCommands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+
+    /// Configure devcontainer workspace settings for worktree compatibility
+    Configure {
+        /// Project directory (defaults to current directory)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Detect main service, container user, and ports from devcontainer
+    Detect {
+        /// Project directory (defaults to current directory)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Stack hint for port detection (e.g., flask, rails, node)
+        #[arg(short, long)]
+        stack: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Add cloudflared tunnel service to compose file
+    AddTunnel {
+        /// Project directory (defaults to current directory)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Main service name to add depends_on (auto-detected if not specified)
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inject AI coding agent volume mounts into compose file
+    InjectAgents {
+        /// Project directory (defaults to current directory)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn execute(cmd: DevcontainerCommands) -> Result<()> {
@@ -34,6 +90,14 @@ pub fn execute(cmd: DevcontainerCommands) -> Result<()> {
             strategy,
             dry_run,
         } => sync(path, strategy, dry_run),
+        DevcontainerCommands::Configure { path, json } => configure(path, json),
+        DevcontainerCommands::Detect { path, stack, json } => detect(path, stack, json),
+        DevcontainerCommands::AddTunnel {
+            path,
+            service,
+            json,
+        } => add_tunnel(path, service, json),
+        DevcontainerCommands::InjectAgents { path, json } => inject_agents(path, json),
     }
 }
 
@@ -146,6 +210,269 @@ fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Resul
         println!("⚠️  {} error(s) occurred:", errors.len());
         for (feature, error) in errors {
             println!("  - {}: {}", feature, error);
+        }
+    }
+
+    Ok(())
+}
+
+// JSON output structures
+#[derive(Serialize)]
+struct ConfigureOutput {
+    devcontainer_modified: bool,
+    compose_modified: bool,
+    changes: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DetectOutput {
+    service_name: Option<String>,
+    port: u16,
+    service_url: String,
+    container_user: String,
+    home_path: String,
+}
+
+#[derive(Serialize)]
+struct AddTunnelOutput {
+    compose_modified: bool,
+    env_created: bool,
+    changes: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct InjectAgentsOutput {
+    compose_modified: bool,
+    container_user: Option<String>,
+    home_path: Option<String>,
+    changes: Vec<String>,
+}
+
+fn configure(path: Option<PathBuf>, json_output: bool) -> Result<()> {
+    let project_path = path.unwrap_or_else(|| PathBuf::from("."));
+    let project_path =
+        std::fs::canonicalize(&project_path).context("Failed to resolve project path")?;
+
+    let devcontainer_dir = project_path.join(".devcontainer");
+    if !devcontainer_dir.exists() {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "No .devcontainer directory found"
+                })
+            );
+        } else {
+            eprintln!("No .devcontainer directory found at {}", project_path.display());
+        }
+        std::process::exit(1);
+    }
+
+    let outcome = configure_workspace_settings(&devcontainer_dir)
+        .context("Failed to configure workspace settings")?;
+
+    if json_output {
+        let output = ConfigureOutput {
+            devcontainer_modified: outcome.devcontainer_modified,
+            compose_modified: outcome.compose_modified,
+            changes: outcome.changes,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Devcontainer Workspace Configuration");
+        println!();
+
+        if outcome.changes.is_empty() {
+            println!("No changes needed - workspace settings are already configured.");
+        } else {
+            println!("Changes made:");
+            for change in &outcome.changes {
+                println!("  - {}", change);
+            }
+            println!();
+            if outcome.devcontainer_modified {
+                println!("Updated devcontainer.json");
+            }
+            if outcome.compose_modified {
+                println!("Updated compose file");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn detect(path: Option<PathBuf>, stack: Option<String>, json_output: bool) -> Result<()> {
+    let project_path = path.unwrap_or_else(|| PathBuf::from("."));
+    let project_path =
+        std::fs::canonicalize(&project_path).context("Failed to resolve project path")?;
+
+    let devcontainer_dir = project_path.join(".devcontainer");
+    if !devcontainer_dir.exists() {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "No .devcontainer directory found"
+                })
+            );
+        } else {
+            eprintln!("No .devcontainer directory found at {}", project_path.display());
+        }
+        std::process::exit(1);
+    }
+
+    let stack_hint = stack.as_deref();
+    let service_info =
+        detect_main_service(&devcontainer_dir, stack_hint).context("Failed to detect service")?;
+
+    // Read devcontainer.json for container user detection
+    let config_path = devcontainer_dir.join("devcontainer.json");
+    let container_user = if config_path.exists() {
+        let contents = std::fs::read_to_string(&config_path)?;
+        let config: serde_json::Value = serde_json::from_str(&contents).unwrap_or_default();
+        detect_container_user(&devcontainer_dir, &config)
+    } else {
+        worktree_core::modules::ContainerUser::default()
+    };
+
+    if json_output {
+        let output = DetectOutput {
+            service_name: service_info.name,
+            port: service_info.port,
+            service_url: service_info.service_url,
+            container_user: container_user.username,
+            home_path: container_user.home_path,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Devcontainer Detection");
+        println!();
+        println!(
+            "Service:        {}",
+            service_info.name.as_deref().unwrap_or("(not detected)")
+        );
+        println!("Port:           {}", service_info.port);
+        println!("Service URL:    {}", service_info.service_url);
+        println!("Container User: {}", container_user.username);
+        println!("Home Path:      {}", container_user.home_path);
+    }
+
+    Ok(())
+}
+
+fn add_tunnel(path: Option<PathBuf>, service: Option<String>, json_output: bool) -> Result<()> {
+    let project_path = path.unwrap_or_else(|| PathBuf::from("."));
+    let project_path =
+        std::fs::canonicalize(&project_path).context("Failed to resolve project path")?;
+
+    let devcontainer_dir = project_path.join(".devcontainer");
+    if !devcontainer_dir.exists() {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "No .devcontainer directory found"
+                })
+            );
+        } else {
+            eprintln!("No .devcontainer directory found at {}", project_path.display());
+        }
+        std::process::exit(1);
+    }
+
+    let outcome = add_cloudflared_service(&devcontainer_dir, service.as_deref())
+        .context("Failed to add cloudflared service")?;
+
+    if json_output {
+        let output = AddTunnelOutput {
+            compose_modified: outcome.compose_modified,
+            env_created: outcome.env_created,
+            changes: outcome.changes,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Add Cloudflared Tunnel Service");
+        println!();
+
+        if outcome.changes.is_empty() {
+            println!("No changes made - cloudflared service may already exist or no compose file found.");
+        } else {
+            println!("Changes made:");
+            for change in &outcome.changes {
+                println!("  - {}", change);
+            }
+            println!();
+            if outcome.compose_modified {
+                println!("Updated compose file with cloudflared service");
+            }
+            if outcome.env_created {
+                println!("Created .cloudflared.env template");
+                println!();
+                println!("Next steps:");
+                println!("  1. Get your tunnel token from Cloudflare Zero Trust dashboard");
+                println!("  2. Add TUNNEL_TOKEN to .devcontainer/.cloudflared.env");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn inject_agents(path: Option<PathBuf>, json_output: bool) -> Result<()> {
+    let project_path = path.unwrap_or_else(|| PathBuf::from("."));
+    let project_path =
+        std::fs::canonicalize(&project_path).context("Failed to resolve project path")?;
+
+    let devcontainer_dir = project_path.join(".devcontainer");
+    if !devcontainer_dir.exists() {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "error": "No .devcontainer directory found"
+                })
+            );
+        } else {
+            eprintln!("No .devcontainer directory found at {}", project_path.display());
+        }
+        std::process::exit(1);
+    }
+
+    let outcome =
+        inject_coding_agent_mounts(&devcontainer_dir).context("Failed to inject agent mounts")?;
+
+    if json_output {
+        let output = InjectAgentsOutput {
+            compose_modified: outcome.compose_modified,
+            container_user: outcome.container_user.as_ref().map(|u| u.username.clone()),
+            home_path: outcome.container_user.as_ref().map(|u| u.home_path.clone()),
+            changes: outcome.changes,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Inject AI Coding Agent Mounts");
+        println!();
+
+        if let Some(user) = &outcome.container_user {
+            println!("Container User: {} ({})", user.username, user.home_path);
+            println!();
+        }
+
+        if outcome.changes.is_empty() {
+            println!("No changes made - mounts may already exist or no compose file found.");
+        } else {
+            println!("Changes made:");
+            for change in &outcome.changes {
+                println!("  - {}", change);
+            }
+            println!();
+            if outcome.compose_modified {
+                println!("Updated compose file with coding agent mounts:");
+                println!("  - .codex   (OpenAI Codex CLI)");
+                println!("  - .claude  (Claude Code)");
+                println!("  - .gh      (GitHub CLI)");
+            }
         }
     }
 
