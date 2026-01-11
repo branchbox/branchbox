@@ -344,7 +344,7 @@ Replace `<stack>` with: `rust`, `rails`, `nodejs`, or `generic`.
 
 **Rails users**: If your Dockerfile has `ghcr.io/rails/devcontainer/images/ruby` (which never existed), update to:
 ```dockerfile
-FROM mcr.microsoft.com/devcontainers/ruby:3.3
+FROM mcr.microsoft.com/devcontainers/ruby:${RUBY_VERSION:-3.3}
 ```
 
 After updating, your next `docker compose up` or "Reopen in Container" will pull the pre-built image instead of building locally.
