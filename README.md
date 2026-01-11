@@ -322,6 +322,21 @@ grep SHARED_CONFIG_DIR .env
 # → "Dev Containers: Rebuild Container Without Cache"
 ```
 
+**Problem**: Need to force local Dockerfile builds (skip pre-built image)
+
+**Solution**: Use one of these approaches:
+
+```bash
+# Option 1: Set environment variable
+DEVCONTAINER_PULL_POLICY=build code .
+
+# Option 2: Use compose override file (for BranchBox development)
+COMPOSE_FILE=compose.yaml:compose.local-build.yaml docker compose up
+
+# Option 3: Add to your .env file for persistent local builds
+echo "DEVCONTAINER_PULL_POLICY=build" >> .env
+```
+
 ### Upgrading Existing Projects
 
 Projects initialized before the pre-built images feature need manual updates to benefit from faster startup times.

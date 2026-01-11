@@ -3,6 +3,7 @@
 //! Validates that the GitHub Actions workflow for building devcontainer images
 //! is properly configured and references all supported stacks.
 
+use regex::Regex;
 use std::fs;
 use std::path::Path;
 
@@ -34,15 +35,25 @@ fn devcontainer_build_workflow_exists_and_has_all_stacks() {
         "workflow should trigger on template Dockerfile changes"
     );
 
-    // Verify all stacks are included in the matrix
+    // Use regex to find the matrix stack definition more robustly
+    // Matches patterns like "stack: [rust, rails, nodejs, generic]" with flexible whitespace
+    let matrix_regex =
+        Regex::new(r"stack:\s*\[([^\]]+)\]").expect("valid regex for matrix definition");
+
+    let matrix_match = matrix_regex
+        .captures(&content)
+        .expect("workflow should have a stack matrix definition");
+
+    let matrix_content = matrix_match
+        .get(1)
+        .expect("matrix should have content")
+        .as_str();
+
+    // Verify all required stacks are in the matrix
     for stack in ["rust", "rails", "nodejs", "generic"] {
         assert!(
-            content.contains(&format!("stack: [{}", stack))
-                || content.contains(&format!("[{},", stack))
-                || content.contains(&format!(", {}]", stack))
-                || content.contains(&format!(", {},", stack))
-                || content.contains(stack),
-            "workflow should include {stack} in the matrix"
+            matrix_content.contains(stack),
+            "workflow matrix should include '{stack}', found: {matrix_content}"
         );
     }
 
@@ -52,10 +63,10 @@ fn devcontainer_build_workflow_exists_and_has_all_stacks() {
         "workflow should push to ghcr.io registry"
     );
 
-    // Verify images are tagged with the expected pattern
+    // Verify images are tagged with the expected pattern (uses IMAGE_BASE env var)
     assert!(
-        content.contains("devcontainer-${{ matrix.stack }}") || content.contains("devcontainer-"),
-        "workflow should tag images with devcontainer-<stack> pattern"
+        content.contains("IMAGE_BASE }}-${{ matrix.stack }}"),
+        "workflow should tag stack images with IMAGE_BASE-matrix.stack pattern"
     );
 }
 

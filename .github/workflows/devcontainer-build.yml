@@ -79,7 +79,9 @@ jobs:
           push: ${{ github.event_name == 'push' || inputs.force_push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=branchbox
+          cache-from: |
+            type=gha,scope=branchbox
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}:buildcache
           cache-to: type=gha,mode=max,scope=branchbox
           platforms: linux/amd64,linux/arm64
 
@@ -127,7 +129,9 @@ jobs:
           push: ${{ github.event_name == 'push' || inputs.force_push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.stack }}
+          cache-from: |
+            type=gha,scope=${{ matrix.stack }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}-${{ matrix.stack }}:buildcache
           cache-to: type=gha,mode=max,scope=${{ matrix.stack }}
           platforms: linux/amd64,linux/arm64
 
