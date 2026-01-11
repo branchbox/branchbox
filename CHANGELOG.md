@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Official pre-built devcontainer images for all stacks (Rust, Rails, Node.js, Generic) published to GHCR at `ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest`.
+- `branchbox init` now generates compose.yaml files that use pre-built images by default with automatic fallback to local Dockerfile builds.
+- New environment variables for devcontainer image control: `DEVCONTAINER_IMAGE` (custom image override) and `DEVCONTAINER_PULL_POLICY` (missing/always/build).
+- GitHub Actions workflow (`devcontainer-build.yml`) that automatically builds and publishes all stack images when `.devcontainer/` or template Dockerfiles change on `main`.
+
+### Changed
+- Rails devcontainer template now uses `mcr.microsoft.com/devcontainers/ruby` base image (previously referenced non-existent `ghcr.io/rails/devcontainer/images/ruby`).
+- All stack compose.yaml templates now include `init: true` and `ipc: host` for better container behavior.
+
 ## [0.5.0] - 2026-01-07
 
 ### Added
