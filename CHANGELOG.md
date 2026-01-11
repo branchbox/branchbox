@@ -17,6 +17,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rails devcontainer template now uses `mcr.microsoft.com/devcontainers/ruby` base image (previously referenced non-existent `ghcr.io/rails/devcontainer/images/ruby`).
 - All stack compose.yaml templates now include `init: true` and `ipc: host` for better container behavior.
 
+### Upgrade Guide for Existing Projects
+
+**New projects** created with `branchbox init` automatically use pre-built images.
+
+**Existing projects** initialized before this release need manual updates to benefit from pre-built images:
+
+1. **Update your compose.yaml** to reference the pre-built image:
+
+   ```yaml
+   services:
+     your-service:
+       image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest}
+       build:
+         context: ..
+         dockerfile: .devcontainer/Dockerfile
+       pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
+   ```
+
+   Replace `<stack>` with your stack: `rust`, `rails`, `nodejs`, or `generic`.
+
+2. **Optionally add to your `.env`** for customization:
+
+   ```bash
+   # Override image (optional)
+   # DEVCONTAINER_IMAGE=my-custom-image:tag
+
+   # Control pull behavior: missing (default), always, build
+   # DEVCONTAINER_PULL_POLICY=missing
+   ```
+
+3. **Rails users**: If your Dockerfile references `ghcr.io/rails/devcontainer/images/ruby`, update to:
+
+   ```dockerfile
+   FROM mcr.microsoft.com/devcontainers/ruby:${RUBY_VERSION:-3.3}
+   ```
+
+**Feature worktrees** will automatically use the updated configuration from your main worktree when you run `branchbox feature start`.
+
 ## [0.5.0] - 2026-01-07
 
 ### Added

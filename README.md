@@ -321,3 +321,30 @@ grep SHARED_CONFIG_DIR .env
 # In VS Code: Cmd/Ctrl+Shift+P
 # → "Dev Containers: Rebuild Container Without Cache"
 ```
+
+### Upgrading Existing Projects
+
+Projects initialized before the pre-built images feature need manual updates to benefit from faster startup times.
+
+**Quick upgrade** - update your `.devcontainer/compose.yaml`:
+
+```yaml
+services:
+  your-service:
+    # Add these lines to use pre-built image with fallback
+    image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest}
+    pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
+    # Keep your existing build: section as fallback
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+```
+
+Replace `<stack>` with: `rust`, `rails`, `nodejs`, or `generic`.
+
+**Rails users**: If your Dockerfile has `ghcr.io/rails/devcontainer/images/ruby` (which never existed), update to:
+```dockerfile
+FROM mcr.microsoft.com/devcontainers/ruby:3.3
+```
+
+After updating, your next `docker compose up` or "Reopen in Container" will pull the pre-built image instead of building locally.
