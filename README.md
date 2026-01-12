@@ -357,9 +357,10 @@ services:
 
 Replace `<stack>` with: `rust`, `rails`, `nodejs`, or `generic`.
 
-**Rails users**: If your Dockerfile has `ghcr.io/rails/devcontainer/images/ruby` (which never existed), update to:
+**Rails/Node.js users**: The new templates use mise for runtime version management. If you want to adopt the new approach, re-run `branchbox init` to regenerate your `.devcontainer/` files. The templates use:
 ```dockerfile
-FROM mcr.microsoft.com/devcontainers/ruby:${RUBY_VERSION:-3.3}
+FROM mcr.microsoft.com/devcontainers/base:debian
+# mise reads .ruby-version, .nvmrc, .node-version, .tool-versions
 ```
 
 After updating, your next `docker compose up` or "Reopen in Container" will pull the pre-built image instead of building locally.

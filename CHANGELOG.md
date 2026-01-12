@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions workflow (`devcontainer-build.yml`) that automatically builds and publishes all stack images when `.devcontainer/` or template Dockerfiles change on `main`.
 
 ### Changed
-- Rails devcontainer template now uses `mcr.microsoft.com/devcontainers/ruby` base image (previously referenced non-existent `ghcr.io/rails/devcontainer/images/ruby`).
+- Rails and Node.js devcontainer templates now use `mcr.microsoft.com/devcontainers/base:debian` with mise for runtime version management, reading `.ruby-version`, `.nvmrc`, `.node-version`, and `.tool-versions` files.
 - All stack compose.yaml templates now include `init: true` and `ipc: host` for better container behavior.
 
 ### Upgrade Guide for Existing Projects
@@ -47,10 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    # DEVCONTAINER_PULL_POLICY=missing
    ```
 
-3. **Rails users**: If your Dockerfile references `ghcr.io/rails/devcontainer/images/ruby`, update to:
+3. **Rails/Node.js users**: The new templates use mise for runtime version management. If you want to adopt the new approach, re-run `branchbox init` to regenerate your `.devcontainer/` files, or manually update your Dockerfile to use the base image with mise:
 
    ```dockerfile
-   FROM mcr.microsoft.com/devcontainers/ruby:${RUBY_VERSION:-3.3}
+   FROM mcr.microsoft.com/devcontainers/base:debian
+   # mise will be installed and read .ruby-version, .nvmrc, etc.
    ```
 
 **Feature worktrees** will automatically use the updated configuration from your main worktree when you run `branchbox feature start`.
