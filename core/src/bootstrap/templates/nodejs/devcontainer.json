@@ -1,27 +1,27 @@
 {
-  "containerEnv": {
-    "DOCKER_CONTAINER": "true"
-  },
+  "name": "Node.js Project",
   "dockerComposeFile": "compose.yaml",
+  "service": "nodejs-app",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+  "containerEnv": {
+    "DOCKER_CONTAINER": "true",
+    "PATH": "/home/vscode/.local/share/mise/shims:/home/vscode/.local/bin:${containerEnv:PATH}"
+  },
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": "false"
     },
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "20"
-    },
     "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
   },
-  "forwardPorts": [
-    3000
-  ],
-  "name": "Node.js Project",
-  "postCreateCommand": "npm install",
+  "forwardPorts": [3000],
+  "postCreateCommand": "mise trust --all && mise install && mise exec -- npm install",
   "runArgs": [
+    "--env-file",
+    "../.env",
+    "--ipc=host",
+    "--shm-size=1gb",
     "--init"
-  ],
-  "service": "nodejs-app",
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
+  ]
 }

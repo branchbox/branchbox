@@ -168,17 +168,132 @@ mod tests {
     }
 
     #[test]
-    fn rails_dockerfile_uses_microsoft_devcontainer_base() {
+    fn rails_dockerfile_uses_mise_for_ruby_version_management() {
         let dockerfile = dockerfile(Stack::Rails).expect("rails dockerfile");
-        // Rails should use Microsoft's official devcontainer Ruby image
+        // Rails should use Microsoft's official devcontainer base image
         assert!(
-            dockerfile.contains("mcr.microsoft.com/devcontainers/ruby"),
-            "Rails Dockerfile should use mcr.microsoft.com/devcontainers/ruby base: {dockerfile}"
+            dockerfile.contains("mcr.microsoft.com/devcontainers/base:debian"),
+            "Rails Dockerfile should use mcr.microsoft.com/devcontainers/base:debian: {dockerfile}"
+        );
+        // Should install mise for Ruby version management
+        assert!(
+            dockerfile.contains("mise.run"),
+            "Rails Dockerfile should install mise: {dockerfile}"
+        );
+        // Should pre-install common Ruby versions
+        assert!(
+            dockerfile.contains("mise install ruby@3.3")
+                || dockerfile.contains("mise install ruby"),
+            "Rails Dockerfile should pre-install Ruby: {dockerfile}"
         );
         // Should NOT use non-existent ghcr.io/rails image
         assert!(
             !dockerfile.contains("ghcr.io/rails/devcontainer"),
             "Rails Dockerfile should not reference non-existent ghcr.io/rails image: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn rails_dockerfile_includes_common_dependencies() {
+        let dockerfile = dockerfile(Stack::Rails).expect("rails dockerfile");
+        // Should include image processing libraries
+        assert!(
+            dockerfile.contains("imagemagick"),
+            "Rails Dockerfile should include imagemagick: {dockerfile}"
+        );
+        assert!(
+            dockerfile.contains("libvips"),
+            "Rails Dockerfile should include libvips: {dockerfile}"
+        );
+        // Should include SQLite support
+        assert!(
+            dockerfile.contains("sqlite3"),
+            "Rails Dockerfile should include sqlite3: {dockerfile}"
+        );
+        // Should include gum for modern Rails bin/setup scripts
+        assert!(
+            dockerfile.contains("gum"),
+            "Rails Dockerfile should include gum: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn rails_compose_includes_mise_cache_volume() {
+        let compose = compose_yaml(Stack::Rails).expect("rails compose template");
+        assert!(
+            compose.contains("mise-cache:/home/vscode/.local/share/mise"),
+            "Rails compose should include mise cache volume: {compose}"
+        );
+    }
+
+    #[test]
+    fn rails_compose_has_solid_queue_env_var() {
+        let compose = compose_yaml(Stack::Rails).expect("rails compose template");
+        assert!(
+            compose.contains("SOLID_QUEUE_IN_PUMA"),
+            "Rails compose should include SOLID_QUEUE_IN_PUMA env var: {compose}"
+        );
+    }
+
+    #[test]
+    fn nodejs_dockerfile_uses_mise_for_node_version_management() {
+        let dockerfile = dockerfile(Stack::NodeJs).expect("nodejs dockerfile");
+        // Node.js should use Microsoft's official devcontainer base image
+        assert!(
+            dockerfile.contains("mcr.microsoft.com/devcontainers/base:debian"),
+            "Node.js Dockerfile should use mcr.microsoft.com/devcontainers/base:debian: {dockerfile}"
+        );
+        // Should install mise for Node version management
+        assert!(
+            dockerfile.contains("mise.run"),
+            "Node.js Dockerfile should install mise: {dockerfile}"
+        );
+        // Should pre-install common Node versions
+        assert!(
+            dockerfile.contains("mise install node@20") || dockerfile.contains("mise install node"),
+            "Node.js Dockerfile should pre-install Node: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn nodejs_dockerfile_includes_native_module_dependencies() {
+        let dockerfile = dockerfile(Stack::NodeJs).expect("nodejs dockerfile");
+        // Should include python for node-gyp
+        assert!(
+            dockerfile.contains("python3"),
+            "Node.js Dockerfile should include python3 for node-gyp: {dockerfile}"
+        );
+        // Should include build-essential for native modules
+        assert!(
+            dockerfile.contains("build-essential"),
+            "Node.js Dockerfile should include build-essential: {dockerfile}"
+        );
+        // Should include libvips for sharp image processing
+        assert!(
+            dockerfile.contains("libvips"),
+            "Node.js Dockerfile should include libvips: {dockerfile}"
+        );
+    }
+
+    #[test]
+    fn nodejs_compose_includes_mise_and_npm_cache_volumes() {
+        let compose = compose_yaml(Stack::NodeJs).expect("nodejs compose template");
+        assert!(
+            compose.contains("mise-cache:/home/vscode/.local/share/mise"),
+            "Node.js compose should include mise cache volume: {compose}"
+        );
+        assert!(
+            compose.contains("npm-cache:/home/vscode/.npm"),
+            "Node.js compose should include npm cache volume: {compose}"
+        );
+    }
+
+    #[test]
+    fn nodejs_devcontainer_uses_mise_exec() {
+        let devcontainer = devcontainer_json(Stack::NodeJs).expect("nodejs devcontainer.json");
+        assert!(
+            devcontainer.contains("mise exec -- npm install"),
+            "Node.js devcontainer should use mise exec for npm install: {devcontainer}"
         );
     }
 

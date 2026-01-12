@@ -1,3 +1,5 @@
+# BranchBox Rails Devcontainer
+# Works with SQLite, Postgres, or MySQL based projects
 name: ${DEVCONTAINER_NAME:-rails-project}
 services:
   rails-app:
@@ -15,6 +17,7 @@ services:
     volumes:
       - ../..:/workspaces:cached
       - dind-data:/var/lib/docker
+      - mise-cache:/home/vscode/.local/share/mise
       - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
       - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
       - ${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json
@@ -25,16 +28,24 @@ services:
         required: false
       - path: .branchbox.env
         required: false
-    depends_on:
-      - postgres
-  postgres:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # Disable Solid Queue Puma plugin by default (enable if you have queue DB configured)
+      SOLID_QUEUE_IN_PUMA: ${SOLID_QUEUE_IN_PUMA:-false}
+    # Uncomment to enable Postgres (for apps using pg gem instead of sqlite3)
+    # depends_on:
+    #   - postgres
+
+  # Postgres service - uncomment if your app uses PostgreSQL
+  # postgres:
+  #   image: pgvector/pgvector:pg16
+  #   restart: unless-stopped
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: postgres
+
 volumes:
   dind-data: null
-  postgres-data: null
+  mise-cache: null
+  # postgres-data: null
