@@ -159,21 +159,21 @@ impl Docker {
 
     /// Start a container
     pub fn start_container(&self, container_id: &str) -> Result<DockerOutput> {
-        self.run_command(&["start", container_id])
+        self.run_command(&["start".to_string(), container_id.to_string()])
     }
 
     /// Stop a container
     pub fn stop_container(&self, container_id: &str) -> Result<DockerOutput> {
-        self.run_command(&["stop", container_id])
+        self.run_command(&["stop".to_string(), container_id.to_string()])
     }
 
     /// Remove a container
     pub fn remove_container(&self, container_id: &str, force: bool) -> Result<DockerOutput> {
-        let mut args = vec!["rm"];
+        let mut args = vec!["rm".to_string()];
         if force {
-            args.push("-f");
+            args.push("-f".to_string());
         }
-        args.push(container_id);
+        args.push(container_id.to_string());
         self.run_command(&args)
     }
 
@@ -187,32 +187,29 @@ impl Docker {
         env: &[(&str, &str)],
         interactive: bool,
     ) -> Result<DockerOutput> {
-        let mut args = vec!["exec"];
+        let mut args: Vec<String> = vec!["exec".to_string()];
 
         if interactive {
-            args.push("-it");
+            args.push("-it".to_string());
         }
 
         if let Some(u) = user {
-            args.push("-u");
-            args.push(u);
+            args.push("-u".to_string());
+            args.push(u.to_string());
         }
 
         if let Some(w) = workdir {
-            args.push("-w");
-            args.push(w);
+            args.push("-w".to_string());
+            args.push(w.to_string());
         }
 
         for (key, value) in env {
-            args.push("-e");
-            // We need to own this string
-            let env_str = format!("{}={}", key, value);
-            // This is a bit awkward but we need to handle the lifetime
-            args.push(Box::leak(env_str.into_boxed_str()));
+            args.push("-e".to_string());
+            args.push(format!("{}={}", key, value));
         }
 
-        args.push(container_id);
-        args.extend(command);
+        args.push(container_id.to_string());
+        args.extend(command.iter().map(|s| s.to_string()));
 
         self.run_command(&args)
     }
@@ -226,22 +223,24 @@ impl Docker {
         build_args: &HashMap<String, String>,
         no_cache: bool,
     ) -> Result<DockerOutput> {
-        let mut args = vec!["build", "-t", tag, "-f"];
-        let dockerfile_str = dockerfile.to_string_lossy();
-        args.push(&dockerfile_str);
+        let mut args: Vec<String> = vec![
+            "build".to_string(),
+            "-t".to_string(),
+            tag.to_string(),
+            "-f".to_string(),
+            dockerfile.to_string_lossy().to_string(),
+        ];
 
         if no_cache {
-            args.push("--no-cache");
+            args.push("--no-cache".to_string());
         }
 
         for (key, value) in build_args {
-            args.push("--build-arg");
-            let arg_str = format!("{}={}", key, value);
-            args.push(Box::leak(arg_str.into_boxed_str()));
+            args.push("--build-arg".to_string());
+            args.push(format!("{}={}", key, value));
         }
 
-        let context_str = context.to_string_lossy();
-        args.push(&context_str);
+        args.push(context.to_string_lossy().to_string());
 
         self.run_command(&args)
     }
@@ -261,54 +260,50 @@ impl Docker {
         detach: bool,
         remove: bool,
     ) -> Result<DockerOutput> {
-        let mut args = vec!["run"];
+        let mut args: Vec<String> = vec!["run".to_string()];
 
         if detach {
-            args.push("-d");
+            args.push("-d".to_string());
         }
 
         if remove {
-            args.push("--rm");
+            args.push("--rm".to_string());
         }
 
         if let Some(n) = name {
-            args.push("--name");
-            args.push(n);
+            args.push("--name".to_string());
+            args.push(n.to_string());
         }
 
         for (key, value) in labels {
-            args.push("--label");
-            let label_str = format!("{}={}", key, value);
-            args.push(Box::leak(label_str.into_boxed_str()));
+            args.push("--label".to_string());
+            args.push(format!("{}={}", key, value));
         }
 
         for (source, target) in mounts {
-            args.push("-v");
-            let mount_str = format!("{}:{}", source, target);
-            args.push(Box::leak(mount_str.into_boxed_str()));
+            args.push("-v".to_string());
+            args.push(format!("{}:{}", source, target));
         }
 
         for (host, container) in ports {
-            args.push("-p");
-            let port_str = format!("{}:{}", host, container);
-            args.push(Box::leak(port_str.into_boxed_str()));
+            args.push("-p".to_string());
+            args.push(format!("{}:{}", host, container));
         }
 
         for (key, value) in env {
-            args.push("-e");
-            let env_str = format!("{}={}", key, value);
-            args.push(Box::leak(env_str.into_boxed_str()));
+            args.push("-e".to_string());
+            args.push(format!("{}={}", key, value));
         }
 
         if let Some(w) = workdir {
-            args.push("-w");
-            args.push(w);
+            args.push("-w".to_string());
+            args.push(w.to_string());
         }
 
-        args.push(image);
+        args.push(image.to_string());
 
         if let Some(cmd) = command {
-            args.extend(cmd.iter().copied());
+            args.extend(cmd.iter().map(|s| s.to_string()));
         }
 
         self.run_command(&args)
@@ -508,7 +503,7 @@ impl Docker {
 
     // === Internal methods ===
 
-    fn run_command(&self, args: &[&str]) -> Result<DockerOutput> {
+    fn run_command(&self, args: &[String]) -> Result<DockerOutput> {
         tracing::debug!(command = %self.docker_path, args = ?args, "Running docker command");
 
         let output = Command::new(&self.docker_path)

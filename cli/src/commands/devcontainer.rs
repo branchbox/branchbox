@@ -772,7 +772,13 @@ fn detect(path: Option<PathBuf>, stack: Option<String>, json_output: bool) -> Re
     let config_path = devcontainer_dir.join("devcontainer.json");
     let container_user = if config_path.exists() {
         let contents = std::fs::read_to_string(&config_path)?;
-        let config: serde_json::Value = serde_json::from_str(&contents).unwrap_or_default();
+        // Use JSONC parser to handle comments in devcontainer.json
+        let config: serde_json::Value =
+            jsonc_parser::parse_to_serde_value(&contents, &Default::default())
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to parse devcontainer.json as JSONC: {:?}", e)
+                })?
+                .unwrap_or_default();
         detect_container_user(&devcontainer_dir, &config)
     } else {
         worktree_core::modules::ContainerUser::default()
