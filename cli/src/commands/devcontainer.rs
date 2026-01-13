@@ -1,12 +1,22 @@
 //! Devcontainer commands
 //!
-//! Commands for managing devcontainer configuration across feature worktrees
+//! Commands for managing devcontainer configuration and lifecycle.
+//!
+//! This module provides two sets of commands:
+//! 1. **Configuration commands** (sync, configure, detect, add-tunnel, inject-agents)
+//!    - Manage devcontainer.json and compose files
+//! 2. **Runtime commands** (up, exec, down, build, read-configuration)
+//!    - Manage container lifecycle (equivalent to @devcontainers/cli)
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use worktree_core::devcontainer_runtime::{
+    DevcontainerRuntime, DownOptions, ExecOptions, UpOptions,
+};
 use worktree_core::modules::{
     add_cloudflared_service, configure_workspace_settings, detect_container_user,
     detect_main_service, inject_coding_agent_mounts, DevcontainerModule, Module,
@@ -15,6 +25,143 @@ use worktree_core::workflows::feature::{FeatureStatus, FeatureWorkflow};
 
 #[derive(Subcommand)]
 pub enum DevcontainerCommands {
+    // === Runtime commands (like @devcontainers/cli) ===
+    /// Create and run dev container
+    Up {
+        /// Workspace folder path
+        #[arg(long, default_value = ".")]
+        workspace_folder: PathBuf,
+
+        /// Docker CLI path
+        #[arg(long)]
+        docker_path: Option<String>,
+
+        /// Docker Compose CLI path
+        #[arg(long)]
+        docker_compose_path: Option<String>,
+
+        /// Remove existing container before starting
+        #[arg(long)]
+        remove_existing_container: bool,
+
+        /// Build with --no-cache
+        #[arg(long)]
+        build_no_cache: bool,
+
+        /// Skip post-create commands
+        #[arg(long)]
+        skip_post_create: bool,
+
+        /// Remote environment variables (name=value)
+        #[arg(long)]
+        remote_env: Vec<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Execute a command on a running dev container
+    Exec {
+        /// Command to execute
+        #[arg(required = true)]
+        cmd: Vec<String>,
+
+        /// Workspace folder path
+        #[arg(long, default_value = ".")]
+        workspace_folder: PathBuf,
+
+        /// Docker CLI path
+        #[arg(long)]
+        docker_path: Option<String>,
+
+        /// Docker Compose CLI path
+        #[arg(long)]
+        docker_compose_path: Option<String>,
+
+        /// User to run command as
+        #[arg(long, short)]
+        user: Option<String>,
+
+        /// Working directory in container
+        #[arg(long, short)]
+        workdir: Option<String>,
+
+        /// Remote environment variables (name=value)
+        #[arg(long)]
+        remote_env: Vec<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Stop and remove dev container
+    Down {
+        /// Workspace folder path
+        #[arg(long, default_value = ".")]
+        workspace_folder: PathBuf,
+
+        /// Docker CLI path
+        #[arg(long)]
+        docker_path: Option<String>,
+
+        /// Docker Compose CLI path
+        #[arg(long)]
+        docker_compose_path: Option<String>,
+
+        /// Remove volumes
+        #[arg(long, short)]
+        volumes: bool,
+
+        /// Remove orphan containers
+        #[arg(long)]
+        remove_orphans: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Build a dev container image
+    Build {
+        /// Workspace folder path
+        #[arg(long, default_value = ".")]
+        workspace_folder: PathBuf,
+
+        /// Docker CLI path
+        #[arg(long)]
+        docker_path: Option<String>,
+
+        /// Docker Compose CLI path
+        #[arg(long)]
+        docker_compose_path: Option<String>,
+
+        /// Build with --no-cache
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Image name (for Dockerfile builds)
+        #[arg(long)]
+        image_name: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Read and output devcontainer configuration
+    ReadConfiguration {
+        /// Workspace folder path
+        #[arg(long, default_value = ".")]
+        workspace_folder: PathBuf,
+
+        /// Output as JSON (always JSON for this command)
+        #[arg(long)]
+        json: bool,
+    },
+
+    // === Configuration commands ===
     /// Sync devcontainer configuration to all feature worktrees
     Sync {
         /// Project directory (defaults to current directory)
@@ -85,6 +232,81 @@ pub enum DevcontainerCommands {
 
 pub fn execute(cmd: DevcontainerCommands) -> Result<()> {
     match cmd {
+        // Runtime commands
+        DevcontainerCommands::Up {
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            remove_existing_container,
+            build_no_cache,
+            skip_post_create,
+            remote_env,
+            json,
+        } => cmd_up(
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            remove_existing_container,
+            build_no_cache,
+            skip_post_create,
+            remote_env,
+            json,
+        ),
+        DevcontainerCommands::Exec {
+            cmd: command,
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            user,
+            workdir,
+            remote_env,
+            json,
+        } => cmd_exec(
+            command,
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            user,
+            workdir,
+            remote_env,
+            json,
+        ),
+        DevcontainerCommands::Down {
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            volumes,
+            remove_orphans,
+            json,
+        } => cmd_down(
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            volumes,
+            remove_orphans,
+            json,
+        ),
+        DevcontainerCommands::Build {
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            no_cache,
+            image_name,
+            json,
+        } => cmd_build(
+            workspace_folder,
+            docker_path,
+            docker_compose_path,
+            no_cache,
+            image_name,
+            json,
+        ),
+        DevcontainerCommands::ReadConfiguration {
+            workspace_folder,
+            json,
+        } => cmd_read_configuration(workspace_folder, json),
+
+        // Configuration commands
         DevcontainerCommands::Sync {
             path,
             strategy,
@@ -100,6 +322,214 @@ pub fn execute(cmd: DevcontainerCommands) -> Result<()> {
         DevcontainerCommands::InjectAgents { path, json } => inject_agents(path, json),
     }
 }
+
+// === Runtime command implementations ===
+
+fn parse_env_vars(env_args: Vec<String>) -> HashMap<String, String> {
+    env_args
+        .into_iter()
+        .filter_map(|s| {
+            let parts: Vec<&str> = s.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_up(
+    workspace_folder: PathBuf,
+    docker_path: Option<String>,
+    docker_compose_path: Option<String>,
+    remove_existing_container: bool,
+    build_no_cache: bool,
+    skip_post_create: bool,
+    remote_env: Vec<String>,
+    json_output: bool,
+) -> Result<()> {
+    let runtime =
+        DevcontainerRuntime::with_docker(&workspace_folder, docker_path, docker_compose_path)?;
+
+    if !runtime.is_docker_available() {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::json!({"outcome": "error", "message": "Docker is not available"})
+            );
+        } else {
+            eprintln!("Error: Docker is not available. Please ensure Docker is installed and running.");
+        }
+        std::process::exit(1);
+    }
+
+    let options = UpOptions {
+        remove_existing: remove_existing_container,
+        build_no_cache,
+        skip_post_create,
+        remote_env: parse_env_vars(remote_env),
+    };
+
+    let result = runtime.up(options).context("Failed to start devcontainer")?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Devcontainer Up");
+        println!();
+        println!("Outcome:          {}", result.outcome);
+        println!("Container ID:     {}", result.container_id);
+        if let Some(user) = &result.remote_user {
+            println!("Remote User:      {}", user);
+        }
+        println!("Workspace Folder: {}", result.remote_workspace_folder);
+        if let Some(project) = &result.compose_project_name {
+            println!("Compose Project:  {}", project);
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_exec(
+    command: Vec<String>,
+    workspace_folder: PathBuf,
+    docker_path: Option<String>,
+    docker_compose_path: Option<String>,
+    user: Option<String>,
+    workdir: Option<String>,
+    remote_env: Vec<String>,
+    json_output: bool,
+) -> Result<()> {
+    if command.is_empty() {
+        anyhow::bail!("No command specified");
+    }
+
+    let runtime =
+        DevcontainerRuntime::with_docker(&workspace_folder, docker_path, docker_compose_path)?;
+
+    let options = ExecOptions {
+        user,
+        workdir,
+        remote_env: parse_env_vars(remote_env),
+    };
+
+    let result = runtime.exec(&command, options)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        // For non-JSON output, just print stdout/stderr directly
+        if !result.stdout.is_empty() {
+            print!("{}", result.stdout);
+        }
+        if !result.stderr.is_empty() {
+            eprint!("{}", result.stderr);
+        }
+    }
+
+    // Exit with the same code as the executed command
+    if result.exit_code != 0 {
+        std::process::exit(result.exit_code);
+    }
+
+    Ok(())
+}
+
+fn cmd_down(
+    workspace_folder: PathBuf,
+    docker_path: Option<String>,
+    docker_compose_path: Option<String>,
+    volumes: bool,
+    remove_orphans: bool,
+    json_output: bool,
+) -> Result<()> {
+    let runtime =
+        DevcontainerRuntime::with_docker(&workspace_folder, docker_path, docker_compose_path)?;
+
+    let options = DownOptions {
+        volumes,
+        remove_orphans,
+    };
+
+    let result = runtime.down(options).context("Failed to stop devcontainer")?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Devcontainer Down");
+        println!();
+        println!("Outcome: {}", result.outcome);
+        if let Some(containers) = &result.removed_containers {
+            println!("Removed containers:");
+            for id in containers {
+                println!("  - {}", id);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_build(
+    workspace_folder: PathBuf,
+    docker_path: Option<String>,
+    docker_compose_path: Option<String>,
+    no_cache: bool,
+    image_name: Option<String>,
+    json_output: bool,
+) -> Result<()> {
+    let runtime =
+        DevcontainerRuntime::with_docker(&workspace_folder, docker_path, docker_compose_path)?;
+
+    let result = runtime
+        .build(no_cache, image_name)
+        .context("Failed to build devcontainer")?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Devcontainer Build");
+        println!();
+        println!("Outcome: {}", result.outcome);
+        if let Some(image) = &result.image_name {
+            println!("Image:   {}", image);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_read_configuration(workspace_folder: PathBuf, json_output: bool) -> Result<()> {
+    let runtime = DevcontainerRuntime::new(&workspace_folder)?;
+    let config = runtime.read_configuration();
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+    } else {
+        println!("Devcontainer Configuration");
+        println!();
+        println!("Workspace:      {}", config.workspace_folder);
+        println!("Config Path:    {}", config.config_path);
+        println!("Container Type: {}", config.container_type);
+        if let Some(name) = &config.configuration.name {
+            println!("Name:           {}", name);
+        }
+        if let Some(image) = &config.configuration.image {
+            println!("Image:          {}", image);
+        }
+        if let Some(service) = &config.configuration.service {
+            println!("Service:        {}", service);
+        }
+    }
+
+    Ok(())
+}
+
+// === Configuration command implementations ===
 
 fn sync(path: Option<PathBuf>, strategy: Option<String>, dry_run: bool) -> Result<()> {
     let project_path = path.unwrap_or_else(|| PathBuf::from("."));
