@@ -454,6 +454,7 @@ Use this checklist for each release:
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| 0.6.0 | 2026-01-13 | Minor | Pre-built devcontainer images, mise runtime management |
 | 0.5.0 | 2026-01-07 | Minor | Git worktree compatibility, Claude Code mounts |
 | 0.4.1 | 2025-12-15 | Patch | Init fixes, tunnel commands |
 | 0.4.0 | 2025-11-15 | Minor | Agent daemon, macOS app, gRPC |

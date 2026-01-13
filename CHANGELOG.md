@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-01-13
+
 ### Added
 - Official pre-built devcontainer images for all stacks (Rust, Rails, Node.js, Generic) published to GHCR at `ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest`.
 - `branchbox init` now generates compose.yaml files that use pre-built images by default with automatic fallback to local Dockerfile builds.
