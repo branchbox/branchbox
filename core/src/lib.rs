@@ -10,12 +10,14 @@
 //! - [`modules`] - Composable feature components
 //! - [`bootstrap`] - Self-bootstrapping devcontainer system (meta!)
 //! - [`git`] - Git worktree operations
+//! - [`devcontainer_runtime`] - Devcontainer lifecycle management (up, exec, down, build)
 //! - [`error`] - Error types
 
 pub mod adapters;
 pub mod bootstrap;
 pub mod cloudflare;
 pub mod config;
+pub mod devcontainer_runtime;
 pub mod error;
 pub mod git;
 pub mod modules;
