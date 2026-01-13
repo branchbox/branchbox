@@ -878,6 +878,11 @@ impl InitWorkflow {
                 }
             }
 
+            // Ensure AI coding agent directory structure exists (for Docker mounts)
+            if self.options.coding_agents {
+                crate::modules::inject_coding_agent_mounts(&devcontainer_dir)?;
+            }
+
             if !self.options.verbose {
                 println!("✓ Created devcontainer configuration");
             }
