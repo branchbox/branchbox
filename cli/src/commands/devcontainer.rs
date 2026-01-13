@@ -360,7 +360,9 @@ fn cmd_up(
                 serde_json::json!({"outcome": "error", "message": "Docker is not available"})
             );
         } else {
-            eprintln!("Error: Docker is not available. Please ensure Docker is installed and running.");
+            eprintln!(
+                "Error: Docker is not available. Please ensure Docker is installed and running."
+            );
         }
         std::process::exit(1);
     }
@@ -372,7 +374,9 @@ fn cmd_up(
         remote_env: parse_env_vars(remote_env),
     };
 
-    let result = runtime.up(options).context("Failed to start devcontainer")?;
+    let result = runtime
+        .up(options)
+        .context("Failed to start devcontainer")?;
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -455,7 +459,9 @@ fn cmd_down(
         remove_orphans,
     };
 
-    let result = runtime.down(options).context("Failed to stop devcontainer")?;
+    let result = runtime
+        .down(options)
+        .context("Failed to stop devcontainer")?;
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -693,7 +699,10 @@ fn configure(path: Option<PathBuf>, json_output: bool) -> Result<()> {
                 })
             );
         } else {
-            eprintln!("No .devcontainer directory found at {}", project_path.display());
+            eprintln!(
+                "No .devcontainer directory found at {}",
+                project_path.display()
+            );
         }
         std::process::exit(1);
     }
@@ -747,7 +756,10 @@ fn detect(path: Option<PathBuf>, stack: Option<String>, json_output: bool) -> Re
                 })
             );
         } else {
-            eprintln!("No .devcontainer directory found at {}", project_path.display());
+            eprintln!(
+                "No .devcontainer directory found at {}",
+                project_path.display()
+            );
         }
         std::process::exit(1);
     }
@@ -806,7 +818,10 @@ fn add_tunnel(path: Option<PathBuf>, service: Option<String>, json_output: bool)
                 })
             );
         } else {
-            eprintln!("No .devcontainer directory found at {}", project_path.display());
+            eprintln!(
+                "No .devcontainer directory found at {}",
+                project_path.display()
+            );
         }
         std::process::exit(1);
     }
@@ -826,7 +841,9 @@ fn add_tunnel(path: Option<PathBuf>, service: Option<String>, json_output: bool)
         println!();
 
         if outcome.changes.is_empty() {
-            println!("No changes made - cloudflared service may already exist or no compose file found.");
+            println!(
+                "No changes made - cloudflared service may already exist or no compose file found."
+            );
         } else {
             println!("Changes made:");
             for change in &outcome.changes {
@@ -864,7 +881,10 @@ fn inject_agents(path: Option<PathBuf>, json_output: bool) -> Result<()> {
                 })
             );
         } else {
-            eprintln!("No .devcontainer directory found at {}", project_path.display());
+            eprintln!(
+                "No .devcontainer directory found at {}",
+                project_path.display()
+            );
         }
         std::process::exit(1);
     }

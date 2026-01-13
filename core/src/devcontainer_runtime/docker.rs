@@ -127,13 +127,10 @@ impl Docker {
             );
         }
 
-        let json: serde_json::Value =
-            serde_json::from_slice(&output.stdout).context("Failed to parse docker inspect output")?;
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .context("Failed to parse docker inspect output")?;
 
-        let id = json["Id"]
-            .as_str()
-            .unwrap_or(container_id)
-            .to_string();
+        let id = json["Id"].as_str().unwrap_or(container_id).to_string();
 
         let name = json["Name"]
             .as_str()
@@ -250,6 +247,7 @@ impl Docker {
     }
 
     /// Run a new container
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
         image: &str,
@@ -524,11 +522,7 @@ impl Docker {
     fn run_compose_command(&self, cmd_parts: &[String]) -> Result<DockerOutput> {
         tracing::debug!(command = ?cmd_parts, "Running docker compose command");
 
-        let (program, args) = if cmd_parts.len() > 1 && cmd_parts[1] == "compose" {
-            (&cmd_parts[0], &cmd_parts[1..])
-        } else {
-            (&cmd_parts[0], &cmd_parts[1..])
-        };
+        let (program, args) = (&cmd_parts[0], &cmd_parts[1..]);
 
         let output = Command::new(program)
             .args(args)

@@ -261,12 +261,13 @@ impl DevcontainerConfig {
             .with_context(|| format!("Failed to read {}", config_path.display()))?;
 
         // Parse JSONC (JSON with comments)
-        let config: DevcontainerConfig = jsonc_parser::parse_to_serde_value(&contents, &Default::default())
-            .map_err(|e| anyhow::anyhow!("Failed to parse JSONC: {:?}", e))?
-            .map(|v| serde_json::from_value(v))
-            .transpose()
-            .with_context(|| format!("Failed to deserialize {}", config_path.display()))?
-            .unwrap_or_default();
+        let config: DevcontainerConfig =
+            jsonc_parser::parse_to_serde_value(&contents, &Default::default())
+                .map_err(|e| anyhow::anyhow!("Failed to parse JSONC: {:?}", e))?
+                .map(serde_json::from_value)
+                .transpose()
+                .with_context(|| format!("Failed to deserialize {}", config_path.display()))?
+                .unwrap_or_default();
 
         Ok((config, config_path.to_path_buf()))
     }
@@ -353,7 +354,10 @@ mod tests {
 
         let config: DevcontainerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.name, Some("Test".to_string()));
-        assert_eq!(config.image, Some("mcr.microsoft.com/devcontainers/rust:1".to_string()));
+        assert_eq!(
+            config.image,
+            Some("mcr.microsoft.com/devcontainers/rust:1".to_string())
+        );
         assert_eq!(config.container_type(), DevcontainerType::Image);
     }
 

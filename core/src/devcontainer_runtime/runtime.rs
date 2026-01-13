@@ -102,8 +102,12 @@ pub struct DownOptions {
 impl DevcontainerRuntime {
     /// Create a new runtime for a workspace
     pub fn new(workspace_folder: &Path) -> Result<Self> {
-        let workspace_folder = std::fs::canonicalize(workspace_folder)
-            .with_context(|| format!("Failed to resolve workspace: {}", workspace_folder.display()))?;
+        let workspace_folder = std::fs::canonicalize(workspace_folder).with_context(|| {
+            format!(
+                "Failed to resolve workspace: {}",
+                workspace_folder.display()
+            )
+        })?;
 
         let (config, config_path) = DevcontainerConfig::load(&workspace_folder)?;
 
@@ -409,7 +413,11 @@ impl DevcontainerRuntime {
             &mounts,
             &[], // ports - handled by forward_ports later
             &env,
-            Some(&self.config.effective_workspace_folder(&self.workspace_name())),
+            Some(
+                &self
+                    .config
+                    .effective_workspace_folder(&self.workspace_name()),
+            ),
             command.as_deref(),
             true,  // detach
             false, // don't auto-remove
@@ -440,7 +448,10 @@ impl DevcontainerRuntime {
 
     fn run_lifecycle_commands(&self, container_id: &str) -> Result<()> {
         let user = self.config.effective_remote_user();
-        let workdir = Some(self.config.effective_workspace_folder(&self.workspace_name()));
+        let workdir = Some(
+            self.config
+                .effective_workspace_folder(&self.workspace_name()),
+        );
         let workdir_ref = workdir.as_deref();
 
         // Run commands in order
@@ -515,10 +526,7 @@ impl DevcontainerRuntime {
         // Verify container is running
         let info = self.docker.inspect_container(&container_id)?;
         if info.state != ContainerState::Running {
-            anyhow::bail!(
-                "Container is not running (state: {:?})",
-                info.state
-            );
+            anyhow::bail!("Container is not running (state: {:?})", info.state);
         }
 
         let user = options
@@ -526,8 +534,13 @@ impl DevcontainerRuntime {
             .as_deref()
             .or_else(|| self.config.effective_remote_user());
 
-        let default_workdir = self.config.effective_workspace_folder(&self.workspace_name());
-        let workdir = options.workdir.as_deref().or(Some(default_workdir.as_str()));
+        let default_workdir = self
+            .config
+            .effective_workspace_folder(&self.workspace_name());
+        let workdir = options
+            .workdir
+            .as_deref()
+            .or(Some(default_workdir.as_str()));
 
         // For compose-based containers, use compose exec
         if self.config.container_type() == DevcontainerType::DockerCompose {
@@ -644,9 +657,9 @@ impl DevcontainerRuntime {
                     "Building Dockerfile"
                 );
 
-                let output = self
-                    .docker
-                    .build(&context, &dockerfile, &image, &build_args, no_cache)?;
+                let output =
+                    self.docker
+                        .build(&context, &dockerfile, &image, &build_args, no_cache)?;
 
                 if !output.success {
                     anyhow::bail!("docker build failed: {}", output.stderr);
