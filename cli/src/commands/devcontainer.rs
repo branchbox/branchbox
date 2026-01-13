@@ -28,8 +28,8 @@ pub enum DevcontainerCommands {
     // === Runtime commands (like @devcontainers/cli) ===
     /// Create and run dev container
     Up {
-        /// Workspace folder path
-        #[arg(long, default_value = ".")]
+        /// Workspace folder path (defaults to current directory)
+        #[arg(default_value = ".")]
         workspace_folder: PathBuf,
 
         /// Docker CLI path
@@ -64,11 +64,11 @@ pub enum DevcontainerCommands {
     /// Execute a command on a running dev container
     Exec {
         /// Command to execute
-        #[arg(required = true)]
+        #[arg(required = true, last = true)]
         cmd: Vec<String>,
 
-        /// Workspace folder path
-        #[arg(long, default_value = ".")]
+        /// Workspace folder path (defaults to current directory)
+        #[arg(short = 'w', long, default_value = ".")]
         workspace_folder: PathBuf,
 
         /// Docker CLI path
@@ -84,7 +84,7 @@ pub enum DevcontainerCommands {
         user: Option<String>,
 
         /// Working directory in container
-        #[arg(long, short)]
+        #[arg(long)]
         workdir: Option<String>,
 
         /// Remote environment variables (name=value)
@@ -98,8 +98,8 @@ pub enum DevcontainerCommands {
 
     /// Stop and remove dev container
     Down {
-        /// Workspace folder path
-        #[arg(long, default_value = ".")]
+        /// Workspace folder path (defaults to current directory)
+        #[arg(default_value = ".")]
         workspace_folder: PathBuf,
 
         /// Docker CLI path
@@ -125,8 +125,8 @@ pub enum DevcontainerCommands {
 
     /// Build a dev container image
     Build {
-        /// Workspace folder path
-        #[arg(long, default_value = ".")]
+        /// Workspace folder path (defaults to current directory)
+        #[arg(default_value = ".")]
         workspace_folder: PathBuf,
 
         /// Docker CLI path
@@ -152,8 +152,8 @@ pub enum DevcontainerCommands {
 
     /// Read and output devcontainer configuration
     ReadConfiguration {
-        /// Workspace folder path
-        #[arg(long, default_value = ".")]
+        /// Workspace folder path (defaults to current directory)
+        #[arg(default_value = ".")]
         workspace_folder: PathBuf,
 
         /// Output as JSON (always JSON for this command)
