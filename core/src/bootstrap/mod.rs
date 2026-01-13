@@ -38,7 +38,12 @@
 use crate::Result;
 use std::path::PathBuf;
 
+pub mod config;
 pub mod templates;
+
+pub use config::{
+    ComposeConfig, DevcontainerConfig, DockerfileConfig, ProjectInfo, StackPreset,
+};
 
 /// Supported stack types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +110,13 @@ impl Bootstrap {
         Ok(Stack::Generic)
     }
 
+    /// Detect project information from the repository
+    ///
+    /// Returns detected settings like project name, runtime versions, etc.
+    pub fn detect_project_info(&self) -> ProjectInfo {
+        ProjectInfo::detect(&self.project_path)
+    }
+
     /// Generate devcontainer configuration
     ///
     /// Creates all necessary files for a complete devcontainer setup.
@@ -120,6 +132,32 @@ impl Bootstrap {
     /// bootstrap.generate(Stack::Rust).unwrap();
     /// ```
     pub fn generate(&self, stack: Stack) -> Result<()> {
+        // Use static templates for backwards compatibility
+        self.generate_internal(stack, None)
+    }
+
+    /// Generate devcontainer configuration with project-specific customizations
+    ///
+    /// This uses dynamic generation based on detected project settings
+    /// such as project name, runtime versions, and ports.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use worktree_core::bootstrap::{Bootstrap, Stack};
+    /// use std::path::Path;
+    ///
+    /// let project = Path::new("/path/to/rails-project");
+    /// let bootstrap = Bootstrap::new(project);
+    /// let info = bootstrap.detect_project_info();
+    /// bootstrap.generate_with_info(Stack::Rails, &info).unwrap();
+    /// ```
+    pub fn generate_with_info(&self, stack: Stack, info: &ProjectInfo) -> Result<()> {
+        self.generate_internal(stack, Some(info))
+    }
+
+    /// Internal generation method that supports both static and dynamic templates
+    fn generate_internal(&self, stack: Stack, info: Option<&ProjectInfo>) -> Result<()> {
         use std::fs;
 
         tracing::info!("Generating devcontainer for {} stack", stack.as_str());
@@ -130,19 +168,31 @@ impl Bootstrap {
         tracing::debug!("Created directory: {}", devcontainer_dir.display());
 
         // Generate and write devcontainer.json
-        let devcontainer_json = self.generate_devcontainer_json(stack)?;
+        let devcontainer_json = if let Some(info) = info {
+            templates::devcontainer_json_dynamic(stack, info)?
+        } else {
+            self.generate_devcontainer_json(stack)?
+        };
         let devcontainer_json_path = devcontainer_dir.join("devcontainer.json");
         fs::write(&devcontainer_json_path, devcontainer_json)?;
         tracing::info!("Created: {}", devcontainer_json_path.display());
 
         // Generate and write compose.yaml
-        let compose_yaml = self.generate_compose_yaml(stack)?;
+        let compose_yaml = if let Some(info) = info {
+            templates::compose_yaml_dynamic(stack, info)?
+        } else {
+            self.generate_compose_yaml(stack)?
+        };
         let compose_yaml_path = devcontainer_dir.join("compose.yaml");
         fs::write(&compose_yaml_path, compose_yaml)?;
         tracing::info!("Created: {}", compose_yaml_path.display());
 
         // Generate and write Dockerfile
-        let dockerfile = self.generate_dockerfile(stack)?;
+        let dockerfile = if let Some(info) = info {
+            templates::dockerfile_dynamic(stack, info)?
+        } else {
+            self.generate_dockerfile(stack)?
+        };
         let dockerfile_path = devcontainer_dir.join("Dockerfile");
         fs::write(&dockerfile_path, dockerfile)?;
         tracing::info!("Created: {}", dockerfile_path.display());

@@ -1,11 +1,42 @@
 //! Templates for devcontainer generation
 //!
 //! Contains template functions for generating devcontainer configuration files.
+//!
+//! This module supports two modes:
+//! 1. **Static templates** - Compiled-in templates for quick generation (default)
+//! 2. **Dynamic generation** - Generate from config structs with project detection
+//!
+//! # Example
+//!
+//! ```no_run
+//! use worktree_core::bootstrap::{Stack, ProjectInfo};
+//! use worktree_core::bootstrap::templates;
+//!
+//! // Static template (fast, no detection)
+//! let json = templates::devcontainer_json(Stack::Rails).unwrap();
+//!
+//! // Dynamic template (with project detection)
+//! let info = ProjectInfo::detect(std::path::Path::new("."));
+//! let json = templates::devcontainer_json_dynamic(Stack::Rails, &info).unwrap();
+//! ```
 
+use super::config::{ComposeConfig, DevcontainerConfig, DockerfileConfig, ProjectInfo, StackPreset};
 use super::Stack;
 use crate::Result;
 
-/// Generate devcontainer.json template
+/// Convert Stack enum to StackPreset
+fn stack_to_preset(stack: Stack) -> StackPreset {
+    match stack {
+        Stack::Rust => StackPreset::Rust,
+        Stack::Rails => StackPreset::Rails,
+        Stack::NodeJs => StackPreset::NodeJs,
+        Stack::Generic => StackPreset::Generic,
+    }
+}
+
+/// Generate devcontainer.json template (static, compiled-in)
+///
+/// Use `devcontainer_json_dynamic` for project-specific customization.
 pub fn devcontainer_json(stack: Stack) -> Result<String> {
     let template = match stack {
         Stack::Rust => include_str!("templates/rust/devcontainer.json"),
@@ -17,7 +48,19 @@ pub fn devcontainer_json(stack: Stack) -> Result<String> {
     Ok(template.to_string())
 }
 
-/// Generate compose.yaml template
+/// Generate devcontainer.json dynamically from project info
+///
+/// This generates a customized devcontainer.json based on detected project settings
+/// such as project name, runtime versions, and ports.
+pub fn devcontainer_json_dynamic(stack: Stack, info: &ProjectInfo) -> Result<String> {
+    let preset = stack_to_preset(stack);
+    let config = DevcontainerConfig::from_project_info(preset, info);
+    config.to_json_pretty()
+}
+
+/// Generate compose.yaml template (static, compiled-in)
+///
+/// Use `compose_yaml_dynamic` for project-specific customization.
 pub fn compose_yaml(stack: Stack) -> Result<String> {
     let template = match stack {
         Stack::Rust => include_str!("templates/rust/compose.yaml"),
@@ -29,7 +72,19 @@ pub fn compose_yaml(stack: Stack) -> Result<String> {
     Ok(template.to_string())
 }
 
-/// Generate Dockerfile template
+/// Generate compose.yaml dynamically from project info
+///
+/// This generates a customized compose.yaml based on detected project settings
+/// such as project name, database type, and volumes.
+pub fn compose_yaml_dynamic(stack: Stack, info: &ProjectInfo) -> Result<String> {
+    let preset = stack_to_preset(stack);
+    let config = ComposeConfig::from_preset(preset, &info.display_name(), info);
+    config.to_yaml(preset, info)
+}
+
+/// Generate Dockerfile template (static, compiled-in)
+///
+/// Use `dockerfile_dynamic` for project-specific customization.
 pub fn dockerfile(stack: Stack) -> Result<String> {
     let template = match stack {
         Stack::Rust => include_str!("templates/rust/Dockerfile"),
@@ -39,6 +94,16 @@ pub fn dockerfile(stack: Stack) -> Result<String> {
     };
 
     Ok(template.to_string())
+}
+
+/// Generate Dockerfile dynamically from project info
+///
+/// This generates a customized Dockerfile based on detected project settings
+/// such as runtime versions and required packages.
+pub fn dockerfile_dynamic(stack: Stack, info: &ProjectInfo) -> Result<String> {
+    let preset = stack_to_preset(stack);
+    let config = DockerfileConfig::from_preset(preset, info);
+    Ok(config.to_dockerfile(preset))
 }
 
 /// Generate .env.sample template

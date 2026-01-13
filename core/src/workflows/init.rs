@@ -37,7 +37,7 @@
 //! println!("Initialized at: {}", summary.workspace_path.display());
 //! ```
 
-use crate::bootstrap::{Bootstrap, Stack};
+use crate::bootstrap::{Bootstrap, ProjectInfo, Stack};
 use crate::cloudflare::CloudflareClient;
 use crate::config::{BranchBoxConfig, CloudflaredConfig};
 use crate::git::GitWorktree;
@@ -855,7 +855,7 @@ impl InitWorkflow {
         let devcontainer_dir = path.join(".devcontainer");
 
         if !devcontainer_dir.exists() {
-            // Generate from scratch
+            // Generate from scratch with project-aware configuration
             if self.options.verbose {
                 println!("Generating devcontainer configuration...");
             }
@@ -866,7 +866,33 @@ impl InitWorkflow {
             }
 
             let bootstrap = Bootstrap::new(path);
-            bootstrap.generate(stack)?;
+
+            // Detect project info and optionally prompt for customization
+            let mut info = bootstrap.detect_project_info();
+
+            // Interactive mode: allow user to customize detected values
+            let interactive = !self.options.non_interactive && Term::stdout().is_term();
+
+            if interactive {
+                info = self.prompt_project_info(info, stack)?;
+            }
+
+            // Display detected/confirmed project info
+            if self.options.verbose {
+                println!("  Project name: {}", info.name);
+                if let Some(ref version) = info.ruby_version {
+                    println!("  Ruby version: {}", version);
+                }
+                if let Some(ref version) = info.node_version {
+                    println!("  Node.js version: {}", version);
+                }
+                if let Some(port) = info.port {
+                    println!("  Application port: {}", port);
+                }
+            }
+
+            // Generate using dynamic templates with project info
+            bootstrap.generate_with_info(stack, &info)?;
 
             // Configure workspace settings for worktree compatibility
             // (our templates should already be correct, but this ensures consistency)
@@ -1177,6 +1203,72 @@ impl InitWorkflow {
         }
 
         Ok(warning)
+    }
+
+    /// Prompt user to customize detected project info
+    ///
+    /// Shows detected values and allows user to confirm or change them.
+    fn prompt_project_info(&self, mut info: ProjectInfo, stack: Stack) -> Result<ProjectInfo> {
+        let theme = ColorfulTheme::default();
+
+        // Project name
+        let project_name: String = Input::with_theme(&theme)
+            .with_prompt("Project name")
+            .with_initial_text(&info.name)
+            .allow_empty(false)
+            .interact_text()?;
+        info.name = project_name.trim().to_string();
+
+        // Stack-specific prompts
+        match stack {
+            Stack::Rails => {
+                // Ruby version
+                let default_ruby = info.ruby_version.clone().unwrap_or_else(|| "3.3".to_string());
+                let ruby_version: String = Input::with_theme(&theme)
+                    .with_prompt("Ruby version (leave empty to use project's .ruby-version)")
+                    .with_initial_text(&default_ruby)
+                    .allow_empty(true)
+                    .interact_text()?;
+                if !ruby_version.trim().is_empty() {
+                    info.ruby_version = Some(ruby_version.trim().to_string());
+                }
+            }
+            Stack::NodeJs => {
+                // Node.js version
+                let default_node = info.node_version.clone().unwrap_or_else(|| "20".to_string());
+                let node_version: String = Input::with_theme(&theme)
+                    .with_prompt("Node.js version (leave empty to use project's .nvmrc)")
+                    .with_initial_text(&default_node)
+                    .allow_empty(true)
+                    .interact_text()?;
+                if !node_version.trim().is_empty() {
+                    info.node_version = Some(node_version.trim().to_string());
+                }
+            }
+            _ => {}
+        }
+
+        // Application port
+        let default_port = info.port.unwrap_or(match stack {
+            Stack::Rails | Stack::NodeJs => 3000,
+            Stack::Rust => 50051,
+            Stack::Generic => 8080,
+        });
+        let port_str: String = Input::with_theme(&theme)
+            .with_prompt("Application port")
+            .with_initial_text(default_port.to_string())
+            .allow_empty(false)
+            .validate_with(|input: &String| -> std::result::Result<(), &str> {
+                input
+                    .trim()
+                    .parse::<u16>()
+                    .map(|_| ())
+                    .map_err(|_| "Please enter a valid port number (1-65535)")
+            })
+            .interact_text()?;
+        info.port = port_str.trim().parse().ok();
+
+        Ok(info)
     }
 
     fn prompt_for_api_token(theme: &ColorfulTheme) -> Result<String> {
