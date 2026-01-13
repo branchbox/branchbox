@@ -120,16 +120,26 @@ impl DevcontainerRuntime {
     }
 
     /// Create a runtime with custom Docker paths
+    ///
+    /// If docker_path or compose_path are None, falls back to DOCKER_PATH
+    /// and DOCKER_COMPOSE_PATH environment variables, then to defaults.
     pub fn with_docker(
         workspace_folder: &Path,
         docker_path: Option<String>,
         compose_path: Option<String>,
     ) -> Result<Self> {
         let mut runtime = Self::new(workspace_folder)?;
-        runtime.docker = Docker::with_paths(
-            docker_path.unwrap_or_else(|| "docker".to_string()),
-            compose_path,
-        );
+
+        // Only override if custom paths are provided; otherwise keep env-based defaults
+        if docker_path.is_some() || compose_path.is_some() {
+            let effective_docker = docker_path.unwrap_or_else(|| {
+                std::env::var("DOCKER_PATH").unwrap_or_else(|_| "docker".to_string())
+            });
+            let effective_compose =
+                compose_path.or_else(|| std::env::var("DOCKER_COMPOSE_PATH").ok());
+            runtime.docker = Docker::with_paths(effective_docker, effective_compose);
+        }
+
         Ok(runtime)
     }
 
@@ -212,6 +222,48 @@ impl DevcontainerRuntime {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| self.workspace_folder.join(".devcontainer"))
+    }
+
+    /// Expand devcontainer variables in a mount string
+    fn expand_mount_variables(&self, input: &str) -> String {
+        let workspace_name = self.workspace_name();
+        let workspace_folder = self.workspace_folder.to_string_lossy();
+
+        input
+            .replace("${localWorkspaceFolder}", &workspace_folder)
+            .replace("${localWorkspaceFolderBasename}", &workspace_name)
+            .replace(
+                "${containerWorkspaceFolder}",
+                &self.config.effective_workspace_folder(&workspace_name),
+            )
+            .replace("${containerWorkspaceFolderBasename}", &workspace_name)
+    }
+
+    /// Parse a mount string in format "source:target" or "source:target:options"
+    fn parse_mount_string(mount: &str) -> Option<(String, String)> {
+        // Handle Docker mount syntax: source=...,target=...,type=...
+        if mount.contains("source=") && mount.contains("target=") {
+            let mut source = None;
+            let mut target = None;
+            for part in mount.split(',') {
+                if let Some(s) = part.strip_prefix("source=") {
+                    source = Some(s.to_string());
+                } else if let Some(t) = part.strip_prefix("target=") {
+                    target = Some(t.to_string());
+                }
+            }
+            if let (Some(s), Some(t)) = (source, target) {
+                return Some((s, t));
+            }
+        }
+
+        // Handle simple colon-separated format: source:target[:options]
+        let parts: Vec<&str> = mount.split(':').collect();
+        if parts.len() >= 2 {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+
+        None
     }
 
     /// Create and start the devcontainer
@@ -385,13 +437,53 @@ impl DevcontainerRuntime {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
-        // Setup mounts
-        let workspace_mount = (
-            self.workspace_folder.to_string_lossy().to_string(),
-            self.config
-                .effective_workspace_folder(&self.workspace_name()),
-        );
-        let mounts = vec![(workspace_mount.0.as_str(), workspace_mount.1.as_str())];
+        // Setup mounts - use workspaceMount from config if provided, otherwise default
+        let workspace_name = self.workspace_name();
+        let workspace_folder_str = self.workspace_folder.to_string_lossy().to_string();
+        let mut mount_strings: Vec<(String, String)> = Vec::new();
+
+        if let Some(ref ws_mount) = self.config.workspace_mount {
+            // Parse and expand the workspaceMount string
+            let expanded = self.expand_mount_variables(ws_mount);
+            if let Some((source, target)) = Self::parse_mount_string(&expanded) {
+                mount_strings.push((source, target));
+            }
+        } else {
+            // Default workspace mount
+            mount_strings.push((
+                workspace_folder_str.clone(),
+                self.config.effective_workspace_folder(&workspace_name),
+            ));
+        }
+
+        // Add additional mounts from config
+        if let Some(ref config_mounts) = self.config.mounts {
+            for mount in config_mounts {
+                match mount {
+                    super::config::MountConfig::String(s) => {
+                        let expanded = self.expand_mount_variables(s);
+                        if let Some((source, target)) = Self::parse_mount_string(&expanded) {
+                            mount_strings.push((source, target));
+                        }
+                    }
+                    super::config::MountConfig::Object { source, target, .. } => {
+                        let expanded_target = self.expand_mount_variables(target);
+                        let expanded_source = source
+                            .as_ref()
+                            .map(|s| self.expand_mount_variables(s))
+                            .unwrap_or_default();
+                        if !expanded_source.is_empty() {
+                            mount_strings.push((expanded_source, expanded_target));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mounts: Vec<(&str, &str)> = mount_strings
+            .iter()
+            .map(|(s, t)| (s.as_str(), t.as_str()))
+            .collect();
 
         // Setup environment
         let mut env: Vec<(&str, &str)> = Vec::new();
