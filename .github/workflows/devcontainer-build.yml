@@ -83,7 +83,8 @@ jobs:
             type=gha,scope=branchbox
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}:buildcache
           cache-to: type=gha,mode=max,scope=branchbox
-          platforms: linux/amd64,linux/arm64
+          # Only build both platforms on push to main; PRs just validate amd64
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
 
   # Build official stack images (used by projects running branchbox init)
   build-stacks:
@@ -133,7 +134,8 @@ jobs:
             type=gha,scope=${{ matrix.stack }}
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}-${{ matrix.stack }}:buildcache
           cache-to: type=gha,mode=max,scope=${{ matrix.stack }}
-          platforms: linux/amd64,linux/arm64
+          # Only build both platforms on push to main; PRs just validate amd64
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
 
   # Generate summary after all builds complete
   summary:
