@@ -1227,7 +1227,14 @@ fn ensure_ai_agents_dir(devcontainer_dir: &Path) -> Result<()> {
                 .lines()
                 .find(|line| line.trim().starts_with("SHARED_CONFIG_DIR="))
                 .and_then(|line| line.split('=').nth(1))
-                .map(|s| s.trim().to_string())
+                .and_then(|s| {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
                 .unwrap_or_else(|| "../..".to_string())
         } else {
             "../..".to_string()
@@ -2381,6 +2388,34 @@ volumes:
         // Verify structure still exists
         let ai_agents_dir = temp.path().join(".ai-agents");
         assert!(ai_agents_dir.join("claude.json").is_file());
+    }
+
+    #[test]
+    fn test_ensure_ai_agents_dir_empty_shared_config_dir() {
+        // When SHARED_CONFIG_DIR is set to an empty value, should use default ../..
+        let temp = TempDir::new().unwrap();
+        let devcontainer_dir = temp.path().join(".devcontainer");
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        // Empty value should fall back to default
+        std::fs::write(
+            devcontainer_dir.join(".branchbox.env"),
+            "SHARED_CONFIG_DIR=\n",
+        )
+        .unwrap();
+
+        ensure_ai_agents_dir(&devcontainer_dir).unwrap();
+
+        // Default is ../.. relative to .devcontainer, so temp/../.ai-agents
+        // which resolves to parent of temp dir
+        let expected_dir = temp.path().parent().unwrap().join(".ai-agents");
+        assert!(
+            expected_dir.join("claude.json").is_file(),
+            "Expected .ai-agents to be created at parent dir when SHARED_CONFIG_DIR is empty"
+        );
+
+        // Clean up - remove the directory we created in parent
+        let _ = std::fs::remove_dir_all(&expected_dir);
     }
 
     #[test]
