@@ -173,3 +173,194 @@ Prefer a disposable sample project?
 branchbox init
 branchbox feature start "Demo Feature"
 ```
+
+---
+
+## Devcontainer Workflow
+
+BranchBox features work seamlessly with VS Code/Cursor devcontainers, giving each feature its own isolated Docker environment while sharing tool credentials.
+
+### Pre-built Images for Instant Startup
+
+BranchBox provides official pre-built devcontainer images for all supported stacks, published to GitHub Container Registry:
+
+| Stack | Image |
+|-------|-------|
+| Rust | `ghcr.io/branchbox/branchbox/devcontainer-rust:latest` |
+| Rails | `ghcr.io/branchbox/branchbox/devcontainer-rails:latest` |
+| Node.js | `ghcr.io/branchbox/branchbox/devcontainer-nodejs:latest` |
+| Generic | `ghcr.io/branchbox/branchbox/devcontainer-generic:latest` |
+
+When you run `branchbox init`, the generated `compose.yaml` references these pre-built images by default. Containers start in seconds instead of minutes—no local build required.
+
+**How it works:**
+- First run: Docker pulls the pre-built image from GHCR
+- Subsequent runs: Uses cached image instantly
+- Fallback: If pull fails, automatically builds from local Dockerfile
+
+**Override options** (in `.env` or environment):
+```bash
+# Use a custom image
+DEVCONTAINER_IMAGE=my-registry.io/my-image:tag
+
+# Control pull behavior
+DEVCONTAINER_PULL_POLICY=missing  # (default) Pull if not cached
+DEVCONTAINER_PULL_POLICY=always   # Always pull latest
+DEVCONTAINER_PULL_POLICY=build    # Always build locally
+```
+
+### Opening a Feature in a Container
+
+When you start a new feature, BranchBox automatically copies the `.devcontainer/` configuration from your main repository:
+
+```bash
+# In main repo
+branchbox feature start "Add OAuth"
+
+# Navigate to new worktree
+cd ../myapp-oauth/
+
+# Open in VS Code/Cursor
+code .
+```
+
+**VS Code/Cursor will prompt**: "Reopen in Container?"
+
+Click **"Reopen in Container"** and your feature will run in an isolated Docker environment with:
+- ✅ Separate Docker network (no port conflicts)
+- ✅ Isolated database (for Rails/Node.js projects)
+- ✅ Same development environment as main repo
+- ✅ Shared tool credentials (see below)
+
+### Shared Tool Credentials
+
+All feature worktrees share authentication for common development tools, so you only need to log in once:
+
+**Supported tools:**
+- **GitHub CLI** (`gh`) - Credentials stored in `~/.config/gh/`
+- **Claude Code** (`claude`) - Session stored in `~/.claude/`
+- **Codex** (`codex`) - Config stored in `~/.codex/`
+- **Cloudflared** (`cloudflared`) - Credentials in `~/.cloudflared/`
+
+**How it works:**
+
+1. **First time** - Authenticate in your main worktree:
+   ```bash
+   cd ~/projects/myapp  # main worktree
+   code .  # Reopen in Container
+   gh auth login  # Authenticate once
+   claude login   # Authenticate once
+   ```
+
+2. **All features inherit** - Open any feature worktree:
+   ```bash
+   branchbox feature start "new feature"
+   cd ../myapp-new-feature
+   code .  # Reopen in Container
+   gh repo view  # Already authenticated!
+   claude chat   # Already authenticated!
+   ```
+
+3. **Credentials persist** - Stored in parent directory (`~/projects/`), mounted read-write to all containers via `SHARED_CONFIG_DIR` environment variable.
+
+**Directory structure:**
+```
+~/projects/
+├── .gh/              # Shared GitHub CLI credentials
+├── .claude/          # Shared Claude session
+├── .codex/           # Shared Codex config
+├── .cloudflared/     # Shared Cloudflare tunnel credentials
+├── myapp/            # Main worktree (mounts shared dirs)
+├── myapp-feature1/   # Feature 1 (mounts same dirs)
+└── myapp-feature2/   # Feature 2 (mounts same dirs)
+```
+
+### Troubleshooting Devcontainers
+
+**Problem**: "Reopen in Container" option not available
+
+**Solution**: Check that `.devcontainer/` exists in feature worktree:
+```bash
+ls .devcontainer/
+# Should show: devcontainer.json  compose.yaml  Dockerfile
+```
+
+If missing, sync from main:
+```bash
+branchbox devcontainer sync
+```
+
+**Problem**: Container takes too long to start
+
+**Solution**: Pre-built images should start in seconds. If building locally:
+```bash
+# Check if using pre-built image
+grep "ghcr.io/branchbox" .devcontainer/compose.yaml
+
+# Force pull latest pre-built image
+DEVCONTAINER_PULL_POLICY=always code .
+```
+
+**Problem**: Tools require re-authentication in each container
+
+**Solution**: Verify shared config mounts are active:
+```bash
+# Inside container
+mount | grep -E '(gh|claude|codex)'
+```
+
+Check `SHARED_CONFIG_DIR` in `.env`:
+```bash
+grep SHARED_CONFIG_DIR .env
+```
+
+**Problem**: Container fails to start
+
+**Solution**: Rebuild without cache:
+```bash
+# In VS Code: Cmd/Ctrl+Shift+P
+# → "Dev Containers: Rebuild Container Without Cache"
+```
+
+**Problem**: Need to force local Dockerfile builds (skip pre-built image)
+
+**Solution**: Use one of these approaches:
+
+```bash
+# Option 1: Set environment variable
+DEVCONTAINER_PULL_POLICY=build code .
+
+# Option 2: Use compose override file (for BranchBox development)
+COMPOSE_FILE=compose.yaml:compose.local-build.yaml docker compose up
+
+# Option 3: Add to your .env file for persistent local builds
+echo "DEVCONTAINER_PULL_POLICY=build" >> .env
+```
+
+### Upgrading Existing Projects
+
+Projects initialized before the pre-built images feature need manual updates to benefit from faster startup times.
+
+**Quick upgrade** - update your `.devcontainer/compose.yaml`:
+
+```yaml
+services:
+  your-service:
+    # Add these lines to use pre-built image with fallback
+    image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest}
+    pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
+    # Keep your existing build: section as fallback
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+```
+
+Replace `<stack>` with: `rust`, `rails`, `nodejs`, or `generic`.
+
+**Rails/Node.js users**: The new templates use mise for runtime version management. If you want to adopt the new approach, re-run `branchbox init` to regenerate your `.devcontainer/` files. The templates use:
+```dockerfile
+FROM mcr.microsoft.com/devcontainers/base:debian
+# mise reads .ruby-version, .nvmrc, .node-version, .tool-versions
+```
+
+After updating, your next `docker compose up` or "Reopen in Container" will pull the pre-built image instead of building locally.

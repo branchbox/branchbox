@@ -1,14 +1,24 @@
+# BranchBox Node.js Devcontainer
+# Works with npm, yarn, pnpm, or bun projects
 name: ${DEVCONTAINER_NAME:-nodejs-project}
 services:
   nodejs-app:
+    # Official BranchBox pre-built image (instant startup)
+    # Falls back to local build if unavailable or DEVCONTAINER_PULL_POLICY=build
+    image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-nodejs:latest}
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+    pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
     privileged: true
+    init: true
+    ipc: host
     container_name: ${DEVCONTAINER_NAME:-nodejs-project}
     volumes:
       - ../..:/workspaces:cached
       - dind-data:/var/lib/docker
+      - mise-cache:/home/vscode/.local/share/mise
+      - npm-cache:/home/vscode/.npm
       - ${SHARED_CONFIG_DIR:-../..}/.codex:/home/vscode/.codex
       - ${SHARED_CONFIG_DIR:-../..}/.claude:/home/vscode/.claude
       - ${SHARED_CONFIG_DIR:-../..}/.claude.json:/home/vscode/.claude.json
@@ -20,6 +30,23 @@ services:
       - path: .branchbox.env
         required: false
     environment:
-      NODE_ENV: development
+      NODE_ENV: ${NODE_ENV:-development}
+    # Uncomment to enable Postgres (for apps using pg, prisma, etc.)
+    # depends_on:
+    #   - postgres
+
+  # Postgres service - uncomment if your app uses PostgreSQL
+  # postgres:
+  #   image: pgvector/pgvector:pg16
+  #   restart: unless-stopped
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: postgres
+
 volumes:
   dind-data: null
+  mise-cache: null
+  npm-cache: null
+  # postgres-data: null

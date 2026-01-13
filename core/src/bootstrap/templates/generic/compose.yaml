@@ -1,10 +1,16 @@
 name: ${DEVCONTAINER_NAME:-dev}
 services:
   dev:
+    # Official BranchBox pre-built image (instant startup)
+    # Falls back to local build if unavailable or DEVCONTAINER_PULL_POLICY=build
+    image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-generic:latest}
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+    pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
     privileged: true
+    init: true
+    ipc: host
     container_name: ${DEVCONTAINER_NAME:-dev}
     volumes:
       - ../..:/workspaces:cached

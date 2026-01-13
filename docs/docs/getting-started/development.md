@@ -29,6 +29,15 @@ This project includes a complete devcontainer setup that provides a consistent d
    - **VS Code/Cursor**: Command Palette → "Reopen in Container"
    - **CLI**: `devcontainer up --workspace-folder .`
 
+**Pre-built images:**
+
+The devcontainer uses a pre-built image from GHCR by default (`ghcr.io/branchbox/branchbox/devcontainer:latest`), which speeds up startup significantly. The image is automatically rebuilt and pushed when `.devcontainer/` files change on `main`.
+
+- **Default behavior**: Pull pre-built image if not present locally, fall back to local build if unavailable
+- **Force latest**: Set `DEVCONTAINER_PULL_POLICY=always` in `.env` to always pull the latest image
+- **Force local build**: Set `DEVCONTAINER_PULL_POLICY=build` in `.env` to always build locally
+- **Custom image**: Set `DEVCONTAINER_IMAGE=your-image:tag` in `.env` to use a different image
+
 3. Inside the container:
    ```bash
    # Build the core library

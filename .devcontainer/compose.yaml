@@ -1,9 +1,13 @@
 name: ${DEVCONTAINER_NAME:-branchbox}
 services:
   rust-dev:
+    # Use pre-built image from GHCR (faster startup)
+    # Falls back to local build if image unavailable
+    image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer:latest}
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+    pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
     privileged: true
     init: true
     ipc: host

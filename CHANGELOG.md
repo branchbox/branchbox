@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Official pre-built devcontainer images for all stacks (Rust, Rails, Node.js, Generic) published to GHCR at `ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest`.
+- `branchbox init` now generates compose.yaml files that use pre-built images by default with automatic fallback to local Dockerfile builds.
+- New environment variables for devcontainer image control: `DEVCONTAINER_IMAGE` (custom image override) and `DEVCONTAINER_PULL_POLICY` (missing/always/build).
+- GitHub Actions workflow (`devcontainer-build.yml`) that automatically builds and publishes all stack images when `.devcontainer/` or template Dockerfiles change on `main`.
+
+### Changed
+- Rails and Node.js devcontainer templates now use `mcr.microsoft.com/devcontainers/base:debian` with mise for runtime version management, reading `.ruby-version`, `.nvmrc`, `.node-version`, and `.tool-versions` files.
+- All stack compose.yaml templates now include `init: true` and `ipc: host` for better container behavior.
+
+### Upgrade Guide for Existing Projects
+
+**New projects** created with `branchbox init` automatically use pre-built images.
+
+**Existing projects** initialized before this release need manual updates to benefit from pre-built images:
+
+1. **Update your compose.yaml** to reference the pre-built image:
+
+   ```yaml
+   services:
+     your-service:
+       image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-<stack>:latest}
+       build:
+         context: ..
+         dockerfile: .devcontainer/Dockerfile
+       pull_policy: ${DEVCONTAINER_PULL_POLICY:-missing}
+   ```
+
+   Replace `<stack>` with your stack: `rust`, `rails`, `nodejs`, or `generic`.
+
+2. **Optionally add to your `.env`** for customization:
+
+   ```bash
+   # Override image (optional)
+   # DEVCONTAINER_IMAGE=my-custom-image:tag
+
+   # Control pull behavior: missing (default), always, build
+   # DEVCONTAINER_PULL_POLICY=missing
+   ```
+
+3. **Rails/Node.js users**: The new templates use mise for runtime version management. If you want to adopt the new approach, re-run `branchbox init` to regenerate your `.devcontainer/` files, or manually update your Dockerfile to use the base image with mise:
+
+   ```dockerfile
+   FROM mcr.microsoft.com/devcontainers/base:debian
+   # mise will be installed and read .ruby-version, .nvmrc, etc.
+   ```
+
+**Feature worktrees** will automatically use the updated configuration from your main worktree when you run `branchbox feature start`.
+
 ## [0.5.0] - 2026-01-07
 
 ### Added
