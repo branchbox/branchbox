@@ -166,6 +166,7 @@ impl DevcontainerRuntime {
 
     /// Find existing container for this workspace
     pub fn find_container(&self) -> Result<Option<String>> {
+        // First try standard devcontainer labels
         let labels = self.container_labels();
         let label_refs: Vec<(&str, &str)> = labels
             .iter()
@@ -173,7 +174,24 @@ impl DevcontainerRuntime {
             .collect();
 
         let containers = self.docker.find_containers(&label_refs)?;
-        Ok(containers.into_iter().next())
+        if let Some(container) = containers.into_iter().next() {
+            return Ok(Some(container));
+        }
+
+        // For Docker Compose, also search by compose project and service
+        if self.config.container_type() == DevcontainerType::DockerCompose {
+            if let Some(service) = self.config.service.as_deref() {
+                let project_name = self.workspace_name();
+                let compose_labels = vec![
+                    ("com.docker.compose.project", project_name.as_str()),
+                    ("com.docker.compose.service", service),
+                ];
+                let containers = self.docker.find_containers(&compose_labels)?;
+                return Ok(containers.into_iter().next());
+            }
+        }
+
+        Ok(None)
     }
 
     /// Get workspace name (last component of path)

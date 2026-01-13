@@ -327,9 +327,15 @@ impl DevcontainerConfig {
 
     /// Get the effective workspace folder inside the container
     pub fn effective_workspace_folder(&self, workspace_name: &str) -> String {
-        self.workspace_folder
+        let folder = self
+            .workspace_folder
             .clone()
-            .unwrap_or_else(|| format!("/workspaces/{}", workspace_name))
+            .unwrap_or_else(|| format!("/workspaces/{}", workspace_name));
+
+        // Expand common devcontainer variables
+        folder
+            .replace("${localWorkspaceFolderBasename}", workspace_name)
+            .replace("${containerWorkspaceFolderBasename}", workspace_name)
     }
 }
 
