@@ -454,6 +454,7 @@ Use this checklist for each release:
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| 0.7.0 | 2026-01-14 | Minor | Devcontainer CLI commands, .ai-agents directory, release skill |
 | 0.6.0 | 2026-01-13 | Minor | Pre-built devcontainer images, mise runtime management |
 | 0.5.0 | 2026-01-07 | Minor | Git worktree compatibility, Claude Code mounts |
 | 0.4.1 | 2025-12-15 | Patch | Init fixes, tunnel commands |

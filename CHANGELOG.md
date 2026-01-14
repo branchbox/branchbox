@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-01-14
+
+### Added
+- New devcontainer CLI commands (`branchbox devcontainer up`, `exec`, `down`, `build`) for direct container management without entering the devcontainer environment.
+- `.ai-agents/` directory structure for consolidated AI agent configurations (Claude Code, GitHub CLI, Codex) with automatic initialization during bootstrap.
+- Release skill for guided version releases with automated quality checks and documentation updates.
+
+### Changed
+- AI agent configuration directories (`.claude/`, `.gh/`, `.codex/`) are now organized under `.ai-agents/` for cleaner workspace structure.
+- Devcontainer builds for arm64 now only run on pushes to main branch to optimize CI performance.
+
+### Fixed
+- Handle empty `SHARED_CONFIG_DIR` environment variable gracefully in devcontainer configurations.
+- Ensure `.ai-agents/` directory structure is created before Docker mount operations during bootstrap and devcontainer setup.
+
+### Testing
+- Added verification for `.claude.json` mount in feature worktree tests.
+- Added comprehensive mount tests for root user scenarios in devcontainer module.
+
 ## [0.6.0] - 2026-01-13
 
 ### Added
