@@ -1009,11 +1009,16 @@ impl FeatureWorkflow {
 
     fn resolve_work_feature(&self, request: &StartRequest) -> Result<String> {
         if let Some(name) = request.name.as_ref() {
+            // If already valid, use it directly
             if naming::validate_work_feature(name) {
                 return Ok(name.clone());
-            } else {
+            }
+            // Otherwise, treat the input as a human-readable title and auto-generate
+            let generated = naming::generate_work_feature(name);
+            if generated.is_empty() {
                 return Err(Error::InvalidFeatureName(name.clone()));
             }
+            return Ok(generated);
         }
 
         if let Some(title) = request.title.as_ref() {
@@ -4994,5 +4999,34 @@ mod tests {
             Some("#old-color")
         );
         assert!(settings.get("workbench.colorCustomizations").is_some());
+    }
+
+    #[test]
+    fn test_resolve_work_feature_auto_generates_from_title_like_input() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        // Table-driven test cases: (input, expected_output)
+        let test_cases = vec![
+            // Valid name should be used directly
+            ("oauth-integration", "oauth-integration"),
+            // Title-like input (uppercase, spaces, dots) should be auto-generated
+            ("Rails 8.1.2", "rails-812"),
+            // Another title-like input with uppercase
+            ("OAuth Integration", "oauth"),
+            // Input with spaces
+            ("fix bug 123", "fix-bug-123"),
+        ];
+
+        for (input, expected) in test_cases {
+            let request = StartRequest {
+                name: Some(input.to_string()),
+                ..Default::default()
+            };
+            let result = workflow.resolve_work_feature(&request).unwrap();
+            assert_eq!(result, expected, "Failed on input: {}", input);
+        }
     }
 }
