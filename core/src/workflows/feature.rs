@@ -1009,11 +1009,16 @@ impl FeatureWorkflow {
 
     fn resolve_work_feature(&self, request: &StartRequest) -> Result<String> {
         if let Some(name) = request.name.as_ref() {
+            // If already valid, use it directly
             if naming::validate_work_feature(name) {
                 return Ok(name.clone());
-            } else {
+            }
+            // Otherwise, treat the input as a human-readable title and auto-generate
+            let generated = naming::generate_work_feature(name);
+            if generated.is_empty() {
                 return Err(Error::InvalidFeatureName(name.clone()));
             }
+            return Ok(generated);
         }
 
         if let Some(title) = request.title.as_ref() {
@@ -4994,5 +4999,45 @@ mod tests {
             Some("#old-color")
         );
         assert!(settings.get("workbench.colorCustomizations").is_some());
+    }
+
+    #[test]
+    fn test_resolve_work_feature_auto_generates_from_title_like_input() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        // Valid name should be used directly
+        let request = StartRequest {
+            name: Some("oauth-integration".to_string()),
+            ..Default::default()
+        };
+        let result = workflow.resolve_work_feature(&request).unwrap();
+        assert_eq!(result, "oauth-integration");
+
+        // Title-like input (uppercase, spaces, dots) should be auto-generated
+        let request = StartRequest {
+            name: Some("Rails 8.1.2".to_string()),
+            ..Default::default()
+        };
+        let result = workflow.resolve_work_feature(&request).unwrap();
+        assert_eq!(result, "rails-812");
+
+        // Another title-like input with uppercase
+        let request = StartRequest {
+            name: Some("OAuth Integration".to_string()),
+            ..Default::default()
+        };
+        let result = workflow.resolve_work_feature(&request).unwrap();
+        assert_eq!(result, "oauth");
+
+        // Input with spaces
+        let request = StartRequest {
+            name: Some("fix bug 123".to_string()),
+            ..Default::default()
+        };
+        let result = workflow.resolve_work_feature(&request).unwrap();
+        assert_eq!(result, "fix-bug-123");
     }
 }
