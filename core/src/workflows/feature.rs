@@ -5008,36 +5008,25 @@ mod tests {
 
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
-        // Valid name should be used directly
-        let request = StartRequest {
-            name: Some("oauth-integration".to_string()),
-            ..Default::default()
-        };
-        let result = workflow.resolve_work_feature(&request).unwrap();
-        assert_eq!(result, "oauth-integration");
+        // Table-driven test cases: (input, expected_output)
+        let test_cases = vec![
+            // Valid name should be used directly
+            ("oauth-integration", "oauth-integration"),
+            // Title-like input (uppercase, spaces, dots) should be auto-generated
+            ("Rails 8.1.2", "rails-812"),
+            // Another title-like input with uppercase
+            ("OAuth Integration", "oauth"),
+            // Input with spaces
+            ("fix bug 123", "fix-bug-123"),
+        ];
 
-        // Title-like input (uppercase, spaces, dots) should be auto-generated
-        let request = StartRequest {
-            name: Some("Rails 8.1.2".to_string()),
-            ..Default::default()
-        };
-        let result = workflow.resolve_work_feature(&request).unwrap();
-        assert_eq!(result, "rails-812");
-
-        // Another title-like input with uppercase
-        let request = StartRequest {
-            name: Some("OAuth Integration".to_string()),
-            ..Default::default()
-        };
-        let result = workflow.resolve_work_feature(&request).unwrap();
-        assert_eq!(result, "oauth");
-
-        // Input with spaces
-        let request = StartRequest {
-            name: Some("fix bug 123".to_string()),
-            ..Default::default()
-        };
-        let result = workflow.resolve_work_feature(&request).unwrap();
-        assert_eq!(result, "fix-bug-123");
+        for (input, expected) in test_cases {
+            let request = StartRequest {
+                name: Some(input.to_string()),
+                ..Default::default()
+            };
+            let result = workflow.resolve_work_feature(&request).unwrap();
+            assert_eq!(result, expected, "Failed on input: {}", input);
+        }
     }
 }
