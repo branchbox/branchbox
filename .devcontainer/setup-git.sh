@@ -40,6 +40,7 @@ GHEOF
         fi
 
         # Switch remote to HTTPS if it's SSH (find actual workspace)
+        shopt -s nullglob
         for dir in "$WORKSPACE_DIR"/*/; do
             if [ -d "$dir/.git" ] || git -C "$dir" rev-parse --git-dir &>/dev/null 2>&1; then
                 REMOTE_URL=$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")
@@ -50,6 +51,7 @@ GHEOF
                 fi
             fi
         done
+        shopt -u nullglob
 
         echo "✅ GitHub authentication configured."
     fi

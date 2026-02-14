@@ -74,9 +74,15 @@ else
     fi
 fi
 
-# Git identity from host config (quote values — names with spaces break source)
-GIT_USER_NAME=$(git config --global user.name 2>/dev/null || echo "")
-GIT_USER_EMAIL=$(git config --global user.email 2>/dev/null || echo "")
+# Git identity from host config
+if ! command -v git &>/dev/null; then
+    echo "ℹ️  git not found on host — skipping identity export."
+    GIT_USER_NAME=""
+    GIT_USER_EMAIL=""
+else
+    GIT_USER_NAME=$(git config --global user.name 2>/dev/null || echo "")
+    GIT_USER_EMAIL=$(git config --global user.email 2>/dev/null || echo "")
+fi
 
 if [ -n "$GIT_USER_NAME" ] && [ -n "$GIT_USER_EMAIL" ]; then
     printf 'GIT_USER_NAME=%q\n' "$GIT_USER_NAME" > "$GIT_CONFIG_FILE"

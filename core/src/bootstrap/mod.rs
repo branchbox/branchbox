@@ -161,13 +161,44 @@ impl Bootstrap {
         tracing::info!("Created: {}", setup_git_path.display());
 
         // Create empty secret files so compose volume mounts don't fail
-        for secret_file in [".github-token.env", ".git-signing-key", ".gitconfig.env"] {
+        let secret_files = [".github-token.env", ".git-signing-key", ".gitconfig.env"];
+        for secret_file in &secret_files {
             let secret_path = devcontainer_dir.join(secret_file);
             if !secret_path.exists() {
                 fs::write(&secret_path, "")?;
                 Self::set_permissions_unix(&secret_path, 0o600)?;
                 tracing::debug!("Created placeholder: {}", secret_path.display());
             }
+        }
+
+        // Ensure secret files are excluded from version control in the target project
+        let gitignore_path = self.project_path.join(".gitignore");
+        let mut gitignore_content = if gitignore_path.exists() {
+            fs::read_to_string(&gitignore_path)?
+        } else {
+            String::new()
+        };
+
+        let mut gitignore_updated = false;
+        for secret_file in &secret_files {
+            let entry = format!(".devcontainer/{}", secret_file);
+            if !gitignore_content.contains(&entry) {
+                if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
+                    gitignore_content.push('\n');
+                }
+                if !gitignore_updated {
+                    gitignore_content
+                        .push_str("\n# 1Password secrets (populated by init-host.sh, never committed)\n");
+                }
+                gitignore_content.push_str(&entry);
+                gitignore_content.push('\n');
+                gitignore_updated = true;
+            }
+        }
+
+        if gitignore_updated {
+            fs::write(&gitignore_path, &gitignore_content)?;
+            tracing::info!("Updated .gitignore to exclude secret files");
         }
 
         // Generate and write .env.sample (in project root, not .devcontainer)
@@ -375,6 +406,49 @@ mod tests {
         let branchbox_env =
             fs::read_to_string(temp_dir.path().join(".devcontainer/.branchbox.env")).unwrap();
         assert!(branchbox_env.contains("WORK_FEATURE=main"));
+    }
+
+    #[test]
+    fn test_generate_updates_gitignore_with_secret_files() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let bootstrap = Bootstrap::new(temp_dir.path());
+        bootstrap.generate(Stack::Rust).unwrap();
+
+        let gitignore = fs::read_to_string(temp_dir.path().join(".gitignore")).unwrap();
+        for secret_file in [".github-token.env", ".git-signing-key", ".gitconfig.env"] {
+            let entry = format!(".devcontainer/{}", secret_file);
+            assert!(
+                gitignore.contains(&entry),
+                ".gitignore should contain {entry}: {gitignore}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_doesnt_duplicate_gitignore_entries() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Pre-populate .gitignore with one of the entries
+        fs::write(
+            temp_dir.path().join(".gitignore"),
+            ".devcontainer/.github-token.env\n",
+        )
+        .unwrap();
+
+        let bootstrap = Bootstrap::new(temp_dir.path());
+        bootstrap.generate(Stack::Rust).unwrap();
+
+        let gitignore = fs::read_to_string(temp_dir.path().join(".gitignore")).unwrap();
+        // Should only appear once
+        assert_eq!(
+            gitignore.matches(".devcontainer/.github-token.env").count(),
+            1,
+            "Entry should not be duplicated in .gitignore"
+        );
+        // Others should still be added
+        assert!(gitignore.contains(".devcontainer/.git-signing-key"));
+        assert!(gitignore.contains(".devcontainer/.gitconfig.env"));
     }
 
     #[test]
