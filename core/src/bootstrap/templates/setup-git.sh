@@ -80,7 +80,12 @@ if [ -f "$SIGNING_KEY_SRC" ] && [ -s "$SIGNING_KEY_SRC" ]; then
     chmod 600 "$SIGNING_KEY_DST"
 
     # Extract the public key for allowed_signers
-    ssh-keygen -y -f "$SIGNING_KEY_DST" > "$SIGNING_KEY_DST.pub" 2>/dev/null
+    if ! ssh-keygen -y -f "$SIGNING_KEY_DST" > "$SIGNING_KEY_DST.pub"; then
+        echo "⚠️  ssh-keygen failed to extract public key from signing key."
+        echo "   The key at $SIGNING_KEY_DST may be malformed or in an unexpected format."
+        echo "   Commit signing will not work correctly."
+        rm -f "$SIGNING_KEY_DST.pub"
+    fi
 
     # Configure git to use SSH signing
     git config --global gpg.format ssh
@@ -90,7 +95,7 @@ if [ -f "$SIGNING_KEY_SRC" ] && [ -s "$SIGNING_KEY_SRC" ]; then
 
     # Create allowed_signers file so `git log --show-signature` works
     GIT_EMAIL=$(git config --global user.email 2>/dev/null || echo "")
-    if [ -n "$GIT_EMAIL" ]; then
+    if [ -n "$GIT_EMAIL" ] && [ -f "$SIGNING_KEY_DST.pub" ]; then
         echo "$GIT_EMAIL $(cat "$SIGNING_KEY_DST.pub")" > ~/.ssh/allowed_signers
         git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
     fi
