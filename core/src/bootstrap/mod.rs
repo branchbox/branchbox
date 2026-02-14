@@ -180,9 +180,11 @@ impl Bootstrap {
         };
 
         let mut gitignore_updated = false;
+        let existing_lines: std::collections::HashSet<&str> =
+            gitignore_content.lines().map(|l| l.trim()).collect();
         for secret_file in &secret_files {
             let entry = format!(".devcontainer/{}", secret_file);
-            if !gitignore_content.contains(&entry) {
+            if !existing_lines.contains(entry.as_str()) {
                 if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
                     gitignore_content.push('\n');
                 }

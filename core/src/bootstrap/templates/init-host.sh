@@ -70,7 +70,7 @@ else
         SIGNING_KEY=""
     }
     if [ -n "$SIGNING_KEY" ]; then
-        echo "$SIGNING_KEY" > "$SIGNING_KEY_FILE"
+        printf '%s\n' "$SIGNING_KEY" > "$SIGNING_KEY_FILE"
     fi
 fi
 
