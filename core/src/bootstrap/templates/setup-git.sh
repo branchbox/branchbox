@@ -26,9 +26,9 @@ else
     source "$TOKEN_FILE"
 
     if [ -n "${GITHUB_TOKEN:-}" ]; then
-        # Git credential helper for github.com
+        # Git credential helper for github.com (references env var, not inline value)
         git config --global credential.https://github.com.helper \
-            '!f() { echo "username=oauth2"; echo "password='"$GITHUB_TOKEN"'"; }; f'
+            '!f() { echo "username=oauth2"; echo "password=$GITHUB_TOKEN"; }; f'
 
         # GH_TOKEN for gh CLI — persist in bashrc for interactive shells
         if ! grep -q "# BranchBox GitHub token" ~/.bashrc 2>/dev/null; then

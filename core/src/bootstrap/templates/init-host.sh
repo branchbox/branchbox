@@ -31,8 +31,8 @@ GIT_CONFIG_FILE="$SCRIPT_DIR/.gitconfig.env"
 OP_GITHUB_REF="${OP_GITHUB_REF:-}"
 OP_SIGNING_KEY_REF="${OP_SIGNING_KEY_REF:-}"
 
-# Ensure files exist so Docker compose volume mounts don't fail
-touch "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE"
+# Ensure files exist with restricted permissions so Docker compose volume mounts don't fail
+(umask 077 && touch "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE")
 
 if ! command -v op &>/dev/null; then
     echo "ℹ️  1Password CLI (op) not found — skipping secret injection."
@@ -53,7 +53,7 @@ else
         GITHUB_TOKEN=""
     }
     if [ -n "$GITHUB_TOKEN" ]; then
-        echo "GITHUB_TOKEN=$GITHUB_TOKEN" > "$TOKEN_FILE"
+        printf 'GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN" > "$TOKEN_FILE"
     fi
 fi
 
@@ -63,11 +63,15 @@ if [ -z "$OP_SIGNING_KEY_REF" ]; then
     echo "   export OP_SIGNING_KEY_REF=\"op://VaultName/Signing Key/private key\""
 else
     echo "🔐 Fetching signing key from 1Password..."
-    op read "$OP_SIGNING_KEY_REF" > "$SIGNING_KEY_FILE" || {
+    SIGNING_KEY=$(op read "$OP_SIGNING_KEY_REF") || {
         echo "⚠️  Could not read signing key from 1Password."
         echo "   Reference: $OP_SIGNING_KEY_REF"
         echo "   Git commits will not be signed."
+        SIGNING_KEY=""
     }
+    if [ -n "$SIGNING_KEY" ]; then
+        echo "$SIGNING_KEY" > "$SIGNING_KEY_FILE"
+    fi
 fi
 
 # Git identity from host config (quote values — names with spaces break source)

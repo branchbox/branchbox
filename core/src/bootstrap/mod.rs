@@ -151,21 +151,13 @@ impl Bootstrap {
         let init_host = self.generate_init_host_sh()?;
         let init_host_path = devcontainer_dir.join("init-host.sh");
         fs::write(&init_host_path, init_host)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&init_host_path, fs::Permissions::from_mode(0o755))?;
-        }
+        Self::set_permissions_unix(&init_host_path, 0o755)?;
         tracing::info!("Created: {}", init_host_path.display());
 
         let setup_git = self.generate_setup_git_sh()?;
         let setup_git_path = devcontainer_dir.join("setup-git.sh");
         fs::write(&setup_git_path, setup_git)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&setup_git_path, fs::Permissions::from_mode(0o755))?;
-        }
+        Self::set_permissions_unix(&setup_git_path, 0o755)?;
         tracing::info!("Created: {}", setup_git_path.display());
 
         // Create empty secret files so compose volume mounts don't fail
@@ -173,6 +165,7 @@ impl Bootstrap {
             let secret_path = devcontainer_dir.join(secret_file);
             if !secret_path.exists() {
                 fs::write(&secret_path, "")?;
+                Self::set_permissions_unix(&secret_path, 0o600)?;
                 tracing::debug!("Created placeholder: {}", secret_path.display());
             }
         }
@@ -251,6 +244,19 @@ impl Bootstrap {
     /// Generate docs/BRANCHBOX.md quickstart guide
     fn generate_branchbox_docs(&self) -> Result<String> {
         templates::branchbox_docs()
+    }
+
+    /// Set file permissions on Unix systems (no-op on other platforms)
+    #[cfg(unix)]
+    fn set_permissions_unix(path: &std::path::Path, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn set_permissions_unix(_path: &std::path::Path, _mode: u32) -> Result<()> {
+        Ok(())
     }
 
     /// Generate .devcontainer/init-host.sh (1Password host-side script)
