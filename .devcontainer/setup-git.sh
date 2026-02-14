@@ -26,9 +26,9 @@ else
     source "$TOKEN_FILE"
 
     if [ -n "${GITHUB_TOKEN:-}" ]; then
-        # Git credential helper for github.com (references env var, not inline value)
+        # Git credential helper for github.com (sources token file each invocation)
         git config --global credential.https://github.com.helper \
-            '!f() { echo "username=oauth2"; echo "password=$GITHUB_TOKEN"; }; f'
+            '!f() { test -f /home/vscode/.github-token.env && source /home/vscode/.github-token.env; echo "username=oauth2"; echo "password=$GITHUB_TOKEN"; }; f'
 
         # GH_TOKEN for gh CLI — persist in bashrc for interactive shells
         if ! grep -q "# BranchBox GitHub token" ~/.bashrc 2>/dev/null; then
@@ -58,13 +58,13 @@ fi
 # --- Git identity (inherited from host) ---
 
 if [ -f "$GITCONFIG_FILE" ] && [ -s "$GITCONFIG_FILE" ]; then
-    # Parse with grep+cut instead of source — values may contain spaces
-    GIT_USER_NAME=$(grep '^GIT_USER_NAME=' "$GITCONFIG_FILE" | cut -d= -f2- | tr -d "'")
-    GIT_USER_EMAIL=$(grep '^GIT_USER_EMAIL=' "$GITCONFIG_FILE" | cut -d= -f2- | tr -d "'")
+    # Source the gitconfig file to get user name and email. This is safer than parsing.
+    # shellcheck disable=SC1090
+    source "$GITCONFIG_FILE"
 
     [ -n "${GIT_USER_NAME:-}" ] && git config --global user.name "$GIT_USER_NAME"
     [ -n "${GIT_USER_EMAIL:-}" ] && git config --global user.email "$GIT_USER_EMAIL"
-    echo "   Git identity: $GIT_USER_NAME <$GIT_USER_EMAIL>"
+    echo "   Git identity: ${GIT_USER_NAME:-} <${GIT_USER_EMAIL:-}>"
 fi
 
 # --- SSH commit signing ---

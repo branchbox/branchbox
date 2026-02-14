@@ -79,8 +79,8 @@ GIT_USER_NAME=$(git config --global user.name 2>/dev/null || echo "")
 GIT_USER_EMAIL=$(git config --global user.email 2>/dev/null || echo "")
 
 if [ -n "$GIT_USER_NAME" ] && [ -n "$GIT_USER_EMAIL" ]; then
-    echo "GIT_USER_NAME='$GIT_USER_NAME'" > "$GIT_CONFIG_FILE"
-    echo "GIT_USER_EMAIL='$GIT_USER_EMAIL'" >> "$GIT_CONFIG_FILE"
+    printf 'GIT_USER_NAME=%q\n' "$GIT_USER_NAME" > "$GIT_CONFIG_FILE"
+    printf 'GIT_USER_EMAIL=%q\n' "$GIT_USER_EMAIL" >> "$GIT_CONFIG_FILE"
 fi
 
 echo "✅ BranchBox secret injection complete."
