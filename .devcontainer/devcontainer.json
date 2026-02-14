@@ -48,7 +48,8 @@
   ],
   "name": "Worktree Manager",
   "postCreateCommand": "bash -c 'sudo chown -R vscode:rustlang /usr/local/cargo 2>/dev/null || true && cargo --version && rustc --version && echo \"SwiftUI builds run on macOS hosts; skipping swift package resolve\"'",
-  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh'",
+  "initializeCommand": "bash .devcontainer/init-host.sh",
+  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh && bash .devcontainer/setup-git.sh'",
   "service": "rust-dev",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"

@@ -19,6 +19,10 @@ services:
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh
+      # 1Password secrets (populated by init-host.sh on container start)
+      - ./.github-token.env:/home/vscode/.github-token.env:ro
+      - ./.git-signing-key:/home/vscode/.git-signing-key:ro
+      - ./.gitconfig.env:/home/vscode/.gitconfig.env:ro
     command: sleep infinity
     env_file:
       - path: ../.env

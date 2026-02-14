@@ -20,7 +20,9 @@
     "ghcr.io/rails/devcontainer/features/activestorage": {}
   },
   "forwardPorts": [3000],
+  "initializeCommand": "bash .devcontainer/init-host.sh",
   "postCreateCommand": "mise trust --all && mise install && mise exec -- bin/setup",
+  "postStartCommand": "bash .devcontainer/setup-git.sh",
   "runArgs": [
     "--env-file",
     "../.env",

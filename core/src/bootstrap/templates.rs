@@ -63,6 +63,16 @@ pub fn branchbox_docs() -> Result<String> {
     Ok(include_str!("templates/BRANCHBOX.md").to_string())
 }
 
+/// Generate the 1Password host-side init script
+pub fn init_host_sh() -> Result<String> {
+    Ok(include_str!("templates/init-host.sh").to_string())
+}
+
+/// Generate the container-side git setup script
+pub fn setup_git_sh() -> Result<String> {
+    Ok(include_str!("templates/setup-git.sh").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +318,80 @@ mod tests {
                 "{stack:?} compose template missing 'privileged: true': {compose}"
             );
         }
+    }
+
+    #[test]
+    fn compose_template_includes_1password_secret_mounts() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let compose = compose_yaml(stack).expect("compose template");
+            for secret_file in [
+                ".github-token.env",
+                ".git-signing-key",
+                ".gitconfig.env",
+            ] {
+                assert!(
+                    compose.contains(secret_file),
+                    "{stack:?} compose template missing 1Password secret mount {secret_file}: {compose}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn devcontainer_template_includes_1password_lifecycle_hooks() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let dc = devcontainer_json(stack).expect("devcontainer.json template");
+            assert!(
+                dc.contains("initializeCommand"),
+                "{stack:?} devcontainer.json missing initializeCommand: {dc}"
+            );
+            assert!(
+                dc.contains("init-host.sh"),
+                "{stack:?} devcontainer.json missing init-host.sh reference: {dc}"
+            );
+            assert!(
+                dc.contains("postStartCommand"),
+                "{stack:?} devcontainer.json missing postStartCommand: {dc}"
+            );
+            assert!(
+                dc.contains("setup-git.sh"),
+                "{stack:?} devcontainer.json missing setup-git.sh reference: {dc}"
+            );
+        }
+    }
+
+    #[test]
+    fn init_host_script_has_expected_content() {
+        let script = init_host_sh().expect("init-host.sh template");
+        assert!(
+            script.contains("OP_GITHUB_REF"),
+            "init-host.sh missing OP_GITHUB_REF: {script}"
+        );
+        assert!(
+            script.contains("OP_SIGNING_KEY_REF"),
+            "init-host.sh missing OP_SIGNING_KEY_REF: {script}"
+        );
+        assert!(
+            script.contains("op read"),
+            "init-host.sh missing 'op read' command: {script}"
+        );
+    }
+
+    #[test]
+    fn setup_git_script_has_expected_content() {
+        let script = setup_git_sh().expect("setup-git.sh template");
+        assert!(
+            script.contains("credential.https://github.com"),
+            "setup-git.sh missing git credential config: {script}"
+        );
+        assert!(
+            script.contains("gpg.format ssh"),
+            "setup-git.sh missing SSH signing config: {script}"
+        );
+        assert!(
+            script.contains("GH_TOKEN"),
+            "setup-git.sh missing GH_TOKEN setup: {script}"
+        );
     }
 
     #[test]

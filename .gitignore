@@ -23,6 +23,11 @@ Cargo.lock
 .devcontainer/.cloudflared.env
 .devcontainer/.branchbox.env
 
+# 1Password secrets (populated by init-host.sh, never committed)
+.devcontainer/.github-token.env
+.devcontainer/.git-signing-key
+.devcontainer/.gitconfig.env
+
 # OS
 .DS_Store
 Thumbs.db

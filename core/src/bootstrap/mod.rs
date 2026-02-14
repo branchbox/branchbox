@@ -147,6 +147,36 @@ impl Bootstrap {
         fs::write(&dockerfile_path, dockerfile)?;
         tracing::info!("Created: {}", dockerfile_path.display());
 
+        // Generate 1Password integration scripts
+        let init_host = self.generate_init_host_sh()?;
+        let init_host_path = devcontainer_dir.join("init-host.sh");
+        fs::write(&init_host_path, init_host)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&init_host_path, fs::Permissions::from_mode(0o755))?;
+        }
+        tracing::info!("Created: {}", init_host_path.display());
+
+        let setup_git = self.generate_setup_git_sh()?;
+        let setup_git_path = devcontainer_dir.join("setup-git.sh");
+        fs::write(&setup_git_path, setup_git)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&setup_git_path, fs::Permissions::from_mode(0o755))?;
+        }
+        tracing::info!("Created: {}", setup_git_path.display());
+
+        // Create empty secret files so compose volume mounts don't fail
+        for secret_file in [".github-token.env", ".git-signing-key", ".gitconfig.env"] {
+            let secret_path = devcontainer_dir.join(secret_file);
+            if !secret_path.exists() {
+                fs::write(&secret_path, "")?;
+                tracing::debug!("Created placeholder: {}", secret_path.display());
+            }
+        }
+
         // Generate and write .env.sample (in project root, not .devcontainer)
         let env_sample = self.generate_env_sample(stack)?;
         let env_sample_path = self.project_path.join(".env.sample");
@@ -222,6 +252,16 @@ impl Bootstrap {
     fn generate_branchbox_docs(&self) -> Result<String> {
         templates::branchbox_docs()
     }
+
+    /// Generate .devcontainer/init-host.sh (1Password host-side script)
+    fn generate_init_host_sh(&self) -> Result<String> {
+        templates::init_host_sh()
+    }
+
+    /// Generate .devcontainer/setup-git.sh (container-side git config)
+    fn generate_setup_git_sh(&self) -> Result<String> {
+        templates::setup_git_sh()
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +328,30 @@ mod tests {
             .join(".devcontainer/.branchbox.env")
             .exists());
         assert!(temp_dir.path().join(".env.sample").exists());
+
+        // Check 1Password integration scripts
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/init-host.sh")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/setup-git.sh")
+            .exists());
+
+        // Check secret file placeholders
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.github-token.env")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.git-signing-key")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.gitconfig.env")
+            .exists());
 
         // Check that files have content
         let devcontainer_json =

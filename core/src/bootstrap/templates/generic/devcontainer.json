@@ -13,7 +13,9 @@
     },
     "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
   },
+  "initializeCommand": "bash .devcontainer/init-host.sh",
   "name": "Development Container",
+  "postStartCommand": "bash .devcontainer/setup-git.sh",
   "runArgs": [
     "--init"
   ],
