@@ -478,28 +478,12 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
-        // create_new (O_EXCL) atomically creates only if missing.
-        // If already exists, leave regular files alone; replace symlinks.
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Replace symlinks; leave regular files untouched.
-                if fs::symlink_metadata(path)
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-                {
-                    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-                    let tmp = tempfile::NamedTempFile::new_in(dir)?;
-                    tmp.persist(path).map_err(|e| e.error)?;
-                }
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-        }
+        // Delegate to safe_write which is already atomic (tempfile + rename).
+        // This overwrites existing files, but these are placeholders that
+        // init-host.sh will populate anyway — simplicity over idempotency
+        // here eliminates the TOCTOU that a create_new + symlink check
+        // would introduce.
+        Self::safe_write(path, "", None)
     }
 
     // NOTE: set_permissions_unix was removed intentionally.
