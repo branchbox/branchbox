@@ -44,8 +44,8 @@ GHEOF
         for dir in "$WORKSPACE_DIR"/*/; do
             if [ -d "$dir/.git" ] || git -C "$dir" rev-parse --git-dir &>/dev/null 2>&1; then
                 REMOTE_URL=$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")
-                if echo "$REMOTE_URL" | grep -q "^git@github.com:"; then
-                    HTTPS_URL=$(echo "$REMOTE_URL" | sed 's|^git@github.com:|https://github.com/|')
+                HTTPS_URL=$(echo "$REMOTE_URL" | sed -e 's|^git@github.com:|https://github.com/|' -e 's|^ssh://git@github.com/|https://github.com/|')
+                if [ "$REMOTE_URL" != "$HTTPS_URL" ]; then
                     git -C "$dir" remote set-url origin "$HTTPS_URL"
                     echo "   Switched $(basename "$dir") remote to HTTPS"
                 fi

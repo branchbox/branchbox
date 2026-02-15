@@ -132,31 +132,31 @@ impl Bootstrap {
         // Generate and write devcontainer.json
         let devcontainer_json = self.generate_devcontainer_json(stack)?;
         let devcontainer_json_path = devcontainer_dir.join("devcontainer.json");
-        fs::write(&devcontainer_json_path, devcontainer_json)?;
+        Self::safe_write(&devcontainer_json_path, &devcontainer_json)?;
         tracing::info!("Created: {}", devcontainer_json_path.display());
 
         // Generate and write compose.yaml
         let compose_yaml = self.generate_compose_yaml(stack)?;
         let compose_yaml_path = devcontainer_dir.join("compose.yaml");
-        fs::write(&compose_yaml_path, compose_yaml)?;
+        Self::safe_write(&compose_yaml_path, &compose_yaml)?;
         tracing::info!("Created: {}", compose_yaml_path.display());
 
         // Generate and write Dockerfile
         let dockerfile = self.generate_dockerfile(stack)?;
         let dockerfile_path = devcontainer_dir.join("Dockerfile");
-        fs::write(&dockerfile_path, dockerfile)?;
+        Self::safe_write(&dockerfile_path, &dockerfile)?;
         tracing::info!("Created: {}", dockerfile_path.display());
 
         // Generate 1Password integration scripts
         let init_host = self.generate_init_host_sh()?;
         let init_host_path = devcontainer_dir.join("init-host.sh");
-        fs::write(&init_host_path, init_host)?;
+        Self::safe_write(&init_host_path, &init_host)?;
         Self::set_permissions_unix(&init_host_path, 0o755)?;
         tracing::info!("Created: {}", init_host_path.display());
 
         let setup_git = self.generate_setup_git_sh()?;
         let setup_git_path = devcontainer_dir.join("setup-git.sh");
-        fs::write(&setup_git_path, setup_git)?;
+        Self::safe_write(&setup_git_path, &setup_git)?;
         Self::set_permissions_unix(&setup_git_path, 0o755)?;
         tracing::info!("Created: {}", setup_git_path.display());
 
@@ -165,8 +165,7 @@ impl Bootstrap {
         for secret_file in &secret_files {
             let secret_path = devcontainer_dir.join(secret_file);
             if !secret_path.exists() {
-                fs::write(&secret_path, "")?;
-                Self::set_permissions_unix(&secret_path, 0o600)?;
+                Self::create_restricted_file(&secret_path)?;
                 tracing::debug!("Created placeholder: {}", secret_path.display());
             }
         }
@@ -279,6 +278,50 @@ impl Bootstrap {
     /// Generate docs/BRANCHBOX.md quickstart guide
     fn generate_branchbox_docs(&self) -> Result<String> {
         templates::branchbox_docs()
+    }
+
+    /// Write a file safely, refusing to follow symbolic links.
+    ///
+    /// If the target path is a symlink, it is removed first to prevent
+    /// overwriting arbitrary files outside the project directory.
+    fn safe_write(path: &std::path::Path, contents: &str) -> Result<()> {
+        if path.is_symlink() {
+            tracing::warn!(
+                "Removing symlink at {} to prevent symlink attack",
+                path.display()
+            );
+            fs::remove_file(path)?;
+        }
+        fs::write(path, contents)?;
+        Ok(())
+    }
+
+    /// Create an empty file with restricted permissions (0600) atomically.
+    ///
+    /// Uses `OpenOptions` with mode on Unix to avoid the race condition
+    /// between file creation and permission change.
+    #[cfg(unix)]
+    fn create_restricted_file(path: &std::path::Path) -> Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
+        if path.is_symlink() {
+            fs::remove_file(path)?;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn create_restricted_file(path: &std::path::Path) -> Result<()> {
+        if path.is_symlink() {
+            fs::remove_file(path)?;
+        }
+        fs::write(path, "")?;
+        Ok(())
     }
 
     /// Set file permissions on Unix systems (no-op on other platforms)
