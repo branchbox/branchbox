@@ -1,3 +1,7 @@
+---
+title: 1Password Devcontainer E2E
+description: Validate BranchBox's host-side 1Password secret fetch and container git/signing setup.
+---
 # Manual 1Password E2E Harness
 
 `scripts/manual-1password-e2e.sh` validates the Docker Desktop for Mac workflow from issue #45 end-to-end:
