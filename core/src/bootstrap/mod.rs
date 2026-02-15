@@ -184,20 +184,28 @@ impl Bootstrap {
             .map(|l| l.trim())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
-        for secret_file in &secret_files {
-            let entry = format!(".devcontainer/{}", secret_file);
-            if !existing_lines.contains(entry.as_str()) {
-                if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
-                    gitignore_content.push('\n');
-                }
-                if !gitignore_updated {
-                    gitignore_content
-                        .push_str("\n# 1Password secrets (populated by init-host.sh, never committed)\n");
-                }
-                gitignore_content.push_str(&entry);
+        let missing_entries: Vec<String> = secret_files
+            .iter()
+            .map(|f| format!(".devcontainer/{}", f))
+            .filter(|e| !existing_lines.contains(e.as_str()))
+            .collect();
+
+        if !missing_entries.is_empty() {
+            if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
                 gitignore_content.push('\n');
-                gitignore_updated = true;
             }
+
+            const GITIGNORE_HEADER: &str =
+                "# 1Password secrets (populated by init-host.sh, never committed)";
+            if !gitignore_content.contains(GITIGNORE_HEADER) {
+                gitignore_content.push_str(&format!("\n{}\n", GITIGNORE_HEADER));
+            }
+
+            for entry in &missing_entries {
+                gitignore_content.push_str(entry);
+                gitignore_content.push('\n');
+            }
+            gitignore_updated = true;
         }
 
         if gitignore_updated {
