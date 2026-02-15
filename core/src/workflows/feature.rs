@@ -1204,15 +1204,23 @@ impl FeatureWorkflow {
                 file,
                 "# Feature-specific configuration (managed by branchbox)"
             )?;
-            writeln!(file, "WORK_FEATURE={}", work_feature)?;
+            writeln!(file, "WORK_FEATURE={}", sanitize_env_value(work_feature))?;
             if let Some(url) = url {
-                let sanitized_url = url.replace(['\n', '\r'], "");
+                let sanitized_url = sanitize_env_value(&url);
                 writeln!(file, "APP_URL={}", sanitized_url)?;
                 feature_url = Some(sanitized_url);
             }
-            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
-            writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
-            writeln!(file, "GIT_BRANCH={}", branch_name)?;
+            writeln!(
+                file,
+                "COMPOSE_PROJECT_NAME={}",
+                sanitize_env_value(&compose_name)
+            )?;
+            writeln!(
+                file,
+                "DEVCONTAINER_NAME={}",
+                sanitize_env_value(&compose_name)
+            )?;
+            writeln!(file, "GIT_BRANCH={}", sanitize_env_value(branch_name))?;
 
             self.link_env_into_devcontainer(worktree_path)?;
         } else {
@@ -1554,18 +1562,26 @@ impl FeatureWorkflow {
             file,
             "# BranchBox-managed overrides (auto-generated, do not edit)"
         )?;
-        writeln!(file, "WORK_FEATURE={}", work_feature)?;
-        writeln!(file, "BRANCHBOX_MAIN_NAME={}", main_name)?;
-        writeln!(file, "GIT_BRANCH={}", branch_name)?;
+        writeln!(file, "WORK_FEATURE={}", sanitize_env_value(work_feature))?;
+        writeln!(
+            file,
+            "BRANCHBOX_MAIN_NAME={}",
+            sanitize_env_value(main_name)
+        )?;
+        writeln!(file, "GIT_BRANCH={}", sanitize_env_value(branch_name))?;
 
         if let Some(url) = feature_url {
-            writeln!(file, "APP_URL={}", url)?;
+            writeln!(file, "APP_URL={}", sanitize_env_value(url))?;
         }
         if let Some(compose) = compose_project_name {
-            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose)?;
+            writeln!(file, "COMPOSE_PROJECT_NAME={}", sanitize_env_value(compose))?;
         }
         if let Some(devcontainer) = devcontainer_name {
-            writeln!(file, "DEVCONTAINER_NAME={}", devcontainer)?;
+            writeln!(
+                file,
+                "DEVCONTAINER_NAME={}",
+                sanitize_env_value(devcontainer)
+            )?;
         }
 
         Ok(())
@@ -2490,11 +2506,11 @@ impl FeatureWorkflow {
 
         // Set up quick access task for feature URL
         if let Some(url) = feature_url {
-            let normalized_url = url
-                .trim()
-                .trim_start_matches("https://")
-                .trim_start_matches("http://")
-                .replace(['\n', '\r'], "");
+            let normalized_url = sanitize_env_value(
+                url.trim()
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://"),
+            );
             if !normalized_url.is_empty() {
                 let full_url = format!("https://{}", normalized_url);
                 let tasks_path = vscode_dir.join("tasks.json");
@@ -2516,8 +2532,8 @@ impl FeatureWorkflow {
                                 "args": [full_url.clone()]
                             },
                             "windows": {
-                                "command": "cmd",
-                                "args": ["/C", "start", "", full_url]
+                                "command": "explorer",
+                                "args": [full_url]
                             }
                         }
                     ]
@@ -2643,6 +2659,10 @@ fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
     }
 }
 
+fn sanitize_env_value(value: &str) -> String {
+    value.replace(['\n', '\r'], "")
+}
+
 fn feature_title_from_work_feature(work_feature: &str) -> String {
     let title = work_feature
         .split('-')
@@ -2725,9 +2745,11 @@ fn update_spec_frontmatter(
 }
 
 fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
-    let prefix = prefix.unwrap_or("feature").trim_end_matches('/');
+    let sanitized_prefix = sanitize_env_value(prefix.unwrap_or("feature"));
+    let prefix = sanitized_prefix.trim_end_matches('/');
+    let work_feature = sanitize_env_value(work_feature);
     if prefix.is_empty() {
-        work_feature.to_string()
+        work_feature
     } else {
         format!("{}/{}", prefix, work_feature)
     }
@@ -3433,6 +3455,14 @@ mod tests {
     #[test]
     fn test_build_branch_name_with_empty_prefix() {
         assert_eq!(build_branch_name(Some(""), "test"), "test");
+    }
+
+    #[test]
+    fn test_build_branch_name_strips_crlf() {
+        assert_eq!(
+            build_branch_name(Some("feature/\n"), "test\r"),
+            "feature/test"
+        );
     }
 
     #[test]
@@ -5133,6 +5163,18 @@ mod tests {
             first_task.get("command").and_then(|value| value.as_str()),
             Some("xdg-open")
         );
+        let windows_task = first_task.get("windows").expect("windows override present");
+        assert_eq!(
+            windows_task.get("command").and_then(|value| value.as_str()),
+            Some("explorer")
+        );
+        let windows_url_arg = windows_task
+            .get("args")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .and_then(|value| value.as_str())
+            .expect("windows url arg present");
+        assert_eq!(windows_url_arg, "https://test-feature.example.com");
     }
 
     #[test]
@@ -5197,6 +5239,38 @@ mod tests {
         let content = fs::read_to_string(settings_path).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(settings.get("workbench.colorCustomizations").is_none());
+    }
+
+    #[test]
+    fn test_write_branchbox_env_sanitizes_values() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(worktree_path.join(".devcontainer")).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .write_branchbox_env(
+                &worktree_path,
+                "test-feature",
+                "feature/test\nINJECTED_BRANCH=1",
+                Some("dev-test-feature.example.com\r\nINJECTED_URL=1"),
+                Some("compose\nname"),
+                Some("devcontainer\rname"),
+                "main\r\nINJECTED_MAIN=1",
+            )
+            .unwrap();
+
+        let managed_env = fs::read_to_string(worktree_path.join(".devcontainer/.branchbox.env"))
+            .expect("managed env should exist");
+        assert!(managed_env.contains("GIT_BRANCH=feature/testINJECTED_BRANCH=1"));
+        assert!(managed_env.contains("APP_URL=dev-test-feature.example.comINJECTED_URL=1"));
+        assert!(managed_env.contains("COMPOSE_PROJECT_NAME=composename"));
+        assert!(managed_env.contains("DEVCONTAINER_NAME=devcontainername"));
+        assert!(managed_env.contains("BRANCHBOX_MAIN_NAME=mainINJECTED_MAIN=1"));
+        assert!(!managed_env.lines().any(|line| line == "INJECTED_BRANCH=1"));
+        assert!(!managed_env.lines().any(|line| line == "INJECTED_URL=1"));
+        assert!(!managed_env.lines().any(|line| line == "INJECTED_MAIN=1"));
     }
 
     #[test]

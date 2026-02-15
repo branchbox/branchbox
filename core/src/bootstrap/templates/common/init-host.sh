@@ -56,11 +56,16 @@ fi
 
 git_user_name="$(git config --global user.name 2>/dev/null || true)"
 git_user_email="$(git config --global user.email 2>/dev/null || true)"
-if [[ -n "${git_user_name}" && -n "${git_user_email}" ]]; then
+git_user_name="${git_user_name//$'\r'/}"
+git_user_name="${git_user_name//$'\n'/}"
+git_user_email="${git_user_email//$'\r'/}"
+git_user_email="${git_user_email//$'\n'/}"
+: >"${GIT_CONFIG_FILE}"
+if [[ -n "${git_user_name}" ]]; then
   printf 'GIT_USER_NAME=%s\n' "${git_user_name}" >"${GIT_CONFIG_FILE}"
+fi
+if [[ -n "${git_user_email}" ]]; then
   printf 'GIT_USER_EMAIL=%s\n' "${git_user_email}" >>"${GIT_CONFIG_FILE}"
-else
-  : >"${GIT_CONFIG_FILE}"
 fi
 
 echo "BranchBox: host credential refresh complete."

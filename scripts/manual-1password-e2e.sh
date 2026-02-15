@@ -447,7 +447,7 @@ validate_workspace_container() {
 
       if [[ "$signing_configured" == "1" ]]; then
         signature_output="$(git log --show-signature -1 2>&1 || true)"
-        printf "%s\n" "$signature_output" | grep -Eq "Good \"git\" signature|Good signature|gpg:"
+        printf "%s\n" "$signature_output" | grep -q 'Good "git" signature'
       fi
     ' 2>&1 | tee "$log_path"; then
     record_bug "Container validation failed for $label (see $log_path)"

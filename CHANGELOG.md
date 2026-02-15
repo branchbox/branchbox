@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `branchbox feature start` now keeps `COMPOSE_PROJECT_NAME` / `DEVCONTAINER_NAME` stable even when the source repo has no `.env`, while still writing `.devcontainer/.branchbox.env`.
 - Feature-start stash handling now ignores untracked files and applies the exact stash reference, eliminating false “failed to apply stashed changes” warnings in common workflows.
 - 1Password host bootstrap now preserves previously fetched token/signing files when `op read` fails and writes signing keys with owner-only permissions.
-- Devcontainer git credential helper now references `GH_TOKEN` at runtime (instead of interpolating raw token text), and feature `APP_URL` writes strip newline/carriage-return characters before persisting `.env`.
-- VS Code feature URL task generation now uses process-style args (instead of shell interpolation), avoiding command injection when URL inputs are untrusted.
+- Devcontainer git credential bootstrapping now stores GitHub credentials via `git credential approve` + `store --file` (no shell helper interpolation of token content).
+- Feature env generation now strips newline/carriage-return characters from dynamic values (`APP_URL`, `GIT_BRANCH`, and `.branchbox.env` fields) before writing `.env` files.
+- VS Code feature URL tasks now use process-style launchers across platforms (`xdg-open`/`open`/`explorer`) instead of `cmd /C start` shell invocation.
 - Compose lifecycle operations now fall back from `docker compose` to `docker-compose` when plugin-style compose is unavailable.
 - `scripts/manual-cli-e2e.sh` now resolves devcontainer services correctly when `devcontainer.json` contains JSONC comments (with compose-service fallback).
 - `scripts/manual-1password-e2e.sh` now supports `docker compose`/`docker-compose` fallback and JSONC-safe devcontainer service detection.

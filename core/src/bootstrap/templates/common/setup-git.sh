@@ -32,10 +32,16 @@ fi
 
 if [[ -s "${TOKEN_FILE}" ]]; then
   github_token="$(grep '^GITHUB_TOKEN=' "${TOKEN_FILE}" | cut -d= -f2- || true)"
+  github_token="${github_token//$'\r'/}"
+  github_token="${github_token//$'\n'/}"
   if [[ -n "${github_token}" ]]; then
     export GH_TOKEN="${github_token}"
+    credential_store_file="${HOME_DIR}/.git-credentials-branchbox"
     git config --global credential.https://github.com.helper \
-      "!f() { echo \"username=oauth2\"; echo \"password=\$GH_TOKEN\"; }; f"
+      "store --file ~/.git-credentials-branchbox"
+    printf 'protocol=https\nhost=github.com\nusername=oauth2\npassword=%s\n\n' "${github_token}" \
+      | git credential approve
+    chmod 600 "${credential_store_file}" 2>/dev/null || true
 
     if ! grep -q "# BranchBox GH token" "${HOME_DIR}/.bashrc" 2>/dev/null; then
       cat >>"${HOME_DIR}/.bashrc" <<EOF
