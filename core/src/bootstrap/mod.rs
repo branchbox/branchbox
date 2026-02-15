@@ -32,11 +32,13 @@
 //! - `.devcontainer/devcontainer.json` - VS Code/Cursor configuration
 //! - `.devcontainer/compose.yaml` - Docker Compose services
 //! - `.devcontainer/Dockerfile` - Custom development image
+//! - `.devcontainer/scripts/init-host.sh` - Host-side 1Password secret refresh
+//! - `.devcontainer/scripts/setup-git.sh` - Container-side git/gh/signing setup
 //! - `.env.sample` - Environment variable template
 //! - Stack-specific scripts and configurations
 
 use crate::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod templates;
 
@@ -169,6 +171,8 @@ impl Bootstrap {
             tracing::info!("Skipped (already exists): {}", branchbox_env_path.display());
         }
 
+        self.ensure_onepassword_assets(&devcontainer_dir)?;
+
         // Generate BranchBox quickstart docs
         let docs_dir = self.project_path.join("docs");
         fs::create_dir_all(&docs_dir)?;
@@ -189,6 +193,36 @@ impl Bootstrap {
         tracing::info!("  1. Open project in VS Code/Cursor");
         tracing::info!("  2. Reopen in Container");
         tracing::info!("  3. Start developing!");
+
+        Ok(())
+    }
+
+    fn ensure_onepassword_assets(&self, devcontainer_dir: &Path) -> Result<()> {
+        use std::fs;
+
+        let scripts_dir = devcontainer_dir.join("scripts");
+        fs::create_dir_all(&scripts_dir)?;
+
+        write_if_missing(
+            &scripts_dir.join("init-host.sh"),
+            &self.generate_onepassword_init_host_script()?,
+        )?;
+        write_if_missing(
+            &scripts_dir.join("setup-git.sh"),
+            &self.generate_onepassword_setup_git_script()?,
+        )?;
+        write_if_missing(
+            &devcontainer_dir.join(".github-token.env"),
+            &self.generate_onepassword_github_token_env()?,
+        )?;
+        write_if_missing(
+            &devcontainer_dir.join(".git-signing-key"),
+            &self.generate_onepassword_git_signing_key()?,
+        )?;
+        write_if_missing(
+            &devcontainer_dir.join(".gitconfig.env"),
+            &self.generate_onepassword_gitconfig_env()?,
+        )?;
 
         Ok(())
     }
@@ -222,6 +256,42 @@ impl Bootstrap {
     fn generate_branchbox_docs(&self) -> Result<String> {
         templates::branchbox_docs()
     }
+
+    /// Generate host-side 1Password secret bootstrap script.
+    fn generate_onepassword_init_host_script(&self) -> Result<String> {
+        templates::onepassword_init_host_script()
+    }
+
+    /// Generate container-side git/gh/signing setup script.
+    fn generate_onepassword_setup_git_script(&self) -> Result<String> {
+        templates::onepassword_setup_git_script()
+    }
+
+    /// Generate mounted GitHub token placeholder.
+    fn generate_onepassword_github_token_env(&self) -> Result<String> {
+        templates::onepassword_github_token_env()
+    }
+
+    /// Generate mounted SSH signing key placeholder.
+    fn generate_onepassword_git_signing_key(&self) -> Result<String> {
+        templates::onepassword_git_signing_key()
+    }
+
+    /// Generate mounted git identity placeholder.
+    fn generate_onepassword_gitconfig_env(&self) -> Result<String> {
+        templates::onepassword_gitconfig_env()
+    }
+}
+
+fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
+    if !path.exists() {
+        std::fs::write(path, contents)?;
+        tracing::info!("Created: {}", path.display());
+    } else {
+        tracing::info!("Skipped (already exists): {}", path.display());
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -287,6 +357,26 @@ mod tests {
             .path()
             .join(".devcontainer/.branchbox.env")
             .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/scripts/init-host.sh")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/scripts/setup-git.sh")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.github-token.env")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.git-signing-key")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(".devcontainer/.gitconfig.env")
+            .exists());
         assert!(temp_dir.path().join(".env.sample").exists());
 
         // Check that files have content
@@ -305,6 +395,14 @@ mod tests {
         let branchbox_env =
             fs::read_to_string(temp_dir.path().join(".devcontainer/.branchbox.env")).unwrap();
         assert!(branchbox_env.contains("WORK_FEATURE=main"));
+
+        let init_host_script =
+            fs::read_to_string(temp_dir.path().join(".devcontainer/scripts/init-host.sh")).unwrap();
+        assert!(init_host_script.contains("op read"));
+
+        let setup_git_script =
+            fs::read_to_string(temp_dir.path().join(".devcontainer/scripts/setup-git.sh")).unwrap();
+        assert!(setup_git_script.contains("credential.https://github.com.helper"));
     }
 
     #[test]
@@ -356,6 +454,30 @@ mod tests {
                     .join(".devcontainer/.branchbox.env")
                     .exists(),
                 "{} stack should create .branchbox.env",
+                stack.as_str()
+            );
+            assert!(
+                temp_dir
+                    .path()
+                    .join(".devcontainer/scripts/init-host.sh")
+                    .exists(),
+                "{} stack should create init-host.sh",
+                stack.as_str()
+            );
+            assert!(
+                temp_dir
+                    .path()
+                    .join(".devcontainer/scripts/setup-git.sh")
+                    .exists(),
+                "{} stack should create setup-git.sh",
+                stack.as_str()
+            );
+            assert!(
+                temp_dir
+                    .path()
+                    .join(".devcontainer/.github-token.env")
+                    .exists(),
+                "{} stack should create .github-token.env",
                 stack.as_str()
             );
         }

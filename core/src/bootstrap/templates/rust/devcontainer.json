@@ -38,8 +38,10 @@
   "forwardPorts": [
     50051
   ],
+  "initializeCommand": "bash -c 'cd \"${localWorkspaceFolder}\" && bash .devcontainer/scripts/init-host.sh'",
   "name": "Rust Project",
   "postCreateCommand": "cargo --version && rustc --version",
+  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/setup-git.sh'",
   "runArgs": [
     "--ipc=host",
     "--init"

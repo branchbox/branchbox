@@ -29,6 +29,7 @@ project/
 Each worktree:
 - Has its own `.devcontainer/` synced from main
 - Shares credentials (`.gh/`, `.claude/`, `.codex/`) across all worktrees
+- Can refresh GitHub PAT + signing keys from 1Password at container start
 - Can run its own devcontainer independently
 
 ## Common Commands
@@ -50,6 +51,7 @@ Open this project in VS Code or Cursor and use "Reopen in Container" to start de
 The devcontainer is configured to:
 - Mount the parent directory so all worktrees are accessible at `/workspaces/`
 - Share credentials across worktrees via mounted config directories
+- Run `.devcontainer/scripts/init-host.sh` (host) + `setup-git.sh` (container) for 1Password-backed git auth/signing
 - Use Docker-in-Docker for container operations
 
 ## Learn More

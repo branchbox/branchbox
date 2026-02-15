@@ -364,3 +364,27 @@ FROM mcr.microsoft.com/devcontainers/base:debian
 ```
 
 After updating, your next `docker compose up` or "Reopen in Container" will pull the pre-built image instead of building locally.
+
+## Manual Release Harnesses
+
+Before tagging a release, run the CLI smoke matrix:
+
+```bash
+./scripts/manual-cli-e2e.sh
+./scripts/manual-cli-e2e.sh --mode verbose
+./scripts/manual-cli-e2e.sh --mode pretend
+STACK=generic ./scripts/manual-cli-e2e.sh
+STACK=rails ./scripts/manual-cli-e2e.sh
+STACK=node ./scripts/manual-cli-e2e.sh
+```
+
+If your change touches devcontainer 1Password auth/signing wiring (issue #45 flow), also run:
+
+```bash
+ORIGIN_SSH_URL='git@github.com:<org>/<repo>.git' \
+OP_GITHUB_REF='op://<vault>/<item>/token' \
+OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
+./scripts/manual-1password-e2e.sh --check-failure-path
+```
+
+Details: `docs/docs/getting-started/manual-cli-e2e.md` and `docs/docs/getting-started/manual-1password-e2e.md`.

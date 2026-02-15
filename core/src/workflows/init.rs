@@ -1442,6 +1442,9 @@ impl InitWorkflow {
             ".branchbox/secure/tunnels/",
             ".devcontainer/.branchbox.env",
             ".devcontainer/.cloudflared.env",
+            ".devcontainer/.github-token.env",
+            ".devcontainer/.git-signing-key",
+            ".devcontainer/.gitconfig.env",
             ".branchbox.env",
             ".env",
             ".env.local",
@@ -1933,6 +1936,9 @@ mod tests {
         assert!(gitignore.contains(".branchbox/secure/"));
         assert!(gitignore.contains(".devcontainer/.branchbox.env"));
         assert!(gitignore.contains(".devcontainer/.cloudflared.env"));
+        assert!(gitignore.contains(".devcontainer/.github-token.env"));
+        assert!(gitignore.contains(".devcontainer/.git-signing-key"));
+        assert!(gitignore.contains(".devcontainer/.gitconfig.env"));
     }
 
     #[test]

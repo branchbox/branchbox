@@ -125,3 +125,16 @@ STACK=node ./scripts/manual-cli-e2e.sh
 ```
 
 If you touch a different adapter or stack, repeat with `STACK=<stack>` for that target as well. Use `KEEP_E2E_TMP=1` when you need to preserve the temporary workspace for debugging and summarize any deviations in the release PR before attempting `cargo release`.
+
+## 1Password regression add-on
+
+If your change touches devcontainer authentication/signing bootstrap (issue #45 path), run the dedicated harness after the CLI matrix:
+
+```bash
+ORIGIN_SSH_URL='git@github.com:<org>/<repo>.git' \
+OP_GITHUB_REF='op://<vault>/<item>/token' \
+OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
+./scripts/manual-1password-e2e.sh --check-failure-path
+```
+
+See `scripts/manual-1password-e2e.md` for prerequisites, troubleshooting, and the expected warning-path behavior when invalid OP refs are provided.

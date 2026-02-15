@@ -60,4 +60,16 @@ Document pass/fail status in the release PR. If you change or add an adapter, ex
 - **Dirty teardown prompt keeps failing** – remove your manual edits, rerun the harness, or inspect `feature-teardown.log` under `$TMP/logs/`.
 - **Tunnel assertions** – if `.cloudflared.env` is missing for the Cloudflared feature, inspect `.branchbox/config.json` in the temporary workspace to confirm the seeded credentials landed.
 
-Keeping this harness green is a release-blocking requirement. If you modify devcontainer templates, tunnel logic, or registry fields, update the script and rerun all three modes before pushing.***
+Keeping this harness green is a release-blocking requirement. If you modify devcontainer templates, tunnel logic, or registry fields, update the script and rerun all three modes before pushing.
+
+## Related harnesses
+
+- `scripts/manual-1password-e2e.sh` focuses specifically on the 1Password PAT + SSH signing flow described in issue #45 (host `op read` + container git setup).
+- If your changes touch `.devcontainer` auth/signing bootstrap, also run:
+
+```bash
+ORIGIN_SSH_URL='git@github.com:<org>/<repo>.git' \
+OP_GITHUB_REF='op://<vault>/<item>/token' \
+OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
+./scripts/manual-1password-e2e.sh --check-failure-path
+```

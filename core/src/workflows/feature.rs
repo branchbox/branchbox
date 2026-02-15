@@ -1161,50 +1161,43 @@ impl FeatureWorkflow {
         warnings: &mut Vec<String>,
     ) -> Result<EnvOutcome> {
         let source_env = self.repo_root.join(".env");
-        if !source_env.exists() {
-            tracing::warn!("No .env found at {}", source_env.display());
-            return Ok(EnvOutcome::skipped());
-        }
-
         let dest_env = worktree_path.join(".env");
-        let (base_env, _previous_section) = split_feature_section(&source_env)?;
+        let source_env_exists = source_env.exists();
 
-        if reuse_existing && dest_env.exists() {
-            if let Ok((_, existing_section)) = split_feature_section(&dest_env) {
-                if let Some(section) = existing_section {
-                    let trimmed = section.trim();
-                    if !trimmed.is_empty() {
+        let mut feature_url = None;
+        let app_slug = self.resolve_app_slug(&source_env)?;
+        let compose_name = format!("{}-{}", app_slug, work_feature);
+        std::env::set_var("BASE_PREFIX", &app_slug);
+        std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
+        std::env::set_var("DEVCONTAINER_NAME", &compose_name);
+
+        if source_env_exists {
+            let (base_env, _previous_section) = split_feature_section(&source_env)?;
+
+            if reuse_existing && dest_env.exists() {
+                if let Ok((_, existing_section)) = split_feature_section(&dest_env) {
+                    if let Some(section) = existing_section {
+                        let trimmed = section.trim();
+                        if !trimmed.is_empty() {
+                            warnings.push(format!(
+                                "Existing feature-specific configuration replaced in {}",
+                                dest_env.display()
+                            ));
+                        }
+                    } else {
                         warnings.push(format!(
-                            "Existing feature-specific configuration replaced in {}",
+                            "Existing {} will be refreshed from main .env (no branchbox block found)",
                             dest_env.display()
                         ));
                     }
-                } else {
-                    warnings.push(format!(
-                        "Existing {} will be refreshed from main .env (no branchbox block found)",
-                        dest_env.display()
-                    ));
                 }
             }
-        }
 
-        fs::write(&dest_env, base_env)?;
+            fs::write(&dest_env, base_env)?;
 
-        let mut feature_url = None;
-        let mut compose_project_name = None;
-        let mut devcontainer_name = None;
-
-        let app_slug = self.resolve_app_slug(&source_env)?;
-        std::env::set_var("BASE_PREFIX", &app_slug);
-
-        // Try to derive feature URL from cloudflared config first (centralized source of truth)
-        // Falls back to APP_URL if cloudflared dns_zone is not configured
-        let url = self.derive_feature_url(&source_env, work_feature);
-
-        if let Some(url) = url {
-            let compose_name = format!("{}-{}", app_slug, work_feature);
-            std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
-            std::env::set_var("DEVCONTAINER_NAME", &compose_name);
+            // Try to derive feature URL from cloudflared config first (centralized source of truth)
+            // Falls back to APP_URL if cloudflared dns_zone is not configured
+            let url = self.derive_feature_url(&source_env, work_feature);
             let mut file = OpenOptions::new().append(true).open(&dest_env)?;
             ensure_trailing_newline(&mut file)?;
             writeln!(
@@ -1212,17 +1205,18 @@ impl FeatureWorkflow {
                 "# Feature-specific configuration (managed by branchbox)"
             )?;
             writeln!(file, "WORK_FEATURE={}", work_feature)?;
-            writeln!(file, "APP_URL={}", url)?;
+            if let Some(url) = url {
+                writeln!(file, "APP_URL={}", url)?;
+                feature_url = Some(url);
+            }
             writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
             writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
             writeln!(file, "GIT_BRANCH={}", branch_name)?;
 
-            feature_url = Some(url);
-            compose_project_name = Some(compose_name.clone());
-            devcontainer_name = Some(compose_name);
+            self.link_env_into_devcontainer(worktree_path)?;
+        } else {
+            tracing::warn!("No .env found at {}", source_env.display());
         }
-
-        self.link_env_into_devcontainer(worktree_path)?;
 
         let main_name = self.main_worktree_name();
         self.write_branchbox_env(
@@ -1230,16 +1224,16 @@ impl FeatureWorkflow {
             work_feature,
             branch_name,
             feature_url.as_deref(),
-            compose_project_name.as_deref(),
-            devcontainer_name.as_deref(),
+            Some(&compose_name),
+            Some(&compose_name),
             &main_name,
         )?;
 
         Ok(EnvOutcome {
-            env_path: Some(dest_env),
+            env_path: source_env_exists.then_some(dest_env),
             feature_url,
-            compose_project_name,
-            skipped: false,
+            compose_project_name: Some(compose_name),
+            skipped: !source_env_exists,
         })
     }
 
@@ -1376,8 +1370,10 @@ impl FeatureWorkflow {
     }
 
     fn capture_stash(&self, work_feature: &str) -> Result<StashState> {
+        let stash_before = self.current_stash_oid()?;
+
         let status = Command::new("git")
-            .args(["status", "--porcelain"])
+            .args(["status", "--porcelain", "--untracked-files=no"])
             .current_dir(&self.repo_root)
             .output()
             .map_err(|err| Error::git(format!("Failed to check git status: {}", err)))?;
@@ -1397,7 +1393,7 @@ impl FeatureWorkflow {
 
         let message = format!("feature-start: changes for {}", work_feature);
         let push = Command::new("git")
-            .args(["stash", "push", "-m", &message])
+            .args(["stash", "push", "--no-include-untracked", "-m", &message])
             .current_dir(&self.repo_root)
             .output()
             .map_err(|err| Error::git(format!("Failed to invoke git stash: {}", err)))?;
@@ -1408,6 +1404,11 @@ impl FeatureWorkflow {
                 "git stash push failed: {}",
                 stderr.trim()
             )));
+        }
+
+        let stash_after = self.current_stash_oid()?;
+        if stash_after.is_none() || stash_after == stash_before {
+            return Ok(StashState::default());
         }
 
         let list = Command::new("git")
@@ -1427,7 +1428,8 @@ impl FeatureWorkflow {
         let reference = String::from_utf8_lossy(&list.stdout)
             .lines()
             .next()
-            .map(|line| line.trim().to_string());
+            .map(|line| line.trim().to_string())
+            .or_else(|| Some("stash@{0}".to_string()));
 
         Ok(StashState {
             created: true,
@@ -1435,13 +1437,45 @@ impl FeatureWorkflow {
         })
     }
 
+    fn current_stash_oid(&self) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["rev-parse", "-q", "--verify", "refs/stash"])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to read refs/stash: {}", err)))?;
+
+        if output.status.success() {
+            let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if oid.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(oid))
+            }
+        } else if output.stderr.is_empty() {
+            Ok(None)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(Error::git(format!(
+                "git rev-parse refs/stash failed: {}",
+                stderr.trim()
+            )))
+        }
+    }
+
     fn apply_stash_to_worktree(&self, stash: &StashState, worktree_path: &Path) -> Vec<String> {
         if !stash.created {
             return Vec::new();
         }
 
+        let Some(reference) = stash.reference.as_deref() else {
+            return vec![
+                "Failed to apply stashed changes to feature worktree: stash reference unavailable. Stash remains available."
+                    .to_string(),
+            ];
+        };
+
         match Command::new("git")
-            .args(["stash", "pop"])
+            .args(["stash", "pop", reference])
             .current_dir(worktree_path)
             .output()
         {
@@ -1452,11 +1486,7 @@ impl FeatureWorkflow {
                     "Failed to apply stashed changes to feature worktree: {}",
                     stderr.trim()
                 );
-                if let Some(reference) = stash.reference.as_deref() {
-                    warning.push_str(&format!(" Stash {} remains available.", reference));
-                } else {
-                    warning.push_str(" Stash remains available.");
-                }
+                warning.push_str(&format!(" Stash {} remains available.", reference));
                 vec![warning]
             }
             Err(err) => {
@@ -1464,11 +1494,7 @@ impl FeatureWorkflow {
                     "Failed to apply stashed changes to feature worktree: {}",
                     err
                 );
-                if let Some(reference) = stash.reference.as_deref() {
-                    warning.push_str(&format!(" Stash {} remains available.", reference));
-                } else {
-                    warning.push_str(" Stash remains available.");
-                }
+                warning.push_str(&format!(" Stash {} remains available.", reference));
                 vec![warning]
             }
         }
@@ -2771,17 +2797,6 @@ struct EnvOutcome {
     skipped: bool,
 }
 
-impl EnvOutcome {
-    fn skipped() -> Self {
-        Self {
-            env_path: None,
-            feature_url: None,
-            compose_project_name: None,
-            skipped: true,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureStatus {
@@ -3516,15 +3531,6 @@ mod tests {
     }
 
     #[test]
-    fn test_env_outcome_skipped() {
-        let outcome = EnvOutcome::skipped();
-        assert!(outcome.skipped);
-        assert!(outcome.env_path.is_none());
-        assert!(outcome.feature_url.is_none());
-        assert!(outcome.compose_project_name.is_none());
-    }
-
-    #[test]
     fn test_resolve_repo_root_direct_repo() {
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path();
@@ -4040,6 +4046,118 @@ mod tests {
     }
 
     #[test]
+    fn feature_start_ignores_untracked_changes_without_stash_warnings() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        fs::write(repo_path.join("scratch-notes.txt"), "untracked changes\n").unwrap();
+        let worktree_path = repo_path.parent().unwrap().join("stash-untracked");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("stash-untracked".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        assert!(
+            !summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Failed to apply stashed changes")),
+            "unexpected stash warning(s): {:?}",
+            summary.warnings
+        );
+        assert!(!summary.worktree_path.join("scratch-notes.txt").exists());
+        assert!(repo_path.join("scratch-notes.txt").exists());
+
+        let stash_list = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&stash_list.stdout)
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn feature_start_keeps_untracked_devcontainer_templates_in_main_worktree() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        let worktree_path = repo_path.parent().unwrap().join("preserve-devcontainer");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
+
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(devcontainer_dir.join("scripts")).unwrap();
+        fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  dev:\n    image: ubuntu:22.04\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            "{\"service\":\"dev\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("scripts/init-host.sh"),
+            "#!/usr/bin/env bash\necho init\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("scripts/setup-git.sh"),
+            "#!/usr/bin/env bash\necho setup\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join(".github-token.env"),
+            "GITHUB_TOKEN=\n",
+        )
+        .unwrap();
+        fs::write(devcontainer_dir.join(".git-signing-key"), "\n").unwrap();
+        fs::write(devcontainer_dir.join(".gitconfig.env"), "\n").unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("preserve-devcontainer".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        for path in [
+            ".devcontainer/Dockerfile",
+            ".devcontainer/compose.yaml",
+            ".devcontainer/devcontainer.json",
+            ".devcontainer/scripts/init-host.sh",
+            ".devcontainer/scripts/setup-git.sh",
+        ] {
+            assert!(
+                repo_path.join(path).exists(),
+                "expected main worktree to keep {}",
+                path
+            );
+            assert!(
+                summary.worktree_path.join(path).exists(),
+                "expected feature worktree to contain {}",
+                path
+            );
+        }
+    }
+
+    #[test]
     fn feature_start_moves_backlog_spec_into_worktree() {
         let temp = setup_test_repo();
         let repo_path = temp.path();
@@ -4071,6 +4189,57 @@ mod tests {
         let contents = fs::read_to_string(&worktree_spec).unwrap();
         assert!(contents.contains("status: in-progress"));
         assert!(contents.contains("branch: feature/backlog-spec"));
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: summary.work_feature,
+                branch_prefix: None,
+                delete_branch: true,
+                force_delete_branch: false,
+                force_remove: true,
+                force_remove_modules: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn feature_start_without_source_env_still_sets_compose_identity() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        copy_repo_devcontainer(repo_path);
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("no-env-feature".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        assert!(summary.env_path.is_none());
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Skipped .env provisioning")),
+            "expected skipped env warning, got {:?}",
+            summary.warnings
+        );
+
+        let compose_name = summary
+            .compose_project_name
+            .clone()
+            .expect("compose project name should be set");
+        assert!(compose_name.ends_with("-no-env-feature"));
+
+        let branchbox_env_path = summary.worktree_path.join(".devcontainer/.branchbox.env");
+        assert!(branchbox_env_path.exists());
+        let branchbox_env = fs::read_to_string(&branchbox_env_path).unwrap();
+        assert!(branchbox_env.contains(&format!("COMPOSE_PROJECT_NAME={}", compose_name)));
+        assert!(branchbox_env.contains(&format!("DEVCONTAINER_NAME={}", compose_name)));
 
         workflow
             .teardown(TeardownRequest {

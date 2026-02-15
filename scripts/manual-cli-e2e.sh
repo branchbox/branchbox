@@ -5,7 +5,7 @@ set -euo pipefail
 MODE="regular"
 SCRIPT_VERBOSE=0
 PRETEND=0
-STACK="rust"
+STACK="${STACK:-rust}"
 
 usage() {
   cat <<'USAGE'
@@ -252,6 +252,45 @@ function assert_file_not_exists() {
   fi
 }
 
+function detect_compose_service() {
+  local compose_file="$1"
+  if [[ ! -f "$compose_file" ]]; then
+    return
+  fi
+
+  awk '
+    /^services:[[:space:]]*$/ { in_services = 1; next }
+    in_services && /^[^[:space:]]/ { exit }
+    in_services && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {
+      service = $1
+      sub(/:$/, "", service)
+      print service
+      exit
+    }
+  ' "$compose_file"
+}
+
+function resolve_devcontainer_service() {
+  local devcontainer_json="$1"
+  local compose_file="$2"
+  local fallback="${3:-rust-dev}"
+  local service=""
+
+  if [[ -f "$devcontainer_json" ]]; then
+    service="$(sed '/^[[:space:]]*\/\//d' "$devcontainer_json" | jq -r '.service // empty' 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$service" ]]; then
+    service="$(detect_compose_service "$compose_file" || true)"
+  fi
+
+  if [[ -z "$service" ]]; then
+    service="$fallback"
+  fi
+
+  printf '%s\n' "$service"
+}
+
 function configure_cloudflared_project() {
   local workspace="$1"
   if [[ "$PRETEND" == "1" ]]; then
@@ -493,7 +532,7 @@ if [[ "$PRETEND" == "0" && -f "$MAIN_COMPOSE" && -f "$MAIN_DEVCONTAINER_JSON" ]]
     } >"$tmp_jsonc"
     mv "$tmp_jsonc" "$MAIN_DEVCONTAINER_JSON"
   fi
-  SERVICE_NAME="$(jq -r '.service // "rust-dev"' "$MAIN_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
+  SERVICE_NAME="$(resolve_devcontainer_service "$MAIN_DEVCONTAINER_JSON" "$MAIN_COMPOSE" "rust-dev")"
   log "Booting main devcontainer service '$SERVICE_NAME'"
   if docker compose -f "$MAIN_COMPOSE" --project-directory "$(dirname "$MAIN_COMPOSE")" up -d --build >/dev/null; then
     COMPOSE_STACKS+=("$MAIN_COMPOSE")
@@ -560,7 +599,7 @@ SECONDARY_COMPOSE="$SECONDARY_DIR/.devcontainer/compose.yaml"
 SECONDARY_DEVCONTAINER_JSON="$SECONDARY_DIR/.devcontainer/devcontainer.json"
 
 if [[ "$PRETEND" == "0" && -f "$FEATURE_COMPOSE" && -f "$FEATURE_DEVCONTAINER_JSON" ]]; then
-  FEATURE_SERVICE="$(jq -r '.service // "rust-dev"' "$FEATURE_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
+  FEATURE_SERVICE="$(resolve_devcontainer_service "$FEATURE_DEVCONTAINER_JSON" "$FEATURE_COMPOSE" "rust-dev")"
   log "Booting feature devcontainer service '$FEATURE_SERVICE'"
   if docker compose -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" up -d --build >/dev/null; then
     COMPOSE_STACKS+=("$FEATURE_COMPOSE")
@@ -617,7 +656,7 @@ else
 fi
 
 if [[ "$PRETEND" == "0" && -f "$SECONDARY_COMPOSE" && -f "$SECONDARY_DEVCONTAINER_JSON" ]]; then
-  SECONDARY_SERVICE="$(jq -r '.service // "rust-dev"' "$SECONDARY_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
+  SECONDARY_SERVICE="$(resolve_devcontainer_service "$SECONDARY_DEVCONTAINER_JSON" "$SECONDARY_COMPOSE" "rust-dev")"
   log "Booting Cloudflared feature devcontainer service '$SECONDARY_SERVICE'"
   if docker compose -f "$SECONDARY_COMPOSE" --project-directory "$(dirname "$SECONDARY_COMPOSE")" up -d --build >/dev/null; then
     COMPOSE_STACKS+=("$SECONDARY_COMPOSE")

@@ -1,0 +1,7 @@
+interface:
+  display_name: "BranchBox Devcontainer Guardrails"
+  short_description: "Guardrails for devcontainer, harness, and release-safe changes"
+  default_prompt: "Use $branchbox-devcontainer-guardrails to implement and validate a BranchBox devcontainer/bootstrap change without regressions."
+
+policy:
+  allow_implicit_invocation: true

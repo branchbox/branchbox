@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `branchbox init` now scaffolds 1Password bootstrap assets in `.devcontainer/` (`scripts/init-host.sh`, `scripts/setup-git.sh`, `.github-token.env`, `.git-signing-key`, `.gitconfig.env`) and wires each stack template to run them during devcontainer startup.
+- Compose templates for Rust, Generic, Rails, and Node now mount the generated 1Password credential files into the container.
+- Added a focused manual 1Password regression harness (`scripts/manual-1password-e2e.sh`) plus runbook (`scripts/manual-1password-e2e.md`) to validate PAT + SSH-signing setup end-to-end.
+
+### Changed
+- Devcontainer compose templates no longer pin top-level compose project names or `container_name`, preventing collisions across parallel worktrees.
+
+### Fixed
+- `branchbox feature start` now keeps `COMPOSE_PROJECT_NAME` / `DEVCONTAINER_NAME` stable even when the source repo has no `.env`, while still writing `.devcontainer/.branchbox.env`.
+- Feature-start stash handling now ignores untracked files and applies the exact stash reference, eliminating false “failed to apply stashed changes” warnings in common workflows.
+- Compose lifecycle operations now fall back from `docker compose` to `docker-compose` when plugin-style compose is unavailable.
+- `scripts/manual-cli-e2e.sh` now resolves devcontainer services correctly when `devcontainer.json` contains JSONC comments (with compose-service fallback).
+
+### Documentation
+- Updated manual E2E docs and release guidance to include the 1Password-specific harness and required environment inputs for issue #45 style validation.
+
 ## [0.7.0] - 2026-01-14
 
 ### Added
@@ -76,7 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    ```
 
 **Feature worktrees** will automatically use the updated configuration from your main worktree when you run `branchbox feature start`.
-
 ## [0.5.0] - 2026-01-07
 
 ### Added
