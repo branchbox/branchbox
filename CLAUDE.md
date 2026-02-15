@@ -22,6 +22,15 @@ If a code-review bot flags the same class of issue more than once, **stop
 pushing incremental patches**.  Step back, identify the root pattern, and fix
 it in one pass.  Band-aid commits create churn without progress.
 
+When fixing a check-then-act pattern, ask: **"Can I eliminate the check by
+making the operation idempotent?"**  Improving the check (e.g. `exists()` →
+`symlink_metadata()`) still leaves a TOCTOU window.  Making the operation
+safe to call unconditionally removes the window entirely.
+
+**Docs are code.**  When changing a pattern in implementation, grep the entire
+repo for every instance — including CONTRIBUTING.md, CLAUDE.md, and inline
+code comments — and update them in the same commit.
+
 ## Architecture Deep Dive
 
 This section provides detailed context for understanding the codebase structure and generating correct code. For basic commands, coding style, and project overview, consult AGENTS.md above.
