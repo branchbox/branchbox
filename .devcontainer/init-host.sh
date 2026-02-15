@@ -34,23 +34,23 @@ OP_SIGNING_KEY_REF="${OP_SIGNING_KEY_REF:-}"
 # atomic_write: write content to a file via temp + rename to prevent
 # symlink TOCTOU attacks. The rename is atomic on the same filesystem,
 # so there is no window where a symlink could be followed.
+# Uses umask 077 to set 0600 at creation — no path-based chmod needed.
 atomic_write() {
     local target="$1"
     local dir
     dir="$(dirname "$target")"
     local tmp
-    tmp="$(mktemp "$dir/.tmp.XXXXXX")"
-    chmod 600 "$tmp"
+    tmp="$(umask 077 && mktemp "$dir/.tmp.XXXXXX")"
     cat > "$tmp"
     mv -f "$tmp" "$target"
 }
 
 # Ensure files exist with restricted permissions so Docker compose volume
 # mounts don't fail.  Unconditional mktemp + mv — no checks, no TOCTOU.
+# umask 077 sets 0600 at creation (no path-based chmod needed).
 # mv -f replaces any existing entry (file, symlink, etc.) atomically.
 for f in "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE"; do
-    _pholder="$(mktemp "$(dirname "$f")/.tmp.XXXXXX")"
-    chmod 600 "$_pholder"
+    _pholder="$(umask 077 && mktemp "$(dirname "$f")/.tmp.XXXXXX")"
     mv -f "$_pholder" "$f"
 done
 

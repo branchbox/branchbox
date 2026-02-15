@@ -159,11 +159,17 @@ impl Bootstrap {
         Self::safe_write(&setup_git_path, &setup_git, Some(0o755))?;
         tracing::info!("Created: {}", setup_git_path.display());
 
-        // Create empty secret files so compose volume mounts don't fail
+        // Create empty secret files so compose volume mounts don't fail.
+        // Use symlink_metadata (lstat) to check existence without following
+        // symlinks — if the path is a symlink, treat it as missing so
+        // create_restricted_file replaces it.
         let secret_files = [".github-token.env", ".git-signing-key", ".gitconfig.env"];
         for secret_file in &secret_files {
             let secret_path = devcontainer_dir.join(secret_file);
-            if !secret_path.exists() {
+            let is_regular_file = fs::symlink_metadata(&secret_path)
+                .map(|m| m.file_type().is_file())
+                .unwrap_or(false);
+            if !is_regular_file {
                 Self::create_restricted_file(&secret_path)?;
                 tracing::debug!("Created placeholder: {}", secret_path.display());
             }
@@ -395,33 +401,31 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn safe_read(path: &std::path::Path) -> Result<Option<String>> {
-        use std::io::Read;
-
-        // Non-Unix platforms lack O_NOFOLLOW. We open the file and then
-        // check metadata **on the handle** (not on the path) to detect
-        // symlinks. Because the metadata query is on the same fd that
-        // we read from, there is no TOCTOU between check and read.
+        // Non-Unix platforms lack O_NOFOLLOW.  We use symlink_metadata()
+        // (equivalent to lstat) which inspects the directory entry itself
+        // without following symlinks.
         //
-        // Caveat: the open() itself may follow symlinks on some
-        // platforms (unavoidable without OS-specific flags). BranchBox
-        // primarily targets macOS/Linux where the Unix O_NOFOLLOW path
-        // is used instead.
-        match fs::File::open(path) {
-            Ok(mut file) => {
-                let meta = file.metadata()?;
-                if meta.file_type().is_symlink() {
-                    drop(file);
-                    tracing::warn!(
-                        "Refusing symlink at {}; removing",
-                        path.display()
-                    );
-                    fs::remove_file(path)?;
-                    return Ok(None);
-                }
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
-                Ok(Some(content))
+        // There is an inherent TOCTOU window between the metadata check
+        // and the read — an attacker could swap the file for a symlink
+        // between the two calls.  This is unavoidable without OS-specific
+        // flags (like O_NOFOLLOW on Unix).  BranchBox primarily targets
+        // macOS/Linux where the atomic O_NOFOLLOW path is used instead;
+        // this fallback exists only for compilation on other platforms.
+        //
+        // NOTE: Do NOT use File::open() + file.metadata() here.
+        // File::open() follows symlinks, so metadata on the handle
+        // describes the target, not the symlink — is_symlink() would
+        // always return false, making the check dead code.
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                tracing::warn!(
+                    "Refusing symlink at {}; removing",
+                    path.display()
+                );
+                fs::remove_file(path)?;
+                Ok(None)
             }
+            Ok(_) => Ok(Some(fs::read_to_string(path)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
