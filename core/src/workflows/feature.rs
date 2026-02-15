@@ -2490,26 +2490,44 @@ impl FeatureWorkflow {
 
         // Set up quick access task for feature URL
         if let Some(url) = feature_url {
-            let tasks_path = vscode_dir.join("tasks.json");
-            let tasks = serde_json::json!({
-                "version": "2.0.0",
-                "tasks": [
-                    {
-                        "label": "Open Feature URL",
-                        "type": "shell",
-                        "command": format!("echo 'Opening https://{}' && xdg-open 'https://{}' || open 'https://{}'", url, url, url),
-                        "problemMatcher": [],
-                        "presentation": {
-                            "reveal": "silent",
-                            "panel": "shared"
+            let normalized_url = url
+                .trim()
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .replace(['\n', '\r'], "");
+            if !normalized_url.is_empty() {
+                let full_url = format!("https://{}", normalized_url);
+                let tasks_path = vscode_dir.join("tasks.json");
+                let tasks = serde_json::json!({
+                    "version": "2.0.0",
+                    "tasks": [
+                        {
+                            "label": "Open Feature URL",
+                            "type": "process",
+                            "command": "xdg-open",
+                            "args": [full_url.clone()],
+                            "problemMatcher": [],
+                            "presentation": {
+                                "reveal": "silent",
+                                "panel": "shared"
+                            },
+                            "osx": {
+                                "command": "open",
+                                "args": [full_url.clone()]
+                            },
+                            "windows": {
+                                "command": "cmd",
+                                "args": ["/C", "start", "", full_url]
+                            }
                         }
-                    }
-                ]
-            });
+                    ]
+                });
 
-            let tasks_json = serde_json::to_string_pretty(&tasks)
-                .map_err(|e| Error::config(format!("Failed to serialize VS Code tasks: {}", e)))?;
-            fs::write(&tasks_path, tasks_json)?;
+                let tasks_json = serde_json::to_string_pretty(&tasks).map_err(|e| {
+                    Error::config(format!("Failed to serialize VS Code tasks: {}", e))
+                })?;
+                fs::write(&tasks_path, tasks_json)?;
+            }
         }
 
         Ok(())
@@ -5099,6 +5117,60 @@ mod tests {
         let content = fs::read_to_string(&tasks_path).unwrap();
         assert!(content.contains("Open Feature URL"));
         assert!(content.contains("https://test-feature.example.com"));
+        assert!(!content.contains("https://https://test-feature.example.com"));
+
+        let tasks: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let first_task = tasks
+            .get("tasks")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .expect("first task present");
+        assert_eq!(
+            first_task.get("type").and_then(|value| value.as_str()),
+            Some("process")
+        );
+        assert_eq!(
+            first_task.get("command").and_then(|value| value.as_str()),
+            Some("xdg-open")
+        );
+    }
+
+    #[test]
+    fn test_setup_vscode_workspace_strips_crlf_from_feature_url() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow
+            .setup_vscode_workspace(
+                &worktree_path,
+                "test-feature",
+                &None,
+                Some("test-feature.example.com\nINJECTED=value\r"),
+            )
+            .unwrap();
+
+        let tasks_path = worktree_path.join(".vscode/tasks.json");
+        assert!(tasks_path.exists());
+        let content = fs::read_to_string(tasks_path).unwrap();
+        let tasks: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let first_task = tasks
+            .get("tasks")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .expect("first task present");
+        let url_arg = first_task
+            .get("args")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .and_then(|value| value.as_str())
+            .expect("url arg present");
+        assert_eq!(url_arg, "https://test-feature.example.comINJECTED=value");
+        assert!(!url_arg.contains('\n'));
+        assert!(!url_arg.contains('\r'));
     }
 
     #[test]
