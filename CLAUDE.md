@@ -15,8 +15,8 @@ Summary of non-negotiable rules:
 2. **Rust writes**: always use `Bootstrap::safe_write(path, contents, mode)`.
    Permissions go in the `mode` parameter, never in a separate `set_permissions` call.
 3. **Rust reads** of potentially hostile paths: use `Bootstrap::safe_read(path)`.
-4. **Shell writes of secrets**: always use `atomic_write` (mktemp → write → chmod → mv).
-5. **Shell placeholder creation**: mktemp → chmod 600 → mv (never touch + chmod).
+4. **Shell writes of secrets**: always use atomic write (`tmp=$(umask 077 && mktemp ...)` → write → `mv`).
+5. **Shell placeholder creation**: `umask 077 && mktemp` → `mv` (never `touch` + `chmod`).
 
 If a code-review bot flags the same class of issue more than once, **stop
 pushing incremental patches**.  Step back, identify the root pattern, and fix

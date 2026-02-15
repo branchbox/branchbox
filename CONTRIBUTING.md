@@ -357,12 +357,11 @@ set atomically at file creation time via `.mode()`.
 ### Shell: atomic writes via `mktemp` + `mv`
 
 ```bash
-# ✅ Correct — no race window; mv is atomic on same filesystem
+# ✅ Correct — umask sets 0600 at creation, mv is atomic on same filesystem
 atomic_write() {
     local target="$1" dir tmp
     dir="$(dirname "$target")"
-    tmp="$(mktemp "$dir/.tmp.XXXXXX")"
-    chmod 600 "$tmp"
+    tmp="$(umask 077 && mktemp "$dir/.tmp.XXXXXX")"
     cat > "$tmp"
     mv -f "$tmp" "$target"
 }
@@ -374,6 +373,10 @@ printf 'TOKEN=%q\n' "$TOKEN" | atomic_write "$SECRET_FILE"
 [ -L "$f" ] && rm -f "$f"
 echo "$SECRET" > "$f"
 chmod 600 "$f"
+
+# ❌ Also wrong — path-based chmod after mktemp has a TOCTOU window
+tmp="$(mktemp /tmp/.tmp.XXXXXX)"
+chmod 600 "$tmp"   # attacker could swap tmp for symlink between mktemp and chmod
 ```
 
 ### Quick checklist for PRs that touch file I/O

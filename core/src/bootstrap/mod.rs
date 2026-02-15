@@ -160,19 +160,14 @@ impl Bootstrap {
         tracing::info!("Created: {}", setup_git_path.display());
 
         // Create empty secret files so compose volume mounts don't fail.
-        // Use symlink_metadata (lstat) to check existence without following
-        // symlinks — if the path is a symlink, treat it as missing so
-        // create_restricted_file replaces it.
+        // Called unconditionally — create_restricted_file is idempotent
+        // (creates if missing, leaves existing regular files untouched,
+        // replaces symlinks). No check-then-act guard needed.
         let secret_files = [".github-token.env", ".git-signing-key", ".gitconfig.env"];
         for secret_file in &secret_files {
             let secret_path = devcontainer_dir.join(secret_file);
-            let is_regular_file = fs::symlink_metadata(&secret_path)
-                .map(|m| m.file_type().is_file())
-                .unwrap_or(false);
-            if !is_regular_file {
-                Self::create_restricted_file(&secret_path)?;
-                tracing::debug!("Created placeholder: {}", secret_path.display());
-            }
+            Self::create_restricted_file(&secret_path)?;
+            tracing::debug!("Ensured placeholder exists: {}", secret_path.display());
         }
 
         // Ensure secret files are excluded from version control in the target project.
@@ -431,18 +426,23 @@ impl Bootstrap {
         }
     }
 
-    /// Create an empty file with restricted permissions (0600) atomically.
+    /// Ensure an empty file with restricted permissions (0600) exists.
     ///
-    /// Uses `OpenOptions` with mode + O_NOFOLLOW on Unix to set
-    /// permissions and reject symlinks in a single syscall.
+    /// **Idempotent**: creates the file if missing, leaves existing
+    /// regular files untouched (no truncate), and replaces symlinks.
+    /// Safe to call unconditionally — no external check-then-act guard
+    /// needed.
+    ///
+    /// On Unix: `O_CREAT` (without `O_TRUNC`) + `O_NOFOLLOW` +
+    /// `.mode(0o600)` in a single `open()` syscall.
     #[cfg(unix)]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         // No pre-check — O_NOFOLLOW is the guard.
+        // No O_TRUNC — existing content preserved (idempotent).
         match std::fs::OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
@@ -457,7 +457,6 @@ impl Bootstrap {
                 std::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
-                    .truncate(true)
                     .mode(0o600)
                     .custom_flags(libc::O_NOFOLLOW)
                     .open(path)?;
@@ -469,11 +468,28 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
-        // Atomic via NamedTempFile + persist (same pattern as safe_write).
-        let dir = path.parent().unwrap_or(std::path::Path::new("."));
-        let tmp = tempfile::NamedTempFile::new_in(dir)?;
-        tmp.persist(path).map_err(|e| e.error)?;
-        Ok(())
+        // create_new (O_EXCL) atomically creates only if missing.
+        // If already exists, leave regular files alone; replace symlinks.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Replace symlinks; leave regular files untouched.
+                if fs::symlink_metadata(path)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+                    let tmp = tempfile::NamedTempFile::new_in(dir)?;
+                    tmp.persist(path).map_err(|e| e.error)?;
+                }
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     // NOTE: set_permissions_unix was removed intentionally.
