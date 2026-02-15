@@ -32,3 +32,6 @@ dialoguer = "0.11"
 rstest.workspace = true
 tempfile.workspace = true
 mockito.workspace = true
+
+[target.'cfg(not(unix))'.dependencies]
+tempfile.workspace = true

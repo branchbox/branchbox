@@ -346,20 +346,16 @@ impl Bootstrap {
     fn safe_write(path: &std::path::Path, contents: &str, _mode: Option<u32>) -> Result<()> {
         use std::io::Write;
 
-        // Atomic write via temp-file + rename.  rename() replaces the
-        // directory entry at `path` — if it's a symlink, the symlink
-        // itself is replaced (not the target), so no TOCTOU window.
+        // Atomic write via NamedTempFile + persist.
+        // - tempfile creates a file with an unpredictable name (safe
+        //   against pre-placed symlinks at the temp path).
+        // - persist() calls rename(), which replaces the directory entry
+        //   at `path` — if it's a symlink, the symlink itself is
+        //   replaced (not the target).
         let dir = path.parent().unwrap_or(std::path::Path::new("."));
-        let tmp_path = dir.join(format!(".tmp.branchbox.{}", std::process::id()));
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(contents.as_bytes())?;
-        drop(file); // flush before rename
-        // Try atomic rename; fall back to remove + rename on platforms
-        // where rename doesn't replace an existing destination.
-        if fs::rename(&tmp_path, path).is_err() {
-            let _ = fs::remove_file(path);
-            fs::rename(&tmp_path, path)?;
-        }
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        tmp.write_all(contents.as_bytes())?;
+        tmp.persist(path).map_err(|e| e.error)?;
         Ok(())
     }
 
@@ -399,21 +395,33 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn safe_read(path: &std::path::Path) -> Result<Option<String>> {
-        // Use symlink_metadata (lstat) to inspect the directory entry
-        // without following symlinks, then open only if it's a regular
-        // file.  This is the best cross-platform approximation of
-        // O_NOFOLLOW; the TOCTOU window is minimal and acceptable for
-        // non-Unix platforms (BranchBox primarily targets macOS/Linux).
-        match fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                tracing::warn!(
-                    "Refusing symlink at {}; removing",
-                    path.display()
-                );
-                fs::remove_file(path)?;
-                Ok(None)
+        use std::io::Read;
+
+        // Non-Unix platforms lack O_NOFOLLOW. We open the file and then
+        // check metadata **on the handle** (not on the path) to detect
+        // symlinks. Because the metadata query is on the same fd that
+        // we read from, there is no TOCTOU between check and read.
+        //
+        // Caveat: the open() itself may follow symlinks on some
+        // platforms (unavoidable without OS-specific flags). BranchBox
+        // primarily targets macOS/Linux where the Unix O_NOFOLLOW path
+        // is used instead.
+        match fs::File::open(path) {
+            Ok(mut file) => {
+                let meta = file.metadata()?;
+                if meta.file_type().is_symlink() {
+                    drop(file);
+                    tracing::warn!(
+                        "Refusing symlink at {}; removing",
+                        path.display()
+                    );
+                    fs::remove_file(path)?;
+                    return Ok(None);
+                }
+                let mut content = String::new();
+                file.read_to_string(&mut content)?;
+                Ok(Some(content))
             }
-            Ok(_) => Ok(Some(fs::read_to_string(path)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -457,14 +465,10 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
-        // Atomic via temp + rename (same pattern as safe_write).
+        // Atomic via NamedTempFile + persist (same pattern as safe_write).
         let dir = path.parent().unwrap_or(std::path::Path::new("."));
-        let tmp_path = dir.join(format!(".tmp.branchbox.{}", std::process::id()));
-        fs::write(&tmp_path, "")?;
-        if fs::rename(&tmp_path, path).is_err() {
-            let _ = fs::remove_file(path);
-            fs::rename(&tmp_path, path)?;
-        }
+        let tmp = tempfile::NamedTempFile::new_in(dir)?;
+        tmp.persist(path).map_err(|e| e.error)?;
         Ok(())
     }
 

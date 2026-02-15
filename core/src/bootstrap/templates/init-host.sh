@@ -46,19 +46,12 @@ atomic_write() {
 }
 
 # Ensure files exist with restricted permissions so Docker compose volume
-# mounts don't fail.  Uses atomic temp+rename so there is no TOCTOU window
-# where a symlink could be swapped in between a check and a write/chmod.
+# mounts don't fail.  Unconditional mktemp + mv — no checks, no TOCTOU.
+# mv -f replaces any existing entry (file, symlink, etc.) atomically.
 for f in "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE"; do
-    # Remove anything that isn't a regular file (symlinks, directories, etc.)
-    if [ -e "$f" ] && ! [ -f "$f" ]; then
-        rm -rf -- "$f"
-    fi
-    if ! [ -e "$f" ]; then
-        _pholder="$(mktemp "$(dirname "$f")/.tmp.XXXXXX")"
-        chmod 600 "$_pholder"
-        mv -f "$_pholder" "$f"
-    fi
-    # Existing regular files keep their 0600 permissions from prior runs
+    _pholder="$(mktemp "$(dirname "$f")/.tmp.XXXXXX")"
+    chmod 600 "$_pholder"
+    mv -f "$_pholder" "$f"
 done
 
 if ! command -v op >/dev/null 2>&1; then
