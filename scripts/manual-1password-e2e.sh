@@ -7,6 +7,7 @@ STACK="${STACK:-generic}"
 FEATURE_NAME="${FEATURE_NAME:-onepassword-e2e}"
 CHECK_FAILURE_PATH=0
 SKIP_BUILD=0
+COMPOSE_CMD=()
 
 usage() {
   cat <<'USAGE'
@@ -195,25 +196,74 @@ require_file_exists() {
   fi
 }
 
+detect_compose_service() {
+  local compose_file="$1"
+  if [[ ! -f "$compose_file" ]]; then
+    return
+  fi
+
+  awk '
+    /^services:[[:space:]]*$/ { in_services = 1; next }
+    in_services && /^[^[:space:]]/ { exit }
+    in_services && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {
+      service = $1
+      sub(/:$/, "", service)
+      print service
+      exit
+    }
+  ' "$compose_file"
+}
+
+resolve_devcontainer_service() {
+  local devcontainer_json="$1"
+  local compose_file="$2"
+  local service_name=""
+
+  if [[ -f "$devcontainer_json" ]]; then
+    service_name="$(sed '/^[[:space:]]*\/\//d' "$devcontainer_json" | jq -r '.service // empty' 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$service_name" ]]; then
+    service_name="$(detect_compose_service "$compose_file" || true)"
+  fi
+
+  printf '%s\n' "$service_name"
+}
+
 resolve_container_id() {
   local workspace="$1"
   local devcontainer_json="$workspace/.devcontainer/devcontainer.json"
   local compose_file="$workspace/.devcontainer/compose.yaml"
   local env_file="$workspace/.devcontainer/.branchbox.env"
 
-  local service_name=""
-  if [[ -f "$devcontainer_json" ]]; then
-    service_name="$(jq -r '.service // empty' "$devcontainer_json")"
-  fi
+  local service_name
+  service_name="$(resolve_devcontainer_service "$devcontainer_json" "$compose_file")"
   if [[ -z "$service_name" ]]; then
     return 1
   fi
 
-  docker compose \
-    --env-file "$env_file" \
-    -f "$compose_file" \
-    --project-directory "$workspace/.devcontainer" \
-    ps -q "$service_name" | head -n 1
+  if [[ -f "$env_file" ]]; then
+    "${COMPOSE_CMD[@]}" \
+      --env-file "$env_file" \
+      -f "$compose_file" \
+      --project-directory "$workspace/.devcontainer" \
+      ps -q "$service_name" | head -n 1
+  else
+    "${COMPOSE_CMD[@]}" \
+      -f "$compose_file" \
+      --project-directory "$workspace/.devcontainer" \
+      ps -q "$service_name" | head -n 1
+  fi
+}
+
+configure_compose_command() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD=(docker-compose)
+  else
+    fatal "Neither docker compose nor docker-compose is available."
+  fi
 }
 
 extract_container_id_from_log() {
@@ -429,6 +479,7 @@ fi
 if ! docker info >/dev/null 2>&1; then
   fatal "Docker daemon is not reachable."
 fi
+configure_compose_command
 
 if [[ -z "$ORIGIN_SSH_URL" ]]; then
   fatal "Set ORIGIN_SSH_URL (or pass --origin-ssh-url) to an SSH GitHub remote."

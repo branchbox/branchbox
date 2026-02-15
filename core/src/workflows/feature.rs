@@ -1206,8 +1206,9 @@ impl FeatureWorkflow {
             )?;
             writeln!(file, "WORK_FEATURE={}", work_feature)?;
             if let Some(url) = url {
-                writeln!(file, "APP_URL={}", url)?;
-                feature_url = Some(url);
+                let sanitized_url = url.replace(['\n', '\r'], "");
+                writeln!(file, "APP_URL={}", sanitized_url)?;
+                feature_url = Some(sanitized_url);
             }
             writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
             writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;

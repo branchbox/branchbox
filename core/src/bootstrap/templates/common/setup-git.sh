@@ -33,16 +33,16 @@ fi
 if [[ -s "${TOKEN_FILE}" ]]; then
   github_token="$(grep '^GITHUB_TOKEN=' "${TOKEN_FILE}" | cut -d= -f2- || true)"
   if [[ -n "${github_token}" ]]; then
-    git config --global credential.https://github.com.helper \
-      "!f() { echo \"username=oauth2\"; echo \"password=${github_token}\"; }; f"
     export GH_TOKEN="${github_token}"
+    git config --global credential.https://github.com.helper \
+      "!f() { echo \"username=oauth2\"; echo \"password=\$GH_TOKEN\"; }; f"
 
     if ! grep -q "# BranchBox GH token" "${HOME_DIR}/.bashrc" 2>/dev/null; then
       cat >>"${HOME_DIR}/.bashrc" <<EOF
 
 # BranchBox GH token
 if [ -f "${TOKEN_FILE}" ]; then
-  export GH_TOKEN="\$(grep '^GITHUB_TOKEN=' ${TOKEN_FILE} | cut -d= -f2-)"
+  export GH_TOKEN="\$(grep '^GITHUB_TOKEN=' \"${TOKEN_FILE}\" | cut -d= -f2-)"
 fi
 EOF
     fi

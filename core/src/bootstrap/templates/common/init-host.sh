@@ -36,17 +36,20 @@ read_op_secret() {
 
 echo "BranchBox: refreshing GitHub credentials from 1Password..."
 
-: >"${TOKEN_FILE}"
 if github_token="$(read_op_secret "${OP_GITHUB_REF}")"; then
-  printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${TOKEN_FILE}"
+  token_tmp="${TOKEN_FILE}.tmp"
+  printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}"
+  chmod 600 "${token_tmp}" 2>/dev/null || true
+  mv "${token_tmp}" "${TOKEN_FILE}"
 else
   echo "BranchBox warning: unable to read GitHub token from ${OP_GITHUB_REF}."
 fi
 
-: >"${SIGNING_KEY_FILE}"
 if signing_key="$(read_op_secret "${OP_SIGNING_KEY_REF}")"; then
-  printf '%s\n' "${signing_key}" >"${SIGNING_KEY_FILE}"
-  chmod 644 "${SIGNING_KEY_FILE}" 2>/dev/null || true
+  signing_tmp="${SIGNING_KEY_FILE}.tmp"
+  printf '%s\n' "${signing_key}" >"${signing_tmp}"
+  chmod 600 "${signing_tmp}" 2>/dev/null || true
+  mv "${signing_tmp}" "${SIGNING_KEY_FILE}"
 else
   echo "BranchBox warning: unable to read signing key from ${OP_SIGNING_KEY_REF}."
 fi
