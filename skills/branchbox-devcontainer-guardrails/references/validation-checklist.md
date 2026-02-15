@@ -39,6 +39,28 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 ./scripts/manual-1password-e2e.sh --check-failure-path
 ```
 
+## Security + robustness preflight (host)
+
+Run these quick checks before opening/updating the PR when touching bootstrap/auth/harness/env-writing code.
+
+```bash
+# No world-readable host signing key writes
+rg -n "chmod 64[0-9].*(SIGNING_KEY|git-signing-key)|chmod 66[0-9].*(SIGNING_KEY|git-signing-key)" core/src/bootstrap scripts || true
+
+# No raw-token interpolation in git credential helper snippets
+rg -n "password=\\$\\{?github_token\\}?" core/src/bootstrap/templates/common/setup-git.sh || true
+
+# APP_URL writes should sanitize CR/LF when sourced from env/config
+rg -n "replace\\(\\['\\\\n', '\\\\r'\\], \"\"\\)" core/src/workflows/feature.rs
+
+# Harness should support plugin and legacy compose + JSONC-safe service parsing
+rg -n "docker-compose|resolve_devcontainer_service" scripts/manual-1password-e2e.sh
+rg -nF "sed '/^[[:space:]]*\\/\\//d'" scripts/manual-1password-e2e.sh
+
+# Keep harness docs synchronized
+diff -u <(tail -n +5 docs/docs/getting-started/manual-1password-e2e.md) scripts/manual-1password-e2e.md
+```
+
 ## Docs + macOS checks (host)
 
 ```bash
