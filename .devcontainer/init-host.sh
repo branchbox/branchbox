@@ -46,14 +46,15 @@ atomic_write() {
 }
 
 # Ensure files exist with restricted permissions so Docker compose volume
-# mounts don't fail. Remove any symlinks first, then create real files.
+# mounts don't fail.  Uses atomic temp+rename so there is no TOCTOU window
+# where a symlink could be swapped in between a check and a write/chmod.
 for f in "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE"; do
-    [ -L "$f" ] && rm -f "$f"
-    if [ ! -f "$f" ]; then
-        (umask 077 && touch "$f")
-    else
-        chmod 600 "$f"
+    if [ -L "$f" ] || [ ! -f "$f" ]; then
+        _pholder="$(mktemp "$(dirname "$f")/.tmp.XXXXXX")"
+        chmod 600 "$_pholder"
+        mv -f "$_pholder" "$f"
     fi
+    # Existing regular files keep their 0600 permissions from prior runs
 done
 
 if ! command -v op >/dev/null 2>&1; then

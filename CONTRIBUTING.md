@@ -321,6 +321,81 @@ All pull requests must pass:
 - **Issues**: [GitHub Issues](https://github.com/branchbox-branchbox/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/branchbox-branchbox/discussions)
 
+## File-operation security patterns
+
+BranchBox writes secret material (tokens, signing keys) to disk.  Every file
+operation that touches secrets — or any path an attacker could replace with a
+symlink — **must** follow these rules.  Failing to do so has historically caused
+review loops where each "fix" re-introduced the same class of vulnerability.
+
+### The cardinal rule: never check-then-act
+
+A pattern like this is **always wrong** for security-sensitive paths:
+
+```rust
+// ❌ TOCTOU — attacker can swap path for a symlink between check and write
+if path.is_symlink() { fs::remove_file(path)?; }
+fs::write(path, contents)?;
+fs::set_permissions(path, …)?;   // follows symlinks!
+```
+
+Between any two syscalls an attacker can re-create a symlink.  The *only*
+defence is to perform the security-critical operation **atomically in a single
+syscall** (or a single `open()` with the right flags).
+
+### Rust: `safe_write` / `safe_read` (in `core/src/bootstrap/mod.rs`)
+
+| Operation | Pattern |
+|-----------|---------|
+| **Write** | `safe_write(path, contents, mode)` — opens with `O_NOFOLLOW \| O_CREAT \| O_TRUNC` and sets permissions via `OpenOptionsExt::mode()` in the same `open()` call. |
+| **Read**  | `safe_read(path)` — opens with `O_NOFOLLOW`; returns `Ok(None)` for symlinks or missing files. |
+| **Restricted placeholder** | `create_restricted_file(path)` — opens with `O_NOFOLLOW` + `.mode(0o600)`. |
+
+**Do not** use `std::fs::set_permissions` after writing.  Permissions must be
+set atomically at file creation time via `.mode()`.
+
+### Shell: atomic writes via `mktemp` + `mv`
+
+```bash
+# ✅ Correct — no race window; mv is atomic on same filesystem
+atomic_write() {
+    local target="$1" dir tmp
+    dir="$(dirname "$target")"
+    tmp="$(mktemp "$dir/.tmp.XXXXXX")"
+    chmod 600 "$tmp"
+    cat > "$tmp"
+    mv -f "$tmp" "$target"
+}
+printf 'TOKEN=%q\n' "$TOKEN" | atomic_write "$SECRET_FILE"
+```
+
+```bash
+# ❌ Wrong — TOCTOU between the check and the write
+[ -L "$f" ] && rm -f "$f"
+echo "$SECRET" > "$f"
+chmod 600 "$f"
+```
+
+### Quick checklist for PRs that touch file I/O
+
+1. **Does the code write to a path that could be attacker-controlled?**
+   → Use `safe_write` (Rust) or `atomic_write` (shell).
+2. **Does the code read a path that could be a symlink?**
+   → Use `safe_read` (Rust) or open with `O_NOFOLLOW`.
+3. **Does the code call `set_permissions` / `chmod` on a path (not an fd)?**
+   → Replace with atomic mode-at-creation.  Path-based `chmod` follows symlinks.
+4. **Does a "fix" introduce a new check-then-act pattern?**
+   → Stop.  The fix is wrong.  Re-read this section.
+
+### Why this section exists
+
+PR #53 went through 13+ review rounds because each TOCTOU "fix" introduced a
+new variant of the same race condition.  The root cause was applying band-aids
+(check-then-act guards) instead of fixing the pattern (atomic operations).
+
+**When a reviewer flags the same class of bug twice, stop patching and fix the
+underlying pattern.**
+
 ## Code of Conduct
 
 Be respectful, inclusive, and constructive. We follow the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct).

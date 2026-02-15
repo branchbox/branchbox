@@ -132,32 +132,31 @@ impl Bootstrap {
         // Generate and write devcontainer.json
         let devcontainer_json = self.generate_devcontainer_json(stack)?;
         let devcontainer_json_path = devcontainer_dir.join("devcontainer.json");
-        Self::safe_write(&devcontainer_json_path, &devcontainer_json)?;
+        Self::safe_write(&devcontainer_json_path, &devcontainer_json, None)?;
         tracing::info!("Created: {}", devcontainer_json_path.display());
 
         // Generate and write compose.yaml
         let compose_yaml = self.generate_compose_yaml(stack)?;
         let compose_yaml_path = devcontainer_dir.join("compose.yaml");
-        Self::safe_write(&compose_yaml_path, &compose_yaml)?;
+        Self::safe_write(&compose_yaml_path, &compose_yaml, None)?;
         tracing::info!("Created: {}", compose_yaml_path.display());
 
         // Generate and write Dockerfile
         let dockerfile = self.generate_dockerfile(stack)?;
         let dockerfile_path = devcontainer_dir.join("Dockerfile");
-        Self::safe_write(&dockerfile_path, &dockerfile)?;
+        Self::safe_write(&dockerfile_path, &dockerfile, None)?;
         tracing::info!("Created: {}", dockerfile_path.display());
 
         // Generate 1Password integration scripts
+        // Mode 0o755 is set atomically at creation — no separate chmod call.
         let init_host = self.generate_init_host_sh()?;
         let init_host_path = devcontainer_dir.join("init-host.sh");
-        Self::safe_write(&init_host_path, &init_host)?;
-        Self::set_permissions_unix(&init_host_path, 0o755)?;
+        Self::safe_write(&init_host_path, &init_host, Some(0o755))?;
         tracing::info!("Created: {}", init_host_path.display());
 
         let setup_git = self.generate_setup_git_sh()?;
         let setup_git_path = devcontainer_dir.join("setup-git.sh");
-        Self::safe_write(&setup_git_path, &setup_git)?;
-        Self::set_permissions_unix(&setup_git_path, 0o755)?;
+        Self::safe_write(&setup_git_path, &setup_git, Some(0o755))?;
         tracing::info!("Created: {}", setup_git_path.display());
 
         // Create empty secret files so compose volume mounts don't fail
@@ -170,18 +169,10 @@ impl Bootstrap {
             }
         }
 
-        // Ensure secret files are excluded from version control in the target project
+        // Ensure secret files are excluded from version control in the target project.
+        // safe_read uses O_NOFOLLOW — a symlink here is treated as non-existent.
         let gitignore_path = self.project_path.join(".gitignore");
-        // Remove symlink before reading to prevent following to unintended files
-        if gitignore_path.is_symlink() {
-            tracing::warn!("Removing .gitignore symlink to prevent symlink attack");
-            fs::remove_file(&gitignore_path)?;
-        }
-        let mut gitignore_content = if gitignore_path.exists() {
-            fs::read_to_string(&gitignore_path)?
-        } else {
-            String::new()
-        };
+        let mut gitignore_content = Self::safe_read(&gitignore_path)?.unwrap_or_default();
 
         let mut gitignore_updated = false;
         let existing_lines: std::collections::HashSet<&str> = gitignore_content
@@ -214,7 +205,7 @@ impl Bootstrap {
         }
 
         if gitignore_updated {
-            Self::safe_write(&gitignore_path, &gitignore_content)?;
+            Self::safe_write(&gitignore_path, &gitignore_content, None)?;
             tracing::info!("Updated .gitignore to exclude secret files");
         }
 
@@ -296,14 +287,28 @@ impl Bootstrap {
 
     /// Write a file safely, refusing to follow symbolic links.
     ///
-    /// Removes any existing symlink first, then writes via O_NOFOLLOW
-    /// on Unix to prevent TOCTOU symlink attacks.
+    /// Uses `O_NOFOLLOW` on Unix so the kernel rejects symlinks at open
+    /// time — no TOCTOU window between a check and the write.  When
+    /// `mode` is `Some(m)`, permissions are set **atomically at
+    /// creation** via `OpenOptionsExt::mode()`, avoiding a separate
+    /// `chmod` race.
+    ///
+    /// ## Why this matters
+    ///
+    /// A naïve `write()` + `set_permissions()` leaves a window where an
+    /// attacker could swap the file for a symlink between the two calls.
+    /// By combining `O_NOFOLLOW` + `.mode()` in a single `open`, both
+    /// the write and the permissions happen on the same file descriptor,
+    /// eliminating the race.
+    ///
+    /// See CONTRIBUTING.md § "File-operation security patterns" for the
+    /// full rationale and rules.
     #[cfg(unix)]
-    fn safe_write(path: &std::path::Path, contents: &str) -> Result<()> {
+    fn safe_write(path: &std::path::Path, contents: &str, mode: Option<u32>) -> Result<()> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
 
-        // Remove symlinks to prevent following them
+        // Best-effort symlink removal — O_NOFOLLOW below is the real guard.
         if path.is_symlink() {
             tracing::warn!(
                 "Removing symlink at {} to prevent symlink attack",
@@ -312,20 +317,21 @@ impl Bootstrap {
             fs::remove_file(path)?;
         }
 
-        // O_NOFOLLOW ensures the open itself fails if a symlink is
-        // re-created between the check and the open (TOCTOU defence).
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true)
             .create(true)
             .truncate(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
+            .custom_flags(libc::O_NOFOLLOW);
+        if let Some(m) = mode {
+            opts.mode(m);
+        }
+        let mut file = opts.open(path)?;
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
 
     #[cfg(not(unix))]
-    fn safe_write(path: &std::path::Path, contents: &str) -> Result<()> {
+    fn safe_write(path: &std::path::Path, contents: &str, _mode: Option<u32>) -> Result<()> {
         if path.is_symlink() {
             tracing::warn!(
                 "Removing symlink at {} to prevent symlink attack",
@@ -335,6 +341,56 @@ impl Bootstrap {
         }
         fs::write(path, contents)?;
         Ok(())
+    }
+
+    /// Read a file safely, refusing to follow symbolic links.
+    ///
+    /// Returns `Ok(None)` when the file does not exist **or** is a
+    /// symlink (symlinks are removed as a side-effect).
+    #[cfg(unix)]
+    fn safe_read(path: &std::path::Path) -> Result<Option<String>> {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(mut file) => {
+                let mut content = String::new();
+                file.read_to_string(&mut content)?;
+                Ok(Some(content))
+            }
+            // ELOOP = path is a symlink and O_NOFOLLOW refused to follow it
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                tracing::warn!(
+                    "Removing symlink at {} to prevent symlink attack",
+                    path.display()
+                );
+                fs::remove_file(path)?;
+                Ok(None)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn safe_read(path: &std::path::Path) -> Result<Option<String>> {
+        if path.is_symlink() {
+            tracing::warn!(
+                "Removing symlink at {} to prevent symlink attack",
+                path.display()
+            );
+            fs::remove_file(path)?;
+            return Ok(None);
+        }
+        match fs::read_to_string(path) {
+            Ok(content) => Ok(Some(content)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Create an empty file with restricted permissions (0600) atomically.
@@ -366,18 +422,9 @@ impl Bootstrap {
         Ok(())
     }
 
-    /// Set file permissions on Unix systems (no-op on other platforms)
-    #[cfg(unix)]
-    fn set_permissions_unix(path: &std::path::Path, mode: u32) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn set_permissions_unix(_path: &std::path::Path, _mode: u32) -> Result<()> {
-        Ok(())
-    }
+    // NOTE: set_permissions_unix was removed intentionally.
+    // Permissions are now set atomically via safe_write(mode) to prevent
+    // TOCTOU races between write and chmod.  See CONTRIBUTING.md.
 
     /// Generate .devcontainer/init-host.sh (1Password host-side script)
     fn generate_init_host_sh(&self) -> Result<String> {

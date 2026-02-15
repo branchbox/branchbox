@@ -4,6 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @AGENTS.md
 
+## ⚠️ Mandatory: File I/O Security Rules
+
+**Before writing any code that creates, reads, or chmods files — read
+CONTRIBUTING.md § "File-operation security patterns".**
+
+Summary of non-negotiable rules:
+
+1. **Never check-then-act** (`is_symlink()` → `write()` is a TOCTOU bug).
+2. **Rust writes**: always use `Bootstrap::safe_write(path, contents, mode)`.
+   Permissions go in the `mode` parameter, never in a separate `set_permissions` call.
+3. **Rust reads** of potentially hostile paths: use `Bootstrap::safe_read(path)`.
+4. **Shell writes of secrets**: always use `atomic_write` (mktemp → write → chmod → mv).
+5. **Shell placeholder creation**: mktemp → chmod 600 → mv (never touch + chmod).
+
+If a code-review bot flags the same class of issue more than once, **stop
+pushing incremental patches**.  Step back, identify the root pattern, and fix
+it in one pass.  Band-aid commits create churn without progress.
+
 ## Architecture Deep Dive
 
 This section provides detailed context for understanding the codebase structure and generating correct code. For basic commands, coding style, and project overview, consult AGENTS.md above.
