@@ -172,6 +172,11 @@ impl Bootstrap {
 
         // Ensure secret files are excluded from version control in the target project
         let gitignore_path = self.project_path.join(".gitignore");
+        // Remove symlink before reading to prevent following to unintended files
+        if gitignore_path.is_symlink() {
+            tracing::warn!("Removing .gitignore symlink to prevent symlink attack");
+            fs::remove_file(&gitignore_path)?;
+        }
         let mut gitignore_content = if gitignore_path.exists() {
             fs::read_to_string(&gitignore_path)?
         } else {
