@@ -455,13 +455,12 @@ impl Bootstrap {
         use std::os::unix::fs::OpenOptionsExt;
         // No pre-check — O_NOFOLLOW is the guard.
         // No O_TRUNC — existing content preserved (idempotent).
-        match std::fs::OpenOptions::new()
-            .write(true)
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true)
             .create(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-        {
+            .custom_flags(libc::O_NOFOLLOW);
+        match opts.open(path) {
             Ok(_) => Ok(()),
             Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
                 tracing::warn!(
@@ -469,12 +468,7 @@ impl Bootstrap {
                     path.display()
                 );
                 fs::remove_file(path)?;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(path)?;
+                opts.open(path)?;
                 Ok(())
             }
             Err(e) => Err(e.into()),
