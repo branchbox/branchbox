@@ -62,7 +62,7 @@ git_user_email="${git_user_email//$'\r'/}"
 git_user_email="${git_user_email//$'\n'/}"
 : >"${GIT_CONFIG_FILE}"
 if [[ -n "${git_user_name}" ]]; then
-  printf 'GIT_USER_NAME=%s\n' "${git_user_name}" >"${GIT_CONFIG_FILE}"
+  printf 'GIT_USER_NAME=%s\n' "${git_user_name}" >>"${GIT_CONFIG_FILE}"
 fi
 if [[ -n "${git_user_email}" ]]; then
   printf 'GIT_USER_EMAIL=%s\n' "${git_user_email}" >>"${GIT_CONFIG_FILE}"
