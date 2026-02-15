@@ -42,7 +42,7 @@ GHEOF
         # Switch remote to HTTPS if it's SSH (find actual workspace)
         shopt -s nullglob
         for dir in "$WORKSPACE_DIR"/*/; do
-            if [ -d "$dir/.git" ] || git -C "$dir" rev-parse --git-dir &>/dev/null 2>&1; then
+            if [ -d "$dir/.git" ] || git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
                 REMOTE_URL=$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")
                 HTTPS_URL=$(echo "$REMOTE_URL" | sed -e 's|^git@github.com:|https://github.com/|' -e 's|^ssh://git@github.com/|https://github.com/|')
                 if [ "$REMOTE_URL" != "$HTTPS_URL" ]; then
@@ -95,9 +95,14 @@ if [ -f "$SIGNING_KEY_SRC" ] && [ -s "$SIGNING_KEY_SRC" ]; then
 
     # Create allowed_signers file so `git log --show-signature` works
     GIT_EMAIL=$(git config --global user.email 2>/dev/null || echo "")
+    # Validate email doesn't contain newlines (prevent injection into allowed_signers)
     if [ -n "$GIT_EMAIL" ] && [ -f "$SIGNING_KEY_DST.pub" ]; then
-        echo "$GIT_EMAIL $(cat "$SIGNING_KEY_DST.pub")" > ~/.ssh/allowed_signers
-        git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+        if printf '%s' "$GIT_EMAIL" | grep -qP '[\n\r]'; then
+            echo "⚠️  Git email contains unexpected characters — skipping allowed_signers."
+        else
+            printf '%s %s\n' "$GIT_EMAIL" "$(cat "$SIGNING_KEY_DST.pub")" > ~/.ssh/allowed_signers
+            git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+        fi
     fi
 
     echo "✅ Git commit signing configured."

@@ -18,9 +18,9 @@
 
 set -euo pipefail
 
-# initializeCommand runs via /bin/sh without a login shell,
-# so add common paths where Homebrew installs binaries.
-export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin"
+# Prepend trusted paths so Homebrew-installed binaries are found first,
+# preventing PATH hijacking from the project directory.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOKEN_FILE="$SCRIPT_DIR/.github-token.env"
@@ -31,10 +31,27 @@ GIT_CONFIG_FILE="$SCRIPT_DIR/.gitconfig.env"
 OP_GITHUB_REF="${OP_GITHUB_REF:-}"
 OP_SIGNING_KEY_REF="${OP_SIGNING_KEY_REF:-}"
 
-# Ensure files exist with restricted permissions so Docker compose volume mounts don't fail
-(umask 077 && touch "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE")
+# safe_write_file: refuse to write through symlinks (prevent symlink attacks)
+safe_write_file() {
+    local target="$1"
+    if [ -L "$target" ]; then
+        echo "⚠️  Refusing to write to symlink: $target"
+        rm -f "$target"
+    fi
+}
 
-if ! command -v op &>/dev/null; then
+# Ensure files exist with restricted permissions so Docker compose volume mounts don't fail.
+# Remove symlinks first, then create or fix permissions on existing files.
+for f in "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE"; do
+    safe_write_file "$f"
+    if [ ! -f "$f" ]; then
+        (umask 077 && touch "$f")
+    else
+        chmod 600 "$f"
+    fi
+done
+
+if ! command -v op >/dev/null 2>&1; then
     echo "ℹ️  1Password CLI (op) not found — skipping secret injection."
     echo "   Install with: brew install 1password-cli"
     echo "   Docs: https://developer.1password.com/docs/cli/get-started/"
@@ -53,7 +70,9 @@ else
         GITHUB_TOKEN=""
     }
     if [ -n "$GITHUB_TOKEN" ]; then
+        safe_write_file "$TOKEN_FILE"
         printf 'GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN" > "$TOKEN_FILE"
+        chmod 600 "$TOKEN_FILE"
     fi
 fi
 
@@ -70,12 +89,14 @@ else
         SIGNING_KEY=""
     }
     if [ -n "$SIGNING_KEY" ]; then
+        safe_write_file "$SIGNING_KEY_FILE"
         printf '%s\n' "$SIGNING_KEY" > "$SIGNING_KEY_FILE"
+        chmod 600 "$SIGNING_KEY_FILE"
     fi
 fi
 
 # Git identity from host config
-if ! command -v git &>/dev/null; then
+if ! command -v git >/dev/null 2>&1; then
     echo "ℹ️  git not found on host — skipping identity export."
     GIT_USER_NAME=""
     GIT_USER_EMAIL=""
@@ -85,8 +106,10 @@ else
 fi
 
 if [ -n "$GIT_USER_NAME" ] && [ -n "$GIT_USER_EMAIL" ]; then
+    safe_write_file "$GIT_CONFIG_FILE"
     printf 'GIT_USER_NAME=%q\n' "$GIT_USER_NAME" > "$GIT_CONFIG_FILE"
     printf 'GIT_USER_EMAIL=%q\n' "$GIT_USER_EMAIL" >> "$GIT_CONFIG_FILE"
+    chmod 600 "$GIT_CONFIG_FILE"
 fi
 
 echo "✅ BranchBox secret injection complete."

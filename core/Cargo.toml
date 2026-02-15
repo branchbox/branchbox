@@ -16,6 +16,7 @@ serde_yaml.workspace = true
 git2.workspace = true
 regex.workspace = true
 which.workspace = true
+libc.workspace = true
 walkdir.workspace = true
 pathdiff.workspace = true
 dirs.workspace = true

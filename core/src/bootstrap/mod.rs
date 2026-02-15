@@ -200,7 +200,7 @@ impl Bootstrap {
         }
 
         if gitignore_updated {
-            fs::write(&gitignore_path, &gitignore_content)?;
+            Self::safe_write(&gitignore_path, &gitignore_content)?;
             tracing::info!("Updated .gitignore to exclude secret files");
         }
 
@@ -282,8 +282,35 @@ impl Bootstrap {
 
     /// Write a file safely, refusing to follow symbolic links.
     ///
-    /// If the target path is a symlink, it is removed first to prevent
-    /// overwriting arbitrary files outside the project directory.
+    /// Removes any existing symlink first, then writes via O_NOFOLLOW
+    /// on Unix to prevent TOCTOU symlink attacks.
+    #[cfg(unix)]
+    fn safe_write(path: &std::path::Path, contents: &str) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Remove symlinks to prevent following them
+        if path.is_symlink() {
+            tracing::warn!(
+                "Removing symlink at {} to prevent symlink attack",
+                path.display()
+            );
+            fs::remove_file(path)?;
+        }
+
+        // O_NOFOLLOW ensures the open itself fails if a symlink is
+        // re-created between the check and the open (TOCTOU defence).
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
     fn safe_write(path: &std::path::Path, contents: &str) -> Result<()> {
         if path.is_symlink() {
             tracing::warn!(
@@ -298,8 +325,8 @@ impl Bootstrap {
 
     /// Create an empty file with restricted permissions (0600) atomically.
     ///
-    /// Uses `OpenOptions` with mode on Unix to avoid the race condition
-    /// between file creation and permission change.
+    /// Uses `OpenOptions` with mode + O_NOFOLLOW on Unix to avoid both
+    /// the permission race and TOCTOU symlink attacks.
     #[cfg(unix)]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
@@ -311,6 +338,7 @@ impl Bootstrap {
             .create(true)
             .truncate(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         Ok(())
     }
