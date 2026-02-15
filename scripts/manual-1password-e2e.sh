@@ -220,7 +220,7 @@ resolve_devcontainer_service() {
   local service_name=""
 
   if [[ -f "$devcontainer_json" ]]; then
-    service_name="$(sed '/^[[:space:]]*\/\//d' "$devcontainer_json" | jq -r '.service // empty' 2>/dev/null || true)"
+    service_name="$(sed -e 's#//.*##' "$devcontainer_json" | jq -r '.service // empty' 2>/dev/null || true)"
   fi
 
   if [[ -z "$service_name" ]]; then

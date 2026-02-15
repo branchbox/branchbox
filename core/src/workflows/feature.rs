@@ -1193,12 +1193,12 @@ impl FeatureWorkflow {
                 }
             }
 
-            fs::write(&dest_env, base_env)?;
+            write_secure_file(&dest_env, &base_env)?;
 
             // Try to derive feature URL from cloudflared config first (centralized source of truth)
             // Falls back to APP_URL if cloudflared dns_zone is not configured
             let url = self.derive_feature_url(&source_env, work_feature);
-            let mut file = OpenOptions::new().append(true).open(&dest_env)?;
+            let mut file = open_append_secure(&dest_env)?;
             ensure_trailing_newline(&mut file)?;
             writeln!(
                 file,
@@ -1557,7 +1557,7 @@ impl FeatureWorkflow {
         }
 
         let managed_env = dev_dir.join(".branchbox.env");
-        let mut file = File::create(&managed_env)?;
+        let mut file = create_secure_file(&managed_env)?;
         writeln!(
             file,
             "# BranchBox-managed overrides (auto-generated, do not edit)"
@@ -2660,7 +2660,54 @@ fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
 }
 
 fn sanitize_env_value(value: &str) -> String {
-    value.replace(['\n', '\r'], "")
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | ':' | '='))
+        .collect()
+}
+
+fn create_secure_file(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        set_owner_only_permissions(path)?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        File::create(path)
+    }
+}
+
+fn write_secure_file(path: &Path, contents: &str) -> io::Result<()> {
+    let mut file = create_secure_file(path)?;
+    file.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
+fn open_append_secure(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new().append(true).open(path)?;
+    set_owner_only_permissions(path)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 fn feature_title_from_work_feature(work_feature: &str) -> String {
@@ -3466,6 +3513,18 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_env_value_strips_shell_metacharacters() {
+        assert_eq!(
+            sanitize_env_value("https://dev.example.com/$(touch /tmp/pwn) & echo hi"),
+            "https://dev.example.com/touch/tmp/pwnechohi"
+        );
+        assert_eq!(
+            sanitize_env_value("feature/$USER;rm -rf *"),
+            "feature/USERrm-rf"
+        );
+    }
+
+    #[test]
     fn test_feature_title_from_work_feature() {
         assert_eq!(
             feature_title_from_work_feature("oauth-integration"),
@@ -3941,6 +4000,12 @@ mod tests {
         let env_content = fs::read_to_string(&env_path).unwrap();
         assert!(env_content.contains("WORK_FEATURE=test-feature"));
         assert!(env_content.contains("APP_URL=dev-test-feature.example.com"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let env_mode = fs::metadata(&env_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(env_mode, 0o600);
+        }
 
         let managed_env_path = summary.worktree_path.join(".devcontainer/.branchbox.env");
         assert!(managed_env_path.exists());
@@ -3958,6 +4023,16 @@ mod tests {
         }
         if let Some(url) = summary.feature_url.as_deref() {
             assert!(managed_env.contains(&format!("APP_URL={}", url)));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let managed_mode = fs::metadata(&managed_env_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(managed_mode, 0o600);
         }
         assert_eq!(
             summary.feature_url.as_deref(),
