@@ -49,7 +49,11 @@ atomic_write() {
 # mounts don't fail.  Uses atomic temp+rename so there is no TOCTOU window
 # where a symlink could be swapped in between a check and a write/chmod.
 for f in "$TOKEN_FILE" "$SIGNING_KEY_FILE" "$GIT_CONFIG_FILE"; do
-    if [ -L "$f" ] || [ ! -f "$f" ]; then
+    # Remove anything that isn't a regular file (symlinks, directories, etc.)
+    if [ -e "$f" ] && ! [ -f "$f" ]; then
+        rm -rf -- "$f"
+    fi
+    if ! [ -e "$f" ]; then
         _pholder="$(mktemp "$(dirname "$f")/.tmp.XXXXXX")"
         chmod 600 "$_pholder"
         mv -f "$_pholder" "$f"

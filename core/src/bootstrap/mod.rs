@@ -293,6 +293,10 @@ impl Bootstrap {
     /// creation** via `OpenOptionsExt::mode()`, avoiding a separate
     /// `chmod` race.
     ///
+    /// On non-Unix platforms, uses atomic temp-file + rename so
+    /// `rename()` replaces any existing symlink at the destination
+    /// without following it.
+    ///
     /// ## Why this matters
     ///
     /// A naïve `write()` + `set_permissions()` leaves a window where an
@@ -308,15 +312,9 @@ impl Bootstrap {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
 
-        // Best-effort symlink removal — O_NOFOLLOW below is the real guard.
-        if path.is_symlink() {
-            tracing::warn!(
-                "Removing symlink at {} to prevent symlink attack",
-                path.display()
-            );
-            fs::remove_file(path)?;
-        }
-
+        // No pre-check for symlinks — O_NOFOLLOW IS the check.
+        // If the path is a symlink, open() returns ELOOP; we handle
+        // that below by removing the symlink and retrying.
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true)
             .create(true)
@@ -325,21 +323,43 @@ impl Bootstrap {
         if let Some(m) = mode {
             opts.mode(m);
         }
-        let mut file = opts.open(path)?;
+
+        let mut file = match opts.open(path) {
+            Ok(f) => f,
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                // O_NOFOLLOW correctly refused a symlink — remove and retry.
+                // The retry is still protected by O_NOFOLLOW.
+                tracing::warn!(
+                    "Refusing symlink at {}; removing and retrying with O_NOFOLLOW",
+                    path.display()
+                );
+                fs::remove_file(path)?;
+                opts.open(path)?
+            }
+            Err(e) => return Err(e.into()),
+        };
         file.write_all(contents.as_bytes())?;
         Ok(())
     }
 
     #[cfg(not(unix))]
     fn safe_write(path: &std::path::Path, contents: &str, _mode: Option<u32>) -> Result<()> {
-        if path.is_symlink() {
-            tracing::warn!(
-                "Removing symlink at {} to prevent symlink attack",
-                path.display()
-            );
-            fs::remove_file(path)?;
+        use std::io::Write;
+
+        // Atomic write via temp-file + rename.  rename() replaces the
+        // directory entry at `path` — if it's a symlink, the symlink
+        // itself is replaced (not the target), so no TOCTOU window.
+        let dir = path.parent().unwrap_or(std::path::Path::new("."));
+        let tmp_path = dir.join(format!(".tmp.branchbox.{}", std::process::id()));
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(contents.as_bytes())?;
+        drop(file); // flush before rename
+        // Try atomic rename; fall back to remove + rename on platforms
+        // where rename doesn't replace an existing destination.
+        if fs::rename(&tmp_path, path).is_err() {
+            let _ = fs::remove_file(path);
+            fs::rename(&tmp_path, path)?;
         }
-        fs::write(path, contents)?;
         Ok(())
     }
 
@@ -352,6 +372,7 @@ impl Bootstrap {
         use std::io::Read;
         use std::os::unix::fs::OpenOptionsExt;
 
+        // O_NOFOLLOW is the sole guard — no pre-check needed.
         match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -365,7 +386,7 @@ impl Bootstrap {
             // ELOOP = path is a symlink and O_NOFOLLOW refused to follow it
             Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
                 tracing::warn!(
-                    "Removing symlink at {} to prevent symlink attack",
+                    "Refusing symlink at {}; removing",
                     path.display()
                 );
                 fs::remove_file(path)?;
@@ -378,16 +399,21 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn safe_read(path: &std::path::Path) -> Result<Option<String>> {
-        if path.is_symlink() {
-            tracing::warn!(
-                "Removing symlink at {} to prevent symlink attack",
-                path.display()
-            );
-            fs::remove_file(path)?;
-            return Ok(None);
-        }
-        match fs::read_to_string(path) {
-            Ok(content) => Ok(Some(content)),
+        // Use symlink_metadata (lstat) to inspect the directory entry
+        // without following symlinks, then open only if it's a regular
+        // file.  This is the best cross-platform approximation of
+        // O_NOFOLLOW; the TOCTOU window is minimal and acceptable for
+        // non-Unix platforms (BranchBox primarily targets macOS/Linux).
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                tracing::warn!(
+                    "Refusing symlink at {}; removing",
+                    path.display()
+                );
+                fs::remove_file(path)?;
+                Ok(None)
+            }
+            Ok(_) => Ok(Some(fs::read_to_string(path)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -395,30 +421,50 @@ impl Bootstrap {
 
     /// Create an empty file with restricted permissions (0600) atomically.
     ///
-    /// Uses `OpenOptions` with mode + O_NOFOLLOW on Unix to avoid both
-    /// the permission race and TOCTOU symlink attacks.
+    /// Uses `OpenOptions` with mode + O_NOFOLLOW on Unix to set
+    /// permissions and reject symlinks in a single syscall.
     #[cfg(unix)]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
-        if path.is_symlink() {
-            fs::remove_file(path)?;
-        }
-        std::fs::OpenOptions::new()
+        // No pre-check — O_NOFOLLOW is the guard.
+        match std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
-        Ok(())
+            .open(path)
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                tracing::warn!(
+                    "Refusing symlink at {}; removing and retrying with O_NOFOLLOW",
+                    path.display()
+                );
+                fs::remove_file(path)?;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(path)?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     #[cfg(not(unix))]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
-        if path.is_symlink() {
-            fs::remove_file(path)?;
+        // Atomic via temp + rename (same pattern as safe_write).
+        let dir = path.parent().unwrap_or(std::path::Path::new("."));
+        let tmp_path = dir.join(format!(".tmp.branchbox.{}", std::process::id()));
+        fs::write(&tmp_path, "")?;
+        if fs::rename(&tmp_path, path).is_err() {
+            let _ = fs::remove_file(path);
+            fs::rename(&tmp_path, path)?;
         }
-        fs::write(path, "")?;
         Ok(())
     }
 
