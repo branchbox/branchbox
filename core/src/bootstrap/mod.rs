@@ -212,12 +212,15 @@ impl Bootstrap {
         }
 
         // Generate and write .env.sample (in project root, not .devcontainer)
+        // Use symlink_metadata (lstat) to check existence without following
+        // symlinks, and safe_write for the write itself.
         let env_sample = self.generate_env_sample(stack)?;
         let env_sample_path = self.project_path.join(".env.sample");
-
-        // Only create if it doesn't exist (don't overwrite)
-        if !env_sample_path.exists() {
-            fs::write(&env_sample_path, env_sample)?;
+        if !fs::symlink_metadata(&env_sample_path)
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false)
+        {
+            Self::safe_write(&env_sample_path, &env_sample, None)?;
             tracing::info!("Created: {}", env_sample_path.display());
         } else {
             tracing::info!("Skipped (already exists): {}", env_sample_path.display());
@@ -226,8 +229,11 @@ impl Bootstrap {
         // Generate the BranchBox env overrides placeholder (lives under .devcontainer)
         let branchbox_env = self.generate_branchbox_env()?;
         let branchbox_env_path = devcontainer_dir.join(".branchbox.env");
-        if !branchbox_env_path.exists() {
-            fs::write(&branchbox_env_path, branchbox_env)?;
+        if !fs::symlink_metadata(&branchbox_env_path)
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false)
+        {
+            Self::safe_write(&branchbox_env_path, &branchbox_env, None)?;
             tracing::info!("Created: {}", branchbox_env_path.display());
         } else {
             tracing::info!("Skipped (already exists): {}", branchbox_env_path.display());
@@ -238,8 +244,11 @@ impl Bootstrap {
         fs::create_dir_all(&docs_dir)?;
         let branchbox_docs = self.generate_branchbox_docs()?;
         let branchbox_docs_path = docs_dir.join("BRANCHBOX.md");
-        if !branchbox_docs_path.exists() {
-            fs::write(&branchbox_docs_path, branchbox_docs)?;
+        if !fs::symlink_metadata(&branchbox_docs_path)
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false)
+        {
+            Self::safe_write(&branchbox_docs_path, &branchbox_docs, None)?;
             tracing::info!("Created: {}", branchbox_docs_path.display());
         } else {
             tracing::info!(
@@ -442,9 +451,11 @@ impl Bootstrap {
     /// in a single `open()` syscall.  Permissions are set atomically.
     ///
     /// ## Non-Unix
-    /// Uses `create_new` (O_EXCL) to create only if missing.  **File
-    /// permissions are not explicitly restricted** — non-Unix platforms
-    /// lack a portable atomic mode-at-creation API.
+    /// Uses `create_new` (O_EXCL) — creates only if missing, ignores
+    /// `AlreadyExists`.  **File permissions are not explicitly
+    /// restricted** — non-Unix platforms lack a portable atomic
+    /// mode-at-creation API.  Symlinks are left in place (init-host.sh
+    /// will replace them atomically via mktemp+mv on next run).
     #[cfg(unix)]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
@@ -478,12 +489,20 @@ impl Bootstrap {
 
     #[cfg(not(unix))]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
-        // Delegate to safe_write which is already atomic (tempfile + rename).
-        // This overwrites existing files, but these are placeholders that
-        // init-host.sh will populate anyway — simplicity over idempotency
-        // here eliminates the TOCTOU that a create_new + symlink check
-        // would introduce.
-        Self::safe_write(path, "", None)
+        // create_new (O_EXCL) atomically creates only if missing.
+        // AlreadyExists is not an error — the file already exists,
+        // which is the postcondition we want (idempotent).
+        // Consistent with the Unix implementation which also preserves
+        // existing files.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     // NOTE: set_permissions_unix was removed intentionally.
