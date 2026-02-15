@@ -395,10 +395,7 @@ impl Bootstrap {
             }
             // ELOOP = path is a symlink and O_NOFOLLOW refused to follow it
             Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
-                tracing::warn!(
-                    "Refusing symlink at {}; removing",
-                    path.display()
-                );
+                tracing::warn!("Refusing symlink at {}; removing", path.display());
                 fs::remove_file(path)?;
                 Ok(None)
             }
@@ -426,10 +423,7 @@ impl Bootstrap {
         // always return false, making the check dead code.
         match fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                tracing::warn!(
-                    "Refusing symlink at {}; removing",
-                    path.display()
-                );
+                tracing::warn!("Refusing symlink at {}; removing", path.display());
                 fs::remove_file(path)?;
                 Ok(None)
             }
@@ -587,28 +581,13 @@ mod tests {
         assert!(temp_dir.path().join(".env.sample").exists());
 
         // Check 1Password integration scripts
-        assert!(temp_dir
-            .path()
-            .join(".devcontainer/init-host.sh")
-            .exists());
-        assert!(temp_dir
-            .path()
-            .join(".devcontainer/setup-git.sh")
-            .exists());
+        assert!(temp_dir.path().join(".devcontainer/init-host.sh").exists());
+        assert!(temp_dir.path().join(".devcontainer/setup-git.sh").exists());
 
         // Check secret file placeholders
-        assert!(temp_dir
-            .path()
-            .join(".devcontainer/.github-token.env")
-            .exists());
-        assert!(temp_dir
-            .path()
-            .join(".devcontainer/.git-signing-key")
-            .exists());
-        assert!(temp_dir
-            .path()
-            .join(".devcontainer/.gitconfig.env")
-            .exists());
+        assert!(temp_dir.path().join(".devcontainer/.github-token.env").exists());
+        assert!(temp_dir.path().join(".devcontainer/.git-signing-key").exists());
+        assert!(temp_dir.path().join(".devcontainer/.gitconfig.env").exists());
 
         // Check that files have content
         let devcontainer_json =

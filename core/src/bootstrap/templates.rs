@@ -324,11 +324,7 @@ mod tests {
     fn compose_template_includes_1password_secret_mounts() {
         for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
             let compose = compose_yaml(stack).expect("compose template");
-            for secret_file in [
-                ".github-token.env",
-                ".git-signing-key",
-                ".gitconfig.env",
-            ] {
+            for secret_file in [".github-token.env", ".git-signing-key", ".gitconfig.env"] {
                 assert!(
                     compose.contains(secret_file),
                     "{stack:?} compose template missing 1Password secret mount {secret_file}: {compose}"
