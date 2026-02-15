@@ -31,7 +31,7 @@ else
             '!f() { test -f /home/vscode/.github-token.env && source /home/vscode/.github-token.env; echo "username=oauth2"; echo "password=$GITHUB_TOKEN"; }; f'
 
         # GH_TOKEN for gh CLI — persist in bashrc for interactive shells
-        if ! grep -q 'export GH_TOKEN="$GITHUB_TOKEN"' ~/.bashrc 2>/dev/null; then
+        if ! grep -q '# BranchBox GitHub token (injected by setup-git.sh)' ~/.bashrc 2>/dev/null; then
             cat >> ~/.bashrc <<'GHEOF'
 
 # BranchBox GitHub token (injected by setup-git.sh)

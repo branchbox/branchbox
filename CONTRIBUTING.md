@@ -345,14 +345,15 @@ syscall** (or a single `open()` with the right flags).
 
 ### Rust: `safe_write` / `safe_read` (in `core/src/bootstrap/mod.rs`)
 
-| Operation | Pattern |
-|-----------|---------|
-| **Write** | `safe_write(path, contents, mode)` — opens with `O_NOFOLLOW \| O_CREAT \| O_TRUNC` and sets permissions via `OpenOptionsExt::mode()` in the same `open()` call. |
-| **Read**  | `safe_read(path)` — opens with `O_NOFOLLOW`; returns `Ok(None)` for symlinks or missing files. |
-| **Restricted placeholder** | `create_restricted_file(path)` — opens with `O_NOFOLLOW` + `.mode(0o600)`. |
+| Operation | Unix | Non-Unix |
+|-----------|------|----------|
+| **Write** | `O_NOFOLLOW \| O_CREAT \| O_TRUNC` + `.mode()` | `tempfile::NamedTempFile` + `persist()` (mode ignored) |
+| **Read**  | `O_NOFOLLOW`; `ELOOP` → symlink detected | `symlink_metadata` + `read_to_string` (TOCTOU, best-effort) |
+| **Placeholder** | `O_NOFOLLOW` + `.mode(0o600)`, no `O_TRUNC` (idempotent) | `create_new` (O_EXCL); perms not enforced |
 
-**Do not** use `std::fs::set_permissions` after writing.  Permissions must be
-set atomically at file creation time via `.mode()`.
+**Do not** use `std::fs::set_permissions` after writing.  On Unix, permissions
+must be set atomically at file creation time via `.mode()`.  Non-Unix platforms
+lack portable atomic mode-at-creation; `mode` is silently ignored there.
 
 ### Shell: atomic writes via `mktemp` + `mv`
 

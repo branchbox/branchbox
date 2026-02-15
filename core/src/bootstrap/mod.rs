@@ -148,7 +148,8 @@ impl Bootstrap {
         tracing::info!("Created: {}", dockerfile_path.display());
 
         // Generate 1Password integration scripts
-        // Mode 0o755 is set atomically at creation — no separate chmod call.
+        // On Unix, mode 0o755 is set atomically at creation — no separate
+        // chmod call.  On non-Unix, mode is not enforced (see safe_write docs).
         let init_host = self.generate_init_host_sh()?;
         let init_host_path = devcontainer_dir.join("init-host.sh");
         Self::safe_write(&init_host_path, &init_host, Some(0o755))?;
@@ -288,23 +289,18 @@ impl Bootstrap {
 
     /// Write a file safely, refusing to follow symbolic links.
     ///
-    /// Uses `O_NOFOLLOW` on Unix so the kernel rejects symlinks at open
-    /// time — no TOCTOU window between a check and the write.  When
-    /// `mode` is `Some(m)`, permissions are set **atomically at
-    /// creation** via `OpenOptionsExt::mode()`, avoiding a separate
-    /// `chmod` race.
+    /// ## Unix
     ///
-    /// On non-Unix platforms, uses atomic temp-file + rename so
-    /// `rename()` replaces any existing symlink at the destination
-    /// without following it.
+    /// Uses `O_NOFOLLOW` so the kernel rejects symlinks at open time —
+    /// no TOCTOU window.  When `mode` is `Some(m)`, permissions are set
+    /// **atomically at creation** via `OpenOptionsExt::mode()`.
     ///
-    /// ## Why this matters
+    /// ## Non-Unix
     ///
-    /// A naïve `write()` + `set_permissions()` leaves a window where an
-    /// attacker could swap the file for a symlink between the two calls.
-    /// By combining `O_NOFOLLOW` + `.mode()` in a single `open`, both
-    /// the write and the permissions happen on the same file descriptor,
-    /// eliminating the race.
+    /// Uses `tempfile::NamedTempFile` + `persist()` (atomic rename).
+    /// **`mode` is ignored** — non-Unix platforms lack a portable way
+    /// to set permissions atomically at file creation.  BranchBox
+    /// primarily targets macOS/Linux where the Unix path is used.
     ///
     /// See CONTRIBUTING.md § "File-operation security patterns" for the
     /// full rationale and rules.
@@ -364,6 +360,14 @@ impl Bootstrap {
     ///
     /// Returns `Ok(None)` when the file does not exist **or** is a
     /// symlink (symlinks are removed as a side-effect).
+    ///
+    /// ## Unix
+    /// Atomic via `O_NOFOLLOW` — no TOCTOU window.
+    ///
+    /// ## Non-Unix
+    /// Uses `symlink_metadata` (lstat) then `read_to_string`.  There is
+    /// an inherent TOCTOU window; see the non-Unix implementation for
+    /// details and rationale.
     #[cfg(unix)]
     fn safe_read(path: &std::path::Path) -> Result<Option<String>> {
         use std::io::Read;
@@ -426,15 +430,21 @@ impl Bootstrap {
         }
     }
 
-    /// Ensure an empty file with restricted permissions (0600) exists.
+    /// Ensure a placeholder file exists for Docker volume mounts.
     ///
     /// **Idempotent**: creates the file if missing, leaves existing
     /// regular files untouched (no truncate), and replaces symlinks.
     /// Safe to call unconditionally — no external check-then-act guard
     /// needed.
     ///
-    /// On Unix: `O_CREAT` (without `O_TRUNC`) + `O_NOFOLLOW` +
-    /// `.mode(0o600)` in a single `open()` syscall.
+    /// ## Unix
+    /// `O_CREAT` (without `O_TRUNC`) + `O_NOFOLLOW` + `.mode(0o600)`
+    /// in a single `open()` syscall.  Permissions are set atomically.
+    ///
+    /// ## Non-Unix
+    /// Uses `create_new` (O_EXCL) to create only if missing.  **File
+    /// permissions are not explicitly restricted** — non-Unix platforms
+    /// lack a portable atomic mode-at-creation API.
     #[cfg(unix)]
     fn create_restricted_file(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
@@ -493,8 +503,9 @@ impl Bootstrap {
     }
 
     // NOTE: set_permissions_unix was removed intentionally.
-    // Permissions are now set atomically via safe_write(mode) to prevent
-    // TOCTOU races between write and chmod.  See CONTRIBUTING.md.
+    // On Unix, permissions are now set atomically via safe_write(mode)
+    // to prevent TOCTOU races between write and chmod.  On non-Unix,
+    // mode is not enforced (see safe_write docs).  See CONTRIBUTING.md.
 
     /// Generate .devcontainer/init-host.sh (1Password host-side script)
     fn generate_init_host_sh(&self) -> Result<String> {
