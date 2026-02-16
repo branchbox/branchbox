@@ -14,7 +14,7 @@
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo nextest run --all-features --no-fail-fast`
-- [ ] `cargo test --doc`
+- [ ] `cargo test --doc --all-features`
 - [ ] `cd docs && npm run build` (if docs changed)
 - [ ] Updated `CHANGELOG.md` (if behavior changed)
 

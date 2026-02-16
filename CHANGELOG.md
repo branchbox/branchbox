@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `branchbox feature start` now keeps `COMPOSE_PROJECT_NAME` / `DEVCONTAINER_NAME` stable even when the source repo has no `.env`, while still writing `.devcontainer/.branchbox.env`.
 - Feature-start stash handling now ignores untracked files and applies the exact stash reference, eliminating false “failed to apply stashed changes” warnings in common workflows.
 - 1Password host bootstrap now preserves previously fetched token/signing files when `op read` fails and writes signing keys with owner-only permissions.
+- 1Password host bootstrap now surfaces the final `op read` error output after retries so secret-fetch failures are diagnosable in `initializeCommand` logs.
 - Devcontainer git credential bootstrapping now stores GitHub credentials via `git credential approve` + `store --file` (no shell helper interpolation of token content).
 - Feature env generation now applies context-specific sanitization before writing `.env` files (`APP_URL` keeps URL-safe delimiters and is single-quoted when emitted, `GIT_BRANCH` preserves valid ref characters while removing control bytes, and `COMPOSE_PROJECT_NAME` is normalized to Docker Compose-safe lowercase chars), and generated feature env files are written with owner-only permissions.
 - VS Code feature URL tasks now use process-style launchers across platforms (`xdg-open`/`open`/`explorer`) instead of `cmd /C start` shell invocation.

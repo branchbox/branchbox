@@ -51,7 +51,7 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 - For SSH signing, copy keys from read-only mounts into `~/.ssh` with strict permissions (`chmod 600`) before configuring `git config user.signingkey`.
 - Convert `origin` from `git@github.com:*` / `ssh://git@github.com/*` to HTTPS when PAT-based auth is configured in-container.
 - Degrade gracefully when secrets are missing/invalid: emit warnings and keep the workspace usable instead of hard-failing startup.
-- Sanitize untrusted `.env`-derived values before writing generated env files (strip `\n`/`\r` at minimum) to prevent variable-injection payloads.
+- Sanitize untrusted `.env`-derived values before writing generated env files (strip control chars such as `\n`/`\r`, and quote shell-sensitive values like `APP_URL`) to prevent variable-injection payloads.
 - Avoid fixed compose `name` or `container_name` values in templates; worktrees must remain parallel-safe.
 - Preserve compatibility by supporting both `docker compose` and `docker-compose` in workflow/module orchestration.
 - For manual harnesses, resolve devcontainer service names with JSONC-safe parsing plus compose-file fallback; do not assume strict JSON or plugin-only compose.
