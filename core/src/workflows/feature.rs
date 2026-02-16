@@ -2681,7 +2681,10 @@ fn sanitize_identifier_env_value(value: &str) -> String {
 }
 
 fn sanitize_git_branch_env_value(value: &str) -> String {
-    value.chars().filter(|ch| !ch.is_control()).collect()
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/'))
+        .collect()
 }
 
 fn sanitize_compose_project_name(value: &str) -> String {
@@ -3599,10 +3602,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_git_branch_env_value_preserves_branch_chars() {
+    fn test_sanitize_git_branch_env_value_strips_shell_metacharacters() {
         assert_eq!(
             sanitize_git_branch_env_value("feature/(ui)\r\nINJECTED=1"),
-            "feature/(ui)INJECTED=1"
+            "feature/uiINJECTED1"
         );
     }
 
@@ -5450,7 +5453,7 @@ mod tests {
 
         let managed_env = fs::read_to_string(worktree_path.join(".devcontainer/.branchbox.env"))
             .expect("managed env should exist");
-        assert!(managed_env.contains("GIT_BRANCH=feature/testINJECTED_BRANCH=1"));
+        assert!(managed_env.contains("GIT_BRANCH=feature/testINJECTED_BRANCH1"));
         assert!(managed_env.contains("APP_URL='dev-test-feature.example.comINJECTED_URL=1'"));
         assert!(managed_env.contains("COMPOSE_PROJECT_NAME=composename"));
         assert!(managed_env.contains("DEVCONTAINER_NAME=devcontainername"));

@@ -15,6 +15,7 @@ OP_SIGNING_KEY_REF="${OP_SIGNING_KEY_REF:-op://<vault>/<item>/private key}"
 
 # Ensure mount targets exist before docker compose evaluates the file mounts.
 touch "${TOKEN_FILE}" "${SIGNING_KEY_FILE}" "${GIT_CONFIG_FILE}"
+chmod 600 "${TOKEN_FILE}" "${SIGNING_KEY_FILE}" "${GIT_CONFIG_FILE}"
 
 if ! command -v op >/dev/null 2>&1; then
   echo "BranchBox: 1Password CLI (op) not found; skipping credential refresh."
@@ -49,7 +50,7 @@ if github_token="$(read_op_secret "${OP_GITHUB_REF}" "GitHub token")"; then
   github_token="${github_token//$'\n'/}"
   if [[ -n "${github_token}" ]]; then
     token_tmp="${TOKEN_FILE}.tmp"
-    printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}"
+    (umask 077; printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}")
     chmod 600 "${token_tmp}"
     mv "${token_tmp}" "${TOKEN_FILE}"
   else
@@ -60,7 +61,7 @@ fi
 if signing_key="$(read_op_secret "${OP_SIGNING_KEY_REF}" "signing key")"; then
   if [[ -n "${signing_key//[$'\t\r\n ']/}" ]]; then
     signing_tmp="${SIGNING_KEY_FILE}.tmp"
-    printf '%s\n' "${signing_key}" >"${signing_tmp}"
+    (umask 077; printf '%s\n' "${signing_key}" >"${signing_tmp}")
     chmod 600 "${signing_tmp}"
     mv "${signing_tmp}" "${SIGNING_KEY_FILE}"
   else
@@ -77,12 +78,19 @@ git_user_email="${git_user_email//$'\n'/}"
 if [[ -n "${git_user_name}" || -n "${git_user_email}" ]]; then
   echo "BranchBox: propagating host git identity into devcontainer."
 fi
-: >"${GIT_CONFIG_FILE}"
-if [[ -n "${git_user_name}" ]]; then
-  printf 'GIT_USER_NAME=%s\n' "${git_user_name}" >>"${GIT_CONFIG_FILE}"
-fi
-if [[ -n "${git_user_email}" ]]; then
-  printf 'GIT_USER_EMAIL=%s\n' "${git_user_email}" >>"${GIT_CONFIG_FILE}"
-fi
+git_config_tmp="${GIT_CONFIG_FILE}.tmp"
+(
+  umask 077
+  {
+    if [[ -n "${git_user_name}" ]]; then
+      printf 'GIT_USER_NAME=%s\n' "${git_user_name}"
+    fi
+    if [[ -n "${git_user_email}" ]]; then
+      printf 'GIT_USER_EMAIL=%s\n' "${git_user_email}"
+    fi
+  } >"${git_config_tmp}"
+)
+chmod 600 "${git_config_tmp}"
+mv "${git_config_tmp}" "${GIT_CONFIG_FILE}"
 
 echo "BranchBox: host credential refresh complete."
