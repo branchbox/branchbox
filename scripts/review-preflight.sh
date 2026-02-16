@@ -167,6 +167,10 @@ check_required_pattern \
   'source "\$REPO_ROOT/scripts/lib/docker-compose\.sh"' \
   scripts/manual-cli-e2e.sh
 check_required_pattern \
+  "manual-1password-e2e.sh missing COMPOSE_PROJECT_NAME override for compose isolation." \
+  '^  printf '\''COMPOSE_PROJECT_NAME=%s\\n'\'' "\$name" >>"\$env_file"' \
+  scripts/manual-1password-e2e.sh
+check_required_pattern \
   "Shared helper file missing resolve_devcontainer_service function." \
   '^resolve_devcontainer_service\(\)' \
   scripts/lib/devcontainer-service.sh

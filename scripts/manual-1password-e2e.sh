@@ -243,7 +243,7 @@ set_devcontainer_name() {
 
   mkdir -p "$workspace/.devcontainer"
   if [[ -f "$env_file" ]]; then
-    awk '!/^DEVCONTAINER_NAME=/' "$env_file" >"$tmp_file"
+    awk '!/^COMPOSE_PROJECT_NAME=/ && !/^DEVCONTAINER_NAME=/' "$env_file" >"$tmp_file"
     mv "$tmp_file" "$env_file"
   else
     : >"$env_file"
@@ -253,6 +253,7 @@ set_devcontainer_name() {
     printf '\n' >>"$env_file"
   fi
 
+  printf 'COMPOSE_PROJECT_NAME=%s\n' "$name" >>"$env_file"
   printf 'DEVCONTAINER_NAME=%s\n' "$name" >>"$env_file"
 }
 
