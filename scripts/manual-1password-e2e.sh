@@ -279,6 +279,7 @@ configure_compose_command() {
     COMPOSE_CMD=(docker compose)
   elif command -v docker-compose >/dev/null 2>&1; then
     COMPOSE_CMD=(docker-compose)
+    log "docker compose plugin unavailable; falling back to docker-compose"
   else
     fatal "Neither docker compose nor docker-compose is available."
   fi
@@ -303,7 +304,7 @@ set_devcontainer_name() {
 
   mkdir -p "$workspace/.devcontainer"
   if [[ -f "$env_file" ]]; then
-    grep -v '^DEVCONTAINER_NAME=' "$env_file" >"$tmp_file" || true
+    awk '!/^DEVCONTAINER_NAME=/' "$env_file" >"$tmp_file"
     mv "$tmp_file" "$env_file"
   else
     : >"$env_file"
@@ -422,13 +423,19 @@ validate_workspace_container() {
         exit 1
       }
 
+      home_dir="${HOME:-/home/vscode}"
+      token_file="${home_dir}/.github-token.env"
+      signing_key_file="${home_dir}/.git-signing-key"
+      signing_key_dst="${home_dir}/.ssh/branchbox-signing-key"
+      allowed_signers_file="${home_dir}/.ssh/allowed_signers"
+
       cd "/workspaces/${WORKSPACE_NAME}"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
         || fail "workspace /workspaces/${WORKSPACE_NAME} is not a git worktree"
 
-      test -s /home/vscode/.github-token.env || fail "missing /home/vscode/.github-token.env"
-      token="$(grep "^GITHUB_TOKEN=" /home/vscode/.github-token.env | cut -d= -f2-)"
-      test -n "$token" || fail "empty GITHUB_TOKEN in /home/vscode/.github-token.env"
+      test -s "$token_file" || fail "missing ${token_file}"
+      token="$(grep "^GITHUB_TOKEN=" "$token_file" | cut -d= -f2-)"
+      test -n "$token" || fail "empty GITHUB_TOKEN in ${token_file}"
 
       helper="$(git config --global --get credential.https://github.com.helper || true)"
       test -n "$helper" || fail "missing git credential helper for github.com"
@@ -442,19 +449,19 @@ validate_workspace_container() {
       esac
 
       signing_configured=0
-      if [[ -s /home/vscode/.git-signing-key ]] && ssh-keygen -y -f /home/vscode/.git-signing-key >/dev/null 2>&1; then
+      if [[ -s "$signing_key_file" ]] && ssh-keygen -y -f "$signing_key_file" >/dev/null 2>&1; then
         signing_configured=1
         test "$(git config --global --get gpg.format)" = "ssh" || fail "git gpg.format is not ssh"
         signing_key="$(git config --global --get user.signingkey)"
-        test "$signing_key" = "/home/vscode/.ssh/branchbox-signing-key" || fail "unexpected user.signingkey: $signing_key"
+        test "$signing_key" = "$signing_key_dst" || fail "unexpected user.signingkey: $signing_key"
         test -s "$signing_key" || fail "missing private signing key at $signing_key"
         test -s "${signing_key}.pub" || fail "missing signing public key at ${signing_key}.pub"
-        test -s "$HOME/.ssh/allowed_signers" || fail "missing allowed_signers file"
+        test -s "$allowed_signers_file" || fail "missing allowed_signers file"
       fi
 
       candidate_gh_token="${GH_TOKEN:-}"
       if [[ -z "$candidate_gh_token" ]]; then
-        candidate_gh_token="$(grep "^GITHUB_TOKEN=" /home/vscode/.github-token.env | cut -d= -f2-)"
+        candidate_gh_token="$(grep "^GITHUB_TOKEN=" "$token_file" | cut -d= -f2-)"
       fi
       test -n "$candidate_gh_token" || fail "GH_TOKEN not set and fallback token missing"
 
@@ -625,8 +632,8 @@ if [[ "$CHECK_FAILURE_PATH" == "1" ]]; then
   FAILURE_LOG="$LOG_DIR/failure-path.log"
   if ! (
     cd "$MAIN_DIR"
-    OP_GITHUB_REF="op://BranchBox/Invalid/credential" \
-      OP_SIGNING_KEY_REF="op://BranchBox/Invalid/private key" \
+    OP_GITHUB_REF="op://__branchbox_nonexistent__/invalid/token" \
+      OP_SIGNING_KEY_REF="op://__branchbox_nonexistent__/invalid/private key" \
       devcontainer up --remove-existing-container --workspace-folder "$MAIN_DIR"
 ) 2>&1 | tee "$FAILURE_LOG"; then
     record_bug "Failure-path restart with invalid refs did not complete."
