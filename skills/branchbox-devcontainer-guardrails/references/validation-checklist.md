@@ -47,15 +47,26 @@ Run these quick checks before opening/updating the PR when touching bootstrap/au
 # No world-readable host signing key writes
 rg -n "chmod 64[0-9].*(SIGNING_KEY|git-signing-key)|chmod 66[0-9].*(SIGNING_KEY|git-signing-key)" core/src/bootstrap scripts || true
 
+# Secret temp-file writes should be created under restrictive umask
+rg -n "umask 077.*(TOKEN_FILE|SIGNING_KEY_FILE|git_config_tmp)|\\(umask 077; printf" core/src/bootstrap/templates/common/init-host.sh
+
+# Empty secret reads should not overwrite existing files
+rg -n "was empty; keeping existing (token file|key file)" core/src/bootstrap/templates/common/init-host.sh
+
 # No raw-token interpolation in git credential helper snippets
 rg -n "password=\\$\\{?github_token\\}?" core/src/bootstrap/templates/common/setup-git.sh || true
 
 # APP_URL writes should route through URL-specific sanitization
 rg -n "APP_URL=.*sanitize_url_env_value|fn sanitize_url_env_value" core/src/workflows/feature.rs
 
+# Compose + branch sanitizer policy checks
+rg -n "fn sanitize_compose_project_name|matches!\\(ch, '-' \\| '_'\\)|trim_start_matches\\(\\['-', '_'\\]\\)" core/src/workflows/feature.rs
+rg -n "fn sanitize_git_branch_env_value|matches!\\(ch, '\\\\.' \\| '-' \\| '_' \\| '/'\\)" core/src/workflows/feature.rs
+
 # Harness should support plugin and legacy compose + robust service resolution
 rg -n "docker-compose|resolve_devcontainer_service" scripts/manual-1password-e2e.sh
 rg -n "read-configuration|detect_compose_service" scripts/manual-1password-e2e.sh scripts/manual-cli-e2e.sh
+rg -n "source .*scripts/lib/devcontainer-service.sh" scripts/manual-1password-e2e.sh scripts/manual-cli-e2e.sh
 
 # Keep harness docs synchronized
 diff -u scripts/manual-1password-e2e.md docs/docs/getting-started/manual-1password-e2e.md

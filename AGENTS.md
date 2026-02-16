@@ -45,6 +45,8 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 - Ensure mounted secret files exist before `docker compose up` (`touch` placeholders) or first-run compose startup will fail.
 - Keep secret files (`.github-token.env`, `.git-signing-key`, `.gitconfig.env`) in `.gitignore` and template scaffolding so new repos are safe by default.
 - Never truncate existing secret files before a successful `op read`; write to temp files and atomically move into place so transient 1Password failures do not wipe previously working credentials.
+- Treat empty/whitespace `op read` results as failures for rotation purposes; preserve existing token/key files instead of writing blank replacements.
+- Create temp secret files with restricted permissions from creation time (`umask 077`), then atomically `mv` into place.
 - Enforce owner-only permissions (`chmod 600`) for host-side token/signing material; never leave private key files world-readable.
 - Parse mounted env-style files with explicit `grep/cut` reads instead of `source` (names with spaces and quotes are common in real configs).
 - Never interpolate raw token values into persisted shell snippets (for example git credential helper commands); reference environment variables like `GH_TOKEN` at runtime.
@@ -52,14 +54,21 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 - Convert `origin` from `git@github.com:*` / `ssh://git@github.com/*` to HTTPS when PAT-based auth is configured in-container.
 - Degrade gracefully when secrets are missing/invalid: emit warnings and keep the workspace usable instead of hard-failing startup.
 - Sanitize untrusted `.env`-derived values before writing generated env files (strip control chars such as `\n`/`\r`, and quote shell-sensitive values like `APP_URL`) to prevent variable-injection payloads.
+- Sanitize compose identity once and reuse the same sanitized value for process env + generated files (`COMPOSE_PROJECT_NAME`, `DEVCONTAINER_NAME`) to avoid drift.
+- Keep compose project names constrained to Compose-safe characters (`[a-z0-9_-]`).
+- Keep `GIT_BRANCH` env writes allow-listed to env-safe ref characters (not only “remove control chars”).
 - Avoid fixed compose `name` or `container_name` values in templates; worktrees must remain parallel-safe.
 - Preserve compatibility by supporting both `docker compose` and `docker-compose` in workflow/module orchestration.
 - For manual harnesses, resolve devcontainer service names with JSONC-safe parsing plus compose-file fallback; do not assume strict JSON or plugin-only compose.
+- When helper logic is shared across harnesses, extract it into `scripts/lib/*.sh` rather than duplicating functions.
 - When editing harnesses/docs, keep `scripts/manual-*.md` and `docs/docs/getting-started/manual-*.md` in sync in the same change.
 
 #### Review preflight for this area
 - Run a quick security grep before PR handoff to catch known regressions: host key mode (`chmod 600`), no raw-token interpolation in credential helper strings, and sanitized `APP_URL` writes.
+- Verify secret-write safety details directly in host init scripts: `umask 077` on temp-file writes and “preserve existing file on empty secret” handling.
+- Verify compose/env sanitizers stay policy-aligned (`COMPOSE_PROJECT_NAME` charset, `GIT_BRANCH` allow-list) and tests cover those policies.
 - Verify harness portability checks are present (`docker compose` + `docker-compose` fallback, JSONC-safe service detection).
+- Check for duplicated shell helpers across `scripts/manual-*.sh`; move shared pieces to `scripts/lib/`.
 - Diff paired docs (`scripts/manual-*.md` vs `docs/docs/getting-started/manual-*.md`) to confirm they remain synchronized after edits.
 
 When touching the macOS client or anything gRPC-related, run the “Mac App ↔ Agent Loop” from `docs/docs/getting-started/manual-cli-e2e.md`: start the agent locally, point the SwiftUI preview at your workspace, issue start/teardown operations from the UI, and verify the HTTP drain logs show the matching events.
