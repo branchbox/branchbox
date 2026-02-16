@@ -44,6 +44,8 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 Run these quick checks before opening/updating the PR when touching bootstrap/auth/harness/env-writing code.
 
 ```bash
+./scripts/review-preflight.sh
+
 # No world-readable host signing key writes
 rg -n "chmod 64[0-9].*(SIGNING_KEY|git-signing-key)|chmod 66[0-9].*(SIGNING_KEY|git-signing-key)" core/src/bootstrap scripts || true
 

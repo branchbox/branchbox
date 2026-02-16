@@ -42,6 +42,7 @@ Load references before implementing:
 
 ## Validate before handoff
 
+- Run `./scripts/review-preflight.sh` first to catch security/sanitizer/docs-sync regressions early.
 - Run devcontainer-side Rust checks and harness matrix from `references/validation-checklist.md`.
 - Run host-side checks when required (docs build, Swift checks, and 1Password E2E harness).
 - Run security/robustness preflight checks from `references/validation-checklist.md` (secret permissions, no token interpolation, env-write sanitization, compose fallback, JSONC-safe parsing).

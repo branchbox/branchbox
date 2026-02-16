@@ -64,6 +64,7 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 - When editing harnesses/docs, keep `scripts/manual-*.md` and `docs/docs/getting-started/manual-*.md` in sync in the same change.
 
 #### Review preflight for this area
+- Run `./scripts/review-preflight.sh` before requesting review; treat failures as blockers.
 - Run a quick security grep before PR handoff to catch known regressions: host key mode (`chmod 600`), no raw-token interpolation in credential helper strings, and sanitized `APP_URL` writes.
 - Verify secret-write safety details directly in host init scripts: `umask 077` on temp-file writes and “preserve existing file on empty secret” handling.
 - Verify compose/env sanitizers stay policy-aligned (`COMPOSE_PROJECT_NAME` charset, `GIT_BRANCH` allow-list) and tests cover those policies.

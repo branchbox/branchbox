@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `branchbox init` now scaffolds 1Password bootstrap assets in `.devcontainer/` (`scripts/init-host.sh`, `scripts/setup-git.sh`, `.github-token.env`, `.git-signing-key`, `.gitconfig.env`) and wires each stack template to run them during devcontainer startup.
 - Compose templates for Rust, Generic, Rails, and Node now mount the generated 1Password credential files into the container.
 - Added a focused manual 1Password regression harness (`scripts/manual-1password-e2e.sh`) plus runbook (`scripts/manual-1password-e2e.md`) to validate PAT + SSH-signing setup end-to-end.
+- Added `scripts/review-preflight.sh` plus CI wiring to enforce security/sanitizer/harness-doc-sync guardrails before deeper test jobs run.
 
 ### Changed
 - Devcontainer compose templates no longer pin top-level compose project names or `container_name`, preventing collisions across parallel worktrees.
