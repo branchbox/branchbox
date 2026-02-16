@@ -9,7 +9,7 @@ detect_compose_service() {
   awk '
     /^services:[[:space:]]*$/ { in_services = 1; next }
     in_services && /^[^[:space:]]/ { exit }
-    in_services && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {
+    in_services && /^[[:space:]]+[A-Za-z0-9._-]+:[[:space:]]*$/ {
       service = $1
       sub(/:$/, "", service)
       print service
