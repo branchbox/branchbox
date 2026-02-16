@@ -1204,7 +1204,11 @@ impl FeatureWorkflow {
                 file,
                 "# Feature-specific configuration (managed by branchbox)"
             )?;
-            writeln!(file, "WORK_FEATURE={}", sanitize_env_value(work_feature))?;
+            writeln!(
+                file,
+                "WORK_FEATURE={}",
+                sanitize_identifier_env_value(work_feature)
+            )?;
             if let Some(url) = url {
                 let sanitized_url = sanitize_url_env_value(&url);
                 writeln!(file, "APP_URL={}", sanitized_url)?;
@@ -1213,14 +1217,18 @@ impl FeatureWorkflow {
             writeln!(
                 file,
                 "COMPOSE_PROJECT_NAME={}",
-                sanitize_env_value(&compose_name)
+                sanitize_compose_project_name(&compose_name)
             )?;
             writeln!(
                 file,
                 "DEVCONTAINER_NAME={}",
-                sanitize_env_value(&compose_name)
+                sanitize_identifier_env_value(&compose_name)
             )?;
-            writeln!(file, "GIT_BRANCH={}", sanitize_env_value(branch_name))?;
+            writeln!(
+                file,
+                "GIT_BRANCH={}",
+                sanitize_git_branch_env_value(branch_name)
+            )?;
 
             self.link_env_into_devcontainer(worktree_path)?;
         } else {
@@ -1562,25 +1570,37 @@ impl FeatureWorkflow {
             file,
             "# BranchBox-managed overrides (auto-generated, do not edit)"
         )?;
-        writeln!(file, "WORK_FEATURE={}", sanitize_env_value(work_feature))?;
+        writeln!(
+            file,
+            "WORK_FEATURE={}",
+            sanitize_identifier_env_value(work_feature)
+        )?;
         writeln!(
             file,
             "BRANCHBOX_MAIN_NAME={}",
-            sanitize_env_value(main_name)
+            sanitize_identifier_env_value(main_name)
         )?;
-        writeln!(file, "GIT_BRANCH={}", sanitize_env_value(branch_name))?;
+        writeln!(
+            file,
+            "GIT_BRANCH={}",
+            sanitize_git_branch_env_value(branch_name)
+        )?;
 
         if let Some(url) = feature_url {
             writeln!(file, "APP_URL={}", sanitize_url_env_value(url))?;
         }
         if let Some(compose) = compose_project_name {
-            writeln!(file, "COMPOSE_PROJECT_NAME={}", sanitize_env_value(compose))?;
+            writeln!(
+                file,
+                "COMPOSE_PROJECT_NAME={}",
+                sanitize_compose_project_name(compose)
+            )?;
         }
         if let Some(devcontainer) = devcontainer_name {
             writeln!(
                 file,
                 "DEVCONTAINER_NAME={}",
-                sanitize_env_value(devcontainer)
+                sanitize_identifier_env_value(devcontainer)
             )?;
         }
 
@@ -2659,11 +2679,36 @@ fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
     }
 }
 
-fn sanitize_env_value(value: &str) -> String {
+fn sanitize_identifier_env_value(value: &str) -> String {
     value
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | ':' | '='))
         .collect()
+}
+
+fn sanitize_git_branch_env_value(value: &str) -> String {
+    value.chars().filter(|ch| !ch.is_control()).collect()
+}
+
+fn sanitize_compose_project_name(value: &str) -> String {
+    let normalized: String = value
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                Some(ch.to_ascii_lowercase())
+            } else if matches!(ch, '-' | '_') {
+                Some(ch)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let trimmed = normalized.trim_start_matches(['-', '_']);
+    if trimmed.is_empty() {
+        "app".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn sanitize_url_env_value(value: &str) -> String {
@@ -2819,9 +2864,9 @@ fn update_spec_frontmatter(
 }
 
 fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
-    let sanitized_prefix = sanitize_env_value(prefix.unwrap_or("feature"));
+    let sanitized_prefix = sanitize_identifier_env_value(prefix.unwrap_or("feature"));
     let prefix = sanitized_prefix.trim_end_matches('/');
-    let work_feature = sanitize_env_value(work_feature);
+    let work_feature = sanitize_identifier_env_value(work_feature);
     if prefix.is_empty() {
         work_feature
     } else {
@@ -3540,15 +3585,30 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_env_value_strips_shell_metacharacters() {
+    fn test_sanitize_identifier_env_value_strips_shell_metacharacters() {
         assert_eq!(
-            sanitize_env_value("https://dev.example.com/$(touch /tmp/pwn) & echo hi"),
+            sanitize_identifier_env_value("https://dev.example.com/$(touch /tmp/pwn) & echo hi"),
             "https://dev.example.com/touch/tmp/pwnechohi"
         );
         assert_eq!(
-            sanitize_env_value("feature/$USER;rm -rf *"),
+            sanitize_identifier_env_value("feature/$USER;rm -rf *"),
             "feature/USERrm-rf"
         );
+    }
+
+    #[test]
+    fn test_sanitize_git_branch_env_value_preserves_branch_chars() {
+        assert_eq!(
+            sanitize_git_branch_env_value("feature/(ui)\r\nINJECTED=1"),
+            "feature/(ui)INJECTED=1"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_compose_project_name_enforces_compose_charset() {
+        assert_eq!(sanitize_compose_project_name("My_App-01"), "my_app-01");
+        assert_eq!(sanitize_compose_project_name("__bad\nname!"), "badname");
+        assert_eq!(sanitize_compose_project_name("___"), "app");
     }
 
     #[test]
