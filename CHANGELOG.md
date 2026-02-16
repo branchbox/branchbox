@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Devcontainer compose templates no longer pin top-level compose project names or `container_name`, preventing collisions across parallel worktrees.
 
 ### Fixed
-- `branchbox feature start` now keeps `COMPOSE_PROJECT_NAME` / `DEVCONTAINER_NAME` stable even when the source repo has no `.env`, while still writing `.devcontainer/.branchbox.env`.
+- `branchbox feature start` now consistently derives `COMPOSE_PROJECT_NAME` / `DEVCONTAINER_NAME` from app slug + feature name (including when the source repo has no `.env`), while still writing `.devcontainer/.branchbox.env`.
 - Feature-start stash handling now ignores untracked files and applies the exact stash reference, eliminating false “failed to apply stashed changes” warnings in common workflows.
 - 1Password host bootstrap now preserves previously fetched token/signing files when `op read` fails and writes signing keys with owner-only permissions.
 - 1Password host bootstrap now surfaces the final `op read` error output after retries so secret-fetch failures are diagnosable in `initializeCommand` logs.
