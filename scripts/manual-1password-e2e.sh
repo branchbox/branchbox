@@ -117,6 +117,7 @@ case "$STACK" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/scripts/lib/devcontainer-service.sh"
 BRANCHBOX_BIN="${BRANCHBOX_BIN:-"$REPO_ROOT/target/debug/branchbox"}"
 ORIGIN_SSH_URL="${ORIGIN_SSH_URL:-}"
 OP_GITHUB_REF="${OP_GITHUB_REF:-}"
@@ -194,58 +195,6 @@ require_file_exists() {
   if [[ ! -f "$path" ]]; then
     fatal "Expected file missing: $path"
   fi
-}
-
-detect_compose_service() {
-  local compose_file="$1"
-  if [[ ! -f "$compose_file" ]]; then
-    return
-  fi
-
-  awk '
-    /^services:[[:space:]]*$/ { in_services = 1; next }
-    in_services && /^[^[:space:]]/ { exit }
-    in_services && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {
-      service = $1
-      sub(/:$/, "", service)
-      print service
-      exit
-    }
-  ' "$compose_file"
-}
-
-read_devcontainer_service() {
-  local workspace="$1"
-  devcontainer read-configuration \
-    --workspace-folder "$workspace" \
-    --log-format json 2>/dev/null \
-    | jq -r 'select(type == "object" and has("configuration")) | .configuration.service // empty' \
-    | tail -n 1
-}
-
-resolve_devcontainer_service() {
-  local devcontainer_json="$1"
-  local compose_file="$2"
-  local service_name=""
-  local workspace=""
-
-  if [[ -f "$devcontainer_json" ]]; then
-    workspace="$(cd "$(dirname "$devcontainer_json")/.." 2>/dev/null && pwd || true)"
-  fi
-
-  if [[ -n "$workspace" ]]; then
-    service_name="$(read_devcontainer_service "$workspace" || true)"
-  fi
-
-  if [[ -z "$service_name" && -f "$devcontainer_json" ]]; then
-    service_name="$(sed -e 's#//.*##' "$devcontainer_json" | jq -r '.service // empty' 2>/dev/null || true)"
-  fi
-
-  if [[ -z "$service_name" ]]; then
-    service_name="$(detect_compose_service "$compose_file" || true)"
-  fi
-
-  printf '%s\n' "$service_name"
 }
 
 resolve_container_id() {

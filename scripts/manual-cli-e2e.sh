@@ -85,6 +85,7 @@ if [[ "$SCRIPT_VERBOSE" == "1" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/scripts/lib/devcontainer-service.sh"
 BRANCHBOX_BIN="${BRANCHBOX_BIN:-"$REPO_ROOT/target/debug/branchbox"}"
 PROJECT_NAME="${PROJECT_NAME:-cli-e2e-${STACK}-sample}"
 FEATURE_NAME="${FEATURE_NAME:-cli-e2e-${STACK}-smoke}"
@@ -250,63 +251,6 @@ function assert_file_not_exists() {
   if [[ -e "$path" ]]; then
     record_bug "Expected file to be absent but found: $path"
   fi
-}
-
-function detect_compose_service() {
-  local compose_file="$1"
-  if [[ ! -f "$compose_file" ]]; then
-    return
-  fi
-
-  awk '
-    /^services:[[:space:]]*$/ { in_services = 1; next }
-    in_services && /^[^[:space:]]/ { exit }
-    in_services && /^  [A-Za-z0-9._-]+:[[:space:]]*$/ {
-      service = $1
-      sub(/:$/, "", service)
-      print service
-      exit
-    }
-  ' "$compose_file"
-}
-
-function read_devcontainer_service() {
-  local workspace="$1"
-  devcontainer read-configuration \
-    --workspace-folder "$workspace" \
-    --log-format json 2>/dev/null \
-    | jq -r 'select(type == "object" and has("configuration")) | .configuration.service // empty' \
-    | tail -n 1
-}
-
-function resolve_devcontainer_service() {
-  local devcontainer_json="$1"
-  local compose_file="$2"
-  local fallback="${3:-rust-dev}"
-  local service=""
-  local workspace=""
-
-  if [[ -f "$devcontainer_json" ]]; then
-    workspace="$(cd "$(dirname "$devcontainer_json")/.." 2>/dev/null && pwd || true)"
-  fi
-
-  if [[ -n "$workspace" ]]; then
-    service="$(read_devcontainer_service "$workspace" || true)"
-  fi
-
-  if [[ -z "$service" && -f "$devcontainer_json" ]]; then
-    service="$(sed -e 's#//.*##' "$devcontainer_json" | jq -r '.service // empty' 2>/dev/null || true)"
-  fi
-
-  if [[ -z "$service" ]]; then
-    service="$(detect_compose_service "$compose_file" || true)"
-  fi
-
-  if [[ -z "$service" ]]; then
-    service="$fallback"
-  fi
-
-  printf '%s\n' "$service"
 }
 
 function configure_cloudflared_project() {
