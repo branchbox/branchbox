@@ -45,17 +45,27 @@ read_op_secret() {
 echo "BranchBox: refreshing GitHub credentials from 1Password..."
 
 if github_token="$(read_op_secret "${OP_GITHUB_REF}" "GitHub token")"; then
-  token_tmp="${TOKEN_FILE}.tmp"
-  printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}"
-  chmod 600 "${token_tmp}"
-  mv "${token_tmp}" "${TOKEN_FILE}"
+  github_token="${github_token//$'\r'/}"
+  github_token="${github_token//$'\n'/}"
+  if [[ -n "${github_token}" ]]; then
+    token_tmp="${TOKEN_FILE}.tmp"
+    printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}"
+    chmod 600 "${token_tmp}"
+    mv "${token_tmp}" "${TOKEN_FILE}"
+  else
+    echo "BranchBox warning: GitHub token from ${OP_GITHUB_REF} was empty; keeping existing token file." >&2
+  fi
 fi
 
 if signing_key="$(read_op_secret "${OP_SIGNING_KEY_REF}" "signing key")"; then
-  signing_tmp="${SIGNING_KEY_FILE}.tmp"
-  printf '%s\n' "${signing_key}" >"${signing_tmp}"
-  chmod 600 "${signing_tmp}"
-  mv "${signing_tmp}" "${SIGNING_KEY_FILE}"
+  if [[ -n "${signing_key//[$'\t\r\n ']/}" ]]; then
+    signing_tmp="${SIGNING_KEY_FILE}.tmp"
+    printf '%s\n' "${signing_key}" >"${signing_tmp}"
+    chmod 600 "${signing_tmp}"
+    mv "${signing_tmp}" "${SIGNING_KEY_FILE}"
+  else
+    echo "BranchBox warning: signing key from ${OP_SIGNING_KEY_REF} was empty; keeping existing key file." >&2
+  fi
 fi
 
 git_user_name="$(git config --global user.name 2>/dev/null || true)"
