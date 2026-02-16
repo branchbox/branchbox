@@ -19,6 +19,7 @@ which.workspace = true
 walkdir.workspace = true
 pathdiff.workspace = true
 dirs.workspace = true
+libc.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true

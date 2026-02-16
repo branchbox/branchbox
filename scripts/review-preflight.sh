@@ -120,6 +120,24 @@ check_required_literal \
   "filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/'))" \
   core/src/workflows/feature.rs
 
+print_header "Checking symlink-write hardening"
+check_required_pattern \
+  "Feature workflow missing symlink guard helper for writes." \
+  '^fn ensure_not_symlink\(' \
+  core/src/workflows/feature.rs
+check_required_pattern \
+  "Feature workflow missing O_NOFOLLOW hardening on managed writes." \
+  'custom_flags\(libc::O_NOFOLLOW\)' \
+  core/src/workflows/feature.rs
+check_required_pattern \
+  "Bootstrap write_if_missing missing symlink guard." \
+  'Refusing to write through symlink' \
+  core/src/bootstrap/mod.rs
+check_required_pattern \
+  "Bootstrap write_if_missing missing O_NOFOLLOW hardening." \
+  'custom_flags\(libc::O_NOFOLLOW\)' \
+  core/src/bootstrap/mod.rs
+
 print_header "Checking harness portability + dedupe"
 check_required_pattern \
   "manual-1password-e2e.sh missing shared devcontainer helper source." \

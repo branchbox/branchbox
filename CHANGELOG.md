@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 1Password host bootstrap now preserves previously fetched token/signing files when `op read` fails and writes signing keys with owner-only permissions.
 - 1Password host bootstrap now surfaces the final `op read` error output after retries so secret-fetch failures are diagnosable in `initializeCommand` logs.
 - Devcontainer git credential bootstrapping now stores GitHub credentials via `git credential approve` + `store --file` (no shell helper interpolation of token content).
+- Feature/bootstrap file generation now rejects symlink targets for managed writes and uses `O_NOFOLLOW`/file-handle permission hardening on Unix to prevent unintended host file overwrite via malicious repository links.
 - Feature env generation now applies context-specific sanitization before writing `.env` files (`APP_URL` keeps URL-safe delimiters and is single-quoted when emitted, `GIT_BRANCH` is allow-listed to env-safe branch characters, and `COMPOSE_PROJECT_NAME` is normalized to Docker Compose-safe lowercase chars), and generated feature env files are written with owner-only permissions.
 - VS Code feature URL tasks now use process-style launchers across platforms (`xdg-open`/`open`/`explorer`) instead of `cmd /C start` shell invocation.
 - Compose lifecycle operations now fall back from `docker compose` to `docker-compose` when plugin-style compose is unavailable.

@@ -37,7 +37,9 @@
 //! - `.env.sample` - Environment variable template
 //! - Stack-specific scripts and configurations
 
-use crate::Result;
+use crate::{Error, Result};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub mod templates;
@@ -284,12 +286,54 @@ impl Bootstrap {
 }
 
 fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
-    if !path.exists() {
-        std::fs::write(path, contents)?;
-        tracing::info!("Created: {}", path.display());
-    } else {
-        tracing::info!("Skipped (already exists): {}", path.display());
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(Error::validation(format!(
+                "Refusing to write through symlink: {}",
+                path.display()
+            )));
+        }
     }
+
+    if path.exists() {
+        tracing::info!("Skipped (already exists): {}", path.display());
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                tracing::info!("Skipped (already exists): {}", path.display());
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        };
+        file.write_all(contents.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = match OpenOptions::new().create_new(true).write(true).open(path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                tracing::info!("Skipped (already exists): {}", path.display());
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        };
+        file.write_all(contents.as_bytes())?;
+    }
+
+    tracing::info!("Created: {}", path.display());
 
     Ok(())
 }
@@ -419,6 +463,23 @@ mod tests {
         // Check that .env.sample wasn't overwritten
         let content = fs::read_to_string(temp_dir.path().join(".env.sample")).unwrap();
         assert_eq!(content, existing_content);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_if_missing_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().unwrap();
+        let protected_file = temp_dir.path().join("protected.txt");
+        fs::write(&protected_file, "original").unwrap();
+
+        let linked = temp_dir.path().join("linked.txt");
+        symlink(&protected_file, &linked).unwrap();
+
+        let err = write_if_missing(&linked, "mutated").unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(fs::read_to_string(&protected_file).unwrap(), "original");
     }
 
     #[test]

@@ -1937,7 +1937,7 @@ impl FeatureWorkflow {
         fs::create_dir_all(&dev_dir)?;
         let env_file = dev_dir.join(".cloudflared.env");
         let content = format!("TUNNEL_TOKEN={token}\nDEV_HOSTNAME={hostname}\n");
-        fs::write(&env_file, content)?;
+        write_secure_file(&env_file, &content)?;
         Ok(env_file)
     }
 
@@ -2299,7 +2299,7 @@ impl FeatureWorkflow {
                 feature_title_from_work_feature(work_feature)
             );
 
-            if let Err(err) = fs::write(&in_progress, content) {
+            if let Err(err) = write_text_file(&in_progress, &content) {
                 warnings.push(format!(
                     "Failed to create feature spec '{}': {}",
                     in_progress.display(),
@@ -2516,7 +2516,7 @@ impl FeatureWorkflow {
 
         let settings_json = serde_json::to_string_pretty(&settings)
             .map_err(|e| Error::config(format!("Failed to serialize VS Code settings: {}", e)))?;
-        fs::write(&settings_path, settings_json)?;
+        write_text_file(&settings_path, &settings_json)?;
 
         // Set up quick access task for feature URL
         if let Some(url) = feature_url {
@@ -2556,7 +2556,7 @@ impl FeatureWorkflow {
                 let tasks_json = serde_json::to_string_pretty(&tasks).map_err(|e| {
                     Error::config(format!("Failed to serialize VS Code tasks: {}", e))
                 })?;
-                fs::write(&tasks_path, tasks_json)?;
+                write_text_file(&tasks_path, &tasks_json)?;
             }
         }
 
@@ -2639,7 +2639,7 @@ impl FeatureWorkflow {
 
         // Write the fixed path
         let new_content = format!("gitdir: {}\n", relative_path_str);
-        fs::write(&git_file, new_content)?;
+        write_text_file(&git_file, &new_content)?;
 
         tracing::info!(
             "Fixed git worktree path from absolute to relative: {}",
@@ -2739,23 +2739,71 @@ fn sanitize_url_env_value(value: &str) -> String {
         .collect()
 }
 
-fn create_secure_file(path: &Path) -> io::Result<File> {
+fn ensure_not_symlink(path: &Path) -> io::Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Refusing to write through symlink: {}", path.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_text_file(path: &Path, contents: &str) -> io::Result<()> {
+    ensure_not_symlink(path)?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+}
+
+fn create_secure_file(path: &Path) -> io::Result<File> {
+    ensure_not_symlink(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
-        set_owner_only_permissions(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         Ok(file)
     }
     #[cfg(not(unix))]
     {
-        File::create(path)
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
     }
 }
 
@@ -2766,21 +2814,23 @@ fn write_secure_file(path: &Path, contents: &str) -> io::Result<()> {
 }
 
 fn open_append_secure(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new().append(true).open(path)?;
-    set_owner_only_permissions(path)?;
-    Ok(file)
-}
+    ensure_not_symlink(path)?;
 
-#[cfg(unix)]
-fn set_owner_only_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn set_owner_only_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
+        let file = OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new().append(true).open(path)
+    }
 }
 
 fn feature_title_from_work_feature(work_feature: &str) -> String {
@@ -2860,7 +2910,7 @@ fn update_spec_frontmatter(
         body_text.push_str(body.trim_start_matches('\n'));
     }
 
-    fs::write(path, format!("{}{}", frontmatter_text, body_text))?;
+    write_text_file(path, &format!("{}{}", frontmatter_text, body_text))?;
     Ok(())
 }
 
@@ -3363,7 +3413,7 @@ impl FeatureStateStore {
             Error::config(format!("Failed to serialize feature registry: {}", err))
         })?;
 
-        fs::write(&self.path, serialized)?;
+        write_text_file(&self.path, &serialized)?;
         if self.legacy_path.exists() && self.legacy_path != self.path {
             let _ = fs::remove_file(&self.legacy_path);
         }
@@ -5431,6 +5481,33 @@ mod tests {
         assert!(settings.get("workbench.colorCustomizations").is_none());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_setup_vscode_workspace_rejects_symlink_tasks_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        let vscode_dir = worktree_path.join(".vscode");
+        fs::create_dir_all(&vscode_dir).unwrap();
+
+        let protected_file = repo_path.join("protected.txt");
+        fs::write(&protected_file, "original").unwrap();
+        symlink(&protected_file, vscode_dir.join("tasks.json")).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let result = workflow.setup_vscode_workspace(
+            &worktree_path,
+            "test-feature",
+            &None,
+            Some("test-feature.example.com"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&protected_file).unwrap(), "original");
+    }
+
     #[test]
     fn test_write_branchbox_env_sanitizes_values() {
         let temp_dir = setup_test_repo();
@@ -5505,6 +5582,24 @@ mod tests {
             Some("#old-color")
         );
         assert!(settings.get("workbench.colorCustomizations").is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_secure_file_rejects_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let protected_file = repo_path.join("protected.txt");
+        fs::write(&protected_file, "original").unwrap();
+
+        let symlink_path = repo_path.join("linked.txt");
+        symlink(&protected_file, &symlink_path).unwrap();
+
+        let err = write_secure_file(&symlink_path, "mutated").unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(fs::read_to_string(&protected_file).unwrap(), "original");
     }
 
     #[test]
