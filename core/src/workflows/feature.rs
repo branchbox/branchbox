@@ -1206,7 +1206,7 @@ impl FeatureWorkflow {
             )?;
             writeln!(file, "WORK_FEATURE={}", sanitize_env_value(work_feature))?;
             if let Some(url) = url {
-                let sanitized_url = sanitize_env_value(&url);
+                let sanitized_url = sanitize_url_env_value(&url);
                 writeln!(file, "APP_URL={}", sanitized_url)?;
                 feature_url = Some(sanitized_url);
             }
@@ -1571,7 +1571,7 @@ impl FeatureWorkflow {
         writeln!(file, "GIT_BRANCH={}", sanitize_env_value(branch_name))?;
 
         if let Some(url) = feature_url {
-            writeln!(file, "APP_URL={}", sanitize_env_value(url))?;
+            writeln!(file, "APP_URL={}", sanitize_url_env_value(url))?;
         }
         if let Some(compose) = compose_project_name {
             writeln!(file, "COMPOSE_PROJECT_NAME={}", sanitize_env_value(compose))?;
@@ -2506,7 +2506,7 @@ impl FeatureWorkflow {
 
         // Set up quick access task for feature URL
         if let Some(url) = feature_url {
-            let normalized_url = sanitize_env_value(
+            let normalized_url = sanitize_url_env_value(
                 url.trim()
                     .trim_start_matches("https://")
                     .trim_start_matches("http://"),
@@ -2663,6 +2663,33 @@ fn sanitize_env_value(value: &str) -> String {
     value
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | ':' | '='))
+        .collect()
+}
+
+fn sanitize_url_env_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '.' | '-'
+                        | '_'
+                        | '/'
+                        | ':'
+                        | '='
+                        | '?'
+                        | '&'
+                        | '#'
+                        | '%'
+                        | '+'
+                        | '~'
+                        | '@'
+                        | ','
+                        | '['
+                        | ']'
+                )
+        })
         .collect()
 }
 
@@ -3521,6 +3548,18 @@ mod tests {
         assert_eq!(
             sanitize_env_value("feature/$USER;rm -rf *"),
             "feature/USERrm-rf"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_url_env_value_preserves_query_and_fragment() {
+        assert_eq!(
+            sanitize_url_env_value("https://dev.example.com/path?a=1&b=2#frag"),
+            "https://dev.example.com/path?a=1&b=2#frag"
+        );
+        assert_eq!(
+            sanitize_url_env_value("https://dev.example.com/$(touch /tmp/pwn)?a=1\r\nINJECT=1"),
+            "https://dev.example.com/touch/tmp/pwn?a=1INJECT=1"
         );
     }
 

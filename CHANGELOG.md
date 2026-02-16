@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature env generation now strips shell-significant characters from dynamic values (`APP_URL`, `GIT_BRANCH`, and `.branchbox.env` fields) before writing `.env` files, and generated feature env files are written with owner-only permissions.
 - VS Code feature URL tasks now use process-style launchers across platforms (`xdg-open`/`open`/`explorer`) instead of `cmd /C start` shell invocation.
 - Compose lifecycle operations now fall back from `docker compose` to `docker-compose` when plugin-style compose is unavailable.
-- `scripts/manual-cli-e2e.sh` now resolves devcontainer services correctly when `devcontainer.json` contains JSONC comments (with compose-service fallback).
-- `scripts/manual-1password-e2e.sh` now supports `docker compose`/`docker-compose` fallback and JSONC-safe devcontainer service detection.
+- `scripts/manual-cli-e2e.sh` now resolves devcontainer services via `devcontainer read-configuration` first (with JSONC/compose fallbacks), avoiding brittle JSONC parsing.
+- `scripts/manual-1password-e2e.sh` now supports `docker compose`/`docker-compose` fallback and resolves devcontainer services via `devcontainer read-configuration` first (with JSONC/compose fallbacks).
 
 ### Documentation
 - Updated manual E2E docs and release guidance to include the 1Password-specific harness and required environment inputs for issue #45 style validation.
