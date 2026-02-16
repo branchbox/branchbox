@@ -58,7 +58,7 @@ rg -n "docker-compose|resolve_devcontainer_service" scripts/manual-1password-e2e
 rg -n "read-configuration|detect_compose_service" scripts/manual-1password-e2e.sh scripts/manual-cli-e2e.sh
 
 # Keep harness docs synchronized
-diff -u <(tail -n +5 docs/docs/getting-started/manual-1password-e2e.md) scripts/manual-1password-e2e.md
+diff -u scripts/manual-1password-e2e.md docs/docs/getting-started/manual-1password-e2e.md
 ```
 
 ## Docs + macOS checks (host)
