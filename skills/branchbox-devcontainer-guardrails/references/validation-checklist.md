@@ -50,12 +50,12 @@ rg -n "chmod 64[0-9].*(SIGNING_KEY|git-signing-key)|chmod 66[0-9].*(SIGNING_KEY|
 # No raw-token interpolation in git credential helper snippets
 rg -n "password=\\$\\{?github_token\\}?" core/src/bootstrap/templates/common/setup-git.sh || true
 
-# APP_URL writes should sanitize CR/LF when sourced from env/config
-rg -n "replace\\(\\['\\\\n', '\\\\r'\\], \"\"\\)" core/src/workflows/feature.rs
+# APP_URL writes should route through URL-specific sanitization
+rg -n "APP_URL=.*sanitize_url_env_value|fn sanitize_url_env_value" core/src/workflows/feature.rs
 
-# Harness should support plugin and legacy compose + JSONC-safe service parsing
+# Harness should support plugin and legacy compose + robust service resolution
 rg -n "docker-compose|resolve_devcontainer_service" scripts/manual-1password-e2e.sh
-rg -nF "sed '/^[[:space:]]*\\/\\//d'" scripts/manual-1password-e2e.sh
+rg -n "read-configuration|detect_compose_service" scripts/manual-1password-e2e.sh scripts/manual-cli-e2e.sh
 
 # Keep harness docs synchronized
 diff -u <(tail -n +5 docs/docs/getting-started/manual-1password-e2e.md) scripts/manual-1password-e2e.md
