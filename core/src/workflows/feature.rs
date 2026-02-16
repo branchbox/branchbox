@@ -2915,9 +2915,9 @@ fn update_spec_frontmatter(
 }
 
 fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
-    let sanitized_prefix = sanitize_identifier_env_value(prefix.unwrap_or("feature"));
+    let sanitized_prefix = sanitize_git_branch_env_value(prefix.unwrap_or("feature"));
     let prefix = sanitized_prefix.trim_end_matches('/');
-    let work_feature = sanitize_identifier_env_value(work_feature);
+    let work_feature = sanitize_git_branch_env_value(work_feature);
     if prefix.is_empty() {
         work_feature
     } else {
@@ -3632,6 +3632,14 @@ mod tests {
         assert_eq!(
             build_branch_name(Some("feature/\n"), "test\r"),
             "feature/test"
+        );
+    }
+
+    #[test]
+    fn test_build_branch_name_strips_equals() {
+        assert_eq!(
+            build_branch_name(Some("feature=unsafe"), "name=unsafe"),
+            "featureunsafe/nameunsafe"
         );
     }
 
