@@ -1211,7 +1211,7 @@ impl FeatureWorkflow {
             )?;
             if let Some(url) = url {
                 let sanitized_url = sanitize_url_env_value(&url);
-                writeln!(file, "APP_URL={}", sanitized_url)?;
+                writeln!(file, "APP_URL={}", quote_env_value(&sanitized_url))?;
                 feature_url = Some(sanitized_url);
             }
             writeln!(
@@ -1587,7 +1587,8 @@ impl FeatureWorkflow {
         )?;
 
         if let Some(url) = feature_url {
-            writeln!(file, "APP_URL={}", sanitize_url_env_value(url))?;
+            let sanitized_url = sanitize_url_env_value(url);
+            writeln!(file, "APP_URL={}", quote_env_value(&sanitized_url))?;
         }
         if let Some(compose) = compose_project_name {
             writeln!(
@@ -2696,19 +2697,23 @@ fn sanitize_compose_project_name(value: &str) -> String {
         .filter_map(|ch| {
             if ch.is_ascii_alphanumeric() {
                 Some(ch.to_ascii_lowercase())
-            } else if matches!(ch, '-' | '_') {
+            } else if matches!(ch, '-' | '_' | '.') {
                 Some(ch)
             } else {
                 None
             }
         })
         .collect();
-    let trimmed = normalized.trim_start_matches(['-', '_']);
+    let trimmed = normalized.trim_start_matches(['-', '_', '.']);
     if trimmed.is_empty() {
         "app".to_string()
     } else {
         trimmed.to_string()
     }
+}
+
+fn quote_env_value(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn sanitize_url_env_value(value: &str) -> String {
@@ -3607,8 +3612,19 @@ mod tests {
     #[test]
     fn test_sanitize_compose_project_name_enforces_compose_charset() {
         assert_eq!(sanitize_compose_project_name("My_App-01"), "my_app-01");
+        assert_eq!(sanitize_compose_project_name("my.app"), "my.app");
         assert_eq!(sanitize_compose_project_name("__bad\nname!"), "badname");
+        assert_eq!(sanitize_compose_project_name("...lead"), "lead");
         assert_eq!(sanitize_compose_project_name("___"), "app");
+    }
+
+    #[test]
+    fn test_quote_env_value_wraps_with_single_quotes() {
+        assert_eq!(
+            quote_env_value("https://dev.example.com?a=1&b=2"),
+            "'https://dev.example.com?a=1&b=2'"
+        );
+        assert_eq!(quote_env_value("it'works"), "'it'\\''works'");
     }
 
     #[test]
@@ -4098,7 +4114,7 @@ mod tests {
         assert!(env_path.exists());
         let env_content = fs::read_to_string(&env_path).unwrap();
         assert!(env_content.contains("WORK_FEATURE=test-feature"));
-        assert!(env_content.contains("APP_URL=dev-test-feature.example.com"));
+        assert!(env_content.contains("APP_URL='dev-test-feature.example.com'"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -4121,7 +4137,7 @@ mod tests {
             assert!(managed_env.contains(&format!("DEVCONTAINER_NAME={}", compose)));
         }
         if let Some(url) = summary.feature_url.as_deref() {
-            assert!(managed_env.contains(&format!("APP_URL={}", url)));
+            assert!(managed_env.contains(&format!("APP_URL='{}'", url)));
         }
         #[cfg(unix)]
         {
@@ -5438,7 +5454,7 @@ mod tests {
         let managed_env = fs::read_to_string(worktree_path.join(".devcontainer/.branchbox.env"))
             .expect("managed env should exist");
         assert!(managed_env.contains("GIT_BRANCH=feature/testINJECTED_BRANCH=1"));
-        assert!(managed_env.contains("APP_URL=dev-test-feature.example.comINJECTED_URL=1"));
+        assert!(managed_env.contains("APP_URL='dev-test-feature.example.comINJECTED_URL=1'"));
         assert!(managed_env.contains("COMPOSE_PROJECT_NAME=composename"));
         assert!(managed_env.contains("DEVCONTAINER_NAME=devcontainername"));
         assert!(managed_env.contains("BRANCHBOX_MAIN_NAME=mainINJECTED_MAIN=1"));
