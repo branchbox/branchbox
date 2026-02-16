@@ -208,22 +208,27 @@ impl Bootstrap {
         write_if_missing(
             &scripts_dir.join("init-host.sh"),
             &self.generate_onepassword_init_host_script()?,
+            0o755,
         )?;
         write_if_missing(
             &scripts_dir.join("setup-git.sh"),
             &self.generate_onepassword_setup_git_script()?,
+            0o755,
         )?;
         write_if_missing(
             &devcontainer_dir.join(".github-token.env"),
             &self.generate_onepassword_github_token_env()?,
+            0o600,
         )?;
         write_if_missing(
             &devcontainer_dir.join(".git-signing-key"),
             &self.generate_onepassword_git_signing_key()?,
+            0o600,
         )?;
         write_if_missing(
             &devcontainer_dir.join(".gitconfig.env"),
             &self.generate_onepassword_gitconfig_env()?,
+            0o600,
         )?;
 
         Ok(())
@@ -285,7 +290,7 @@ impl Bootstrap {
     }
 }
 
-fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
+fn write_if_missing(path: &Path, contents: &str, mode: u32) -> Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {
             return Err(Error::validation(format!(
@@ -307,7 +312,7 @@ fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
         let mut file = match OpenOptions::new()
             .create_new(true)
             .write(true)
-            .mode(0o644)
+            .mode(mode)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
         {
@@ -322,6 +327,7 @@ fn write_if_missing(path: &Path, contents: &str) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
+        let _ = mode;
         let mut file = match OpenOptions::new().create_new(true).write(true).open(path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -477,9 +483,57 @@ mod tests {
         let linked = temp_dir.path().join("linked.txt");
         symlink(&protected_file, &linked).unwrap();
 
-        let err = write_if_missing(&linked, "mutated").unwrap_err();
+        let err = write_if_missing(&linked, "mutated", 0o644).unwrap_err();
         assert!(err.to_string().contains("symlink"));
         assert_eq!(fs::read_to_string(&protected_file).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_onepassword_asset_permissions_are_hardened() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bootstrap = Bootstrap::new(temp_dir.path());
+        bootstrap.generate(Stack::Rust).unwrap();
+
+        let init_host_mode =
+            fs::metadata(temp_dir.path().join(".devcontainer/scripts/init-host.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+        assert_eq!(init_host_mode, 0o755);
+
+        let setup_git_mode =
+            fs::metadata(temp_dir.path().join(".devcontainer/scripts/setup-git.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+        assert_eq!(setup_git_mode, 0o755);
+
+        let github_token_mode =
+            fs::metadata(temp_dir.path().join(".devcontainer/.github-token.env"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+        assert_eq!(github_token_mode, 0o600);
+
+        let signing_key_mode = fs::metadata(temp_dir.path().join(".devcontainer/.git-signing-key"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(signing_key_mode, 0o600);
+
+        let gitconfig_mode = fs::metadata(temp_dir.path().join(".devcontainer/.gitconfig.env"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(gitconfig_mode, 0o600);
     }
 
     #[test]
