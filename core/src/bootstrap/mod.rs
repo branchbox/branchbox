@@ -300,11 +300,6 @@ fn write_if_missing(path: &Path, contents: &str, mode: u32) -> Result<()> {
         }
     }
 
-    if path.exists() {
-        tracing::info!("Skipped (already exists): {}", path.display());
-        return Ok(());
-    }
-
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

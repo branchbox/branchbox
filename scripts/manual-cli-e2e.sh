@@ -86,6 +86,7 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/devcontainer-service.sh"
+source "$REPO_ROOT/scripts/lib/docker-compose.sh"
 BRANCHBOX_BIN="${BRANCHBOX_BIN:-"$REPO_ROOT/target/debug/branchbox"}"
 PROJECT_NAME="${PROJECT_NAME:-cli-e2e-${STACK}-sample}"
 FEATURE_NAME="${FEATURE_NAME:-cli-e2e-${STACK}-smoke}"
@@ -209,17 +210,6 @@ EOF_INDEX
 
 function require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
-}
-
-function configure_compose_command() {
-  if docker compose version >/dev/null 2>&1; then
-    COMPOSE_CMD=(docker compose)
-  elif command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE_CMD=(docker-compose)
-    log "docker compose plugin unavailable; falling back to docker-compose"
-  else
-    fatal "Neither docker compose nor docker-compose is available."
-  fi
 }
 
 function pretend_step() {

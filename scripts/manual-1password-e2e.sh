@@ -118,6 +118,7 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/devcontainer-service.sh"
+source "$REPO_ROOT/scripts/lib/docker-compose.sh"
 BRANCHBOX_BIN="${BRANCHBOX_BIN:-"$REPO_ROOT/target/debug/branchbox"}"
 ORIGIN_SSH_URL="${ORIGIN_SSH_URL:-}"
 OP_GITHUB_REF="${OP_GITHUB_REF:-}"
@@ -220,17 +221,6 @@ resolve_container_id() {
       -f "$compose_file" \
       --project-directory "$workspace/.devcontainer" \
       ps -q "$service_name" | head -n 1
-  fi
-}
-
-configure_compose_command() {
-  if docker compose version >/dev/null 2>&1; then
-    COMPOSE_CMD=(docker compose)
-  elif command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE_CMD=(docker-compose)
-    log "docker compose plugin unavailable; falling back to docker-compose"
-  else
-    fatal "Neither docker compose nor docker-compose is available."
   fi
 }
 

@@ -65,6 +65,17 @@ check_no_harness_helper_duplication() {
   rm -f "$output_file"
 }
 
+check_no_compose_helper_duplication() {
+  local output_file
+  output_file="$(mktemp)"
+  if rg -n --no-heading -S '^(function )?configure_compose_command\s*\(' \
+    scripts/manual-cli-e2e.sh scripts/manual-1password-e2e.sh >"$output_file"; then
+    record_failure "Duplicate docker compose helper found in manual harness scripts; use scripts/lib/docker-compose.sh."
+    sed 's/^/   /' "$output_file" >&2
+  fi
+  rm -f "$output_file"
+}
+
 print_header() {
   printf '==> %s\n' "$1"
 }
@@ -148,18 +159,27 @@ check_required_pattern \
   'source "\$REPO_ROOT/scripts/lib/devcontainer-service\.sh"' \
   scripts/manual-cli-e2e.sh
 check_required_pattern \
+  "manual-1password-e2e.sh missing shared docker-compose helper source." \
+  'source "\$REPO_ROOT/scripts/lib/docker-compose\.sh"' \
+  scripts/manual-1password-e2e.sh
+check_required_pattern \
+  "manual-cli-e2e.sh missing shared docker-compose helper source." \
+  'source "\$REPO_ROOT/scripts/lib/docker-compose\.sh"' \
+  scripts/manual-cli-e2e.sh
+check_required_pattern \
   "Shared helper file missing resolve_devcontainer_service function." \
   '^resolve_devcontainer_service\(\)' \
   scripts/lib/devcontainer-service.sh
+check_required_pattern \
+  "Shared helper file missing configure_compose_command function." \
+  '^configure_compose_command\(\)' \
+  scripts/lib/docker-compose.sh
 check_no_harness_helper_duplication
+check_no_compose_helper_duplication
 check_required_pattern \
-  "manual-1password-e2e.sh missing docker-compose fallback handling." \
+  "Shared docker-compose helper missing docker-compose fallback handling." \
   'docker-compose' \
-  scripts/manual-1password-e2e.sh
-check_required_pattern \
-  "manual-cli-e2e.sh missing docker-compose fallback handling." \
-  'docker-compose' \
-  scripts/manual-cli-e2e.sh
+  scripts/lib/docker-compose.sh
 
 print_header "Checking docs synchronization"
 if ! diff -u scripts/manual-1password-e2e.md docs/docs/getting-started/manual-1password-e2e.md >/dev/null; then
