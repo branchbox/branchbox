@@ -145,6 +145,7 @@ impl ComposeModule {
                 if !Self::docker_compose_unavailable(&stderr) {
                     return Ok(output);
                 }
+                let primary_error = stderr.trim().to_string();
 
                 Command::new("docker-compose")
                     .args(args)
@@ -152,7 +153,8 @@ impl ComposeModule {
                     .output()
                     .map_err(|fallback_error| {
                         Error::validation(format!(
-                            "Failed to run Docker Compose (tried `docker compose` then `docker-compose`): {}",
+                            "Failed to run Docker Compose (tried `docker compose` which failed with: '{}', then `docker-compose` which failed with: {})",
+                            primary_error,
                             fallback_error
                         ))
                     })
