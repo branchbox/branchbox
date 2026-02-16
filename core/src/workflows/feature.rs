@@ -1166,7 +1166,8 @@ impl FeatureWorkflow {
 
         let mut feature_url = None;
         let app_slug = self.resolve_app_slug(&source_env)?;
-        let compose_name = format!("{}-{}", app_slug, work_feature);
+        let raw_compose_name = format!("{}-{}", app_slug, work_feature);
+        let compose_name = sanitize_compose_project_name(&raw_compose_name);
         std::env::set_var("BASE_PREFIX", &app_slug);
         std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
         std::env::set_var("DEVCONTAINER_NAME", &compose_name);
@@ -1214,16 +1215,8 @@ impl FeatureWorkflow {
                 writeln!(file, "APP_URL={}", quote_env_value(&sanitized_url))?;
                 feature_url = Some(sanitized_url);
             }
-            writeln!(
-                file,
-                "COMPOSE_PROJECT_NAME={}",
-                sanitize_compose_project_name(&compose_name)
-            )?;
-            writeln!(
-                file,
-                "DEVCONTAINER_NAME={}",
-                sanitize_identifier_env_value(&compose_name)
-            )?;
+            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
+            writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
             writeln!(
                 file,
                 "GIT_BRANCH={}",
@@ -2683,7 +2676,7 @@ fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
 fn sanitize_identifier_env_value(value: &str) -> String {
     value
         .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | ':' | '='))
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | '='))
         .collect()
 }
 
@@ -2697,14 +2690,14 @@ fn sanitize_compose_project_name(value: &str) -> String {
         .filter_map(|ch| {
             if ch.is_ascii_alphanumeric() {
                 Some(ch.to_ascii_lowercase())
-            } else if matches!(ch, '-' | '_' | '.') {
+            } else if matches!(ch, '-' | '_') {
                 Some(ch)
             } else {
                 None
             }
         })
         .collect();
-    let trimmed = normalized.trim_start_matches(['-', '_', '.']);
+    let trimmed = normalized.trim_start_matches(['-', '_']);
     if trimmed.is_empty() {
         "app".to_string()
     } else {
@@ -3593,11 +3586,15 @@ mod tests {
     fn test_sanitize_identifier_env_value_strips_shell_metacharacters() {
         assert_eq!(
             sanitize_identifier_env_value("https://dev.example.com/$(touch /tmp/pwn) & echo hi"),
-            "https://dev.example.com/touch/tmp/pwnechohi"
+            "https//dev.example.com/touch/tmp/pwnechohi"
         );
         assert_eq!(
             sanitize_identifier_env_value("feature/$USER;rm -rf *"),
             "feature/USERrm-rf"
+        );
+        assert_eq!(
+            sanitize_identifier_env_value("feature:with:colons"),
+            "featurewithcolons"
         );
     }
 
@@ -3612,7 +3609,7 @@ mod tests {
     #[test]
     fn test_sanitize_compose_project_name_enforces_compose_charset() {
         assert_eq!(sanitize_compose_project_name("My_App-01"), "my_app-01");
-        assert_eq!(sanitize_compose_project_name("my.app"), "my.app");
+        assert_eq!(sanitize_compose_project_name("my.app"), "myapp");
         assert_eq!(sanitize_compose_project_name("__bad\nname!"), "badname");
         assert_eq!(sanitize_compose_project_name("...lead"), "lead");
         assert_eq!(sanitize_compose_project_name("___"), "app");
