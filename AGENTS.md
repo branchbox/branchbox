@@ -79,7 +79,7 @@ CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch ano
 
 ### Release workflow
 - Follow `RELEASING.md` verbatim. The short version: ensure `main` is up to date, run fmt/clippy/tests/docs, then execute the six manual CLI harness permutations listed above (regular/verbose/pretend × rust/generic/rails/node). Releases are blocked until every combination passes locally.
-- Update `CHANGELOG.md` with highlights, refresh `README.md` + `docs/docs/**` (especially the manual CLI E2E and CLI reference pages), and capture any new expectations here in `AGENTS.md` before tagging. Regenerate `docs/docs/reference/cli.md` by pasting `branchbox --help` output whenever flags change.
+- Update `CHANGELOG.md` with highlights, refresh `README.md` + `docs/docs/**` (especially the manual CLI E2E pages, first-run `branchbox init` UX in quick start, and CLI reference pages), and capture any new expectations here in `AGENTS.md` before tagging. Regenerate `docs/docs/reference/cli.md` by pasting `branchbox --help` output whenever flags change.
 - Keep `docs/docs/getting-started/manual-cli-e2e.md` + `scripts/manual-cli-e2e.md` and `docs/docs/getting-started/manual-1password-e2e.md` + `scripts/manual-1password-e2e.md` synchronized with the actual harness steps—future contributors should be able to trace every required validation from those docs.
 - Run `cargo release --workspace --dry-run` before `--execute` so you can catch version bumps or git state issues early. Push with `git push --follow-tags` and monitor the release workflow with `gh run watch`.
 - After tagging, confirm the docs build (`cd docs && npm run build`), the GitHub Pages deployment, and downstream taps (Homebrew) before announcing the release.

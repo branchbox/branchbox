@@ -158,6 +158,13 @@ branchbox feature start "Add OAuth Integration"
 cd ../oauth-integration/
 ```
 
+On first run in an interactive shell, `branchbox init` may prompt for:
+- moving out of temporary directories,
+- confirming repository reorganization,
+- optional Cloudflare tunnel setup (prefix/zone/credentials).
+
+Use `branchbox init -y` for non-interactive defaults.
+
 Your feature now has:
 
 - Its own DB  
