@@ -12,15 +12,12 @@ GIT_CONFIG_FILE="${DEVCONTAINER_DIR}/.gitconfig.env"
 
 OP_GITHUB_REF="${OP_GITHUB_REF:-op://<vault>/<item>/token}"
 OP_SIGNING_KEY_REF="${OP_SIGNING_KEY_REF:-op://<vault>/<item>/private key}"
+DEFAULT_OP_GITHUB_REF='op://<vault>/<item>/token'
+DEFAULT_OP_SIGNING_KEY_REF='op://<vault>/<item>/private key'
 
 # Ensure mount targets exist before docker compose evaluates the file mounts.
 touch "${TOKEN_FILE}" "${SIGNING_KEY_FILE}" "${GIT_CONFIG_FILE}"
 chmod 600 "${TOKEN_FILE}" "${SIGNING_KEY_FILE}" "${GIT_CONFIG_FILE}"
-
-if ! command -v op >/dev/null 2>&1; then
-  echo "BranchBox: 1Password CLI (op) not found; skipping credential refresh."
-  exit 0
-fi
 
 read_op_secret() {
   local reference="$1"
@@ -43,29 +40,59 @@ read_op_secret() {
   return 1
 }
 
-echo "BranchBox: refreshing GitHub credentials from 1Password..."
+should_skip_op_refresh() {
+  case "${BRANCHBOX_SKIP_OP_REFRESH:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
-if github_token="$(read_op_secret "${OP_GITHUB_REF}" "GitHub token")"; then
-  github_token="${github_token//$'\r'/}"
-  github_token="${github_token//$'\n'/}"
-  if [[ -n "${github_token}" ]]; then
-    token_tmp="${TOKEN_FILE}.tmp"
-    (umask 077; printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}")
-    chmod 600 "${token_tmp}"
-    mv "${token_tmp}" "${TOKEN_FILE}"
-  else
-    echo "BranchBox warning: GitHub token from ${OP_GITHUB_REF} was empty; keeping existing token file." >&2
-  fi
+op_refresh_enabled=1
+if should_skip_op_refresh; then
+  op_refresh_enabled=0
+  echo "BranchBox: skipping 1Password refresh (BRANCHBOX_SKIP_OP_REFRESH=${BRANCHBOX_SKIP_OP_REFRESH})."
+elif ! command -v op >/dev/null 2>&1; then
+  op_refresh_enabled=0
+  echo "BranchBox: 1Password CLI (op) not found; skipping credential refresh."
 fi
 
-if signing_key="$(read_op_secret "${OP_SIGNING_KEY_REF}" "signing key")"; then
-  if [[ -n "${signing_key//[$'\t\r\n ']/}" ]]; then
-    signing_tmp="${SIGNING_KEY_FILE}.tmp"
-    (umask 077; printf '%s\n' "${signing_key}" >"${signing_tmp}")
-    chmod 600 "${signing_tmp}"
-    mv "${signing_tmp}" "${SIGNING_KEY_FILE}"
+if [[ "${op_refresh_enabled}" == "1" ]]; then
+  echo "BranchBox: refreshing GitHub credentials from 1Password..."
+
+  if [[ "${OP_GITHUB_REF}" != "${DEFAULT_OP_GITHUB_REF}" ]]; then
+    if github_token="$(read_op_secret "${OP_GITHUB_REF}" "GitHub token")"; then
+      github_token="${github_token//$'\r'/}"
+      github_token="${github_token//$'\n'/}"
+      if [[ -n "${github_token}" ]]; then
+        token_tmp="${TOKEN_FILE}.tmp"
+        (umask 077; printf 'GITHUB_TOKEN=%s\n' "${github_token}" >"${token_tmp}")
+        chmod 600 "${token_tmp}"
+        mv "${token_tmp}" "${TOKEN_FILE}"
+      else
+        echo "BranchBox warning: GitHub token from ${OP_GITHUB_REF} was empty; keeping existing token file." >&2
+      fi
+    fi
   else
-    echo "BranchBox warning: signing key from ${OP_SIGNING_KEY_REF} was empty; keeping existing key file." >&2
+    echo "BranchBox: OP_GITHUB_REF not set; keeping existing token file."
+  fi
+
+  if [[ "${OP_SIGNING_KEY_REF}" != "${DEFAULT_OP_SIGNING_KEY_REF}" ]]; then
+    if signing_key="$(read_op_secret "${OP_SIGNING_KEY_REF}" "signing key")"; then
+      if [[ -n "${signing_key//[$'\t\r\n ']/}" ]]; then
+        signing_tmp="${SIGNING_KEY_FILE}.tmp"
+        (umask 077; printf '%s\n' "${signing_key}" >"${signing_tmp}")
+        chmod 600 "${signing_tmp}"
+        mv "${signing_tmp}" "${SIGNING_KEY_FILE}"
+      else
+        echo "BranchBox warning: signing key from ${OP_SIGNING_KEY_REF} was empty; keeping existing key file." >&2
+      fi
+    fi
+  else
+    echo "BranchBox: OP_SIGNING_KEY_REF not set; keeping existing signing key file."
   fi
 fi
 

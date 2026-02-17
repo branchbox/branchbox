@@ -7,6 +7,12 @@ STACK="${STACK:-generic}"
 FEATURE_NAME="${FEATURE_NAME:-onepassword-e2e}"
 CHECK_FAILURE_PATH=0
 SKIP_BUILD=0
+SKIP_OP_REFRESH=0
+ALLOW_MISSING_TOKEN=0
+EXPECT_REMOTE="${EXPECT_REMOTE:-https}"
+EXPECT_SIGNING="${EXPECT_SIGNING:-auto}"
+SEED_TOKEN=0
+SEED_SIGNING_KEY="${SEED_SIGNING_KEY:-none}"
 COMPOSE_CMD=()
 
 usage() {
@@ -21,6 +27,14 @@ Options:
   --origin-ssh-url <url>       SSH remote URL to validate SSH -> HTTPS conversion.
   --op-github-ref <ref>        1Password ref for GitHub PAT (op://.../token).
   --op-signing-key-ref <ref>   1Password ref for SSH signing private key (op://.../private key).
+  --skip-op-refresh            Skip host 1Password reads (sets BRANCHBOX_SKIP_OP_REFRESH=1).
+  --allow-missing-token        Do not require GH token/helper assertions.
+  --expect-remote <https|ssh>  Expected remote form after container bootstrap (default: https).
+  --expect-signing <auto|required|disabled>
+                               Signing expectation (default: auto).
+  --seed-token                 Seed fixture GitHub token file before devcontainer boot.
+  --seed-signing-key <none|valid|invalid>
+                               Seed signing key fixture before devcontainer boot.
   --check-failure-path         Also run invalid-reference restart smoke check.
   --skip-build                 Skip `cargo build -p branchbox-cli`.
   --help                       Show this help text.
@@ -30,6 +44,9 @@ Environment overrides:
   OP_GITHUB_REF                Same as --op-github-ref.
   OP_SIGNING_KEY_REF           Same as --op-signing-key-ref.
   ORIGIN_SSH_URL               Same as --origin-ssh-url.
+  EXPECT_REMOTE                Same as --expect-remote.
+  EXPECT_SIGNING               Same as --expect-signing.
+  SEED_SIGNING_KEY             Same as --seed-signing-key.
   KEEP_E2E_TMP=1               Keep temp workspace for debugging.
 USAGE
 }
@@ -78,6 +95,36 @@ while [[ $# -gt 0 ]]; do
     --op-signing-key-ref=*)
       OP_SIGNING_KEY_REF="${1#*=}"
       ;;
+    --skip-op-refresh)
+      SKIP_OP_REFRESH=1
+      ;;
+    --allow-missing-token)
+      ALLOW_MISSING_TOKEN=1
+      ;;
+    --expect-remote)
+      shift
+      EXPECT_REMOTE="${1:-}"
+      ;;
+    --expect-remote=*)
+      EXPECT_REMOTE="${1#*=}"
+      ;;
+    --expect-signing)
+      shift
+      EXPECT_SIGNING="${1:-}"
+      ;;
+    --expect-signing=*)
+      EXPECT_SIGNING="${1#*=}"
+      ;;
+    --seed-token)
+      SEED_TOKEN=1
+      ;;
+    --seed-signing-key)
+      shift
+      SEED_SIGNING_KEY="${1:-}"
+      ;;
+    --seed-signing-key=*)
+      SEED_SIGNING_KEY="${1#*=}"
+      ;;
     --check-failure-path)
       CHECK_FAILURE_PATH=1
       ;;
@@ -99,6 +146,9 @@ done
 
 MODE="$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')"
 STACK="$(printf '%s' "$STACK" | tr '[:upper:]' '[:lower:]')"
+EXPECT_REMOTE="$(printf '%s' "$EXPECT_REMOTE" | tr '[:upper:]' '[:lower:]')"
+EXPECT_SIGNING="$(printf '%s' "$EXPECT_SIGNING" | tr '[:upper:]' '[:lower:]')"
+SEED_SIGNING_KEY="$(printf '%s' "$SEED_SIGNING_KEY" | tr '[:upper:]' '[:lower:]')"
 
 case "$MODE" in
   regular|pretend) ;;
@@ -112,6 +162,30 @@ case "$STACK" in
   rust|generic|rails|node) ;;
   *)
     echo "Unsupported stack: $STACK (supported: rust, generic, rails, node)" >&2
+    exit 1
+    ;;
+esac
+
+case "$EXPECT_REMOTE" in
+  https|ssh) ;;
+  *)
+    echo "Invalid --expect-remote value: $EXPECT_REMOTE (supported: https, ssh)" >&2
+    exit 1
+    ;;
+esac
+
+case "$EXPECT_SIGNING" in
+  auto|required|disabled) ;;
+  *)
+    echo "Invalid --expect-signing value: $EXPECT_SIGNING (supported: auto, required, disabled)" >&2
+    exit 1
+    ;;
+esac
+
+case "$SEED_SIGNING_KEY" in
+  none|valid|invalid) ;;
+  *)
+    echo "Invalid --seed-signing-key value: $SEED_SIGNING_KEY (supported: none, valid, invalid)" >&2
     exit 1
     ;;
 esac
@@ -170,6 +244,10 @@ cleanup() {
   if [[ "$MODE" == "regular" ]]; then
     devcontainer down --workspace-folder "$FEATURE_DIR" >/dev/null 2>&1 || true
     devcontainer down --workspace-folder "$MAIN_DIR" >/dev/null 2>&1 || true
+    if ((${#COMPOSE_CMD[@]} > 0)); then
+      compose_down_workspace "$FEATURE_DIR"
+      compose_down_workspace "$MAIN_DIR"
+    fi
   fi
 
   if [[ "${KEEP_E2E_TMP:-0}" == "1" ]]; then
@@ -182,6 +260,47 @@ trap cleanup EXIT
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
+}
+
+compose_down_workspace() {
+  local workspace="$1"
+  local compose_file="$workspace/.devcontainer/compose.yaml"
+  local env_file="$workspace/.devcontainer/.branchbox.env"
+  local workspace_name
+  workspace_name="$(basename "$workspace")"
+  if [[ ! -f "$compose_file" ]]; then
+    return
+  fi
+
+  if [[ -f "$env_file" ]]; then
+    "${COMPOSE_CMD[@]}" \
+      --env-file "$env_file" \
+      --project-name "${workspace_name}_devcontainer" \
+      -f "$compose_file" \
+      --project-directory "$workspace/.devcontainer" \
+      down --remove-orphans >/dev/null 2>&1 || true
+  else
+    "${COMPOSE_CMD[@]}" \
+      --project-name "${workspace_name}_devcontainer" \
+      -f "$compose_file" \
+      --project-directory "$workspace/.devcontainer" \
+      down --remove-orphans >/dev/null 2>&1 || true
+  fi
+}
+
+configure_build_env() {
+  if [[ "$SKIP_BUILD" != "0" ]]; then
+    return
+  fi
+
+  if [[ "$OSTYPE" == darwin* ]] && [[ -z "${SDKROOT:-}" ]] && command -v xcrun >/dev/null 2>&1; then
+    local sdkroot_path
+    sdkroot_path="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    if [[ -n "$sdkroot_path" ]]; then
+      export SDKROOT="$sdkroot_path"
+      log "Detected macOS SDK at $SDKROOT for host cargo build"
+    fi
+  fi
 }
 
 assert_file_exists() {
@@ -255,6 +374,59 @@ set_devcontainer_name() {
 
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$name" >>"$env_file"
   printf 'DEVCONTAINER_NAME=%s\n' "$name" >>"$env_file"
+}
+
+seed_fixture_credentials() {
+  local workspace="$1"
+  local devcontainer_dir="$workspace/.devcontainer"
+  local token_file="$devcontainer_dir/.github-token.env"
+  local signing_key_file="$devcontainer_dir/.git-signing-key"
+  local fixture_dir="$TMP_ROOT/fixtures"
+  local fixture_private_key="$fixture_dir/id_ed25519"
+
+  mkdir -p "$devcontainer_dir"
+
+  if [[ "$SEED_TOKEN" == "1" ]]; then
+    printf 'GITHUB_TOKEN=%s\n' "branchbox-fixture-token-${RUN_TAG}" >"$token_file"
+    chmod 600 "$token_file"
+  fi
+
+  case "$SEED_SIGNING_KEY" in
+    valid)
+      mkdir -p "$fixture_dir"
+      if [[ ! -f "$fixture_private_key" ]]; then
+        rm -f "$fixture_private_key" "$fixture_private_key.pub"
+        ssh-keygen -q -t ed25519 -N '' -f "$fixture_private_key" >/dev/null
+      fi
+      cp "$fixture_private_key" "$signing_key_file"
+      chmod 600 "$signing_key_file"
+      ;;
+    invalid)
+      printf '%s\n' "not-a-valid-private-key" >"$signing_key_file"
+      chmod 600 "$signing_key_file"
+      ;;
+    none)
+      if [[ ! -f "$signing_key_file" ]]; then
+        : >"$signing_key_file"
+      fi
+      chmod 600 "$signing_key_file"
+      ;;
+  esac
+}
+
+devcontainer_up_workspace() {
+  local workspace="$1"
+
+  (
+    cd "$workspace"
+    if [[ "$SKIP_OP_REFRESH" == "1" ]]; then
+      BRANCHBOX_SKIP_OP_REFRESH=1 OP_GITHUB_REF="$OP_GITHUB_REF" OP_SIGNING_KEY_REF="$OP_SIGNING_KEY_REF" \
+        devcontainer up --remove-existing-container --workspace-folder "$workspace"
+    else
+      OP_GITHUB_REF="$OP_GITHUB_REF" OP_SIGNING_KEY_REF="$OP_SIGNING_KEY_REF" \
+        devcontainer up --remove-existing-container --workspace-folder "$workspace"
+    fi
+  )
 }
 
 assert_log_contains() {
@@ -343,6 +515,12 @@ validate_workspace_container() {
   local label="$2"
   local container_id="$3"
   local log_path="$LOG_DIR/validate-${label}.log"
+  local token_required
+  if [[ "$ALLOW_MISSING_TOKEN" == "1" ]]; then
+    token_required="0"
+  else
+    token_required="1"
+  fi
   local workspace_name
   workspace_name="$(basename "$workspace")"
 
@@ -354,6 +532,9 @@ validate_workspace_container() {
   if ! docker exec \
     -e CHECK_LABEL="$label" \
     -e WORKSPACE_NAME="$workspace_name" \
+    -e EXPECT_REMOTE="$EXPECT_REMOTE" \
+    -e EXPECT_TOKEN_REQUIRED="$token_required" \
+    -e EXPECT_SIGNING="$EXPECT_SIGNING" \
     "$container_id" \
     bash -c '
       set -euo pipefail
@@ -373,20 +554,36 @@ validate_workspace_container() {
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
         || fail "workspace /workspaces/${WORKSPACE_NAME} is not a git worktree"
 
-      test -s "$token_file" || fail "missing ${token_file}"
-      token="$(grep "^GITHUB_TOKEN=" "$token_file" | cut -d= -f2-)"
-      test -n "$token" || fail "empty GITHUB_TOKEN in ${token_file}"
-
+      token=""
+      if [[ -f "$token_file" ]]; then
+        token="$(grep "^GITHUB_TOKEN=" "$token_file" | cut -d= -f2- || true)"
+      fi
       helper="$(git config --global --get credential.https://github.com.helper || true)"
-      test -n "$helper" || fail "missing git credential helper for github.com"
+
+      if [[ "${EXPECT_TOKEN_REQUIRED}" == "1" ]]; then
+        test -s "$token_file" || fail "missing ${token_file}"
+        test -n "$token" || fail "empty GITHUB_TOKEN in ${token_file}"
+        test -n "$helper" || fail "missing git credential helper for github.com"
+      elif [[ -n "$helper" && -z "$token" ]]; then
+        fail "credential helper present without token material"
+      fi
 
       remote="$(git remote get-url origin)"
-      case "$remote" in
-        https://github.com/*) ;;
-        *)
-          fail "origin remote did not convert to HTTPS: $remote"
-          ;;
-      esac
+      if [[ "${EXPECT_REMOTE}" == "https" ]]; then
+        case "$remote" in
+          https://github.com/*) ;;
+          *)
+            fail "origin remote did not convert to HTTPS: $remote"
+            ;;
+        esac
+      else
+        case "$remote" in
+          git@*|ssh://*) ;;
+          *)
+            fail "origin remote did not remain SSH: $remote"
+            ;;
+        esac
+      fi
 
       signing_configured=0
       if [[ -s "$signing_key_file" ]] && ssh-keygen -y -f "$signing_key_file" >/dev/null 2>&1; then
@@ -397,13 +594,26 @@ validate_workspace_container() {
         test -s "$signing_key" || fail "missing private signing key at $signing_key"
         test -s "${signing_key}.pub" || fail "missing signing public key at ${signing_key}.pub"
         test -s "$allowed_signers_file" || fail "missing allowed_signers file"
+      elif [[ "${EXPECT_SIGNING}" == "required" ]]; then
+        fail "expected signing key material and signing config, but none was configured"
       fi
 
-      candidate_gh_token="${GH_TOKEN:-}"
-      if [[ -z "$candidate_gh_token" ]]; then
-        candidate_gh_token="$(grep "^GITHUB_TOKEN=" "$token_file" | cut -d= -f2-)"
+      if [[ "${EXPECT_SIGNING}" == "disabled" ]]; then
+        if [[ -n "$(git config --global --get user.signingkey || true)" ]]; then
+          fail "signing key configured when signing is expected to be disabled"
+        fi
+        if [[ "$(git config --global --get commit.gpgsign || true)" == "true" ]]; then
+          fail "commit.gpgsign enabled when signing is expected to be disabled"
+        fi
       fi
-      test -n "$candidate_gh_token" || fail "GH_TOKEN not set and fallback token missing"
+
+      if [[ "${EXPECT_TOKEN_REQUIRED}" == "1" ]]; then
+        candidate_gh_token="${GH_TOKEN:-}"
+        if [[ -z "$candidate_gh_token" ]]; then
+          candidate_gh_token="$(grep "^GITHUB_TOKEN=" "$token_file" | cut -d= -f2-)"
+        fi
+        test -n "$candidate_gh_token" || fail "GH_TOKEN not set and fallback token missing"
+      fi
 
       marker_file=".branchbox-1password-${CHECK_LABEL}.txt"
       printf "%s\n" "${CHECK_LABEL}-$(date -u +%s)" >>"$marker_file"
@@ -412,7 +622,9 @@ validate_workspace_container() {
 
       if [[ "$signing_configured" == "1" ]]; then
         signature_output="$(git log --show-signature -1 2>&1 || true)"
-        printf "%s\n" "$signature_output" | grep -q 'Good "git" signature'
+        printf "%s\n" "$signature_output" | grep -q "Good \"git\" signature"
+      elif [[ "${EXPECT_SIGNING}" == "required" ]]; then
+        fail "expected signed commit but signing was not configured"
       fi
     ' 2>&1 | tee "$log_path"; then
     record_bug "Container validation failed for $label (see $log_path)"
@@ -421,6 +633,13 @@ validate_workspace_container() {
 
 if [[ "$MODE" == "pretend" ]]; then
   log "[pretend] Would run 1Password e2e with stack '$STACK' and feature '$FEATURE_NAME'."
+  log "[pretend] Expectations: remote=$EXPECT_REMOTE token_required=$((1-ALLOW_MISSING_TOKEN)) signing=$EXPECT_SIGNING."
+  if [[ "$SKIP_OP_REFRESH" == "1" ]]; then
+    log "[pretend] Would skip host 1Password reads via BRANCHBOX_SKIP_OP_REFRESH=1."
+  fi
+  if [[ "$SEED_TOKEN" == "1" || "$SEED_SIGNING_KEY" != "none" ]]; then
+    log "[pretend] Would seed fixture credentials (token=$SEED_TOKEN signing=$SEED_SIGNING_KEY)."
+  fi
   log "[pretend] Would seed repo at $MAIN_DIR, run branchbox init, and start devcontainers."
   log "[pretend] Would validate token/signing config in main and feature worktrees."
   if [[ "$CHECK_FAILURE_PATH" == "1" ]]; then
@@ -435,11 +654,19 @@ require_cmd git
 require_cmd jq
 require_cmd docker
 require_cmd devcontainer
-require_cmd op
+
+if [[ "$SKIP_OP_REFRESH" == "0" || "$CHECK_FAILURE_PATH" == "1" ]]; then
+  require_cmd op
+fi
+if [[ "$SEED_SIGNING_KEY" == "valid" ]]; then
+  require_cmd ssh-keygen
+fi
 
 if [[ "$SKIP_BUILD" == "0" ]]; then
   require_cmd cargo
 fi
+
+configure_build_env
 
 if ! docker info >/dev/null 2>&1; then
   fatal "Docker daemon is not reachable."
@@ -447,19 +674,27 @@ fi
 configure_compose_command
 
 if [[ -z "$ORIGIN_SSH_URL" ]]; then
-  fatal "Set ORIGIN_SSH_URL (or pass --origin-ssh-url) to an SSH GitHub remote."
+  fatal "Set ORIGIN_SSH_URL (or pass --origin-ssh-url) to an SSH remote."
 fi
-if [[ ! "$ORIGIN_SSH_URL" =~ ^git@github\.com: ]] && [[ ! "$ORIGIN_SSH_URL" =~ ^ssh://git@github\.com/ ]]; then
-  fatal "ORIGIN_SSH_URL must target GitHub over SSH (git@github.com:... or ssh://git@github.com/...)."
+if [[ ! "$ORIGIN_SSH_URL" =~ ^git@[^:]+:.+ ]] && [[ ! "$ORIGIN_SSH_URL" =~ ^ssh://[^/]+/.+ ]]; then
+  fatal "ORIGIN_SSH_URL must be SSH format (git@host:org/repo.git or ssh://user@host/org/repo.git)."
 fi
-if [[ -z "$OP_GITHUB_REF" ]]; then
-  fatal "Set OP_GITHUB_REF (or pass --op-github-ref)."
+if [[ "$EXPECT_REMOTE" == "https" ]] \
+  && [[ ! "$ORIGIN_SSH_URL" =~ ^git@github\.com: ]] \
+  && [[ ! "$ORIGIN_SSH_URL" =~ ^ssh://git@github\.com/ ]]; then
+  fatal "HTTPS conversion expectation requires a GitHub SSH origin (git@github.com:... or ssh://git@github.com/...)."
 fi
-if [[ -z "$OP_SIGNING_KEY_REF" ]]; then
-  fatal "Set OP_SIGNING_KEY_REF (or pass --op-signing-key-ref)."
+if [[ "$CHECK_FAILURE_PATH" == "1" && "$SKIP_OP_REFRESH" == "1" ]]; then
+  fatal "--check-failure-path requires live op reads; remove --skip-op-refresh."
+fi
+if [[ "$SKIP_OP_REFRESH" == "0" && -z "$OP_GITHUB_REF" ]]; then
+  fatal "Set OP_GITHUB_REF (or pass --op-github-ref), or use --skip-op-refresh."
+fi
+if [[ "$SKIP_OP_REFRESH" == "0" && -z "$OP_SIGNING_KEY_REF" ]]; then
+  fatal "Set OP_SIGNING_KEY_REF (or pass --op-signing-key-ref), or use --skip-op-refresh."
 fi
 
-log "Running 1Password devcontainer e2e (stack: $STACK)"
+log "Running 1Password devcontainer e2e (stack: $STACK, expect_remote: $EXPECT_REMOTE, expect_signing: $EXPECT_SIGNING, allow_missing_token: $ALLOW_MISSING_TOKEN, skip_op_refresh: $SKIP_OP_REFRESH)"
 
 if [[ "$SKIP_BUILD" == "0" ]]; then
   log "Building branchbox CLI"
@@ -502,14 +737,15 @@ require_file_exists "$MAIN_DIR/.devcontainer/.github-token.env"
 require_file_exists "$MAIN_DIR/.devcontainer/.git-signing-key"
 require_file_exists "$MAIN_DIR/.devcontainer/.gitconfig.env"
 
+if [[ "$SEED_TOKEN" == "1" || "$SEED_SIGNING_KEY" != "none" ]]; then
+  log "Seeding fixture credentials in main workspace (token=$SEED_TOKEN signing=$SEED_SIGNING_KEY)"
+  seed_fixture_credentials "$MAIN_DIR"
+fi
+
 log "Booting main devcontainer (initializeCommand + postStartCommand)"
 set_devcontainer_name "$MAIN_DIR" "$MAIN_DEVCONTAINER_NAME"
 MAIN_UP_LOG="$LOG_DIR/main-devcontainer-up.log"
-if ! (
-  cd "$MAIN_DIR"
-  OP_GITHUB_REF="$OP_GITHUB_REF" OP_SIGNING_KEY_REF="$OP_SIGNING_KEY_REF" \
-    devcontainer up --remove-existing-container --workspace-folder "$MAIN_DIR"
-) 2>&1 | tee "$MAIN_UP_LOG"; then
+if ! devcontainer_up_workspace "$MAIN_DIR" 2>&1 | tee "$MAIN_UP_LOG"; then
   fatal "devcontainer up failed for main workspace (see $MAIN_UP_LOG)"
 fi
 
@@ -547,12 +783,12 @@ fi
 
 log "Booting feature devcontainer"
 set_devcontainer_name "$FEATURE_DIR" "$FEATURE_DEVCONTAINER_NAME"
+if [[ "$SEED_TOKEN" == "1" || "$SEED_SIGNING_KEY" != "none" ]]; then
+  log "Seeding fixture credentials in feature workspace (token=$SEED_TOKEN signing=$SEED_SIGNING_KEY)"
+  seed_fixture_credentials "$FEATURE_DIR"
+fi
 FEATURE_UP_LOG="$LOG_DIR/feature-devcontainer-up.log"
-if ! (
-  cd "$FEATURE_DIR"
-  OP_GITHUB_REF="$OP_GITHUB_REF" OP_SIGNING_KEY_REF="$OP_SIGNING_KEY_REF" \
-    devcontainer up --remove-existing-container --workspace-folder "$FEATURE_DIR"
-) 2>&1 | tee "$FEATURE_UP_LOG"; then
+if ! devcontainer_up_workspace "$FEATURE_DIR" 2>&1 | tee "$FEATURE_UP_LOG"; then
   fatal "devcontainer up failed for feature workspace (see $FEATURE_UP_LOG)"
 fi
 

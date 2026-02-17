@@ -444,6 +444,7 @@ mod tests {
         let init_host_script =
             fs::read_to_string(temp_dir.path().join(".devcontainer/scripts/init-host.sh")).unwrap();
         assert!(init_host_script.contains("op read"));
+        assert!(init_host_script.contains("BRANCHBOX_SKIP_OP_REFRESH"));
 
         let setup_git_script =
             fs::read_to_string(temp_dir.path().join(".devcontainer/scripts/setup-git.sh")).unwrap();
