@@ -321,6 +321,13 @@ fn write_if_missing(path: &Path, contents: &str, mode: u32) -> Result<()> {
         }
         Err(err) => return Err(err.into()),
     };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+
     file.write_all(contents.as_bytes())?;
 
     tracing::info!("Created: {}", path.display());
