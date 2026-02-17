@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-02-17
+
 ### Added
 - `branchbox init` now scaffolds 1Password bootstrap assets in `.devcontainer/` (`scripts/init-host.sh`, `scripts/setup-git.sh`, `.github-token.env`, `.git-signing-key`, `.gitconfig.env`) and wires each stack template to run them during devcontainer startup.
 - Compose templates for Rust, Generic, Rails, and Node now mount the generated 1Password credential files into the container.
