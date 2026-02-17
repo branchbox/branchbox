@@ -2734,6 +2734,11 @@ fn sanitize_url_env_value(value: &str) -> String {
                         | ','
                         | '['
                         | ']'
+                        | '!'
+                        | '*'
+                        | '('
+                        | ')'
+                        | ';'
                 )
         })
         .collect()
@@ -3692,8 +3697,12 @@ mod tests {
             "https://dev.example.com/path?a=1&b=2#frag"
         );
         assert_eq!(
+            sanitize_url_env_value("https://dev.example.com/path;one!(two)*three?a=1"),
+            "https://dev.example.com/path;one!(two)*three?a=1"
+        );
+        assert_eq!(
             sanitize_url_env_value("https://dev.example.com/$(touch /tmp/pwn)?a=1\r\nINJECT=1"),
-            "https://dev.example.com/touch/tmp/pwn?a=1INJECT=1"
+            "https://dev.example.com/(touch/tmp/pwn)?a=1INJECT=1"
         );
     }
 

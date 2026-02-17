@@ -108,7 +108,7 @@ if [[ -s "${SIGNING_KEY_SRC}" ]] && head -n 1 "${SIGNING_KEY_SRC}" | grep -q '^-
       allowed_signers_file="${HOME_DIR}/.ssh/allowed_signers"
       tmp_allowed_signers="${allowed_signers_file}.tmp"
       signer_key="$(cat "${SIGNING_KEY_DST}.pub")"
-      if [[ -f "${allowed_signers_file}" ]]; then
+      if [[ -f "${allowed_signers_file}" && -s "${allowed_signers_file}" ]]; then
         awk -v email="${git_email}" '$1 != email' "${allowed_signers_file}" >"${tmp_allowed_signers}"
       else
         : >"${tmp_allowed_signers}"

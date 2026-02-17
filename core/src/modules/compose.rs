@@ -121,7 +121,11 @@ impl ComposeModule {
         Ok(())
     }
 
-    fn docker_compose_unavailable(stderr: &str) -> bool {
+    fn docker_compose_unavailable(status: &std::process::ExitStatus, stderr: &str) -> bool {
+        if status.code() == Some(125) {
+            return true;
+        }
+
         let stderr_lower = stderr.to_ascii_lowercase();
         stderr_lower.contains("is not a docker command")
             || stderr_lower.contains("unknown command \"compose\"")
@@ -142,7 +146,7 @@ impl ComposeModule {
             Ok(output) if output.status.success() => Ok(output),
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                if !Self::docker_compose_unavailable(&stderr) {
+                if !Self::docker_compose_unavailable(&output.status, &stderr) {
                     return Ok(output);
                 }
                 let primary_error = stderr.trim().to_string();
