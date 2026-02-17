@@ -165,6 +165,8 @@ On first run in an interactive shell, `branchbox init` may prompt for:
 
 Use `branchbox init -y` for non-interactive defaults.
 
+If `init` generates `.devcontainer/` from BranchBox templates, it also includes optional 1Password-backed git bootstrap hooks (`init-host.sh` + `setup-git.sh`). Those hooks are not auto-injected into pre-existing custom devcontainer configs.
+
 Your feature now has:
 
 - Its own DB  

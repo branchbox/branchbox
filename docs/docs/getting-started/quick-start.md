@@ -65,6 +65,18 @@ branchbox init -y
 
 This skips prompts and applies defaults.
 
+### Optional: 1Password + git bootstrap
+
+If `branchbox init` **creates** `.devcontainer/` from BranchBox templates, it also wires:
+
+- `.devcontainer/scripts/init-host.sh` (runs via `initializeCommand` on host)
+- `.devcontainer/scripts/setup-git.sh` (runs via `postStartCommand` in container)
+- mounted credential files: `.github-token.env`, `.git-signing-key`, `.gitconfig.env`
+
+With `OP_GITHUB_REF` / `OP_SIGNING_KEY_REF` set, opening the container can auto-refresh token/key from 1Password, configure git HTTPS credentials, and enable SSH commit signing (when key material is valid).
+
+Important: if your repo already has a custom `.devcontainer/`, `branchbox init` currently updates workspace compatibility but does **not** automatically retrofit these 1Password/git hooks into your existing files.
+
 ## Start Your First Feature
 
 ```bash

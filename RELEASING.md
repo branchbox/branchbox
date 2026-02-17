@@ -95,7 +95,7 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
 3. **Update CHANGELOG.md and documentation:**
    - Edit `CHANGELOG.md` to capture highlights for the version you're publishing
    - Update end-user docs (`README.md`, `docs/docs/**`) if behavior changed
-   - If `branchbox init` prompts/defaults changed, update the first-run UX docs (`docs/docs/getting-started/quick-start.md`) with the exact interactive prompts and defaults
+   - If `branchbox init` prompts/defaults or devcontainer bootstrap behavior changed (including 1Password/git wiring), update first-run docs in `docs/docs/getting-started/quick-start.md` with exact behavior and caveats
    - If CLI flags changed, regenerate `docs/docs/reference/cli.md` using `branchbox --help`
    - Commit documentation updates before tagging
 
