@@ -158,6 +158,15 @@ branchbox feature start "Add OAuth Integration"
 cd ../oauth-integration/
 ```
 
+On first run in an interactive shell, `branchbox init` may prompt for:
+- moving out of temporary directories,
+- confirming repository reorganization,
+- optional Cloudflare tunnel setup (prefix/zone/credentials).
+
+Use `branchbox init -y` for non-interactive defaults.
+
+If `init` generates `.devcontainer/` from BranchBox templates, it also includes optional 1Password-backed git bootstrap hooks (`init-host.sh` + `setup-git.sh`). Those hooks are not auto-injected into pre-existing custom devcontainer configs.
+
 Your feature now has:
 
 - Its own DB  
@@ -364,3 +373,27 @@ FROM mcr.microsoft.com/devcontainers/base:debian
 ```
 
 After updating, your next `docker compose up` or "Reopen in Container" will pull the pre-built image instead of building locally.
+
+## Manual Release Harnesses
+
+Before tagging a release, run the CLI smoke matrix:
+
+```bash
+./scripts/manual-cli-e2e.sh
+./scripts/manual-cli-e2e.sh --mode verbose
+./scripts/manual-cli-e2e.sh --mode pretend
+STACK=generic ./scripts/manual-cli-e2e.sh
+STACK=rails ./scripts/manual-cli-e2e.sh
+STACK=node ./scripts/manual-cli-e2e.sh
+```
+
+If your change touches devcontainer 1Password auth/signing wiring (issue #45 flow), also run:
+
+```bash
+ORIGIN_SSH_URL='git@github.com:<org>/<repo>.git' \
+OP_GITHUB_REF='op://<vault>/<item>/token' \
+OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
+./scripts/manual-1password-e2e.sh --check-failure-path
+```
+
+Details: `docs/docs/getting-started/manual-cli-e2e.md` and `docs/docs/getting-started/manual-1password-e2e.md`.

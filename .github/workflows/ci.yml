@@ -13,9 +13,20 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  review_preflight:
+    name: Review Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Run review preflight checks
+        run: scripts/review-preflight.sh
+
   quality_checks:
     name: Quality Checks
     runs-on: ubuntu-latest
+    needs: review_preflight
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `branchbox init` now scaffolds 1Password bootstrap assets in `.devcontainer/` (`scripts/init-host.sh`, `scripts/setup-git.sh`, `.github-token.env`, `.git-signing-key`, `.gitconfig.env`) and wires each stack template to run them during devcontainer startup.
+- Compose templates for Rust, Generic, Rails, and Node now mount the generated 1Password credential files into the container.
+- Added a focused manual 1Password regression harness (`scripts/manual-1password-e2e.sh`) plus runbook (`scripts/manual-1password-e2e.md`) to validate PAT + SSH-signing setup end-to-end.
+- Added `scripts/review-preflight.sh` plus CI wiring to enforce security/sanitizer/harness-doc-sync guardrails before deeper test jobs run.
+
+### Changed
+- Devcontainer compose templates no longer pin top-level compose project names or `container_name`, preventing collisions across parallel worktrees.
+
+### Fixed
+- `branchbox feature start` now consistently derives `COMPOSE_PROJECT_NAME` / `DEVCONTAINER_NAME` from app slug + feature name (including when the source repo has no `.env`), while still writing `.devcontainer/.branchbox.env`.
+- Feature-start stash handling now ignores untracked files and applies the exact stash reference, eliminating false “failed to apply stashed changes” warnings in common workflows.
+- 1Password host bootstrap now preserves previously fetched token/signing files when `op read` fails and writes signing keys with owner-only permissions.
+- 1Password host bootstrap now surfaces the final `op read` error output after retries so secret-fetch failures are diagnosable in `initializeCommand` logs.
+- Devcontainer git credential bootstrapping now stores GitHub credentials via `git credential approve` + `store --file` (no shell helper interpolation of token content).
+- Feature/bootstrap file generation now rejects symlink targets for managed writes and uses `O_NOFOLLOW`/file-handle permission hardening on Unix to prevent unintended host file overwrite via malicious repository links.
+- Feature env generation now applies context-specific sanitization before writing `.env` files (`APP_URL` keeps URL-safe delimiters and is single-quoted when emitted, `GIT_BRANCH` is allow-listed to env-safe branch characters, and `COMPOSE_PROJECT_NAME` is normalized to Docker Compose-safe lowercase chars), and generated feature env files are written with owner-only permissions.
+- VS Code feature URL tasks now use process-style launchers across platforms (`xdg-open`/`open`/`explorer`) instead of `cmd /C start` shell invocation.
+- Compose lifecycle operations now fall back from `docker compose` to `docker-compose` when plugin-style compose is unavailable.
+- `scripts/manual-cli-e2e.sh` now resolves devcontainer services via `devcontainer read-configuration` first (with JSONC/compose fallbacks), avoiding brittle JSONC parsing.
+- `scripts/manual-1password-e2e.sh` now supports `docker compose`/`docker-compose` fallback and resolves devcontainer services via `devcontainer read-configuration` first (with JSONC/compose fallbacks).
+
+### Documentation
+- Updated manual E2E docs and release guidance to include the 1Password-specific harness and required environment inputs for issue #45 style validation.
+
 ## [0.7.0] - 2026-01-14
 
 ### Added
@@ -76,7 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    ```
 
 **Feature worktrees** will automatically use the updated configuration from your main worktree when you run `branchbox feature start`.
-
 ## [0.5.0] - 2026-01-07
 
 ### Added

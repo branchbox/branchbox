@@ -5,7 +5,7 @@ set -euo pipefail
 MODE="regular"
 SCRIPT_VERBOSE=0
 PRETEND=0
-STACK="rust"
+STACK="${STACK:-rust}"
 
 usage() {
   cat <<'USAGE'
@@ -85,6 +85,8 @@ if [[ "$SCRIPT_VERBOSE" == "1" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/scripts/lib/devcontainer-service.sh"
+source "$REPO_ROOT/scripts/lib/docker-compose.sh"
 BRANCHBOX_BIN="${BRANCHBOX_BIN:-"$REPO_ROOT/target/debug/branchbox"}"
 PROJECT_NAME="${PROJECT_NAME:-cli-e2e-${STACK}-sample}"
 FEATURE_NAME="${FEATURE_NAME:-cli-e2e-${STACK}-smoke}"
@@ -104,6 +106,7 @@ mkdir -p "$LOG_DIR"
 
 BUGS=()
 COMPOSE_STACKS=()
+COMPOSE_CMD=()
 
 function cleanup() {
   if [[ "${PRETEND}" == "1" ]]; then
@@ -114,7 +117,10 @@ function cleanup() {
   fi
 
   for compose_file in "${COMPOSE_STACKS[@]}"; do
-    docker compose -f "$compose_file" \
+    if ((${#COMPOSE_CMD[@]} == 0)); then
+      continue
+    fi
+    "${COMPOSE_CMD[@]}" -f "$compose_file" \
       --project-directory "$(dirname "$compose_file")" \
       down -v --remove-orphans >/dev/null 2>&1 || true
   done
@@ -349,6 +355,7 @@ require_cmd cargo
 require_cmd jq
 if [[ "$PRETEND" == "0" ]]; then
   require_cmd docker
+  configure_compose_command
 fi
 
 log "Running manual CLI e2e in '$MODE' mode (stack: $STACK)"
@@ -493,11 +500,11 @@ if [[ "$PRETEND" == "0" && -f "$MAIN_COMPOSE" && -f "$MAIN_DEVCONTAINER_JSON" ]]
     } >"$tmp_jsonc"
     mv "$tmp_jsonc" "$MAIN_DEVCONTAINER_JSON"
   fi
-  SERVICE_NAME="$(jq -r '.service // "rust-dev"' "$MAIN_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
+  SERVICE_NAME="$(resolve_devcontainer_service "$MAIN_DEVCONTAINER_JSON" "$MAIN_COMPOSE" "rust-dev")"
   log "Booting main devcontainer service '$SERVICE_NAME'"
-  if docker compose -f "$MAIN_COMPOSE" --project-directory "$(dirname "$MAIN_COMPOSE")" up -d --build >/dev/null; then
+  if "${COMPOSE_CMD[@]}" -f "$MAIN_COMPOSE" --project-directory "$(dirname "$MAIN_COMPOSE")" up -d --build >/dev/null; then
     COMPOSE_STACKS+=("$MAIN_COMPOSE")
-    if ! docker compose -f "$MAIN_COMPOSE" --project-directory "$(dirname "$MAIN_COMPOSE")" exec -T "$SERVICE_NAME" git --version >/dev/null; then
+    if ! "${COMPOSE_CMD[@]}" -f "$MAIN_COMPOSE" --project-directory "$(dirname "$MAIN_COMPOSE")" exec -T "$SERVICE_NAME" git --version >/dev/null; then
       record_bug "git binary missing inside main devcontainer (service $SERVICE_NAME)"
     fi
   else
@@ -560,11 +567,11 @@ SECONDARY_COMPOSE="$SECONDARY_DIR/.devcontainer/compose.yaml"
 SECONDARY_DEVCONTAINER_JSON="$SECONDARY_DIR/.devcontainer/devcontainer.json"
 
 if [[ "$PRETEND" == "0" && -f "$FEATURE_COMPOSE" && -f "$FEATURE_DEVCONTAINER_JSON" ]]; then
-  FEATURE_SERVICE="$(jq -r '.service // "rust-dev"' "$FEATURE_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
+  FEATURE_SERVICE="$(resolve_devcontainer_service "$FEATURE_DEVCONTAINER_JSON" "$FEATURE_COMPOSE" "rust-dev")"
   log "Booting feature devcontainer service '$FEATURE_SERVICE'"
-  if docker compose -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" up -d --build >/dev/null; then
+  if "${COMPOSE_CMD[@]}" -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" up -d --build >/dev/null; then
     COMPOSE_STACKS+=("$FEATURE_COMPOSE")
-    if ! docker compose -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" exec -T "$FEATURE_SERVICE" git --version >/dev/null; then
+    if ! "${COMPOSE_CMD[@]}" -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" exec -T "$FEATURE_SERVICE" git --version >/dev/null; then
       record_bug "git binary missing inside feature devcontainer (service $FEATURE_SERVICE)"
     fi
   else
@@ -617,11 +624,11 @@ else
 fi
 
 if [[ "$PRETEND" == "0" && -f "$SECONDARY_COMPOSE" && -f "$SECONDARY_DEVCONTAINER_JSON" ]]; then
-  SECONDARY_SERVICE="$(jq -r '.service // "rust-dev"' "$SECONDARY_DEVCONTAINER_JSON" 2>/dev/null || echo "rust-dev")"
+  SECONDARY_SERVICE="$(resolve_devcontainer_service "$SECONDARY_DEVCONTAINER_JSON" "$SECONDARY_COMPOSE" "rust-dev")"
   log "Booting Cloudflared feature devcontainer service '$SECONDARY_SERVICE'"
-  if docker compose -f "$SECONDARY_COMPOSE" --project-directory "$(dirname "$SECONDARY_COMPOSE")" up -d --build >/dev/null; then
+  if "${COMPOSE_CMD[@]}" -f "$SECONDARY_COMPOSE" --project-directory "$(dirname "$SECONDARY_COMPOSE")" up -d --build >/dev/null; then
     COMPOSE_STACKS+=("$SECONDARY_COMPOSE")
-    if ! docker compose -f "$SECONDARY_COMPOSE" --project-directory "$(dirname "$SECONDARY_COMPOSE")" exec -T "$SECONDARY_SERVICE" git --version >/dev/null; then
+    if ! "${COMPOSE_CMD[@]}" -f "$SECONDARY_COMPOSE" --project-directory "$(dirname "$SECONDARY_COMPOSE")" exec -T "$SECONDARY_SERVICE" git --version >/dev/null; then
       record_bug "git binary missing inside Cloudflared feature devcontainer (service $SECONDARY_SERVICE)"
     fi
   else

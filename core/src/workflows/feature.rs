@@ -1161,68 +1161,72 @@ impl FeatureWorkflow {
         warnings: &mut Vec<String>,
     ) -> Result<EnvOutcome> {
         let source_env = self.repo_root.join(".env");
-        if !source_env.exists() {
-            tracing::warn!("No .env found at {}", source_env.display());
-            return Ok(EnvOutcome::skipped());
-        }
-
         let dest_env = worktree_path.join(".env");
-        let (base_env, _previous_section) = split_feature_section(&source_env)?;
+        let source_env_exists = source_env.exists();
 
-        if reuse_existing && dest_env.exists() {
-            if let Ok((_, existing_section)) = split_feature_section(&dest_env) {
-                if let Some(section) = existing_section {
-                    let trimmed = section.trim();
-                    if !trimmed.is_empty() {
+        let mut feature_url = None;
+        let app_slug = self.resolve_app_slug(&source_env)?;
+        let raw_compose_name = format!("{}-{}", app_slug, work_feature);
+        let compose_name = sanitize_compose_project_name(&raw_compose_name);
+        std::env::set_var("BASE_PREFIX", &app_slug);
+        std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
+        std::env::set_var("DEVCONTAINER_NAME", &compose_name);
+
+        if source_env_exists {
+            let (base_env, _previous_section) = split_feature_section(&source_env)?;
+
+            if reuse_existing && dest_env.exists() {
+                if let Ok((_, existing_section)) = split_feature_section(&dest_env) {
+                    if let Some(section) = existing_section {
+                        let trimmed = section.trim();
+                        if !trimmed.is_empty() {
+                            warnings.push(format!(
+                                "Existing feature-specific configuration replaced in {}",
+                                dest_env.display()
+                            ));
+                        }
+                    } else {
                         warnings.push(format!(
-                            "Existing feature-specific configuration replaced in {}",
+                            "Existing {} will be refreshed from main .env (no branchbox block found)",
                             dest_env.display()
                         ));
                     }
-                } else {
-                    warnings.push(format!(
-                        "Existing {} will be refreshed from main .env (no branchbox block found)",
-                        dest_env.display()
-                    ));
                 }
             }
-        }
 
-        fs::write(&dest_env, base_env)?;
+            write_secure_file(&dest_env, &base_env)?;
 
-        let mut feature_url = None;
-        let mut compose_project_name = None;
-        let mut devcontainer_name = None;
-
-        let app_slug = self.resolve_app_slug(&source_env)?;
-        std::env::set_var("BASE_PREFIX", &app_slug);
-
-        // Try to derive feature URL from cloudflared config first (centralized source of truth)
-        // Falls back to APP_URL if cloudflared dns_zone is not configured
-        let url = self.derive_feature_url(&source_env, work_feature);
-
-        if let Some(url) = url {
-            let compose_name = format!("{}-{}", app_slug, work_feature);
-            std::env::set_var("COMPOSE_PROJECT_NAME", &compose_name);
-            std::env::set_var("DEVCONTAINER_NAME", &compose_name);
-            let mut file = OpenOptions::new().append(true).open(&dest_env)?;
+            // Try to derive feature URL from cloudflared config first (centralized source of truth)
+            // Falls back to APP_URL if cloudflared dns_zone is not configured
+            let url = self.derive_feature_url(&source_env, work_feature);
+            let mut file = open_append_secure(&dest_env)?;
             ensure_trailing_newline(&mut file)?;
             writeln!(
                 file,
                 "# Feature-specific configuration (managed by branchbox)"
             )?;
-            writeln!(file, "WORK_FEATURE={}", work_feature)?;
-            writeln!(file, "APP_URL={}", url)?;
+            writeln!(
+                file,
+                "WORK_FEATURE={}",
+                sanitize_identifier_env_value(work_feature)
+            )?;
+            if let Some(url) = url {
+                let sanitized_url = sanitize_url_env_value(&url);
+                writeln!(file, "APP_URL={}", quote_env_value(&sanitized_url))?;
+                feature_url = Some(sanitized_url);
+            }
             writeln!(file, "COMPOSE_PROJECT_NAME={}", compose_name)?;
             writeln!(file, "DEVCONTAINER_NAME={}", compose_name)?;
-            writeln!(file, "GIT_BRANCH={}", branch_name)?;
+            writeln!(
+                file,
+                "GIT_BRANCH={}",
+                sanitize_git_branch_env_value(branch_name)
+            )?;
 
-            feature_url = Some(url);
-            compose_project_name = Some(compose_name.clone());
-            devcontainer_name = Some(compose_name);
+            self.link_env_into_devcontainer(worktree_path)?;
+        } else {
+            tracing::warn!("No .env found at {}", source_env.display());
         }
-
-        self.link_env_into_devcontainer(worktree_path)?;
 
         let main_name = self.main_worktree_name();
         self.write_branchbox_env(
@@ -1230,16 +1234,16 @@ impl FeatureWorkflow {
             work_feature,
             branch_name,
             feature_url.as_deref(),
-            compose_project_name.as_deref(),
-            devcontainer_name.as_deref(),
+            Some(&compose_name),
+            Some(&compose_name),
             &main_name,
         )?;
 
         Ok(EnvOutcome {
-            env_path: Some(dest_env),
+            env_path: source_env_exists.then_some(dest_env),
             feature_url,
-            compose_project_name,
-            skipped: false,
+            compose_project_name: Some(compose_name),
+            skipped: !source_env_exists,
         })
     }
 
@@ -1376,8 +1380,10 @@ impl FeatureWorkflow {
     }
 
     fn capture_stash(&self, work_feature: &str) -> Result<StashState> {
+        let stash_before = self.current_stash_oid()?;
+
         let status = Command::new("git")
-            .args(["status", "--porcelain"])
+            .args(["status", "--porcelain", "--untracked-files=no"])
             .current_dir(&self.repo_root)
             .output()
             .map_err(|err| Error::git(format!("Failed to check git status: {}", err)))?;
@@ -1397,7 +1403,7 @@ impl FeatureWorkflow {
 
         let message = format!("feature-start: changes for {}", work_feature);
         let push = Command::new("git")
-            .args(["stash", "push", "-m", &message])
+            .args(["stash", "push", "--no-include-untracked", "-m", &message])
             .current_dir(&self.repo_root)
             .output()
             .map_err(|err| Error::git(format!("Failed to invoke git stash: {}", err)))?;
@@ -1408,6 +1414,11 @@ impl FeatureWorkflow {
                 "git stash push failed: {}",
                 stderr.trim()
             )));
+        }
+
+        let stash_after = self.current_stash_oid()?;
+        if stash_after.is_none() || stash_after == stash_before {
+            return Ok(StashState::default());
         }
 
         let list = Command::new("git")
@@ -1427,7 +1438,8 @@ impl FeatureWorkflow {
         let reference = String::from_utf8_lossy(&list.stdout)
             .lines()
             .next()
-            .map(|line| line.trim().to_string());
+            .map(|line| line.trim().to_string())
+            .or_else(|| Some("stash@{0}".to_string()));
 
         Ok(StashState {
             created: true,
@@ -1435,13 +1447,45 @@ impl FeatureWorkflow {
         })
     }
 
+    fn current_stash_oid(&self) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["rev-parse", "-q", "--verify", "refs/stash"])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to read refs/stash: {}", err)))?;
+
+        if output.status.success() {
+            let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if oid.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(oid))
+            }
+        } else if output.stderr.is_empty() {
+            Ok(None)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(Error::git(format!(
+                "git rev-parse refs/stash failed: {}",
+                stderr.trim()
+            )))
+        }
+    }
+
     fn apply_stash_to_worktree(&self, stash: &StashState, worktree_path: &Path) -> Vec<String> {
         if !stash.created {
             return Vec::new();
         }
 
+        let Some(reference) = stash.reference.as_deref() else {
+            return vec![
+                "Failed to apply stashed changes to feature worktree: stash reference unavailable. Stash remains available."
+                    .to_string(),
+            ];
+        };
+
         match Command::new("git")
-            .args(["stash", "pop"])
+            .args(["stash", "pop", reference])
             .current_dir(worktree_path)
             .output()
         {
@@ -1452,11 +1496,7 @@ impl FeatureWorkflow {
                     "Failed to apply stashed changes to feature worktree: {}",
                     stderr.trim()
                 );
-                if let Some(reference) = stash.reference.as_deref() {
-                    warning.push_str(&format!(" Stash {} remains available.", reference));
-                } else {
-                    warning.push_str(" Stash remains available.");
-                }
+                warning.push_str(&format!(" Stash {} remains available.", reference));
                 vec![warning]
             }
             Err(err) => {
@@ -1464,11 +1504,7 @@ impl FeatureWorkflow {
                     "Failed to apply stashed changes to feature worktree: {}",
                     err
                 );
-                if let Some(reference) = stash.reference.as_deref() {
-                    warning.push_str(&format!(" Stash {} remains available.", reference));
-                } else {
-                    warning.push_str(" Stash remains available.");
-                }
+                warning.push_str(&format!(" Stash {} remains available.", reference));
                 vec![warning]
             }
         }
@@ -1522,23 +1558,44 @@ impl FeatureWorkflow {
         }
 
         let managed_env = dev_dir.join(".branchbox.env");
-        let mut file = File::create(&managed_env)?;
+        let mut file = create_secure_file(&managed_env)?;
         writeln!(
             file,
             "# BranchBox-managed overrides (auto-generated, do not edit)"
         )?;
-        writeln!(file, "WORK_FEATURE={}", work_feature)?;
-        writeln!(file, "BRANCHBOX_MAIN_NAME={}", main_name)?;
-        writeln!(file, "GIT_BRANCH={}", branch_name)?;
+        writeln!(
+            file,
+            "WORK_FEATURE={}",
+            sanitize_identifier_env_value(work_feature)
+        )?;
+        writeln!(
+            file,
+            "BRANCHBOX_MAIN_NAME={}",
+            sanitize_identifier_env_value(main_name)
+        )?;
+        writeln!(
+            file,
+            "GIT_BRANCH={}",
+            sanitize_git_branch_env_value(branch_name)
+        )?;
 
         if let Some(url) = feature_url {
-            writeln!(file, "APP_URL={}", url)?;
+            let sanitized_url = sanitize_url_env_value(url);
+            writeln!(file, "APP_URL={}", quote_env_value(&sanitized_url))?;
         }
         if let Some(compose) = compose_project_name {
-            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose)?;
+            writeln!(
+                file,
+                "COMPOSE_PROJECT_NAME={}",
+                sanitize_compose_project_name(compose)
+            )?;
         }
         if let Some(devcontainer) = devcontainer_name {
-            writeln!(file, "DEVCONTAINER_NAME={}", devcontainer)?;
+            writeln!(
+                file,
+                "DEVCONTAINER_NAME={}",
+                sanitize_identifier_env_value(devcontainer)
+            )?;
         }
 
         Ok(())
@@ -1880,7 +1937,7 @@ impl FeatureWorkflow {
         fs::create_dir_all(&dev_dir)?;
         let env_file = dev_dir.join(".cloudflared.env");
         let content = format!("TUNNEL_TOKEN={token}\nDEV_HOSTNAME={hostname}\n");
-        fs::write(&env_file, content)?;
+        write_secure_file(&env_file, &content)?;
         Ok(env_file)
     }
 
@@ -2242,7 +2299,7 @@ impl FeatureWorkflow {
                 feature_title_from_work_feature(work_feature)
             );
 
-            if let Err(err) = fs::write(&in_progress, content) {
+            if let Err(err) = write_text_file(&in_progress, &content) {
                 warnings.push(format!(
                     "Failed to create feature spec '{}': {}",
                     in_progress.display(),
@@ -2459,30 +2516,48 @@ impl FeatureWorkflow {
 
         let settings_json = serde_json::to_string_pretty(&settings)
             .map_err(|e| Error::config(format!("Failed to serialize VS Code settings: {}", e)))?;
-        fs::write(&settings_path, settings_json)?;
+        write_text_file(&settings_path, &settings_json)?;
 
         // Set up quick access task for feature URL
         if let Some(url) = feature_url {
-            let tasks_path = vscode_dir.join("tasks.json");
-            let tasks = serde_json::json!({
-                "version": "2.0.0",
-                "tasks": [
-                    {
-                        "label": "Open Feature URL",
-                        "type": "shell",
-                        "command": format!("echo 'Opening https://{}' && xdg-open 'https://{}' || open 'https://{}'", url, url, url),
-                        "problemMatcher": [],
-                        "presentation": {
-                            "reveal": "silent",
-                            "panel": "shared"
+            let normalized_url = sanitize_url_env_value(
+                url.trim()
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://"),
+            );
+            if !normalized_url.is_empty() {
+                let full_url = format!("https://{}", normalized_url);
+                let tasks_path = vscode_dir.join("tasks.json");
+                let tasks = serde_json::json!({
+                    "version": "2.0.0",
+                    "tasks": [
+                        {
+                            "label": "Open Feature URL",
+                            "type": "process",
+                            "command": "xdg-open",
+                            "args": [full_url.clone()],
+                            "problemMatcher": [],
+                            "presentation": {
+                                "reveal": "silent",
+                                "panel": "shared"
+                            },
+                            "osx": {
+                                "command": "open",
+                                "args": [full_url.clone()]
+                            },
+                            "windows": {
+                                "command": "explorer",
+                                "args": [full_url]
+                            }
                         }
-                    }
-                ]
-            });
+                    ]
+                });
 
-            let tasks_json = serde_json::to_string_pretty(&tasks)
-                .map_err(|e| Error::config(format!("Failed to serialize VS Code tasks: {}", e)))?;
-            fs::write(&tasks_path, tasks_json)?;
+                let tasks_json = serde_json::to_string_pretty(&tasks).map_err(|e| {
+                    Error::config(format!("Failed to serialize VS Code tasks: {}", e))
+                })?;
+                write_text_file(&tasks_path, &tasks_json)?;
+            }
         }
 
         Ok(())
@@ -2564,7 +2639,7 @@ impl FeatureWorkflow {
 
         // Write the fixed path
         let new_content = format!("gitdir: {}\n", relative_path_str);
-        fs::write(&git_file, new_content)?;
+        write_text_file(&git_file, &new_content)?;
 
         tracing::info!(
             "Fixed git worktree path from absolute to relative: {}",
@@ -2595,6 +2670,171 @@ fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
             base.push('\n');
         }
         Ok((base, None))
+    }
+}
+
+fn sanitize_identifier_env_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/' | '='))
+        .collect()
+}
+
+fn sanitize_git_branch_env_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '/'))
+        .collect()
+}
+
+fn sanitize_compose_project_name(value: &str) -> String {
+    let normalized: String = value
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                Some(ch.to_ascii_lowercase())
+            } else if matches!(ch, '-' | '_') {
+                Some(ch)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let trimmed = normalized.trim_start_matches(['-', '_']);
+    if trimmed.is_empty() {
+        "app".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn quote_env_value(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn sanitize_url_env_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '.' | '-'
+                        | '_'
+                        | '/'
+                        | ':'
+                        | '='
+                        | '?'
+                        | '&'
+                        | '#'
+                        | '%'
+                        | '+'
+                        | '~'
+                        | '@'
+                        | ','
+                        | '['
+                        | ']'
+                        | '!'
+                        | '*'
+                        | '('
+                        | ')'
+                        | ';'
+                )
+        })
+        .collect()
+}
+
+fn ensure_not_symlink(path: &Path) -> io::Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Refusing to write through symlink: {}", path.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_text_file(path: &Path, contents: &str) -> io::Result<()> {
+    ensure_not_symlink(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+}
+
+fn create_secure_file(path: &Path) -> io::Result<File> {
+    ensure_not_symlink(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+    }
+}
+
+fn write_secure_file(path: &Path, contents: &str) -> io::Result<()> {
+    let mut file = create_secure_file(path)?;
+    file.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
+fn open_append_secure(path: &Path) -> io::Result<File> {
+    ensure_not_symlink(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let file = OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new().append(true).open(path)
     }
 }
 
@@ -2675,14 +2915,16 @@ fn update_spec_frontmatter(
         body_text.push_str(body.trim_start_matches('\n'));
     }
 
-    fs::write(path, format!("{}{}", frontmatter_text, body_text))?;
+    write_text_file(path, &format!("{}{}", frontmatter_text, body_text))?;
     Ok(())
 }
 
 fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
-    let prefix = prefix.unwrap_or("feature").trim_end_matches('/');
+    let sanitized_prefix = sanitize_git_branch_env_value(prefix.unwrap_or("feature"));
+    let prefix = sanitized_prefix.trim_end_matches('/');
+    let work_feature = sanitize_git_branch_env_value(work_feature);
     if prefix.is_empty() {
-        work_feature.to_string()
+        work_feature
     } else {
         format!("{}/{}", prefix, work_feature)
     }
@@ -2769,17 +3011,6 @@ struct EnvOutcome {
     feature_url: Option<String>,
     compose_project_name: Option<String>,
     skipped: bool,
-}
-
-impl EnvOutcome {
-    fn skipped() -> Self {
-        Self {
-            env_path: None,
-            feature_url: None,
-            compose_project_name: None,
-            skipped: true,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3187,7 +3418,7 @@ impl FeatureStateStore {
             Error::config(format!("Failed to serialize feature registry: {}", err))
         })?;
 
-        fs::write(&self.path, serialized)?;
+        write_text_file(&self.path, &serialized)?;
         if self.legacy_path.exists() && self.legacy_path != self.path {
             let _ = fs::remove_file(&self.legacy_path);
         }
@@ -3402,6 +3633,80 @@ mod tests {
     }
 
     #[test]
+    fn test_build_branch_name_strips_crlf() {
+        assert_eq!(
+            build_branch_name(Some("feature/\n"), "test\r"),
+            "feature/test"
+        );
+    }
+
+    #[test]
+    fn test_build_branch_name_strips_equals() {
+        assert_eq!(
+            build_branch_name(Some("feature=unsafe"), "name=unsafe"),
+            "featureunsafe/nameunsafe"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_identifier_env_value_strips_shell_metacharacters() {
+        assert_eq!(
+            sanitize_identifier_env_value("https://dev.example.com/$(touch /tmp/pwn) & echo hi"),
+            "https//dev.example.com/touch/tmp/pwnechohi"
+        );
+        assert_eq!(
+            sanitize_identifier_env_value("feature/$USER;rm -rf *"),
+            "feature/USERrm-rf"
+        );
+        assert_eq!(
+            sanitize_identifier_env_value("feature:with:colons"),
+            "featurewithcolons"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_git_branch_env_value_strips_shell_metacharacters() {
+        assert_eq!(
+            sanitize_git_branch_env_value("feature/(ui)\r\nINJECTED=1"),
+            "feature/uiINJECTED1"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_compose_project_name_enforces_compose_charset() {
+        assert_eq!(sanitize_compose_project_name("My_App-01"), "my_app-01");
+        assert_eq!(sanitize_compose_project_name("my.app"), "myapp");
+        assert_eq!(sanitize_compose_project_name("__bad\nname!"), "badname");
+        assert_eq!(sanitize_compose_project_name("...lead"), "lead");
+        assert_eq!(sanitize_compose_project_name("___"), "app");
+    }
+
+    #[test]
+    fn test_quote_env_value_wraps_with_single_quotes() {
+        assert_eq!(
+            quote_env_value("https://dev.example.com?a=1&b=2"),
+            "'https://dev.example.com?a=1&b=2'"
+        );
+        assert_eq!(quote_env_value("it'works"), "'it'\\''works'");
+    }
+
+    #[test]
+    fn test_sanitize_url_env_value_preserves_query_and_fragment() {
+        assert_eq!(
+            sanitize_url_env_value("https://dev.example.com/path?a=1&b=2#frag"),
+            "https://dev.example.com/path?a=1&b=2#frag"
+        );
+        assert_eq!(
+            sanitize_url_env_value("https://dev.example.com/path;one!(two)*three?a=1"),
+            "https://dev.example.com/path;one!(two)*three?a=1"
+        );
+        assert_eq!(
+            sanitize_url_env_value("https://dev.example.com/$(touch /tmp/pwn)?a=1\r\nINJECT=1"),
+            "https://dev.example.com/(touch/tmp/pwn)?a=1INJECT=1"
+        );
+    }
+
+    #[test]
     fn test_feature_title_from_work_feature() {
         assert_eq!(
             feature_title_from_work_feature("oauth-integration"),
@@ -3513,15 +3818,6 @@ mod tests {
         assert_eq!(base.trim(), "FOO=bar");
         assert!(feature.is_some());
         assert!(feature.unwrap().contains("WORK_FEATURE=test"));
-    }
-
-    #[test]
-    fn test_env_outcome_skipped() {
-        let outcome = EnvOutcome::skipped();
-        assert!(outcome.skipped);
-        assert!(outcome.env_path.is_none());
-        assert!(outcome.feature_url.is_none());
-        assert!(outcome.compose_project_name.is_none());
     }
 
     #[test]
@@ -3885,7 +4181,13 @@ mod tests {
         assert!(env_path.exists());
         let env_content = fs::read_to_string(&env_path).unwrap();
         assert!(env_content.contains("WORK_FEATURE=test-feature"));
-        assert!(env_content.contains("APP_URL=dev-test-feature.example.com"));
+        assert!(env_content.contains("APP_URL='dev-test-feature.example.com'"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let env_mode = fs::metadata(&env_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(env_mode, 0o600);
+        }
 
         let managed_env_path = summary.worktree_path.join(".devcontainer/.branchbox.env");
         assert!(managed_env_path.exists());
@@ -3902,7 +4204,17 @@ mod tests {
             assert!(managed_env.contains(&format!("DEVCONTAINER_NAME={}", compose)));
         }
         if let Some(url) = summary.feature_url.as_deref() {
-            assert!(managed_env.contains(&format!("APP_URL={}", url)));
+            assert!(managed_env.contains(&format!("APP_URL='{}'", url)));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let managed_mode = fs::metadata(&managed_env_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(managed_mode, 0o600);
         }
         assert_eq!(
             summary.feature_url.as_deref(),
@@ -4040,6 +4352,118 @@ mod tests {
     }
 
     #[test]
+    fn feature_start_ignores_untracked_changes_without_stash_warnings() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        fs::write(repo_path.join("scratch-notes.txt"), "untracked changes\n").unwrap();
+        let worktree_path = repo_path.parent().unwrap().join("stash-untracked");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("stash-untracked".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        assert!(
+            !summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Failed to apply stashed changes")),
+            "unexpected stash warning(s): {:?}",
+            summary.warnings
+        );
+        assert!(!summary.worktree_path.join("scratch-notes.txt").exists());
+        assert!(repo_path.join("scratch-notes.txt").exists());
+
+        let stash_list = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&stash_list.stdout)
+            .trim()
+            .is_empty());
+    }
+
+    #[test]
+    fn feature_start_keeps_untracked_devcontainer_templates_in_main_worktree() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        let worktree_path = repo_path.parent().unwrap().join("preserve-devcontainer");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
+
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(devcontainer_dir.join("scripts")).unwrap();
+        fs::write(devcontainer_dir.join("Dockerfile"), "FROM ubuntu:22.04\n").unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  dev:\n    image: ubuntu:22.04\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            "{\"service\":\"dev\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("scripts/init-host.sh"),
+            "#!/usr/bin/env bash\necho init\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("scripts/setup-git.sh"),
+            "#!/usr/bin/env bash\necho setup\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join(".github-token.env"),
+            "GITHUB_TOKEN=\n",
+        )
+        .unwrap();
+        fs::write(devcontainer_dir.join(".git-signing-key"), "\n").unwrap();
+        fs::write(devcontainer_dir.join(".gitconfig.env"), "\n").unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("preserve-devcontainer".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        for path in [
+            ".devcontainer/Dockerfile",
+            ".devcontainer/compose.yaml",
+            ".devcontainer/devcontainer.json",
+            ".devcontainer/scripts/init-host.sh",
+            ".devcontainer/scripts/setup-git.sh",
+        ] {
+            assert!(
+                repo_path.join(path).exists(),
+                "expected main worktree to keep {}",
+                path
+            );
+            assert!(
+                summary.worktree_path.join(path).exists(),
+                "expected feature worktree to contain {}",
+                path
+            );
+        }
+    }
+
+    #[test]
     fn feature_start_moves_backlog_spec_into_worktree() {
         let temp = setup_test_repo();
         let repo_path = temp.path();
@@ -4071,6 +4495,57 @@ mod tests {
         let contents = fs::read_to_string(&worktree_spec).unwrap();
         assert!(contents.contains("status: in-progress"));
         assert!(contents.contains("branch: feature/backlog-spec"));
+
+        workflow
+            .teardown(TeardownRequest {
+                work_feature: summary.work_feature,
+                branch_prefix: None,
+                delete_branch: true,
+                force_delete_branch: false,
+                force_remove: true,
+                force_remove_modules: true,
+                complete_spec: false,
+                telemetry: false,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn feature_start_without_source_env_still_sets_compose_identity() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        copy_repo_devcontainer(repo_path);
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("no-env-feature".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        assert!(summary.env_path.is_none());
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Skipped .env provisioning")),
+            "expected skipped env warning, got {:?}",
+            summary.warnings
+        );
+
+        let compose_name = summary
+            .compose_project_name
+            .clone()
+            .expect("compose project name should be set");
+        assert!(compose_name.ends_with("-no-env-feature"));
+
+        let branchbox_env_path = summary.worktree_path.join(".devcontainer/.branchbox.env");
+        assert!(branchbox_env_path.exists());
+        let branchbox_env = fs::read_to_string(&branchbox_env_path).unwrap();
+        assert!(branchbox_env.contains(&format!("COMPOSE_PROJECT_NAME={}", compose_name)));
+        assert!(branchbox_env.contains(&format!("DEVCONTAINER_NAME={}", compose_name)));
 
         workflow
             .teardown(TeardownRequest {
@@ -4929,6 +5404,72 @@ mod tests {
         let content = fs::read_to_string(&tasks_path).unwrap();
         assert!(content.contains("Open Feature URL"));
         assert!(content.contains("https://test-feature.example.com"));
+        assert!(!content.contains("https://https://test-feature.example.com"));
+
+        let tasks: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let first_task = tasks
+            .get("tasks")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .expect("first task present");
+        assert_eq!(
+            first_task.get("type").and_then(|value| value.as_str()),
+            Some("process")
+        );
+        assert_eq!(
+            first_task.get("command").and_then(|value| value.as_str()),
+            Some("xdg-open")
+        );
+        let windows_task = first_task.get("windows").expect("windows override present");
+        assert_eq!(
+            windows_task.get("command").and_then(|value| value.as_str()),
+            Some("explorer")
+        );
+        let windows_url_arg = windows_task
+            .get("args")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .and_then(|value| value.as_str())
+            .expect("windows url arg present");
+        assert_eq!(windows_url_arg, "https://test-feature.example.com");
+    }
+
+    #[test]
+    fn test_setup_vscode_workspace_strips_crlf_from_feature_url() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
+        workflow
+            .setup_vscode_workspace(
+                &worktree_path,
+                "test-feature",
+                &None,
+                Some("test-feature.example.com\nINJECTED=value\r"),
+            )
+            .unwrap();
+
+        let tasks_path = worktree_path.join(".vscode/tasks.json");
+        assert!(tasks_path.exists());
+        let content = fs::read_to_string(tasks_path).unwrap();
+        let tasks: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let first_task = tasks
+            .get("tasks")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .expect("first task present");
+        let url_arg = first_task
+            .get("args")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .and_then(|value| value.as_str())
+            .expect("url arg present");
+        assert_eq!(url_arg, "https://test-feature.example.comINJECTED=value");
+        assert!(!url_arg.contains('\n'));
+        assert!(!url_arg.contains('\r'));
     }
 
     #[test]
@@ -4955,6 +5496,65 @@ mod tests {
         let content = fs::read_to_string(settings_path).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(settings.get("workbench.colorCustomizations").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_setup_vscode_workspace_rejects_symlink_tasks_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        let vscode_dir = worktree_path.join(".vscode");
+        fs::create_dir_all(&vscode_dir).unwrap();
+
+        let protected_file = repo_path.join("protected.txt");
+        fs::write(&protected_file, "original").unwrap();
+        symlink(&protected_file, vscode_dir.join("tasks.json")).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let result = workflow.setup_vscode_workspace(
+            &worktree_path,
+            "test-feature",
+            &None,
+            Some("test-feature.example.com"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&protected_file).unwrap(), "original");
+    }
+
+    #[test]
+    fn test_write_branchbox_env_sanitizes_values() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("test-feature");
+        fs::create_dir_all(worktree_path.join(".devcontainer")).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .write_branchbox_env(
+                &worktree_path,
+                "test-feature",
+                "feature/test\nINJECTED_BRANCH=1",
+                Some("dev-test-feature.example.com\r\nINJECTED_URL=1"),
+                Some("compose\nname"),
+                Some("devcontainer\rname"),
+                "main\r\nINJECTED_MAIN=1",
+            )
+            .unwrap();
+
+        let managed_env = fs::read_to_string(worktree_path.join(".devcontainer/.branchbox.env"))
+            .expect("managed env should exist");
+        assert!(managed_env.contains("GIT_BRANCH=feature/testINJECTED_BRANCH1"));
+        assert!(managed_env.contains("APP_URL='dev-test-feature.example.comINJECTED_URL=1'"));
+        assert!(managed_env.contains("COMPOSE_PROJECT_NAME=composename"));
+        assert!(managed_env.contains("DEVCONTAINER_NAME=devcontainername"));
+        assert!(managed_env.contains("BRANCHBOX_MAIN_NAME=mainINJECTED_MAIN=1"));
+        assert!(!managed_env.lines().any(|line| line == "INJECTED_BRANCH=1"));
+        assert!(!managed_env.lines().any(|line| line == "INJECTED_URL=1"));
+        assert!(!managed_env.lines().any(|line| line == "INJECTED_MAIN=1"));
     }
 
     #[test]
@@ -4999,6 +5599,24 @@ mod tests {
             Some("#old-color")
         );
         assert!(settings.get("workbench.colorCustomizations").is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_secure_file_rejects_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let protected_file = repo_path.join("protected.txt");
+        fs::write(&protected_file, "original").unwrap();
+
+        let symlink_path = repo_path.join("linked.txt");
+        symlink(&protected_file, &symlink_path).unwrap();
+
+        let err = write_secure_file(&symlink_path, "mutated").unwrap_err();
+        assert!(err.to_string().contains("symlink"));
+        assert_eq!(fs::read_to_string(&protected_file).unwrap(), "original");
     }
 
     #[test]

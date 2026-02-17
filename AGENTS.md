@@ -30,6 +30,48 @@ STACK=node ./scripts/manual-cli-e2e.sh
 
 Follow up with `./scripts/manual-agent-e2e.sh --cp-stub` to exercise the control-plane HTTP drain. The flag spins up a disposable stub endpoint, feeds it the agent’s batched events, and prints the ack cursor so you can confirm retries/metadata before cutting a release. For quick spot checks (without rerunning the harness) use `branchbox agent status --json`—it reports whether the drain is configured/connected plus the last delivery/failure timestamps.
 
+If you touch devcontainer auth/signing bootstrap (1Password PAT + SSH signing flow from issue #45), also run:
+
+```bash
+ORIGIN_SSH_URL='git@github.com:<org>/<repo>.git' \
+OP_GITHUB_REF='op://<vault>/<item>/token' \
+OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
+./scripts/manual-1password-e2e.sh --check-failure-path
+```
+
+### Devcontainer auth/signing guardrails (issue #45)
+- Treat Docker Desktop on macOS as **no SSH-agent socket pass-through** for 1Password keys; prefer the PAT + mounted-file strategy.
+- Keep host-only secret retrieval in devcontainer `initializeCommand` (`op read`), and keep container-only git/gh/signing setup in `postStartCommand`.
+- Ensure mounted secret files exist before `docker compose up` (`touch` placeholders) or first-run compose startup will fail.
+- Keep secret files (`.github-token.env`, `.git-signing-key`, `.gitconfig.env`) in `.gitignore` and template scaffolding so new repos are safe by default.
+- Never truncate existing secret files before a successful `op read`; write to temp files and atomically move into place so transient 1Password failures do not wipe previously working credentials.
+- Treat empty/whitespace `op read` results as failures for rotation purposes; preserve existing token/key files instead of writing blank replacements.
+- Create temp secret files with restricted permissions from creation time (`umask 077`), then atomically `mv` into place.
+- Enforce owner-only permissions (`chmod 600`) for host-side token/signing material; never leave private key files world-readable.
+- Parse mounted env-style files with explicit `grep/cut` reads instead of `source` (names with spaces and quotes are common in real configs).
+- Never interpolate raw token values into persisted shell snippets (for example git credential helper commands); reference environment variables like `GH_TOKEN` at runtime.
+- For SSH signing, copy keys from read-only mounts into `~/.ssh` with strict permissions (`chmod 600`) before configuring `git config user.signingkey`.
+- Convert `origin` from `git@github.com:*` / `ssh://git@github.com/*` to HTTPS when PAT-based auth is configured in-container.
+- Degrade gracefully when secrets are missing/invalid: emit warnings and keep the workspace usable instead of hard-failing startup.
+- Sanitize untrusted `.env`-derived values before writing generated env files (strip control chars such as `\n`/`\r`, and quote shell-sensitive values like `APP_URL`) to prevent variable-injection payloads.
+- Sanitize compose identity once and reuse the same sanitized value for process env + generated files (`COMPOSE_PROJECT_NAME`, `DEVCONTAINER_NAME`) to avoid drift.
+- Keep compose project names constrained to Compose-safe characters (`[a-z0-9_-]`).
+- Keep `GIT_BRANCH` env writes allow-listed to env-safe ref characters (not only “remove control chars”).
+- Avoid fixed compose `name` or `container_name` values in templates; worktrees must remain parallel-safe.
+- Preserve compatibility by supporting both `docker compose` and `docker-compose` in workflow/module orchestration.
+- For manual harnesses, resolve devcontainer service names with JSONC-safe parsing plus compose-file fallback; do not assume strict JSON or plugin-only compose.
+- When helper logic is shared across harnesses, extract it into `scripts/lib/*.sh` rather than duplicating functions.
+- When editing harnesses/docs, keep `scripts/manual-*.md` and `docs/docs/getting-started/manual-*.md` in sync in the same change.
+
+#### Review preflight for this area
+- Run `./scripts/review-preflight.sh` before requesting review; treat failures as blockers.
+- Run a quick security grep before PR handoff to catch known regressions: host key mode (`chmod 600`), no raw-token interpolation in credential helper strings, and sanitized `APP_URL` writes.
+- Verify secret-write safety details directly in host init scripts: `umask 077` on temp-file writes and “preserve existing file on empty secret” handling.
+- Verify compose/env sanitizers stay policy-aligned (`COMPOSE_PROJECT_NAME` charset, `GIT_BRANCH` allow-list) and tests cover those policies.
+- Verify harness portability checks are present (`docker compose` + `docker-compose` fallback, JSONC-safe service detection).
+- Check for duplicated shell helpers across `scripts/manual-*.sh`; move shared pieces to `scripts/lib/`.
+- Diff paired docs (`scripts/manual-*.md` vs `docs/docs/getting-started/manual-*.md`) to confirm they remain synchronized after edits.
+
 When touching the macOS client or anything gRPC-related, run the “Mac App ↔ Agent Loop” from `docs/docs/getting-started/manual-cli-e2e.md`: start the agent locally, point the SwiftUI preview at your workspace, issue start/teardown operations from the UI, and verify the HTTP drain logs show the matching events.
 
 The harness intentionally edits the feature devcontainer before teardown to exercise the dirty-worktree guard, so an initial `feature teardown` failure followed by the scripted `--force` retry is expected. Use `KEEP_E2E_TMP=1` when you need to inspect the generated workspace for failures, and block merges until the script succeeds.
@@ -37,8 +79,8 @@ CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch ano
 
 ### Release workflow
 - Follow `RELEASING.md` verbatim. The short version: ensure `main` is up to date, run fmt/clippy/tests/docs, then execute the six manual CLI harness permutations listed above (regular/verbose/pretend × rust/generic/rails/node). Releases are blocked until every combination passes locally.
-- Update `CHANGELOG.md` with highlights, refresh `README.md` + `docs/docs/**` (especially the manual CLI E2E and CLI reference pages), and capture any new expectations here in `AGENTS.md` before tagging. Regenerate `docs/docs/reference/cli.md` by pasting `branchbox --help` output whenever flags change.
-- Keep `docs/docs/getting-started/manual-cli-e2e.md` and `scripts/manual-cli-e2e.md` synchronized with the actual harness steps—future contributors should be able to trace every required validation from those docs.
+- Update `CHANGELOG.md` with highlights, refresh `README.md` + `docs/docs/**` (especially the manual CLI E2E pages, first-run `branchbox init` UX + 1Password/git bootstrap caveats in quick start, and CLI reference pages), and capture any new expectations here in `AGENTS.md` before tagging. Regenerate `docs/docs/reference/cli.md` by pasting `branchbox --help` output whenever flags change.
+- Keep `docs/docs/getting-started/manual-cli-e2e.md` + `scripts/manual-cli-e2e.md` and `docs/docs/getting-started/manual-1password-e2e.md` + `scripts/manual-1password-e2e.md` synchronized with the actual harness steps—future contributors should be able to trace every required validation from those docs.
 - Run `cargo release --workspace --dry-run` before `--execute` so you can catch version bumps or git state issues early. Push with `git push --follow-tags` and monitor the release workflow with `gh run watch`.
 - After tagging, confirm the docs build (`cd docs && npm run build`), the GitHub Pages deployment, and downstream taps (Homebrew) before announcing the release.
 
@@ -147,3 +189,8 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 
 ## Known Issues & TODOs
 Recent code review identified: incorrect repository URL in `Cargo.toml` (`branchbox-branchbox`), placeholder author metadata, generic `anyhow::Error` usage (migrate to `thiserror` domain errors), missing CLI input validation, registry race conditions (check + create isn't atomic), hardcoded config (Docker networks, port ranges, spec templates), and insufficient unit test coverage for registry operations and module implementations.
+
+## Project Skills
+- `skills/branchbox-devcontainer-guardrails/` captures repeatable implementation + validation guardrails for devcontainer/bootstrap/compose/harness/release-sensitive changes.
+- Use the skill whenever a change touches 1Password auth/signing bootstrap, compose template naming/mount behavior, feature env/stash mechanics, or manual E2E harnesses.
+- Keep the skill references (`references/gotchas.md`, `references/validation-checklist.md`) synchronized with AGENTS expectations and the corresponding manual harness docs.

@@ -16,7 +16,9 @@
     "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
   },
   "forwardPorts": [3000],
+  "initializeCommand": "bash -c 'cd \"${localWorkspaceFolder}\" && bash .devcontainer/scripts/init-host.sh'",
   "postCreateCommand": "mise trust --all && mise install && mise exec -- npm install",
+  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/setup-git.sh'",
   "runArgs": [
     "--env-file",
     "../.env",

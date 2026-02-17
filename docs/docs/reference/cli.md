@@ -54,6 +54,16 @@ Options:
   -h, --help                  Print help
 ```
 
+### `branchbox init` interactive behavior
+
+When `branchbox init` runs in an interactive terminal (and without `-y/--yes`), it can prompt for:
+
+- Reorganization decisions (`Move to permanent location?`, `Continue?`)
+- Cloudflare tunnel setup (`Enable Cloudflare tunnels...`, prefix, DNS zone, credentials)
+- Optional immediate main tunnel provisioning (`Provision tunnel for 'main' branch now?`)
+
+Use `branchbox init -y` to skip prompts and apply defaults.
+
 ## branchbox devcontainer
 
 ```text
@@ -296,4 +306,3 @@ Options:
       --json         Emit JSON output instead of human-readable summary
   -h, --help         Print help
 ```
-

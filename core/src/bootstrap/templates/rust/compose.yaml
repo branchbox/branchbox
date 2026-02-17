@@ -1,4 +1,3 @@
-name: ${DEVCONTAINER_NAME:-rust-project}
 services:
   rust-dev:
     # Official BranchBox pre-built image (instant startup)
@@ -11,7 +10,6 @@ services:
     privileged: true
     init: true
     ipc: host
-    container_name: ${DEVCONTAINER_NAME:-rust-project}
     volumes:
       - ../..:/workspaces:cached
       - dind-data:/var/lib/docker
@@ -19,6 +17,9 @@ services:
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json
       - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh
+      - ./.github-token.env:/home/vscode/.github-token.env:ro
+      - ./.git-signing-key:/home/vscode/.git-signing-key:ro
+      - ./.gitconfig.env:/home/vscode/.gitconfig.env:ro
     command: sleep infinity
     env_file:
       - path: ../.env

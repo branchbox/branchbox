@@ -63,6 +63,31 @@ pub fn branchbox_docs() -> Result<String> {
     Ok(include_str!("templates/BRANCHBOX.md").to_string())
 }
 
+/// Generate the host-side script that fetches 1Password secrets.
+pub fn onepassword_init_host_script() -> Result<String> {
+    Ok(include_str!("templates/common/init-host.sh").to_string())
+}
+
+/// Generate the container-side script that configures git/gh/signing.
+pub fn onepassword_setup_git_script() -> Result<String> {
+    Ok(include_str!("templates/common/setup-git.sh").to_string())
+}
+
+/// Generate the mounted GitHub token placeholder file.
+pub fn onepassword_github_token_env() -> Result<String> {
+    Ok(include_str!("templates/common/github-token.env").to_string())
+}
+
+/// Generate the mounted SSH signing key placeholder file.
+pub fn onepassword_git_signing_key() -> Result<String> {
+    Ok(include_str!("templates/common/git-signing-key").to_string())
+}
+
+/// Generate the mounted git identity placeholder file.
+pub fn onepassword_gitconfig_env() -> Result<String> {
+    Ok(include_str!("templates/common/gitconfig.env").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +109,16 @@ mod tests {
             assert!(
                 compose.contains(shared),
                 "compose template missing shared config volume {shared}: {compose}"
+            );
+        }
+        for secret_mount in [
+            "./.github-token.env:/home/vscode/.github-token.env:ro",
+            "./.git-signing-key:/home/vscode/.git-signing-key:ro",
+            "./.gitconfig.env:/home/vscode/.gitconfig.env:ro",
+        ] {
+            assert!(
+                compose.contains(secret_mount),
+                "compose template missing 1Password mount {secret_mount}: {compose}"
             );
         }
     }
@@ -147,6 +182,45 @@ mod tests {
             assert!(
                 compose.contains("ipc: host"),
                 "{stack:?} compose template missing 'ipc: host': {compose}"
+            );
+        }
+    }
+
+    #[test]
+    fn devcontainer_template_includes_1password_hooks() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let template = devcontainer_json(stack).expect("devcontainer template");
+            assert!(
+                template.contains("initializeCommand"),
+                "{:?} devcontainer template missing initializeCommand",
+                stack
+            );
+            assert!(
+                template.contains("scripts/init-host.sh"),
+                "{:?} devcontainer template missing host init script hook",
+                stack
+            );
+            assert!(
+                template.contains("scripts/setup-git.sh"),
+                "{:?} devcontainer template missing setup script hook",
+                stack
+            );
+        }
+    }
+
+    #[test]
+    fn compose_template_avoids_fixed_project_and_container_names() {
+        for stack in [Stack::Rust, Stack::Rails, Stack::NodeJs, Stack::Generic] {
+            let compose = compose_yaml(stack).expect("compose template");
+            assert!(
+                !compose.contains("container_name:"),
+                "{:?} compose template should not pin container_name",
+                stack
+            );
+            assert!(
+                !compose.lines().any(|line| line.starts_with("name:")),
+                "{:?} compose template should not pin top-level name",
+                stack
             );
         }
     }

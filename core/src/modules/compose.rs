@@ -120,6 +120,61 @@ impl ComposeModule {
 
         Ok(())
     }
+
+    fn docker_compose_unavailable(status: &std::process::ExitStatus, stderr: &str) -> bool {
+        if status.code() == Some(125) {
+            return true;
+        }
+
+        let stderr_lower = stderr.to_ascii_lowercase();
+        stderr_lower.contains("is not a docker command")
+            || stderr_lower.contains("unknown command \"compose\"")
+            || stderr_lower.contains("unknown shorthand flag")
+    }
+
+    fn run_compose_command(
+        &self,
+        feature_dir: &Path,
+        args: &[&str],
+    ) -> Result<std::process::Output> {
+        match Command::new("docker")
+            .arg("compose")
+            .args(args)
+            .current_dir(feature_dir)
+            .output()
+        {
+            Ok(output) if output.status.success() => Ok(output),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !Self::docker_compose_unavailable(&output.status, &stderr) {
+                    return Ok(output);
+                }
+                let primary_error = stderr.trim().to_string();
+
+                Command::new("docker-compose")
+                    .args(args)
+                    .current_dir(feature_dir)
+                    .output()
+                    .map_err(|fallback_error| {
+                        Error::validation(format!(
+                            "Failed to run Docker Compose (tried `docker compose` which failed with: '{}', then `docker-compose` which failed with: {})",
+                            primary_error,
+                            fallback_error
+                        ))
+                    })
+            }
+            Err(primary_error) => Command::new("docker-compose")
+                .args(args)
+                .current_dir(feature_dir)
+                .output()
+                .map_err(|fallback_error| {
+                    Error::validation(format!(
+                        "Failed to run Docker Compose (docker compose error: {}; docker-compose error: {})",
+                        primary_error, fallback_error
+                    ))
+                }),
+        }
+    }
 }
 
 impl Default for ComposeModule {
@@ -197,35 +252,20 @@ impl Module for ComposeModule {
         let compose_file = feature_dir
             .join(".devcontainer")
             .join(&self.compose_file_name);
+        let compose_file_str = compose_file
+            .to_str()
+            .ok_or_else(|| Error::validation("Compose file path is not valid UTF-8".to_string()))?;
 
         if compose_file.exists() {
             // Check if containers are running
-            let ps_output = Command::new("docker")
-                .args([
-                    "compose",
-                    "-f",
-                    compose_file.to_str().unwrap(),
-                    "ps",
-                    "--quiet",
-                ])
-                .current_dir(feature_dir)
-                .output()
-                .map_err(|e| Error::validation(format!("Failed to check containers: {}", e)))?;
+            let ps_output =
+                self.run_compose_command(feature_dir, &["-f", compose_file_str, "ps", "--quiet"])?;
 
             if ps_output.status.success() && !ps_output.stdout.is_empty() {
                 tracing::info!("Stopping containers for {}...", self.compose_project_name);
 
-                let down_output = Command::new("docker")
-                    .args([
-                        "compose",
-                        "-f",
-                        compose_file.to_str().unwrap(),
-                        "down",
-                        "-v",
-                    ])
-                    .current_dir(feature_dir)
-                    .output()
-                    .map_err(|e| Error::validation(format!("Failed to stop containers: {}", e)))?;
+                let down_output =
+                    self.run_compose_command(feature_dir, &["-f", compose_file_str, "down", "-v"])?;
 
                 if down_output.status.success() {
                     tracing::info!("Containers stopped and removed");
@@ -253,12 +293,13 @@ impl Module for ComposeModule {
         let compose_file = feature_dir
             .join(".devcontainer")
             .join(&self.compose_file_name);
+        let compose_file_str = compose_file
+            .to_str()
+            .ok_or_else(|| Error::validation("Compose file path is not valid UTF-8".to_string()))?;
 
         if compose_file.exists() {
-            let output = Command::new("docker")
-                .args(["compose", "-f", compose_file.to_str().unwrap(), "config"])
-                .current_dir(feature_dir)
-                .output()
+            let output = self
+                .run_compose_command(feature_dir, &["-f", compose_file_str, "config"])
                 .map_err(|e| Error::validation(format!("Failed to validate compose: {}", e)))?;
 
             if !output.status.success() {

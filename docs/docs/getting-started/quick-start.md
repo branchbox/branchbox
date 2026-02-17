@@ -41,6 +41,42 @@ BranchBox will:
 - Set up the `.branchbox/` registry
 - Validate your devcontainer (if present)
 
+### First-run prompts (`branchbox init`)
+
+In an interactive terminal, `branchbox init` asks only for decisions that change behavior:
+
+| Prompt | When it appears | Default |
+| --- | --- | --- |
+| `Move to permanent location? (Y/n)` | Repository is in a temporary path (for example under `/tmp`) | `Y` |
+| `Continue? (y/N)` (with from/to paths) | Reorganization is about to move the repository | `N` unless you type `y` |
+| `Enable Cloudflare tunnels for feature worktrees?` | Interactive run while tunnel config is being set | Current config value (first run defaults to enabled) |
+| `Tunnel name prefix ...` | Tunnel support enabled | Pre-filled (`branchbox`) |
+| `DNS zone for tunnel hostnames ...` | Tunnel support enabled | Empty allowed |
+| `Provide Cloudflare API credentials now ...` | Tunnel support enabled | Uses whether credentials already exist |
+| `Cloudflare account ID` / `Cloudflare API token` | You chose automated provisioning | Required |
+| `Provision tunnel for 'main' branch now?` | Credentials were provided | `Yes` |
+| `Service URL for tunnel ingress ...` | Provisioning main tunnel now | Auto-detected from compose/devcontainer |
+
+For CI or fully scripted setup, use:
+
+```bash
+branchbox init -y
+```
+
+This skips prompts and applies defaults.
+
+### Optional: 1Password + git bootstrap
+
+If `branchbox init` **creates** `.devcontainer/` from BranchBox templates, it also wires:
+
+- `.devcontainer/scripts/init-host.sh` (runs via `initializeCommand` on host)
+- `.devcontainer/scripts/setup-git.sh` (runs via `postStartCommand` in container)
+- mounted credential files: `.github-token.env`, `.git-signing-key`, `.gitconfig.env`
+
+With `OP_GITHUB_REF` / `OP_SIGNING_KEY_REF` set, opening the container can auto-refresh token/key from 1Password, configure git HTTPS credentials, and enable SSH commit signing (when key material is valid).
+
+Important: if your repo already has a custom `.devcontainer/`, `branchbox init` currently updates workspace compatibility but does **not** automatically retrofit these 1Password/git hooks into your existing files.
+
 ## Start Your First Feature
 
 ```bash
