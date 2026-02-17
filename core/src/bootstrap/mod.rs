@@ -300,39 +300,28 @@ fn write_if_missing(path: &Path, contents: &str, mode: u32) -> Result<()> {
         }
     }
 
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(mode)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-        {
-            Ok(file) => file,
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                tracing::info!("Skipped (already exists): {}", path.display());
-                return Ok(());
-            }
-            Err(err) => return Err(err.into()),
-        };
-        file.write_all(contents.as_bytes())?;
+        options.mode(mode).custom_flags(libc::O_NOFOLLOW);
     }
     #[cfg(not(unix))]
     {
         let _ = mode;
-        let mut file = match OpenOptions::new().create_new(true).write(true).open(path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                tracing::info!("Skipped (already exists): {}", path.display());
-                return Ok(());
-            }
-            Err(err) => return Err(err.into()),
-        };
-        file.write_all(contents.as_bytes())?;
     }
+
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            tracing::info!("Skipped (already exists): {}", path.display());
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
+    };
+    file.write_all(contents.as_bytes())?;
 
     tracing::info!("Created: {}", path.display());
 
