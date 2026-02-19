@@ -243,17 +243,29 @@ write_manifest() {
   poster_file="$media_dir/$(basename "$POSTER_16X9")"
   card_file="$media_dir/$(basename "$CARD_1200X630")"
 
-  local variants_json=()
-  variants_json+=("{\"variant\":\"web-16x9\",\"file\":\"/media/demos/$(basename "$WEB_16X9")\",\"sha256\":\"$(sha256_file "$web_file")\",\"size_bytes\":$(wc -c < "$web_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$web_file")}")
-  variants_json+=("{\"variant\":\"social-square-1x1\",\"file\":\"/media/demos/$(basename "$SQUARE_1X1")\",\"sha256\":\"$(sha256_file "$square_file")\",\"size_bytes\":$(wc -c < "$square_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$square_file")}")
-  variants_json+=("{\"variant\":\"social-vertical-9x16\",\"file\":\"/media/demos/$(basename "$VERTICAL_9X16")\",\"sha256\":\"$(sha256_file "$vertical_file")\",\"size_bytes\":$(wc -c < "$vertical_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$vertical_file")}")
-  variants_json+=("{\"variant\":\"poster-16x9\",\"file\":\"/media/demos/$(basename "$POSTER_16X9")\",\"sha256\":\"$(sha256_file "$poster_file")\",\"size_bytes\":$(wc -c < "$poster_file" | tr -d ' '),\"duration_seconds\":null}")
-  variants_json+=("{\"variant\":\"social-card-1200x630\",\"file\":\"/media/demos/$(basename "$CARD_1200X630")\",\"sha256\":\"$(sha256_file "$card_file")\",\"size_bytes\":$(wc -c < "$card_file" | tr -d ' '),\"duration_seconds\":null}")
+  local variant_rows=()
+  variant_rows+=("web-16x9"$'\t'"/media/demos/$(basename "$WEB_16X9")"$'\t'"$(sha256_file "$web_file")"$'\t'"$(wc -c < "$web_file" | tr -d ' ')"$'\t'"$(duration_or_null "$web_file")")
+  variant_rows+=("social-square-1x1"$'\t'"/media/demos/$(basename "$SQUARE_1X1")"$'\t'"$(sha256_file "$square_file")"$'\t'"$(wc -c < "$square_file" | tr -d ' ')"$'\t'"$(duration_or_null "$square_file")")
+  variant_rows+=("social-vertical-9x16"$'\t'"/media/demos/$(basename "$VERTICAL_9X16")"$'\t'"$(sha256_file "$vertical_file")"$'\t'"$(wc -c < "$vertical_file" | tr -d ' ')"$'\t'"$(duration_or_null "$vertical_file")")
+  variant_rows+=("poster-16x9"$'\t'"/media/demos/$(basename "$POSTER_16X9")"$'\t'"$(sha256_file "$poster_file")"$'\t'"$(wc -c < "$poster_file" | tr -d ' ')"$'\t'"null")
+  variant_rows+=("social-card-1200x630"$'\t'"/media/demos/$(basename "$CARD_1200X630")"$'\t'"$(sha256_file "$card_file")"$'\t'"$(wc -c < "$card_file" | tr -d ' ')"$'\t'"null")
 
-  node - "$manifest" "$timestamp" "$STACK" "${variants_json[@]}" <<'EOF'
+  printf '%s\n' "${variant_rows[@]}" | node - "$manifest" "$timestamp" "$STACK" <<'EOF'
 const fs = require("fs");
-const [manifest, generatedAt, stack, ...variantsRaw] = process.argv.slice(2);
-const variants = variantsRaw.map((raw) => JSON.parse(raw));
+const [manifest, generatedAt, stack] = process.argv.slice(2);
+const input = fs.readFileSync(0, "utf8").trim();
+const variants = input
+  ? input.split("\n").map((row) => {
+      const [variant, file, sha, size, duration] = row.split("\t");
+      return {
+        variant,
+        file,
+        sha256: sha,
+        size_bytes: Number(size),
+        duration_seconds: duration === "null" ? null : Number(duration),
+      };
+    })
+  : [];
 const payload = {
   generated_at: generatedAt,
   stack,

@@ -316,7 +316,7 @@ manifest_for_target() {
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   mkdir -p "$media_dir"
 
-  local assets_json=()
+  local asset_rows=()
   for part_name in "${PARTS[@]}"; do
     local file_name source_file sha size duration
     file_name="$(part_filename "$part_name")"
@@ -333,13 +333,25 @@ manifest_for_target() {
       fi
     fi
 
-    assets_json+=("{\"part\":\"$part_name\",\"file\":\"/media/demos/$file_name\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"duration_seconds\":$duration}")
+    asset_rows+=("${part_name}"$'\t'"/media/demos/${file_name}"$'\t'"${sha}"$'\t'"${size}"$'\t'"${duration}")
   done
 
-  node - "$manifest" "$timestamp" "$STACK" "${assets_json[@]}" <<'EOF'
+  printf '%s\n' "${asset_rows[@]}" | node - "$manifest" "$timestamp" "$STACK" <<'EOF'
 const fs = require("fs");
-const [manifest, generatedAt, stack, ...assetsRaw] = process.argv.slice(2);
-const assets = assetsRaw.map((raw) => JSON.parse(raw));
+const [manifest, generatedAt, stack] = process.argv.slice(2);
+const input = fs.readFileSync(0, "utf8").trim();
+const assets = input
+  ? input.split("\n").map((row) => {
+      const [part, file, sha, size, duration] = row.split("\t");
+      return {
+        part,
+        file,
+        sha256: sha,
+        size_bytes: Number(size),
+        duration_seconds: duration === "null" ? null : Number(duration),
+      };
+    })
+  : [];
 const payload = {
   generated_at: generatedAt,
   stack,

@@ -204,12 +204,32 @@ fi
 
 cd "$DEMO_DIR"
 
+deps_hash_file() {
+  if [[ -f package-lock.json ]]; then
+    printf 'package-lock.json'
+    return
+  fi
+  printf 'package.json'
+}
+
+file_hash() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+    return
+  fi
+  sha256sum "$file" | awk '{print $1}'
+}
+
+DEPS_STAMP_FILE=".branchbox-node-deps.stamp"
+DEPS_HASH_SOURCE="$(deps_hash_file)"
+CURRENT_DEPS_HASH="$(file_hash "$DEPS_HASH_SOURCE")"
 needs_node_install=0
 if [[ ! -d node_modules ]]; then
   needs_node_install=1
-elif [[ -f package-lock.json && package-lock.json -nt node_modules ]]; then
+elif [[ ! -f "$DEPS_STAMP_FILE" ]]; then
   needs_node_install=1
-elif [[ -f package.json && package.json -nt node_modules ]]; then
+elif [[ "$(cat "$DEPS_STAMP_FILE" 2>/dev/null || true)" != "$CURRENT_DEPS_HASH" ]]; then
   needs_node_install=1
 fi
 
@@ -219,16 +239,14 @@ if [[ "$needs_node_install" == "1" ]]; then
   else
     npm install --include=dev
   fi
+  printf '%s' "$CURRENT_DEPS_HASH" > "$DEPS_STAMP_FILE"
 fi
 
 npx remotion browser ensure --chrome-mode="$CHROME_MODE"
 
 if [[ "$MODE" == "studio" ]]; then
   PROPS_JSON="$(printf '{"stack":"%s"}' "$STACK")"
-  if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
-    exec npx remotion studio src/index.ts --props="$PROPS_JSON" "${EXTRA_ARGS[@]}"
-  fi
-  exec npx remotion studio src/index.ts --props="$PROPS_JSON"
+  exec npx remotion studio src/index.ts --props="$PROPS_JSON" "${EXTRA_ARGS[@]}"
 fi
 
 render_stack() {
@@ -248,21 +266,12 @@ render_stack() {
   fi
   mkdir -p "$(dirname "$output_path")"
 
-  if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
-    npx remotion render src/index.ts "$composition_id" "$output_path" \
-      --props="$props_json" \
-      --chrome-mode="$CHROME_MODE" \
-      --codec=h264 \
-      --overwrite \
-      "${EXTRA_ARGS[@]}"
-    return
-  fi
-
   npx remotion render src/index.ts "$composition_id" "$output_path" \
     --props="$props_json" \
     --chrome-mode="$CHROME_MODE" \
     --codec=h264 \
-    --overwrite
+    --overwrite \
+    "${EXTRA_ARGS[@]}"
 }
 
 if [[ "$ALL_STACKS" == "1" ]]; then
