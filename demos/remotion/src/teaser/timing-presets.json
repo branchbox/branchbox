@@ -1,0 +1,13 @@
+{
+  "totalScenes": 4,
+  "full": {
+    "introFrames": 120,
+    "sceneFrames": 330,
+    "outroFrames": 90
+  },
+  "social": {
+    "introFrames": 60,
+    "sceneFrames": 210,
+    "outroFrames": 45
+  }
+}

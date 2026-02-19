@@ -157,15 +157,55 @@ if [[ "$GENERATE_SOCIAL" == "1" && ! -x "$SOCIAL_SCRIPT" ]]; then
   exit 1
 fi
 
+TIMING_PRESETS_FILE="$REPO_ROOT/demos/remotion/src/teaser/timing-presets.json"
+if [[ ! -f "$TIMING_PRESETS_FILE" ]]; then
+  echo "Missing timing presets file at $TIMING_PRESETS_FILE" >&2
+  exit 1
+fi
+
+timing_value() {
+  local pace="$1"
+  local key="${2:-}"
+  node -e '
+const fs = require("fs");
+const [file, pace, key] = process.argv.slice(1);
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+const value = key ? data[pace]?.[key] : data[pace];
+if (value === undefined || value === null) {
+  process.exit(2);
+}
+process.stdout.write(String(value));
+' "$TIMING_PRESETS_FILE" "$pace" "$key"
+}
+
+TOTAL_SCENES="$(timing_value totalScenes)"
+FULL_INTRO_FRAMES="$(timing_value full introFrames)"
+FULL_SCENE_FRAMES="$(timing_value full sceneFrames)"
+FULL_OUTRO_FRAMES="$(timing_value full outroFrames)"
+
+if (( TOTAL_SCENES < 4 )); then
+  echo "Expected at least 4 scenes in $TIMING_PRESETS_FILE, found $TOTAL_SCENES" >&2
+  exit 1
+fi
+
+FULL_REEL_START=0
+FULL_REEL_END=$((FULL_INTRO_FRAMES + FULL_SCENE_FRAMES * TOTAL_SCENES + FULL_OUTRO_FRAMES - 1))
+GETTING_STARTED_START="$FULL_INTRO_FRAMES"
+GETTING_STARTED_END=$((GETTING_STARTED_START + FULL_SCENE_FRAMES - 1))
+MINIMAL_MODE_START=$((GETTING_STARTED_END + 1))
+MINIMAL_MODE_END=$((MINIMAL_MODE_START + FULL_SCENE_FRAMES - 1))
+PARALLEL_FEATURES_START=$((MINIMAL_MODE_END + 1))
+PARALLEL_FEATURES_END=$((PARALLEL_FEATURES_START + FULL_SCENE_FRAMES - 1))
+DEVCONTAINER_SYNC_START=$((PARALLEL_FEATURES_END + 1))
+DEVCONTAINER_SYNC_END=$((DEVCONTAINER_SYNC_START + FULL_SCENE_FRAMES - 1))
+
 part_frames() {
-  # Keep these frame windows aligned with demos/remotion/src/teaser/teaserData.ts
-  # TIMING_PRESETS and TOTAL_SCENES. Update both files in the same change.
   case "$1" in
-    full-reel) echo "0-1529" ;;
-    getting-started) echo "120-449" ;;
-    minimal-mode) echo "450-779" ;;
-    parallel-features) echo "780-1109" ;;
-    devcontainer-sync) echo "1110-1439" ;;
+    full-reel) echo "${FULL_REEL_START}-${FULL_REEL_END}" ;;
+    getting-started) echo "${GETTING_STARTED_START}-${GETTING_STARTED_END}" ;;
+    minimal-mode) echo "${MINIMAL_MODE_START}-${MINIMAL_MODE_END}" ;;
+    parallel-features) echo "${PARALLEL_FEATURES_START}-${PARALLEL_FEATURES_END}" ;;
+    devcontainer-sync) echo "${DEVCONTAINER_SYNC_START}-${DEVCONTAINER_SYNC_END}" ;;
     *)
       return 1
       ;;
@@ -267,7 +307,6 @@ manifest_for_target() {
   local media_dir="$destination_root/media/demos"
   local manifest_name="manifest-${STACK}.json"
   local timestamp
-  local idx=0
 
   if [[ "$PART" != "all" ]]; then
     manifest_name="manifest-${STACK}-${PART}.json"
@@ -277,44 +316,37 @@ manifest_for_target() {
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   mkdir -p "$media_dir"
 
-  {
-    echo "{"
-    echo "  \"generated_at\": \"$timestamp\","
-    echo "  \"stack\": \"$STACK\","
-    echo "  \"assets\": ["
+  local assets_json=()
+  for part_name in "${PARTS[@]}"; do
+    local file_name source_file sha size duration
+    file_name="$(part_filename "$part_name")"
+    source_file="$media_dir/$file_name"
+    sha="$(sha256_file "$source_file")"
+    size="$(wc -c < "$source_file" | tr -d ' ')"
+    duration="null"
 
-    for part_name in "${PARTS[@]}"; do
-      local file_name source_file sha size duration comma
-      file_name="$(part_filename "$part_name")"
-      source_file="$media_dir/$file_name"
-      sha="$(sha256_file "$source_file")"
-      size="$(wc -c < "$source_file" | tr -d ' ')"
-      duration="null"
-
-      if command -v ffprobe >/dev/null 2>&1; then
-        duration="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$source_file" 2>/dev/null || true)"
-        if [[ -z "$duration" ]]; then
-          duration="null"
-        fi
+    if command -v ffprobe >/dev/null 2>&1; then
+      duration="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$source_file" 2>/dev/null || true)"
+      duration="${duration//$'\n'/}"
+      if [[ -z "$duration" ]]; then
+        duration="null"
       fi
+    fi
 
-      comma=","
-      if [[ "$idx" -eq "$((${#PARTS[@]} - 1))" ]]; then
-        comma=""
-      fi
+    assets_json+=("{\"part\":\"$part_name\",\"file\":\"/media/demos/$file_name\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"duration_seconds\":$duration}")
+  done
 
-      if [[ "$duration" == "null" ]]; then
-        echo "    {\"part\":\"$part_name\",\"file\":\"/media/demos/$file_name\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"duration_seconds\":null}$comma"
-      else
-        echo "    {\"part\":\"$part_name\",\"file\":\"/media/demos/$file_name\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"duration_seconds\":$duration}$comma"
-      fi
-
-      idx=$((idx + 1))
-    done
-
-    echo "  ]"
-    echo "}"
-  } > "$manifest"
+  node - "$manifest" "$timestamp" "$STACK" "${assets_json[@]}" <<'EOF'
+const fs = require("fs");
+const [manifest, generatedAt, stack, ...assetsRaw] = process.argv.slice(2);
+const assets = assetsRaw.map((raw) => JSON.parse(raw));
+const payload = {
+  generated_at: generatedAt,
+  stack,
+  assets,
+};
+fs.writeFileSync(manifest, `${JSON.stringify(payload, null, 2)}\n`);
+EOF
 }
 
 if [[ "$TARGET" == "docs" || "$TARGET" == "both" ]]; then

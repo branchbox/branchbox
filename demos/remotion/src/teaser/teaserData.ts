@@ -1,3 +1,5 @@
+import timingPresets from './timing-presets.json';
+
 export type Stack = 'rust' | 'node' | 'rails' | 'generic';
 export type Format = 'landscape' | 'square' | 'vertical';
 export type Pace = 'full' | 'social';
@@ -49,11 +51,15 @@ export type LayoutPreset = {
 };
 
 export const CAPTURED_AT = '2026-02-17';
-export const TOTAL_SCENES = 4;
+type TimingPreset = {introFrames: number; sceneFrames: number; outroFrames: number};
+type TimingPresetBundle = {totalScenes: number} & Record<Pace, TimingPreset>;
 
-export const TIMING_PRESETS: Record<Pace, {introFrames: number; sceneFrames: number; outroFrames: number}> = {
-  full: {introFrames: 120, sceneFrames: 330, outroFrames: 90},
-  social: {introFrames: 60, sceneFrames: 210, outroFrames: 45},
+const timingPresetBundle = timingPresets as TimingPresetBundle;
+
+export const TOTAL_SCENES = timingPresetBundle.totalScenes;
+export const TIMING_PRESETS: Record<Pace, TimingPreset> = {
+  full: timingPresetBundle.full,
+  social: timingPresetBundle.social,
 };
 
 export const presetDuration = (pace: Pace): number => {
@@ -313,4 +319,3 @@ export const buildScenes = (stack: Stack): Scene[] => {
     },
   ];
 };
-

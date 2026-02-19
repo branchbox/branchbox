@@ -181,7 +181,7 @@ echo "Rendering native vertical variant..."
 ffmpeg -y -ss "$CARD_AT_SECONDS" -i "$SOURCE" \
   -frames:v 1 \
   -update 1 \
-  -filter_complex "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x090f1f[v]" \
+  -filter_complex "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x060915[v]" \
   -map "[v]" \
   -q:v 2 \
   "$POSTER_16X9"

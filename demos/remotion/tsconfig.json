@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "jsx": "react-jsx",
     "strict": true,
+    "resolveJsonModule": true,
     "noEmit": true,
     "skipLibCheck": true,
     "types": [

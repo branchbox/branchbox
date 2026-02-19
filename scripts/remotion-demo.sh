@@ -188,6 +188,7 @@ install_linux_deps() {
     libcairo2
     libpango-1.0-0
     libatk-bridge2.0-0
+    ffmpeg
   )
 
   run_apt install -y "${packages[@]}"
@@ -199,7 +200,16 @@ fi
 
 cd "$DEMO_DIR"
 
+needs_node_install=0
 if [[ ! -d node_modules ]]; then
+  needs_node_install=1
+elif [[ -f package-lock.json && package-lock.json -nt node_modules ]]; then
+  needs_node_install=1
+elif [[ -f package.json && package.json -nt node_modules ]]; then
+  needs_node_install=1
+fi
+
+if [[ "$needs_node_install" == "1" ]]; then
   if [[ -f package-lock.json ]]; then
     npm ci --include=dev
   else
