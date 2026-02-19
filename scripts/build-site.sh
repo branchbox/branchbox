@@ -76,9 +76,9 @@ fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-# 1. Copy landing page to root
+# 1. Copy landing page to root (including dotfiles for complete static output)
 echo "Copying landing page..."
-cp -r "$ROOT_DIR/website/"* "$BUILD_DIR/"
+cp -r "$ROOT_DIR/website/." "$BUILD_DIR/"
 
 # 2. Build Docusaurus docs
 echo "Building documentation..."
@@ -86,10 +86,10 @@ cd "$ROOT_DIR/docs"
 npm ci
 npm run build
 
-# 3. Copy docs to /docs/ subpath
+# 3. Copy docs to /docs/ subpath (including dotfiles)
 echo "Copying docs to /docs/..."
 mkdir -p "$BUILD_DIR/docs"
-cp -r "$ROOT_DIR/docs/build/"* "$BUILD_DIR/docs/"
+cp -r "$ROOT_DIR/docs/build/." "$BUILD_DIR/docs/"
 
 # 4. Add .nojekyll for GitHub Pages
 touch "$BUILD_DIR/.nojekyll"

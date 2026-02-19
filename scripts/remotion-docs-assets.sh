@@ -158,6 +158,8 @@ if [[ "$GENERATE_SOCIAL" == "1" && ! -x "$SOCIAL_SCRIPT" ]]; then
 fi
 
 part_frames() {
+  # Keep these frame windows aligned with demos/remotion/src/teaser/teaserData.ts
+  # TIMING_PRESETS and TOTAL_SCENES. Update both files in the same change.
   case "$1" in
     full-reel) echo "0-1529" ;;
     getting-started) echo "120-449" ;;
