@@ -250,12 +250,12 @@ write_manifest() {
   variant_rows+=("poster-16x9"$'\t'"/media/demos/$(basename "$POSTER_16X9")"$'\t'"$(sha256_file "$poster_file")"$'\t'"$(wc -c < "$poster_file" | tr -d ' ')"$'\t'"null")
   variant_rows+=("social-card-1200x630"$'\t'"/media/demos/$(basename "$CARD_1200X630")"$'\t'"$(sha256_file "$card_file")"$'\t'"$(wc -c < "$card_file" | tr -d ' ')"$'\t'"null")
 
-  printf '%s\n' "${variant_rows[@]}" | node - "$manifest" "$timestamp" "$STACK" <<'EOF'
+  node - "$manifest" "$timestamp" "$STACK" "${variant_rows[@]}" <<'EOF'
 const fs = require("fs");
-const [manifest, generatedAt, stack] = process.argv.slice(2);
-const input = fs.readFileSync(0, "utf8").trim();
-const variants = input
-  ? input.split("\n").map((row) => {
+const [manifest, generatedAt, stack, ...rows] = process.argv.slice(2);
+const variants = rows
+  .filter((row) => row.length > 0)
+  .map((row) => {
       const [variant, file, sha, size, duration] = row.split("\t");
       return {
         variant,
@@ -264,8 +264,7 @@ const variants = input
         size_bytes: Number(size),
         duration_seconds: duration === "null" ? null : Number(duration),
       };
-    })
-  : [];
+    });
 const payload = {
   generated_at: generatedAt,
   stack,

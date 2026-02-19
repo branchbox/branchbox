@@ -166,16 +166,16 @@ fi
 timing_value() {
   local pace="$1"
   local key="${2:-}"
-  node -e '
+  node - "$TIMING_PRESETS_FILE" "$pace" "$key" <<'EOF'
 const fs = require("fs");
-const [file, pace, key] = process.argv.slice(1);
+const [file, pace, key] = process.argv.slice(2);
 const data = JSON.parse(fs.readFileSync(file, "utf8"));
 const value = key ? data[pace]?.[key] : data[pace];
 if (value === undefined || value === null) {
   process.exit(2);
 }
 process.stdout.write(String(value));
-' "$TIMING_PRESETS_FILE" "$pace" "$key"
+EOF
 }
 
 TOTAL_SCENES="$(timing_value totalScenes)"
@@ -351,12 +351,12 @@ manifest_for_target() {
     asset_rows+=("${part_name}"$'\t'"/media/demos/${file_name}"$'\t'"${sha}"$'\t'"${size}"$'\t'"${duration}")
   done
 
-  printf '%s\n' "${asset_rows[@]}" | node - "$manifest" "$timestamp" "$STACK" <<'EOF'
+  node - "$manifest" "$timestamp" "$STACK" "${asset_rows[@]}" <<'EOF'
 const fs = require("fs");
-const [manifest, generatedAt, stack] = process.argv.slice(2);
-const input = fs.readFileSync(0, "utf8").trim();
-const assets = input
-  ? input.split("\n").map((row) => {
+const [manifest, generatedAt, stack, ...rows] = process.argv.slice(2);
+const assets = rows
+  .filter((row) => row.length > 0)
+  .map((row) => {
       const [part, file, sha, size, duration] = row.split("\t");
       return {
         part,
@@ -365,8 +365,7 @@ const assets = input
         size_bytes: Number(size),
         duration_seconds: duration === "null" ? null : Number(duration),
       };
-    })
-  : [];
+    });
 const payload = {
   generated_at: generatedAt,
   stack,
