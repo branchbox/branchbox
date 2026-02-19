@@ -1,0 +1,175 @@
+---
+title: Demo Assets Pipeline
+description: Render and publish BranchBox demo videos for docs, website, and social channels.
+---
+
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# Demo Assets Pipeline
+
+Use the Remotion pipeline to keep website, docs, and social demo assets consistent and reproducible.
+
+## Marketing Distribution Plan
+
+| Channel | Asset | Format | Goal |
+| --- | --- | --- | --- |
+| `branchbox.dev` landing page | Full reel + chapter cuts | `16:9` MP4 | Show complete value quickly |
+| Docs guide pages | Chapter cuts | `16:9` MP4 | Explain one workflow per doc section |
+| LinkedIn / X feed posts | Square social reel | `1:1` MP4 | Better feed real estate and autoplay visibility |
+| Reels / Shorts / Stories | Vertical social reel | `9:16` MP4 | Mobile-first discovery |
+| Link previews (Slack/Discord/social cards) | Social card image | `1200x630` JPG | Clean preview when sharing links |
+
+## Where Demos Are Integrated
+
+- Landing page: `website/index.html` (`See the magic` section)
+- Docs: this guide (`/guides/demo-assets`) and any doc page that embeds `/media/demos/*`
+- Share metadata: Open Graph + Twitter image tags in `website/index.html`
+
+## One-command publish (all parts)
+
+From repo root:
+
+```bash
+./scripts/remotion-docs-all.sh --target both
+```
+
+This command renders:
+
+- Full reel
+- Four docs chapter cuts
+- Social variants (`16:9` web alias, `1:1`, `9:16`, social card JPG)
+
+And publishes to:
+
+- `docs/static/media/demos/`
+- `website/media/demos/`
+
+## Per-section scripts
+
+Use these when only one docs section changed:
+
+```bash
+./scripts/remotion-docs-getting-started.sh
+./scripts/remotion-docs-minimal-mode.sh
+./scripts/remotion-docs-parallel-features.sh
+./scripts/remotion-docs-devcontainer-sync.sh
+./scripts/remotion-docs-full-reel.sh
+```
+
+## Social-only packaging
+
+If you already rendered a full reel and only need social/mobile variants:
+
+```bash
+./scripts/remotion-social-assets.sh --stack rust --target both
+```
+
+## Generated files
+
+- Docs assets: `docs/static/media/demos/*.mp4`
+- Website assets: `website/media/demos/*.mp4` (when `--target website|both`)
+- Social images: `docs/static/media/demos/*.jpg` and `website/media/demos/*.jpg`
+- Manifests:
+  - `manifest-<stack>.json` (full reel + chapter cuts)
+  - `manifest-<stack>-social.json` (social/mobile variants)
+
+## Pull Request Cycle (Always Have a Demo)
+
+For PRs with user-facing changes (CLI UX, website copy/layout, docs walkthroughs, onboarding flows):
+
+```bash
+./scripts/remotion-docs-all.sh --target both
+./scripts/build-site.sh --skip-demo-assets
+```
+
+Include in your PR:
+
+- Which demo clip changed
+- Why it changed
+- At least one screenshot or short clip link for reviewers
+
+## Release Cycle (Always Have a Demo)
+
+Before tagging:
+
+```bash
+./scripts/remotion-docs-all.sh --target both
+./scripts/build-site.sh --skip-demo-assets
+```
+
+Verify:
+
+- Landing page player loads clips correctly on desktop and mobile
+- Social links point to `1:1` / `9:16` variants
+- Docs videos load without 404s
+
+## Demo: Full Reel (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14}}
+  src={useBaseUrl('/media/demos/branchbox-teaser-rust-final.mp4')}
+/>
+
+## Demo: Getting Started Cut (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14}}
+  src={useBaseUrl('/media/demos/branchbox-docs-getting-started-rust.mp4')}
+/>
+
+## Demo: Minimal Mode Cut (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14}}
+  src={useBaseUrl('/media/demos/branchbox-docs-minimal-mode-rust.mp4')}
+/>
+
+## Demo: Parallel Features Cut (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14}}
+  src={useBaseUrl('/media/demos/branchbox-docs-parallel-features-rust.mp4')}
+/>
+
+## Demo: Devcontainer Sync Cut (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14}}
+  src={useBaseUrl('/media/demos/branchbox-docs-devcontainer-sync-rust.mp4')}
+/>
+
+## Demo: Square Social Reel (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14, maxWidth: 720}}
+  src={useBaseUrl('/media/demos/branchbox-teaser-rust-social-square.mp4')}
+/>
+
+## Demo: Vertical Social Reel (Rust)
+
+<video
+  controls
+  preload="metadata"
+  style={{width: '100%', borderRadius: 14, maxWidth: 420}}
+  src={useBaseUrl('/media/demos/branchbox-teaser-rust-social-vertical.mp4')}
+/>
+
+## Demo: Social Card (Rust)
+
+<img
+  alt="BranchBox social card"
+  style={{width: '100%', borderRadius: 14, maxWidth: 800}}
+  src={useBaseUrl('/media/demos/branchbox-teaser-rust-social-card.jpg')}
+/>

@@ -59,10 +59,16 @@ Lower-thirds/Overlays (suggested)
 Recording options
 - Live: run `scripts/demo-teaser.sh --stack rust` and screen record the terminal. Use 60s pacing.
 - Auto-GIF (for socials): `vhs scripts/demo-teaser.tape` (requires `ffmpeg` + `ttyd`).
+- Auto-MP4 (Remotion): `./scripts/remotion-demo.sh --stack rust` (devcontainer-friendly deterministic render).
+- Auto-MP4 (all stacks): `./scripts/remotion-demo.sh --all-stacks` (renders rust/node/rails/generic final cuts).
+- Docs/website-ready cuts: `./scripts/remotion-docs-all.sh --target docs` (or `--target both`).
+- Social/mobile variants: `./scripts/remotion-social-assets.sh --stack rust --target both` (1:1 feed, 9:16 reels, 1200x630 card).
+- Full deploy bundle check: `./scripts/build-site.sh --skip-demo-assets`.
 
 Social 15s cut (optional)
 - Terminal supercut only: feature start → feature list → devcontainer sync.
 - Overlay: “Stop context switching.” → “Parallel features.” → “Sync everywhere.”
+- Preferred export formats: `1:1` for feeds and `9:16` for reels/shorts.
 
 End slate
 - “github.com/branchbox/branchbox”

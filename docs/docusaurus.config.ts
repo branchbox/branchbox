@@ -55,7 +55,7 @@ const config: Config = {
 
   themeConfig: {
     // Social card for sharing
-    image: 'img/logo.svg',
+    image: 'media/demos/branchbox-teaser-rust-social-card.jpg',
 
     // Force dark mode to match the landing page
     colorMode: {

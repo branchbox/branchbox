@@ -11,11 +11,19 @@
     <meta property="og:description" content="Isolated, fully provisioned development environments for every feature. Real environments, zero collisions.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://branchbox.dev">
+    <meta property="og:image" content="https://branchbox.dev/media/demos/branchbox-teaser-rust-social-card.jpg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:video" content="https://branchbox.dev/media/demos/branchbox-teaser-rust-social-square.mp4">
+    <meta property="og:video:type" content="video/mp4">
+    <meta property="og:video:width" content="1080">
+    <meta property="og:video:height" content="1080">
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="BranchBox">
     <meta name="twitter:description" content="Parallel development for humans and AI agents. Real environments, zero collisions.">
+    <meta name="twitter:image" content="https://branchbox.dev/media/demos/branchbox-teaser-rust-social-card.jpg">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -188,41 +196,85 @@
             <h2 class="section-title">See the magic</h2>
             <p class="section-subtitle">Watch BranchBox create a complete isolated environment in seconds</p>
 
-            <div class="terminal">
-                <div class="terminal-header">
-                    <span class="terminal-dot red"></span>
-                    <span class="terminal-dot yellow"></span>
-                    <span class="terminal-dot green"></span>
-                    <span class="terminal-title">Terminal</span>
+            <div class="demo-shell">
+                <div class="demo-media">
+                    <video
+                        id="demo-video"
+                        class="demo-video"
+                        controls
+                        preload="metadata"
+                        poster="/media/demos/branchbox-teaser-rust-social-card.jpg"
+                        playsinline
+                        muted
+                        loop
+                    >
+                        <source src="/media/demos/branchbox-teaser-rust-web-16x9.mp4" type="video/mp4">
+                        Your browser does not support the demo video.
+                    </video>
                 </div>
-                <div class="terminal-body">
-                    <pre><code><span class="code-comment"># Initialize BranchBox in your repo</span>
-<span class="code-prompt">$</span> branchbox init
-<span class="code-dim">&#10003; Initialized BranchBox (Rails project)</span>
 
-<span class="code-comment"># Start an isolated feature workspace</span>
-<span class="code-prompt">$</span> branchbox feature start <span class="code-string">"OAuth Integration"</span>
+                <div class="demo-controls">
+                    <div class="demo-tabs" role="tablist" aria-label="Demo clips">
+                        <button
+                            class="demo-tab is-active"
+                            type="button"
+                            role="tab"
+                            aria-selected="true"
+                            data-src="/media/demos/branchbox-teaser-rust-web-16x9.mp4"
+                            data-caption="Full 50-second walkthrough from real CLI output."
+                        >
+                            Full Reel (50s)
+                        </button>
+                        <button
+                            class="demo-tab"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            data-src="/media/demos/branchbox-docs-getting-started-rust.mp4"
+                            data-caption="Getting-started cut: full feature workspace bootstrapping."
+                        >
+                            Getting Started
+                        </button>
+                        <button
+                            class="demo-tab"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            data-src="/media/demos/branchbox-docs-minimal-mode-rust.mp4"
+                            data-caption="Minimal-mode cut: spin up fast without heavyweight modules."
+                        >
+                            Minimal Mode
+                        </button>
+                        <button
+                            class="demo-tab"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            data-src="/media/demos/branchbox-docs-parallel-features-rust.mp4"
+                            data-caption="Feature-list cut: visibility across parallel branches."
+                        >
+                            Parallel Features
+                        </button>
+                        <button
+                            class="demo-tab"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            data-src="/media/demos/branchbox-docs-devcontainer-sync-rust.mp4"
+                            data-caption="Devcontainer-sync cut: propagate config updates across active features."
+                        >
+                            Devcontainer Sync
+                        </button>
+                    </div>
 
-<span class="code-output">&#128640; Feature workspace ready (full)
-  Feature: oauth-integration
+                    <p class="demo-caption" id="demo-caption">Full 50-second walkthrough from real CLI output.</p>
 
-+------------------+------------+------------------------------------------+
-| Step             | Result     | Details                                  |
-+------------------+------------+------------------------------------------+
-| Worktree         | &#10003; ready    | ../oauth-integration                     |
-| Branch           | &#10003; ready    | feature/oauth-integration                |
-| Adapter          | &#10003; detected | Rails &middot; http://localhost:3000            |
-| Feature URL      | &#10003; ready    | https://oauth-integration.example.com   |
-| Compose project  | &#10003; isolated | branchbox-oauth-integration              |
-| .env             | &#10003; copied   | ../oauth-integration/.env                |
-| Tunnel           | &#10003; online   | cloudflared (*.trycloudflare.com)       |
-| Modules          | &#10003; ready    | 4 ok                                     |
-| Default agent    | &#10003; ready    | Will launch claude via `claude`          |
-+------------------+------------+------------------------------------------+</span>
-
-<span class="code-comment"># Work in your isolated environment</span>
-<span class="code-prompt">$</span> cd ../oauth-integration
-<span class="code-prompt">oauth-integration$</span> <span class="code-cursor">_</span></code></pre>
+                    <div class="demo-share-links">
+                        <a class="demo-share-link" href="/media/demos/branchbox-teaser-rust-social-square.mp4">Square 1:1</a>
+                        <a class="demo-share-link" href="/media/demos/branchbox-teaser-rust-social-vertical.mp4">Vertical 9:16</a>
+                        <a class="demo-share-link" href="/media/demos/branchbox-teaser-rust-social-card.jpg">Social Card</a>
+                        <a class="demo-share-link" href="/docs/guides/demo-assets">Demo Pipeline Docs</a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -463,6 +515,39 @@
     </footer>
 
     <script>
+        // Demo clip switcher
+        const demoVideo = document.getElementById('demo-video');
+        const demoCaption = document.getElementById('demo-caption');
+        const demoTabs = document.querySelectorAll('.demo-tab');
+
+        if (demoVideo && demoTabs.length > 0) {
+            demoTabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    const source = tab.dataset.src;
+                    const caption = tab.dataset.caption || '';
+                    if (!source) {
+                        return;
+                    }
+
+                    demoTabs.forEach(item => {
+                        item.classList.remove('is-active');
+                        item.setAttribute('aria-selected', 'false');
+                    });
+
+                    tab.classList.add('is-active');
+                    tab.setAttribute('aria-selected', 'true');
+                    demoVideo.pause();
+                    demoVideo.src = source;
+                    demoVideo.load();
+                    demoVideo.play().catch(() => {});
+
+                    if (demoCaption) {
+                        demoCaption.textContent = caption;
+                    }
+                });
+            });
+        }
+
         // Copy to clipboard functionality
         document.querySelectorAll('.copy-btn').forEach(btn => {
             btn.addEventListener('click', async () => {

@@ -79,7 +79,9 @@ CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch ano
 
 ### Release workflow
 - Follow `RELEASING.md` verbatim. The short version: ensure `main` is up to date, run fmt/clippy/tests/docs, then execute the six manual CLI harness permutations listed above (regular/verbose/pretend × rust/generic/rails/node). Releases are blocked until every combination passes locally.
+- Always refresh demo media before tagging: `./scripts/remotion-docs-all.sh --stack rust --target both`, then verify the combined site bundle with `./scripts/build-site.sh --skip-demo-assets`.
 - Update `CHANGELOG.md` with highlights, refresh `README.md` + `docs/docs/**` (especially the manual CLI E2E pages, first-run `branchbox init` UX + 1Password/git bootstrap caveats in quick start, and CLI reference pages), and capture any new expectations here in `AGENTS.md` before tagging. Regenerate `docs/docs/reference/cli.md` by pasting `branchbox --help` output whenever flags change.
+- Confirm social/share variants remain available (`branchbox-teaser-*-social-square.mp4`, `branchbox-teaser-*-social-vertical.mp4`, and `branchbox-teaser-*-social-card.jpg`) before release handoff.
 - Keep `docs/docs/getting-started/manual-cli-e2e.md` + `scripts/manual-cli-e2e.md` and `docs/docs/getting-started/manual-1password-e2e.md` + `scripts/manual-1password-e2e.md` synchronized with the actual harness steps—future contributors should be able to trace every required validation from those docs.
 - Run `cargo release --workspace --dry-run` before `--execute` so you can catch version bumps or git state issues early. Push with `git push --follow-tags` and monitor the release workflow with `gh run watch`.
 - After tagging, confirm the docs build (`cd docs && npm run build`), the GitHub Pages deployment, and downstream taps (Homebrew) before announcing the release.
@@ -90,6 +92,8 @@ CI runs the harness for `rust`, `generic`, `rails`, and `node`; if you touch ano
 
 ## Commit & Pull Request Guidelines
 Recent history favors concise, imperative summaries (e.g., `Refactor CLI to 'branchbox' with grouped subcommands`). Continue that tone while adopting the Conventional Commit prefix expected in `CONTRIBUTING.md`, such as `feat(modules): add docker compose planner`. Before opening a PR, rebase on `main`, rerun fmt/clippy/tests/doc checks, and attach context: problem statement, scope, linked issues, and any relevant CLI transcripts or screenshots. Ensure the CI suite is green before requesting review.
+
+For user-facing changes (CLI UX, website, onboarding/docs flows), treat demo freshness as required PR hygiene: run `./scripts/remotion-docs-all.sh --stack rust --target both`, run `./scripts/build-site.sh --skip-demo-assets`, and fill the PR template's demo lifecycle checklist.
 
 Prefer the GitHub CLI (`gh pr create --fill`) for opening PRs after pushing the branch so reviewers get the templated context and automation can rely on consistent metadata.
 
@@ -178,6 +182,8 @@ Use the provided devcontainer (`.devcontainer/`) for a consistent toolchain; it 
 - Publish user-facing documentation with `Docusaurus`. Source files live under `docs/docs/`; keep specs automation untouched in `docs/features/`.
 - The devcontainer ships with Node.js 20; on bare-metal setups install Node.js and npm, then install dependencies with `cd docs && npm install`, and build locally with `cd docs && npm run build`.
 - CI must always include a fast `npm run build` check on PRs (in the docs directory). A dedicated Pages workflow deploys the built site to GitHub Pages on successful pushes to `main`.
+- Treat demos as first-class website/docs content: render with `./scripts/remotion-docs-all.sh --target both` (includes social variants) and verify packaging via `./scripts/build-site.sh`.
+- The Pages deployment pipeline now uses `scripts/build-site.sh` so demo media is rendered during deploy, not manually copied.
 - Keep CLI reference pages up to date: manually regenerate `docs/docs/reference/cli.md` by capturing `branchbox --help` output and its subcommands during releases or when command flags change.
 - Engineers and coding agents must update documentation content as needed, mirror critical entry points in `README.md`, and document any automation adjustments in this file so future contributors know how docs are built and shipped.
 

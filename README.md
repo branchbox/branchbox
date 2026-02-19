@@ -183,6 +183,32 @@ branchbox init
 branchbox feature start "Demo Feature"
 ```
 
+Want a deterministic demo video render (Remotion)?
+
+```bash
+./scripts/remotion-demo.sh --stack rust
+```
+
+Want docs/website-ready cut files for each documentation section?
+
+```bash
+./scripts/remotion-docs-all.sh --target docs
+# or:
+./scripts/remotion-docs-all.sh --target both
+```
+
+Need mobile/social variants (1:1, 9:16, social card) from the full reel?
+
+```bash
+./scripts/remotion-social-assets.sh --stack rust --target both
+```
+
+Build the combined website+docs bundle with current demos:
+
+```bash
+./scripts/build-site.sh
+```
+
 ---
 
 ## Devcontainer Workflow

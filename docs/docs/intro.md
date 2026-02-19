@@ -65,6 +65,7 @@ branchbox feature teardown oauth-integration
 - **[Quick Start](getting-started/quick-start.md)** — Get running in 2 minutes
 - **[Installation](getting-started/installation.md)** — All install methods
 - **[Use Cases](guides/parallel-features.md)** — Common workflows
+- **[Demo Assets](guides/demo-assets)** — Website/docs/social demo pipeline
 - **[CLI Reference](reference/cli.md)** — Every command documented
 
 ---

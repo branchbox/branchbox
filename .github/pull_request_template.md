@@ -18,6 +18,15 @@
 - [ ] `cd docs && npm run build` (if docs changed)
 - [ ] Updated `CHANGELOG.md` (if behavior changed)
 
+## Demo Lifecycle (Required for User-Facing Changes)
+
+> Complete this section if the PR changes CLI UX, onboarding/docs flows, website copy/layout, or anything shown in product demos.
+
+- [ ] `./scripts/remotion-docs-all.sh --stack rust --target both`
+- [ ] `./scripts/build-site.sh --skip-demo-assets`
+- [ ] Confirmed landing page demo player + chapter switches still work
+- [ ] Added reviewer note describing which demo clip(s) changed and why
+
 ## Devcontainer/Auth/Signing Changes (issue #45 flow)
 
 > Complete this section only if the PR touches bootstrap/devcontainer auth-signing/harness logic.

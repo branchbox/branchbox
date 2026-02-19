@@ -74,6 +74,8 @@ test/workspaces/local/
 docs/build/
 docs/.docusaurus/
 docs/node_modules/
+docs/static/media/demos/
+website/media/demos/
 
 .branchbox/registry.json
 .branchbox/secure/
@@ -83,3 +85,7 @@ docs/node_modules/
 
 # Build artifacts
 build/
+
+# Remotion demo artifacts
+demos/remotion/node_modules/
+demos/remotion/out/

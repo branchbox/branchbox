@@ -221,6 +221,16 @@ cargo doc --no-deps
 
 When updating CLI commands, manually regenerate the CLI reference by capturing `branchbox --help` output and updating `docs/docs/reference/cli.md`.
 
+For user-facing changes, keep demo assets current as part of the same PR:
+
+```bash
+# Render website/docs chapters plus social/mobile variants
+./scripts/remotion-docs-all.sh --stack rust --target both
+
+# Validate the combined website/docs output
+./scripts/build-site.sh --skip-demo-assets
+```
+
 ## Project Structure
 
 ```

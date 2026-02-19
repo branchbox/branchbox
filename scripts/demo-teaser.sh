@@ -163,7 +163,7 @@ BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature start \
   --skip-module database 
 
 echo "==> Start second feature (minimal + default prompt)"
-BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature new backlog-quick-fix --minimal --default-prompt >/dev/null
+BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature new backlog-quick-fix --minimal --default-prompt
 
 echo "==> List features"
 BRANCHBOX_SKIP_HOST_VALIDATION=1 "$BRANCHBOX_BIN" feature list

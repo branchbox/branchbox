@@ -90,11 +90,19 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
    npm install
    npm run build
    cd ..
+
+   # Demo assets (website + docs + social variants)
+   ./scripts/remotion-docs-all.sh --stack rust --target both
+
+   # Final combined site bundle sanity check
+   ./scripts/build-site.sh --skip-demo-assets
    ```
 
 3. **Update CHANGELOG.md and documentation:**
    - Edit `CHANGELOG.md` to capture highlights for the version you're publishing
    - Update end-user docs (`README.md`, `docs/docs/**`) if behavior changed
+   - Keep marketing demo assets in sync by re-running `./scripts/remotion-docs-all.sh --stack rust --target both`
+   - Confirm landing page demo embeds and social links still resolve (`website/index.html`)
    - If `branchbox init` prompts/defaults or devcontainer bootstrap behavior changed (including 1Password/git wiring), update first-run docs in `docs/docs/getting-started/quick-start.md` with exact behavior and caveats
    - If CLI flags changed, regenerate `docs/docs/reference/cli.md` using `branchbox --help`
    - Commit documentation updates before tagging
@@ -261,6 +269,11 @@ git push origin v1.0.0
    branchbox --version  # Should show new version
    branchbox feature list
    ```
+
+4. **Verify demo surfaces are live:**
+   - Landing page `https://branchbox.dev` "See the magic" player loads reel + chapter cuts
+   - Docs page `https://branchbox.dev/docs/guides/demo-assets` loads embedded videos
+   - Social preview image resolves: `https://branchbox.dev/media/demos/branchbox-teaser-rust-social-card.jpg`
 
 ## Emergency Rollback
 

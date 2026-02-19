@@ -6,7 +6,11 @@ on:
     paths:
       - 'docs/**'
       - 'website/**'
+      - 'demos/remotion/**'
       - 'scripts/build-site.sh'
+      - 'scripts/remotion-demo.sh'
+      - 'scripts/remotion-docs-*.sh'
+      - 'scripts/remotion-social-assets.sh'
       - '.github/workflows/docs-deploy.yml'
   workflow_dispatch:
 
@@ -36,25 +40,7 @@ jobs:
           cache-dependency-path: docs/package-lock.json
 
       - name: Build combined site
-        run: |
-          # Create build directory
-          mkdir -p build
-
-          # 1. Copy landing page to root
-          cp -r website/* build/
-
-          # 2. Build Docusaurus docs
-          cd docs
-          npm ci
-          npm run build
-          cd ..
-
-          # 3. Copy docs to /docs/ subpath
-          mkdir -p build/docs
-          cp -r docs/build/* build/docs/
-
-          # 4. Ensure .nojekyll exists
-          touch build/.nojekyll
+        run: ./scripts/build-site.sh --install-demo-linux-deps
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
