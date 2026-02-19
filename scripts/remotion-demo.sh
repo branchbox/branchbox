@@ -147,8 +147,29 @@ install_linux_deps() {
     return 1
   fi
 
+  apt_candidate() {
+    apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/ {print $2; exit}'
+  }
+
+  has_install_candidate() {
+    local pkg="$1"
+    local candidate
+    candidate="$(apt_candidate "$pkg")"
+    [[ -n "$candidate" && "$candidate" != "(none)" ]]
+  }
+
+  run_apt() {
+    if [[ "$EUID" -eq 0 ]]; then
+      apt-get "$@"
+    else
+      sudo apt-get "$@"
+    fi
+  }
+
+  run_apt update
+
   local asound_pkg="libasound2"
-  if ! apt-cache show "$asound_pkg" >/dev/null 2>&1 && apt-cache show "libasound2t64" >/dev/null 2>&1; then
+  if ! has_install_candidate "$asound_pkg" && has_install_candidate "libasound2t64"; then
     asound_pkg="libasound2t64"
   fi
 
@@ -169,13 +190,7 @@ install_linux_deps() {
     libatk-bridge2.0-0
   )
 
-  if [[ "$EUID" -eq 0 ]]; then
-    apt-get update
-    apt-get install -y "${packages[@]}"
-  else
-    sudo apt-get update
-    sudo apt-get install -y "${packages[@]}"
-  fi
+  run_apt install -y "${packages[@]}"
 }
 
 if [[ "$INSTALL_LINUX_DEPS" == "1" ]]; then
