@@ -29,7 +29,7 @@ Options:
                                         all (default)
   --target <docs|website|both>         Publish destination (default: docs)
   --out-dir <path>                     Render output directory (default: demos/remotion/out/docs-assets)
-  --skip-render                        Publish existing files only
+  --skip-render                        Publish existing files only (skips social/mobile rendering too)
   --install-linux-deps                 Install Linux browser dependencies before first render (apt-based systems)
   --chrome-mode <mode>                 headless-shell (default) or chrome-for-testing
   --no-social                          Skip social/mobile asset generation
@@ -222,7 +222,9 @@ for part_name in "${PARTS[@]}"; do
 done
 
 if [[ "$GENERATE_SOCIAL" == "1" ]]; then
-  if [[ "$PART" == "all" || "$PART" == "full-reel" ]]; then
+  if [[ "$SKIP_RENDER" == "1" ]]; then
+    echo "Skipping social asset render because --skip-render was provided (equivalent to --no-social)."
+  elif [[ "$PART" == "all" || "$PART" == "full-reel" ]]; then
     FULL_REEL_FILE="$OUT_DIR/$(part_filename full-reel)"
     if [[ -f "$FULL_REEL_FILE" ]]; then
       "$SOCIAL_SCRIPT" \
