@@ -183,8 +183,9 @@ FULL_INTRO_FRAMES="$(timing_value full introFrames)"
 FULL_SCENE_FRAMES="$(timing_value full sceneFrames)"
 FULL_OUTRO_FRAMES="$(timing_value full outroFrames)"
 
-if (( TOTAL_SCENES < 4 )); then
-  echo "Expected at least 4 scenes in $TIMING_PRESETS_FILE, found $TOTAL_SCENES" >&2
+if (( TOTAL_SCENES != 4 )); then
+  echo "Expected exactly 4 scenes in $TIMING_PRESETS_FILE for docs cut mapping, found $TOTAL_SCENES." >&2
+  echo "Update docs part mapping in scripts/remotion-docs-assets.sh when scene count changes." >&2
   exit 1
 fi
 

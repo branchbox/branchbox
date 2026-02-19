@@ -242,7 +242,24 @@ if [[ "$needs_node_install" == "1" ]]; then
   printf '%s' "$CURRENT_DEPS_HASH" > "$DEPS_STAMP_FILE"
 fi
 
-npx remotion browser ensure --chrome-mode="$CHROME_MODE"
+ensure_remotion_browser() {
+  if npx remotion browser ensure --chrome-mode="$CHROME_MODE"; then
+    return 0
+  fi
+
+  if command -v google-chrome >/dev/null 2>&1 \
+    || command -v google-chrome-stable >/dev/null 2>&1 \
+    || command -v chromium >/dev/null 2>&1 \
+    || command -v chromium-browser >/dev/null 2>&1; then
+    echo "Warning: remotion browser ensure failed; using system browser from PATH." >&2
+    return 0
+  fi
+
+  echo "Failed to ensure Remotion browser and no system Chrome/Chromium binary was found." >&2
+  return 1
+}
+
+ensure_remotion_browser
 
 if [[ "$MODE" == "studio" ]]; then
   PROPS_JSON="$(printf '{"stack":"%s"}' "$STACK")"
