@@ -183,34 +183,48 @@ FULL_INTRO_FRAMES="$(timing_value full introFrames)"
 FULL_SCENE_FRAMES="$(timing_value full sceneFrames)"
 FULL_OUTRO_FRAMES="$(timing_value full outroFrames)"
 
-if (( TOTAL_SCENES != 4 )); then
-  echo "Expected exactly 4 scenes in $TIMING_PRESETS_FILE for docs cut mapping, found $TOTAL_SCENES." >&2
+DOC_SCENE_PARTS=(getting-started minimal-mode parallel-features devcontainer-sync)
+if (( TOTAL_SCENES != ${#DOC_SCENE_PARTS[@]} )); then
+  echo "Expected ${#DOC_SCENE_PARTS[@]} scenes in $TIMING_PRESETS_FILE for docs cut mapping, found $TOTAL_SCENES." >&2
   echo "Update docs part mapping in scripts/remotion-docs-assets.sh when scene count changes." >&2
   exit 1
 fi
 
 FULL_REEL_START=0
 FULL_REEL_END=$((FULL_INTRO_FRAMES + FULL_SCENE_FRAMES * TOTAL_SCENES + FULL_OUTRO_FRAMES - 1))
-GETTING_STARTED_START="$FULL_INTRO_FRAMES"
-GETTING_STARTED_END=$((GETTING_STARTED_START + FULL_SCENE_FRAMES - 1))
-MINIMAL_MODE_START=$((GETTING_STARTED_END + 1))
-MINIMAL_MODE_END=$((MINIMAL_MODE_START + FULL_SCENE_FRAMES - 1))
-PARALLEL_FEATURES_START=$((MINIMAL_MODE_END + 1))
-PARALLEL_FEATURES_END=$((PARALLEL_FEATURES_START + FULL_SCENE_FRAMES - 1))
-DEVCONTAINER_SYNC_START=$((PARALLEL_FEATURES_END + 1))
-DEVCONTAINER_SYNC_END=$((DEVCONTAINER_SYNC_START + FULL_SCENE_FRAMES - 1))
+
+scene_index_for_part() {
+  local target="$1"
+  local idx=0
+  local scene_part
+  for scene_part in "${DOC_SCENE_PARTS[@]}"; do
+    if [[ "$scene_part" == "$target" ]]; then
+      echo "$idx"
+      return 0
+    fi
+    idx=$((idx + 1))
+  done
+  return 1
+}
 
 part_frames() {
-  case "$1" in
-    full-reel) echo "${FULL_REEL_START}-${FULL_REEL_END}" ;;
-    getting-started) echo "${GETTING_STARTED_START}-${GETTING_STARTED_END}" ;;
-    minimal-mode) echo "${MINIMAL_MODE_START}-${MINIMAL_MODE_END}" ;;
-    parallel-features) echo "${PARALLEL_FEATURES_START}-${PARALLEL_FEATURES_END}" ;;
-    devcontainer-sync) echo "${DEVCONTAINER_SYNC_START}-${DEVCONTAINER_SYNC_END}" ;;
-    *)
-      return 1
-      ;;
-  esac
+  local part_name="$1"
+  local scene_index
+  local start
+  local end
+
+  if [[ "$part_name" == "full-reel" ]]; then
+    echo "${FULL_REEL_START}-${FULL_REEL_END}"
+    return 0
+  fi
+
+  if ! scene_index="$(scene_index_for_part "$part_name")"; then
+    return 1
+  fi
+
+  start=$((FULL_INTRO_FRAMES + FULL_SCENE_FRAMES * scene_index))
+  end=$((start + FULL_SCENE_FRAMES - 1))
+  echo "${start}-${end}"
 }
 
 part_filename() {

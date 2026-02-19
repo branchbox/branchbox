@@ -89,3 +89,4 @@ build/
 # Remotion demo artifacts
 demos/remotion/node_modules/
 demos/remotion/out/
+demos/remotion/.branchbox-node-deps.stamp
