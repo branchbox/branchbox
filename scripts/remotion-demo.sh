@@ -162,6 +162,10 @@ install_linux_deps() {
     if [[ "$EUID" -eq 0 ]]; then
       apt-get "$@"
     else
+      if ! command -v sudo >/dev/null 2>&1; then
+        echo "sudo is required to install Linux dependencies when not running as root." >&2
+        return 1
+      fi
       sudo apt-get "$@"
     fi
   }

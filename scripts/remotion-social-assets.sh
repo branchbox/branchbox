@@ -210,6 +210,7 @@ duration_or_null() {
   local file="$1"
   local duration
   duration="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null || true)"
+  duration="${duration//$'\n'/}"
   if [[ -z "$duration" ]]; then
     echo "null"
   else
@@ -242,19 +243,24 @@ write_manifest() {
   poster_file="$media_dir/$(basename "$POSTER_16X9")"
   card_file="$media_dir/$(basename "$CARD_1200X630")"
 
-  {
-    echo "{"
-    echo "  \"generated_at\": \"$timestamp\","
-    echo "  \"stack\": \"$STACK\","
-    echo "  \"variants\": ["
-    echo "    {\"variant\":\"web-16x9\",\"file\":\"/media/demos/$(basename "$WEB_16X9")\",\"sha256\":\"$(sha256_file "$web_file")\",\"size_bytes\":$(wc -c < "$web_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$web_file")},"
-    echo "    {\"variant\":\"social-square-1x1\",\"file\":\"/media/demos/$(basename "$SQUARE_1X1")\",\"sha256\":\"$(sha256_file "$square_file")\",\"size_bytes\":$(wc -c < "$square_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$square_file")},"
-    echo "    {\"variant\":\"social-vertical-9x16\",\"file\":\"/media/demos/$(basename "$VERTICAL_9X16")\",\"sha256\":\"$(sha256_file "$vertical_file")\",\"size_bytes\":$(wc -c < "$vertical_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$vertical_file")},"
-    echo "    {\"variant\":\"poster-16x9\",\"file\":\"/media/demos/$(basename "$POSTER_16X9")\",\"sha256\":\"$(sha256_file "$poster_file")\",\"size_bytes\":$(wc -c < "$poster_file" | tr -d ' '),\"duration_seconds\":null},"
-    echo "    {\"variant\":\"social-card-1200x630\",\"file\":\"/media/demos/$(basename "$CARD_1200X630")\",\"sha256\":\"$(sha256_file "$card_file")\",\"size_bytes\":$(wc -c < "$card_file" | tr -d ' '),\"duration_seconds\":null}"
-    echo "  ]"
-    echo "}"
-  } > "$manifest"
+  local variants_json=()
+  variants_json+=("{\"variant\":\"web-16x9\",\"file\":\"/media/demos/$(basename "$WEB_16X9")\",\"sha256\":\"$(sha256_file "$web_file")\",\"size_bytes\":$(wc -c < "$web_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$web_file")}")
+  variants_json+=("{\"variant\":\"social-square-1x1\",\"file\":\"/media/demos/$(basename "$SQUARE_1X1")\",\"sha256\":\"$(sha256_file "$square_file")\",\"size_bytes\":$(wc -c < "$square_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$square_file")}")
+  variants_json+=("{\"variant\":\"social-vertical-9x16\",\"file\":\"/media/demos/$(basename "$VERTICAL_9X16")\",\"sha256\":\"$(sha256_file "$vertical_file")\",\"size_bytes\":$(wc -c < "$vertical_file" | tr -d ' '),\"duration_seconds\":$(duration_or_null "$vertical_file")}")
+  variants_json+=("{\"variant\":\"poster-16x9\",\"file\":\"/media/demos/$(basename "$POSTER_16X9")\",\"sha256\":\"$(sha256_file "$poster_file")\",\"size_bytes\":$(wc -c < "$poster_file" | tr -d ' '),\"duration_seconds\":null}")
+  variants_json+=("{\"variant\":\"social-card-1200x630\",\"file\":\"/media/demos/$(basename "$CARD_1200X630")\",\"sha256\":\"$(sha256_file "$card_file")\",\"size_bytes\":$(wc -c < "$card_file" | tr -d ' '),\"duration_seconds\":null}")
+
+  node - "$manifest" "$timestamp" "$STACK" "${variants_json[@]}" <<'EOF'
+const fs = require("fs");
+const [manifest, generatedAt, stack, ...variantsRaw] = process.argv.slice(2);
+const variants = variantsRaw.map((raw) => JSON.parse(raw));
+const payload = {
+  generated_at: generatedAt,
+  stack,
+  variants,
+};
+fs.writeFileSync(manifest, `${JSON.stringify(payload, null, 2)}\n`);
+EOF
 }
 
 if [[ "$TARGET" == "docs" || "$TARGET" == "both" ]]; then
