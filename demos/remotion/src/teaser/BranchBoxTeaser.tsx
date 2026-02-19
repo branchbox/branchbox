@@ -73,12 +73,12 @@ export const BranchBoxTeaser: React.FC<BranchBoxTeaserProps> = ({stack, format =
   }
 
   const activeScene = scenes[activeSceneIndex];
-  const sceneCommand =
-    format === 'landscape'
-      ? activeScene.command
-      : format === 'vertical'
-        ? activeScene.verticalCommand ?? activeScene.mobileCommand ?? activeScene.command
-        : activeScene.mobileCommand ?? activeScene.command;
+  let sceneCommand = activeScene.command;
+  if (format === 'vertical') {
+    sceneCommand = activeScene.verticalCommand ?? activeScene.mobileCommand ?? activeScene.command;
+  } else if (format !== 'landscape') {
+    sceneCommand = activeScene.mobileCommand ?? activeScene.command;
+  }
   const sceneTitle = format === 'landscape' ? activeScene.title : activeScene.mobileTitle ?? activeScene.title;
   const progressLabel =
     format === 'landscape'
