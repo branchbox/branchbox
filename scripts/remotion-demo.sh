@@ -9,6 +9,7 @@ INSTALL_LINUX_DEPS=0
 CHROME_MODE="${REMOTION_CHROME_MODE:-headless-shell}"
 ALL_STACKS=0
 FORMAT="landscape"
+AUDIENCE="marketing"
 EXTRA_ARGS=()
 
 usage() {
@@ -17,7 +18,8 @@ Usage: scripts/remotion-demo.sh [options] [-- <extra remotion args>]
 
 Options:
   --stack <rust|node|rails|generic>   Demo stack to visualize (default: rust)
-  --format <landscape|square|vertical> Output aspect variant (default: landscape)
+  --format <landscape|square|vertical|web-mobile> Output aspect variant (default: landscape)
+  --audience <marketing|docs>         Narrative style (default: marketing)
   --studio                            Launch Remotion Studio instead of rendering
   --render                            Render MP4 output (default)
   --output <path>                     Output file path for render mode
@@ -28,6 +30,7 @@ Options:
 
 Examples:
   scripts/remotion-demo.sh --stack rust
+  scripts/remotion-demo.sh --stack rust --audience docs
   scripts/remotion-demo.sh --studio --stack node
   scripts/remotion-demo.sh --all-stacks
   scripts/remotion-demo.sh --install-linux-deps --chrome-mode chrome-for-testing
@@ -55,6 +58,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --format=*)
       FORMAT="${1#*=}"
+      ;;
+    --audience)
+      AUDIENCE="${2:-}"
+      shift
+      ;;
+    --audience=*)
+      AUDIENCE="${1#*=}"
       ;;
     --output)
       OUTPUT="${2:-}"
@@ -104,9 +114,17 @@ case "$STACK" in
 esac
 
 case "$FORMAT" in
-  landscape|square|vertical) ;;
+  landscape|square|vertical|web-mobile) ;;
   *)
     echo "Unsupported format: $FORMAT" >&2
+    exit 1
+    ;;
+esac
+
+case "$AUDIENCE" in
+  marketing|docs) ;;
+  *)
+    echo "Unsupported audience: $AUDIENCE" >&2
     exit 1
     ;;
 esac
@@ -262,8 +280,15 @@ ensure_remotion_browser() {
 ensure_remotion_browser
 
 if [[ "$MODE" == "studio" ]]; then
-  PROPS_JSON="$(printf '{"stack":"%s"}' "$STACK")"
-  exec npx remotion studio src/index.ts --props="$PROPS_JSON" "${EXTRA_ARGS[@]}"
+  PROPS_JSON="$(printf '{"stack":"%s","audience":"%s"}' "$STACK" "$AUDIENCE")"
+  REMOTION_STUDIO_CMD=(
+    npx remotion studio src/index.ts
+    --props="$PROPS_JSON"
+  )
+  if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    REMOTION_STUDIO_CMD+=("${EXTRA_ARGS[@]}")
+  fi
+  exec "${REMOTION_STUDIO_CMD[@]}"
 fi
 
 render_stack() {
@@ -271,24 +296,33 @@ render_stack() {
   local output_path="$2"
   local props_json
   local composition_id
+  local remotion_cmd
 
-  props_json="$(printf '{"stack":"%s"}' "$stack_name")"
+  props_json="$(printf '{"stack":"%s","audience":"%s"}' "$stack_name" "$AUDIENCE")"
   composition_id="BranchBoxTeaser"
   if [[ "$FORMAT" == "square" ]]; then
     composition_id="BranchBoxTeaserSquare"
-    props_json="$(printf '{"stack":"%s","format":"square"}' "$stack_name")"
+    props_json="$(printf '{"stack":"%s","format":"square","audience":"%s"}' "$stack_name" "$AUDIENCE")"
   elif [[ "$FORMAT" == "vertical" ]]; then
     composition_id="BranchBoxTeaserVertical"
-    props_json="$(printf '{"stack":"%s","format":"vertical"}' "$stack_name")"
+    props_json="$(printf '{"stack":"%s","format":"vertical","audience":"%s"}' "$stack_name" "$AUDIENCE")"
+  elif [[ "$FORMAT" == "web-mobile" ]]; then
+    composition_id="BranchBoxTeaserWebMobile"
+    props_json="$(printf '{"stack":"%s","format":"web-mobile","audience":"%s"}' "$stack_name" "$AUDIENCE")"
   fi
   mkdir -p "$(dirname "$output_path")"
 
-  npx remotion render src/index.ts "$composition_id" "$output_path" \
-    --props="$props_json" \
-    --chrome-mode="$CHROME_MODE" \
-    --codec=h264 \
-    --overwrite \
-    "${EXTRA_ARGS[@]}"
+  remotion_cmd=(
+    npx remotion render src/index.ts "$composition_id" "$output_path"
+    --props="$props_json"
+    --chrome-mode="$CHROME_MODE"
+    --codec=h264
+    --overwrite
+  )
+  if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    remotion_cmd+=("${EXTRA_ARGS[@]}")
+  fi
+  "${remotion_cmd[@]}"
 }
 
 if [[ "$ALL_STACKS" == "1" ]]; then

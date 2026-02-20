@@ -41,6 +41,15 @@ export const RemotionRoot: React.FC = () => {
         durationInFrames={BRANCHBOX_TEASER_SOCIAL_DURATION}
         defaultProps={{...defaultProps, format: 'vertical', pace: 'social'}}
       />
+      <Composition
+        id="BranchBoxTeaserWebMobile"
+        component={BranchBoxTeaser}
+        width={1080}
+        height={1350}
+        fps={30}
+        durationInFrames={BRANCHBOX_TEASER_SOCIAL_DURATION}
+        defaultProps={{...defaultProps, format: 'web-mobile', pace: 'social'}}
+      />
     </>
   );
 };

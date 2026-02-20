@@ -7,6 +7,7 @@ TARGET="both"
 SOURCE=""
 OUT_DIR=""
 CARD_AT_SECONDS="8"
+SOCIAL_POSTER_AT_SECONDS="4"
 CHROME_MODE="${REMOTION_CHROME_MODE:-headless-shell}"
 
 usage() {
@@ -23,14 +24,19 @@ Options:
   --out-dir <path>                     Variant output directory (default: source directory)
   --target <docs|website|both>         Publish destination (default: both)
   --card-at <seconds>                  Timestamp for poster/share card capture (default: 8)
+  --social-poster-at <seconds>         Timestamp for square/vertical posters (default: 4)
   --chrome-mode <mode>                 headless-shell (default) or chrome-for-testing
   -h, --help                           Show this help
 
 Outputs:
   branchbox-teaser-<stack>-web-16x9.mp4
+  branchbox-teaser-<stack>-web-mobile-4x5.mp4
   branchbox-teaser-<stack>-social-square.mp4
   branchbox-teaser-<stack>-social-vertical.mp4
   branchbox-teaser-<stack>-poster.jpg
+  branchbox-teaser-<stack>-web-mobile-poster.jpg
+  branchbox-teaser-<stack>-social-square-poster.jpg
+  branchbox-teaser-<stack>-social-vertical-poster.jpg
   branchbox-teaser-<stack>-social-card.jpg
   manifest-<stack>-social.json
 EOF
@@ -72,6 +78,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --card-at=*)
       CARD_AT_SECONDS="${1#*=}"
+      ;;
+    --social-poster-at)
+      SOCIAL_POSTER_AT_SECONDS="${2:-}"
+      shift
+      ;;
+    --social-poster-at=*)
+      SOCIAL_POSTER_AT_SECONDS="${1#*=}"
       ;;
     --chrome-mode)
       CHROME_MODE="${2:-}"
@@ -154,9 +167,13 @@ fi
 mkdir -p "$OUT_DIR"
 
 WEB_16X9="$OUT_DIR/branchbox-teaser-${STACK}-web-16x9.mp4"
+WEB_MOBILE_4X5="$OUT_DIR/branchbox-teaser-${STACK}-web-mobile-4x5.mp4"
 SQUARE_1X1="$OUT_DIR/branchbox-teaser-${STACK}-social-square.mp4"
 VERTICAL_9X16="$OUT_DIR/branchbox-teaser-${STACK}-social-vertical.mp4"
 POSTER_16X9="$OUT_DIR/branchbox-teaser-${STACK}-poster.jpg"
+POSTER_WEB_MOBILE="$OUT_DIR/branchbox-teaser-${STACK}-web-mobile-poster.jpg"
+POSTER_SQUARE="$OUT_DIR/branchbox-teaser-${STACK}-social-square-poster.jpg"
+POSTER_VERTICAL="$OUT_DIR/branchbox-teaser-${STACK}-social-vertical-poster.jpg"
 CARD_1200X630="$OUT_DIR/branchbox-teaser-${STACK}-social-card.jpg"
 
 echo "Packaging social variants from $SOURCE"
@@ -168,6 +185,7 @@ echo "Rendering native square variant..."
 "$RENDER_SCRIPT" \
   --stack "$STACK" \
   --format square \
+  --audience marketing \
   --chrome-mode "$CHROME_MODE" \
   --output "$SQUARE_1X1"
 
@@ -175,8 +193,17 @@ echo "Rendering native vertical variant..."
 "$RENDER_SCRIPT" \
   --stack "$STACK" \
   --format vertical \
+  --audience marketing \
   --chrome-mode "$CHROME_MODE" \
   --output "$VERTICAL_9X16"
+
+echo "Rendering native website mobile (4:5) variant..."
+"$RENDER_SCRIPT" \
+  --stack "$STACK" \
+  --format web-mobile \
+  --audience marketing \
+  --chrome-mode "$CHROME_MODE" \
+  --output "$WEB_MOBILE_4X5"
 
 ffmpeg -y -ss "$CARD_AT_SECONDS" -i "$SOURCE" \
   -frames:v 1 \
@@ -185,6 +212,24 @@ ffmpeg -y -ss "$CARD_AT_SECONDS" -i "$SOURCE" \
   -map "[v]" \
   -q:v 2 \
   "$POSTER_16X9"
+
+ffmpeg -y -ss "$SOCIAL_POSTER_AT_SECONDS" -i "$SQUARE_1X1" \
+  -frames:v 1 \
+  -update 1 \
+  -q:v 2 \
+  "$POSTER_SQUARE"
+
+ffmpeg -y -ss "$SOCIAL_POSTER_AT_SECONDS" -i "$VERTICAL_9X16" \
+  -frames:v 1 \
+  -update 1 \
+  -q:v 2 \
+  "$POSTER_VERTICAL"
+
+ffmpeg -y -ss "$SOCIAL_POSTER_AT_SECONDS" -i "$WEB_MOBILE_4X5" \
+  -frames:v 1 \
+  -update 1 \
+  -q:v 2 \
+  "$POSTER_WEB_MOBILE"
 
 ffmpeg -y -ss "$CARD_AT_SECONDS" -i "$SOURCE" \
   -frames:v 1 \
@@ -200,9 +245,13 @@ copy_assets() {
   mkdir -p "$media_dir"
 
   cp -f "$WEB_16X9" "$media_dir/$(basename "$WEB_16X9")"
+  cp -f "$WEB_MOBILE_4X5" "$media_dir/$(basename "$WEB_MOBILE_4X5")"
   cp -f "$SQUARE_1X1" "$media_dir/$(basename "$SQUARE_1X1")"
   cp -f "$VERTICAL_9X16" "$media_dir/$(basename "$VERTICAL_9X16")"
   cp -f "$POSTER_16X9" "$media_dir/$(basename "$POSTER_16X9")"
+  cp -f "$POSTER_WEB_MOBILE" "$media_dir/$(basename "$POSTER_WEB_MOBILE")"
+  cp -f "$POSTER_SQUARE" "$media_dir/$(basename "$POSTER_SQUARE")"
+  cp -f "$POSTER_VERTICAL" "$media_dir/$(basename "$POSTER_VERTICAL")"
   cp -f "$CARD_1200X630" "$media_dir/$(basename "$CARD_1200X630")"
 }
 
@@ -236,18 +285,27 @@ write_manifest() {
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   mkdir -p "$media_dir"
 
-  local web_file square_file vertical_file poster_file card_file
+  local web_file web_mobile_file square_file vertical_file poster_file poster_web_mobile_file card_file
+  local poster_square_file poster_vertical_file
   web_file="$media_dir/$(basename "$WEB_16X9")"
+  web_mobile_file="$media_dir/$(basename "$WEB_MOBILE_4X5")"
   square_file="$media_dir/$(basename "$SQUARE_1X1")"
   vertical_file="$media_dir/$(basename "$VERTICAL_9X16")"
   poster_file="$media_dir/$(basename "$POSTER_16X9")"
+  poster_web_mobile_file="$media_dir/$(basename "$POSTER_WEB_MOBILE")"
+  poster_square_file="$media_dir/$(basename "$POSTER_SQUARE")"
+  poster_vertical_file="$media_dir/$(basename "$POSTER_VERTICAL")"
   card_file="$media_dir/$(basename "$CARD_1200X630")"
 
   local variant_rows=()
   variant_rows+=("web-16x9"$'\t'"/media/demos/$(basename "$WEB_16X9")"$'\t'"$(sha256_file "$web_file")"$'\t'"$(wc -c < "$web_file" | tr -d ' ')"$'\t'"$(duration_or_null "$web_file")")
+  variant_rows+=("web-mobile-4x5"$'\t'"/media/demos/$(basename "$WEB_MOBILE_4X5")"$'\t'"$(sha256_file "$web_mobile_file")"$'\t'"$(wc -c < "$web_mobile_file" | tr -d ' ')"$'\t'"$(duration_or_null "$web_mobile_file")")
   variant_rows+=("social-square-1x1"$'\t'"/media/demos/$(basename "$SQUARE_1X1")"$'\t'"$(sha256_file "$square_file")"$'\t'"$(wc -c < "$square_file" | tr -d ' ')"$'\t'"$(duration_or_null "$square_file")")
   variant_rows+=("social-vertical-9x16"$'\t'"/media/demos/$(basename "$VERTICAL_9X16")"$'\t'"$(sha256_file "$vertical_file")"$'\t'"$(wc -c < "$vertical_file" | tr -d ' ')"$'\t'"$(duration_or_null "$vertical_file")")
   variant_rows+=("poster-16x9"$'\t'"/media/demos/$(basename "$POSTER_16X9")"$'\t'"$(sha256_file "$poster_file")"$'\t'"$(wc -c < "$poster_file" | tr -d ' ')"$'\t'"null")
+  variant_rows+=("poster-web-mobile-4x5"$'\t'"/media/demos/$(basename "$POSTER_WEB_MOBILE")"$'\t'"$(sha256_file "$poster_web_mobile_file")"$'\t'"$(wc -c < "$poster_web_mobile_file" | tr -d ' ')"$'\t'"null")
+  variant_rows+=("poster-square-1x1"$'\t'"/media/demos/$(basename "$POSTER_SQUARE")"$'\t'"$(sha256_file "$poster_square_file")"$'\t'"$(wc -c < "$poster_square_file" | tr -d ' ')"$'\t'"null")
+  variant_rows+=("poster-vertical-9x16"$'\t'"/media/demos/$(basename "$POSTER_VERTICAL")"$'\t'"$(sha256_file "$poster_vertical_file")"$'\t'"$(wc -c < "$poster_vertical_file" | tr -d ' ')"$'\t'"null")
   variant_rows+=("social-card-1200x630"$'\t'"/media/demos/$(basename "$CARD_1200X630")"$'\t'"$(sha256_file "$card_file")"$'\t'"$(wc -c < "$card_file" | tr -d ' ')"$'\t'"null")
 
   node - "$manifest" "$timestamp" "$STACK" "${variant_rows[@]}" <<'EOF'

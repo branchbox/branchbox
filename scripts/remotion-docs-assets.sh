@@ -17,6 +17,9 @@ Usage: scripts/remotion-docs-assets.sh [options]
 
 Renders documentation-ready demo cuts from the Remotion composition, copies them
 to docs and/or website static directories, and writes a manifest.
+Audience defaults are intentional:
+  - full-reel => marketing narrative
+  - chapter cuts => docs narrative
 
 Options:
   --stack <rust|node|rails|generic>    Stack to render (default: rust)
@@ -252,15 +255,26 @@ render_part() {
   local frames
   local file_name
   local out_file
+  local audience
   local render_cmd=()
 
   frames="$(part_frames "$part_name")"
   file_name="$(part_filename "$part_name")"
   out_file="$OUT_DIR/$file_name"
+  audience="marketing"
+  if [[ "$part_name" != "full-reel" ]]; then
+    audience="docs"
+  fi
 
   if [[ "$SKIP_RENDER" == "0" ]]; then
-    echo "Rendering $part_name ($frames) -> $out_file"
-    render_cmd=("$RENDER_SCRIPT" --stack "$STACK" --output "$out_file" --chrome-mode "$CHROME_MODE")
+    echo "Rendering $part_name ($frames, audience=$audience) -> $out_file"
+    render_cmd=(
+      "$RENDER_SCRIPT"
+      --stack "$STACK"
+      --audience "$audience"
+      --output "$out_file"
+      --chrome-mode "$CHROME_MODE"
+    )
     if [[ "$INSTALL_LINUX_DEPS" == "1" ]]; then
       render_cmd+=(--install-linux-deps)
       INSTALL_LINUX_DEPS=0

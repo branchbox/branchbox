@@ -526,6 +526,9 @@ strong {
     overflow: hidden;
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-lg), var(--shadow-glow);
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 
 .demo-video {
@@ -533,6 +536,32 @@ strong {
     display: block;
     background: #040814;
     aspect-ratio: 16 / 9;
+    object-fit: contain;
+}
+
+.demo-video--landscape {
+    aspect-ratio: 16 / 9;
+}
+
+.demo-video--square {
+    aspect-ratio: 1 / 1;
+    width: min(100%, 72vh);
+    max-height: none;
+    margin-inline: auto;
+}
+
+.demo-video--mobile {
+    aspect-ratio: 4 / 5;
+    width: min(100%, 540px);
+    max-height: 80vh;
+    margin-inline: auto;
+}
+
+.demo-video--vertical {
+    aspect-ratio: 9 / 16;
+    width: min(100%, 500px);
+    max-height: 78vh;
+    margin-inline: auto;
 }
 
 .demo-controls {
@@ -577,35 +606,26 @@ strong {
     font-size: 0.95rem;
 }
 
-.demo-share-links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
-}
-
-.demo-share-link {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid var(--color-border-subtle);
-    border-radius: 999px;
-    padding: 0.35rem 0.8rem;
-    font-size: 0.82rem;
-    color: var(--color-text-secondary);
-    background: rgba(255, 255, 255, 0.02);
-    transition: var(--transition-fast);
-}
-
-.demo-share-link:hover {
-    border-color: var(--color-accent);
-    color: var(--color-text-primary);
-}
-
 @media (max-width: 768px) {
-    .demo-video {
+    .demo-video--landscape {
         aspect-ratio: 4 / 3;
-        max-height: 72vh;
-        object-fit: contain;
+    }
+
+    .demo-video--square {
+        aspect-ratio: 1 / 1;
+        width: min(100%, 70vh);
+    }
+
+    .demo-video--mobile {
+        aspect-ratio: 4 / 5;
+        width: min(100%, 420px);
+        max-height: 78vh;
+    }
+
+    .demo-video--vertical {
+        aspect-ratio: 9 / 16;
+        width: min(100%, 440px);
+        max-height: 78vh;
     }
 
     .demo-tabs {
@@ -624,10 +644,6 @@ strong {
 
     .demo-caption {
         font-size: 0.88rem;
-    }
-
-    .demo-share-link {
-        font-size: 0.76rem;
     }
 }
 

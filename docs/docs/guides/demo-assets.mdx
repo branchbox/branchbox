@@ -9,12 +9,12 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 Use the Remotion pipeline to keep website, docs, and social demo assets consistent and reproducible.
 
-## Marketing Distribution Plan
+## Audience Split (GTM Plan)
 
 | Channel | Asset | Format | Goal |
 | --- | --- | --- | --- |
-| `branchbox.dev` landing page | Full reel + chapter cuts | `16:9` MP4 | Show complete value quickly |
-| Docs guide pages | Chapter cuts | `16:9` MP4 | Explain one workflow per doc section |
+| `branchbox.dev` landing page | Full reel (`marketing` narrative) | `16:9` MP4 | Sell the outcome quickly: isolated parallel environments without branch collisions |
+| Docs guide pages | Chapter cuts (`docs` narrative) | `16:9` MP4 | Explain one command and one operational outcome per section |
 | LinkedIn / X feed posts | Square social reel | `1:1` MP4 | Better feed real estate and autoplay visibility |
 | Reels / Shorts / Stories | Vertical social reel | `9:16` MP4 | Mobile-first discovery |
 | Link previews (Slack/Discord/social cards) | Social card image | `1200x630` JPG | Clean preview when sharing links |
@@ -35,9 +35,10 @@ From repo root:
 
 This command renders:
 
-- Full reel
-- Four docs chapter cuts
+- Full reel in `marketing` voice (website-first)
+- Four docs chapter cuts in `docs` voice (explainer-first)
 - Social variants (`16:9` web alias, `1:1`, `9:16`, social card JPG)
+- Marketing social scenes include a short pain-hook opener, quantified proof chips, and channel-specific CTA outro copy
 
 And publishes to:
 

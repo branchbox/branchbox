@@ -202,7 +202,7 @@
                         id="demo-video"
                         class="demo-video"
                         controls
-                        preload="metadata"
+                        preload="none"
                         poster="/media/demos/branchbox-teaser-rust-social-card.jpg"
                         playsinline
                         muted
@@ -221,7 +221,18 @@
                             role="tab"
                             aria-selected="true"
                             data-src="/media/demos/branchbox-teaser-rust-web-16x9.mp4"
-                            data-caption="Full 50-second walkthrough from real CLI output."
+                            data-src-mobile="/media/demos/branchbox-teaser-rust-web-mobile-4x5.mp4"
+                            data-src-square="/media/demos/branchbox-teaser-rust-social-square.mp4"
+                            data-src-vertical="/media/demos/branchbox-teaser-rust-social-vertical.mp4"
+                            data-poster="/media/demos/branchbox-teaser-rust-social-card.jpg"
+                            data-poster-mobile="/media/demos/branchbox-teaser-rust-web-mobile-poster.jpg"
+                            data-poster-square="/media/demos/branchbox-teaser-rust-social-square-poster.jpg"
+                            data-poster-vertical="/media/demos/branchbox-teaser-rust-social-vertical-poster.jpg"
+                            data-start="4.0"
+                            data-start-mobile="4.0"
+                            data-start-square="4.0"
+                            data-start-vertical="4.0"
+                            data-caption="One command creates an isolated feature environment so you can ship without branch collisions."
                         >
                             Full Reel (50s)
                         </button>
@@ -231,7 +242,7 @@
                             role="tab"
                             aria-selected="false"
                             data-src="/media/demos/branchbox-docs-getting-started-rust.mp4"
-                            data-caption="Getting-started cut: full feature workspace bootstrapping."
+                            data-caption="Step 1 explained: full setup creates worktree, branch, env, and module state."
                         >
                             Getting Started
                         </button>
@@ -241,7 +252,7 @@
                             role="tab"
                             aria-selected="false"
                             data-src="/media/demos/branchbox-docs-minimal-mode-rust.mp4"
-                            data-caption="Minimal-mode cut: spin up fast without heavyweight modules."
+                            data-caption="Step 2 explained: minimal mode skips heavy modules for fast iteration."
                         >
                             Minimal Mode
                         </button>
@@ -251,7 +262,7 @@
                             role="tab"
                             aria-selected="false"
                             data-src="/media/demos/branchbox-docs-parallel-features-rust.mp4"
-                            data-caption="Feature-list cut: visibility across parallel branches."
+                            data-caption="Step 3 explained: feature list shows what is active, skipped, and ready to sync."
                         >
                             Parallel Features
                         </button>
@@ -261,20 +272,13 @@
                             role="tab"
                             aria-selected="false"
                             data-src="/media/demos/branchbox-docs-devcontainer-sync-rust.mp4"
-                            data-caption="Devcontainer-sync cut: propagate config updates across active features."
+                            data-caption="Step 4 explained: dry-run devcontainer sync propagates updates safely."
                         >
                             Devcontainer Sync
                         </button>
                     </div>
 
-                    <p class="demo-caption" id="demo-caption">Full 50-second walkthrough from real CLI output.</p>
-
-                    <div class="demo-share-links">
-                        <a class="demo-share-link" href="/media/demos/branchbox-teaser-rust-social-square.mp4">Square 1:1</a>
-                        <a class="demo-share-link" href="/media/demos/branchbox-teaser-rust-social-vertical.mp4">Vertical 9:16</a>
-                        <a class="demo-share-link" href="/media/demos/branchbox-teaser-rust-social-card.jpg">Social Card</a>
-                        <a class="demo-share-link" href="/docs/guides/demo-assets">Demo Pipeline Docs</a>
-                    </div>
+                    <p class="demo-caption" id="demo-caption">One command creates an isolated feature environment so you can ship without branch collisions.</p>
                 </div>
             </div>
         </div>
@@ -519,16 +523,162 @@
         const demoVideo = document.getElementById('demo-video');
         const demoCaption = document.getElementById('demo-caption');
         const demoTabs = document.querySelectorAll('.demo-tab');
+        const DEMO_VARIANTS = ['landscape', 'square', 'mobile', 'vertical'];
+        const DEMO_BREAKPOINTS = {
+            mobileMaxWidth: 767,
+            squareMaxWidth: 1200,
+        };
+        const defaultDemoPoster = demoVideo ? (demoVideo.getAttribute('poster') || '') : '';
 
         if (demoVideo && demoTabs.length > 0) {
+            const getViewportVariant = () => {
+                const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+                if (viewportWidth <= DEMO_BREAKPOINTS.mobileMaxWidth) {
+                    return 'mobile';
+                }
+                if (viewportWidth <= DEMO_BREAKPOINTS.squareMaxWidth) {
+                    return 'square';
+                }
+                return 'landscape';
+            };
+
+            const updateVideoVariantClass = (variant) => {
+                demoVideo.classList.remove(...DEMO_VARIANTS.map((item) => `demo-video--${item}`));
+                demoVideo.classList.add(`demo-video--${variant}`);
+            };
+
+            const parseStartSeconds = (rawValue) => {
+                const parsed = Number.parseFloat(rawValue ?? '');
+                if (!Number.isFinite(parsed) || parsed <= 0) {
+                    return 0;
+                }
+                return parsed;
+            };
+
+            const seekToStart = (seconds, shouldPlay) => {
+                const applyStart = () => {
+                    if (seconds > 0) {
+                        const hasFiniteDuration =
+                            Number.isFinite(demoVideo.duration) && demoVideo.duration > 0;
+                        const maxStart = hasFiniteDuration ? Math.max(0, demoVideo.duration - 0.05) : seconds;
+                        const startAt = Math.max(0, Math.min(seconds, maxStart));
+                        try {
+                            demoVideo.currentTime = startAt;
+                        } catch (_error) {
+                            // Ignore seek errors (usually transient metadata timing issues).
+                        }
+                    }
+                    if (shouldPlay) {
+                        demoVideo.play().catch(() => {});
+                    }
+                };
+
+                const hasFiniteDuration = Number.isFinite(demoVideo.duration) && demoVideo.duration > 0;
+                if (demoVideo.readyState >= 1 && hasFiniteDuration) {
+                    // Defer one tick so the new source commit settles before seeking.
+                    window.setTimeout(applyStart, 0);
+                    return;
+                }
+
+                const onLoadedMetadata = () => {
+                    demoVideo.removeEventListener('loadedmetadata', onLoadedMetadata);
+                    window.setTimeout(applyStart, 0);
+                };
+                demoVideo.addEventListener('loadedmetadata', onLoadedMetadata);
+            };
+
+            const resolveSourceForTab = (tab, preferredVariant) => {
+                if (preferredVariant === 'mobile') {
+                    if (tab.dataset.srcMobile) {
+                        return {
+                            source: tab.dataset.srcMobile,
+                            appliedVariant: 'mobile',
+                            poster: tab.dataset.posterMobile || '',
+                            startSeconds: parseStartSeconds(tab.dataset.startMobile),
+                        };
+                    }
+                    if (tab.dataset.srcVertical) {
+                        return {
+                            source: tab.dataset.srcVertical,
+                            appliedVariant: 'vertical',
+                            poster: tab.dataset.posterVertical || '',
+                            startSeconds: parseStartSeconds(tab.dataset.startVertical),
+                        };
+                    }
+                    if (tab.dataset.srcSquare) {
+                        return {
+                            source: tab.dataset.srcSquare,
+                            appliedVariant: 'square',
+                            poster: tab.dataset.posterSquare || '',
+                            startSeconds: parseStartSeconds(tab.dataset.startSquare),
+                        };
+                    }
+                }
+
+                if (preferredVariant === 'vertical' && tab.dataset.srcVertical) {
+                    return {
+                        source: tab.dataset.srcVertical,
+                        appliedVariant: 'vertical',
+                        poster: tab.dataset.posterVertical || '',
+                        startSeconds: parseStartSeconds(tab.dataset.startVertical),
+                    };
+                }
+                if (preferredVariant === 'square' && tab.dataset.srcSquare) {
+                    return {
+                        source: tab.dataset.srcSquare,
+                        appliedVariant: 'square',
+                        poster: tab.dataset.posterSquare || '',
+                        startSeconds: parseStartSeconds(tab.dataset.startSquare),
+                    };
+                }
+                return {
+                    source: tab.dataset.src,
+                    appliedVariant: 'landscape',
+                    poster: tab.dataset.poster || defaultDemoPoster,
+                    startSeconds: parseStartSeconds(tab.dataset.start),
+                };
+            };
+
+            const getActiveTab = () => document.querySelector('.demo-tab.is-active') || demoTabs[0];
+
+            const applyTabSource = (tab, options = {}) => {
+                const {preservePlayback = false} = options;
+                const caption = tab.dataset.caption || '';
+                const preferredVariant = getViewportVariant();
+                const {source, appliedVariant, poster, startSeconds} = resolveSourceForTab(tab, preferredVariant);
+
+                if (!source) {
+                    return;
+                }
+
+                updateVideoVariantClass(appliedVariant);
+                if (poster) {
+                    demoVideo.setAttribute('poster', poster);
+                } else {
+                    demoVideo.removeAttribute('poster');
+                }
+
+                const currentSource = demoVideo.dataset.activeSrc;
+                if (currentSource !== source) {
+                    const wasPlaying = !demoVideo.paused && !demoVideo.ended;
+                    const shouldPlay = wasPlaying || preservePlayback;
+                    demoVideo.pause();
+                    demoVideo.src = source;
+                    demoVideo.dataset.activeSrc = source;
+                    if (shouldPlay) {
+                        seekToStart(startSeconds, true);
+                    }
+                } else if (preservePlayback && demoVideo.paused) {
+                    demoVideo.play().catch(() => {});
+                }
+
+                if (demoCaption) {
+                    demoCaption.textContent = caption;
+                }
+            };
+
             demoTabs.forEach(tab => {
                 tab.addEventListener('click', () => {
-                    const source = tab.dataset.src;
-                    const caption = tab.dataset.caption || '';
-                    if (!source) {
-                        return;
-                    }
-
                     demoTabs.forEach(item => {
                         item.classList.remove('is-active');
                         item.setAttribute('aria-selected', 'false');
@@ -536,16 +686,34 @@
 
                     tab.classList.add('is-active');
                     tab.setAttribute('aria-selected', 'true');
-                    demoVideo.pause();
-                    demoVideo.src = source;
-                    demoVideo.load();
-                    demoVideo.play().catch(() => {});
-
-                    if (demoCaption) {
-                        demoCaption.textContent = caption;
-                    }
+                    applyTabSource(tab, {preservePlayback: true});
                 });
             });
+
+            let lastViewportVariant = getViewportVariant();
+            let resizeTimer = null;
+
+            window.addEventListener('resize', () => {
+                if (resizeTimer) {
+                    window.clearTimeout(resizeTimer);
+                }
+                resizeTimer = window.setTimeout(() => {
+                    const nextVariant = getViewportVariant();
+                    if (nextVariant === lastViewportVariant) {
+                        return;
+                    }
+                    lastViewportVariant = nextVariant;
+                    const activeTab = getActiveTab();
+                    if (activeTab) {
+                        applyTabSource(activeTab);
+                    }
+                }, 120);
+            });
+
+            const activeTab = getActiveTab();
+            if (activeTab) {
+                applyTabSource(activeTab);
+            }
         }
 
         // Copy to clipboard functionality
