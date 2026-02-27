@@ -455,6 +455,7 @@ Use this checklist for each release:
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| 0.9.0 | 2026-02-27 | Minor | Interactive 1Password setup in `branchbox init`, PATH fix for pre-built images, compose env_file for GITHUB_TOKEN |
 | 0.7.0 | 2026-01-14 | Minor | Devcontainer CLI commands, .ai-agents directory, release skill |
 | 0.6.0 | 2026-01-13 | Minor | Pre-built devcontainer images, mise runtime management |
 | 0.5.0 | 2026-01-07 | Minor | Git worktree compatibility, Claude Code mounts |
