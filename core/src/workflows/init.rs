@@ -366,6 +366,15 @@ impl InitWorkflow {
             summary.warnings.push(warning);
         }
 
+        // Phase 6c: Configure 1Password credential references
+        if !self.options.skip_devcontainer {
+            if self.options.dry_run {
+                println!("[DRY RUN] Would configure 1Password credential references");
+            } else if let Some(warning) = self.configure_onepassword_settings(&workspace_path)? {
+                summary.warnings.push(warning);
+            }
+        }
+
         // Phase 7: Generate next steps
         summary.next_steps = self.generate_next_steps(&summary);
 
@@ -1185,6 +1194,229 @@ impl InitWorkflow {
             .with_confirmation("Confirm API token", "Tokens did not match")
             .allow_empty_password(false)
             .interact()?)
+    }
+
+    /// Configure 1Password credential references for devcontainer GitHub/signing auth.
+    ///
+    /// Prompts interactively for `OP_GITHUB_REF` and `OP_SIGNING_KEY_REF`, persists them
+    /// to `.devcontainer/.env` so `init-host.sh` can fetch secrets on container startup.
+    fn configure_onepassword_settings(&self, workspace_path: &Path) -> Result<Option<String>> {
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        if !devcontainer_dir.exists() {
+            return Ok(None);
+        }
+
+        let env_path = devcontainer_dir.join(".env");
+
+        // Read existing values from .devcontainer/.env if present.
+        let (existing_github_ref, existing_signing_ref, existing_setup) =
+            Self::read_op_env(&env_path);
+
+        // If already configured with real refs, nothing to do.
+        let has_github = existing_github_ref
+            .as_deref()
+            .is_some_and(|r| r.starts_with("op://"));
+        if has_github && !self.options.update {
+            return Ok(None);
+        }
+
+        // If previously skipped and not running --update, respect that choice.
+        if existing_setup.as_deref() == Some("skip") && !self.options.update {
+            return Ok(None);
+        }
+
+        let interactive = !self.options.non_interactive && Term::stdout().is_term();
+
+        if !interactive {
+            if !has_github {
+                return Ok(Some(
+                    "1Password credential references not configured; \
+                     set OP_GITHUB_REF and OP_SIGNING_KEY_REF in your environment \
+                     or run `branchbox init` interactively."
+                        .to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+
+        let theme = ColorfulTheme::default();
+
+        // Default to true; if user previously skipped, default reflects that on --update.
+        let default_enable = existing_setup.as_deref() != Some("skip");
+
+        let enable = Confirm::with_theme(&theme)
+            .with_prompt("Configure 1Password for GitHub credentials?")
+            .default(default_enable)
+            .interact()?;
+
+        if !enable {
+            Self::write_op_env(&env_path, None, None, true)?;
+            println!(
+                "  Skipped 1Password setup. To configure later, \
+                 delete {} and run `branchbox init`.",
+                env_path.display()
+            );
+            return Ok(None);
+        }
+
+        // Prompt for GitHub token reference, validated by op CLI.
+        let github_ref: String = Input::with_theme(&theme)
+            .with_prompt("GitHub token reference (op://vault/item/field)")
+            .with_initial_text(existing_github_ref.clone().unwrap_or_default())
+            .interact_text()?;
+        let github_ref = github_ref
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+
+        // Validate the reference resolves in 1Password.
+        print!("  Verifying GitHub token reference... ");
+        match Self::verify_op_reference(&github_ref) {
+            Ok(()) => println!("✓"),
+            Err(e) => {
+                println!("✘");
+                println!("  {}", e);
+                let proceed = Confirm::with_theme(&theme)
+                    .with_prompt("Save this reference anyway?")
+                    .default(false)
+                    .interact()?;
+                if !proceed {
+                    return Ok(Some(
+                        "1Password reference verification failed; skipped.".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Prompt for signing key reference (optional).
+        let signing_ref: String = Input::with_theme(&theme)
+            .with_prompt("SSH signing key reference (Enter to skip)")
+            .with_initial_text(existing_signing_ref.clone().unwrap_or_default())
+            .allow_empty(true)
+            .interact_text()?;
+        let signing_ref = signing_ref
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+
+        let signing = if signing_ref.is_empty() {
+            None
+        } else {
+            print!("  Verifying signing key reference... ");
+            match Self::verify_op_reference(&signing_ref) {
+                Ok(()) => {
+                    println!("✓");
+                    Some(signing_ref.as_str())
+                }
+                Err(e) => {
+                    println!("✘");
+                    println!("  {}", e);
+                    let proceed = Confirm::with_theme(&theme)
+                        .with_prompt("Save this reference anyway?")
+                        .default(false)
+                        .interact()?;
+                    if proceed {
+                        Some(signing_ref.as_str())
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+
+        Self::write_op_env(&env_path, Some(&github_ref), signing, false)?;
+        println!("✓ 1Password references saved to {}", env_path.display());
+
+        Ok(None)
+    }
+
+    /// Verify an `op://` reference resolves by calling `op read --no-newline`.
+    fn verify_op_reference(reference: &str) -> std::result::Result<(), String> {
+        let output = Command::new("op")
+            .args(["read", "--no-newline", reference])
+            .output()
+            .map_err(|e| format!("Failed to run `op`: {}", e))?;
+
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout);
+            if value.trim().is_empty() {
+                Err("Reference resolved but returned an empty value".to_string())
+            } else {
+                Ok(())
+            }
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!(
+                "`op read` failed: {}",
+                stderr.trim().lines().next().unwrap_or("unknown error")
+            ))
+        }
+    }
+
+    /// Read existing 1Password configuration from `.devcontainer/.env`.
+    fn read_op_env(path: &Path) -> (Option<String>, Option<String>, Option<String>) {
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return (None, None, None),
+        };
+
+        let mut github_ref = None;
+        let mut signing_ref = None;
+        let mut setup = None;
+
+        for line in content.lines() {
+            if let Some(val) = line.strip_prefix("OP_GITHUB_REF=") {
+                github_ref = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("OP_SIGNING_KEY_REF=") {
+                signing_ref = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("BRANCHBOX_OP_SETUP=") {
+                setup = Some(val.to_string());
+            }
+        }
+
+        (github_ref, signing_ref, setup)
+    }
+
+    /// Atomically write 1Password configuration to `.devcontainer/.env`.
+    fn write_op_env(
+        path: &Path,
+        github_ref: Option<&str>,
+        signing_ref: Option<&str>,
+        skip: bool,
+    ) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let tmp_path = path.with_extension("env.tmp");
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+
+        if skip {
+            writeln!(file, "BRANCHBOX_OP_SETUP=skip")?;
+        } else {
+            if let Some(github) = github_ref {
+                let sanitized = github.replace(['\n', '\r'], "");
+                writeln!(file, "OP_GITHUB_REF={}", sanitized)?;
+            }
+            if let Some(signing) = signing_ref {
+                let sanitized = signing.replace(['\n', '\r'], "");
+                writeln!(file, "OP_SIGNING_KEY_REF={}", sanitized)?;
+            }
+        }
+
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(&tmp_path, path)?;
+
+        Ok(())
     }
 
     fn prompt_and_provision_main_tunnel(

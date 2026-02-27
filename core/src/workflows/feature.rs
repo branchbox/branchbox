@@ -4291,7 +4291,7 @@ mod tests {
                 .get("postStartCommand")
                 .and_then(|value| value.as_str()),
             Some(
-                "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh'"
+                "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/ensure-gitdir.sh && bash .devcontainer/scripts/setup-git.sh'"
             ),
             "devcontainer.json missing canonical postStartCommand"
         );
