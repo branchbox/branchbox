@@ -1270,7 +1270,8 @@ impl InitWorkflow {
             .trim_matches('\'')
             .to_string();
 
-        // Validate the reference resolves in 1Password.
+        // Validate the reference resolves in 1Password (op read handles all
+        // format validation; no client-side prefix check needed).
         print!("  Verifying GitHub token reference... ");
         match Self::verify_op_reference(&github_ref) {
             Ok(()) => println!("✓"),
@@ -1335,7 +1336,7 @@ impl InitWorkflow {
     /// Verify an `op://` reference resolves by calling `op read --no-newline`.
     fn verify_op_reference(reference: &str) -> std::result::Result<(), String> {
         let output = Command::new("op")
-            .args(["read", "--no-newline", reference])
+            .args(["read", "--no-newline", "--", reference])
             .output()
             .map_err(|e| format!("Failed to run `op`: {}", e))?;
 
@@ -1379,7 +1380,8 @@ impl InitWorkflow {
         (github_ref, signing_ref, setup)
     }
 
-    /// Atomically write 1Password configuration to `.devcontainer/.env`.
+    /// Atomically write 1Password configuration to `.devcontainer/.env`,
+    /// preserving any existing keys that BranchBox does not manage.
     fn write_op_env(
         path: &Path,
         github_ref: Option<&str>,
@@ -1387,17 +1389,42 @@ impl InitWorkflow {
         skip: bool,
     ) -> Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+
+        // BranchBox-managed keys that we will replace.
+        const MANAGED_PREFIXES: &[&str] = &[
+            "OP_GITHUB_REF=",
+            "OP_SIGNING_KEY_REF=",
+            "BRANCHBOX_OP_SETUP=",
+        ];
+
+        // Read existing content and keep lines that aren't managed by BranchBox.
+        let existing = fs::read_to_string(path).unwrap_or_default();
+        let preserved: Vec<&str> = existing
+            .lines()
+            .filter(|line| {
+                !line.is_empty() && !MANAGED_PREFIXES.iter().any(|p| line.starts_with(p))
+            })
+            .collect();
 
         let tmp_path = path.with_extension("env.tmp");
 
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp_path)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+
+        let mut file = opts.open(&tmp_path)?;
+
+        // Write back preserved (non-BranchBox) lines first.
+        for line in &preserved {
+            writeln!(file, "{}", line)?;
+        }
+
+        // Write BranchBox-managed keys.
         if skip {
             writeln!(file, "BRANCHBOX_OP_SETUP=skip")?;
         } else {

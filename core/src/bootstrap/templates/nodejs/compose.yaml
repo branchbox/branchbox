@@ -30,6 +30,8 @@ services:
         required: false
       - path: .branchbox.env
         required: false
+      - path: .github-token.env
+        required: false
     environment:
       NODE_ENV: ${NODE_ENV:-development}
     # Uncomment to enable Postgres (for apps using pg, prisma, etc.)

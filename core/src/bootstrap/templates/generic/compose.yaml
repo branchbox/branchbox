@@ -26,5 +26,7 @@ services:
         required: false
       - path: .branchbox.env
         required: false
+      - path: .github-token.env
+        required: false
 volumes:
   dind-data: null

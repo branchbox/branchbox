@@ -19,7 +19,10 @@ DEFAULT_OP_SIGNING_KEY_REF='op://<vault>/<item>/private key'
 # Check current worktree first, then fall back to the main worktree.
 DEVCONTAINER_OP_ENV="${DEVCONTAINER_DIR}/.env"
 if [[ ! -f "${DEVCONTAINER_OP_ENV}" ]]; then
-  _candidate="${DEVCONTAINER_DIR}/../../.devcontainer/.env"
+  # Resolve main worktree name from .branchbox.env (defaults to "main").
+  _main_name="$(grep '^BRANCHBOX_MAIN_NAME=' "${DEVCONTAINER_DIR}/.branchbox.env" 2>/dev/null | cut -d= -f2- || true)"
+  _main_name="${_main_name:-main}"
+  _candidate="${DEVCONTAINER_DIR}/../../${_main_name}/.devcontainer/.env"
   if [[ -f "${_candidate}" ]]; then
     DEVCONTAINER_OP_ENV="${_candidate}"
   fi
