@@ -16,7 +16,7 @@ This guide covers all installation methods for BranchBox across different platfo
 brew install branchbox/tap/branchbox
 ```
 
-### Linux
+### Linux / macOS (installer script)
 
 Install with our automated script:
 
@@ -42,9 +42,10 @@ chmod +x install.sh
 
 **What the script does:**
 - Detects your architecture (x86_64 or ARM64)
+- Detects your OS (Linux or macOS)
 - Downloads the latest release from GitHub
-- Verifies SHA256 checksums
-- Installs to `/usr/local/bin` (with sudo) or `~/.local/bin` (without sudo)
+- Verifies SHA256 checksums for the specific downloaded archive
+- Installs to `/usr/local/bin` (Linux), `/opt/homebrew/bin` (macOS when available), or `~/.local/bin` fallback
 - Provides clear output and error messages
 
 ### Windows (Scoop)

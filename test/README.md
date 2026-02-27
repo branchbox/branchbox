@@ -116,9 +116,9 @@ INSTALL_DIR=$HOME/test-bin bash install.sh
 - `shellcheck` - Static analysis
 
 **Required by install.sh:**
-- `curl` - Download files
+- `curl` or `wget` - Download files
 - `tar` - Extract archives
-- `sha256sum` - Verify checksums
+- `sha256sum`, `shasum`, or `openssl` - Verify checksums
 
 ## Troubleshooting
 
