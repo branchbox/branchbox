@@ -5,8 +5,7 @@
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
   "containerEnv": {
-    "DOCKER_CONTAINER": "true",
-    "PATH": "/home/vscode/.local/share/mise/shims:/home/vscode/.local/bin:${containerEnv:PATH}"
+    "DOCKER_CONTAINER": "true"
   },
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {

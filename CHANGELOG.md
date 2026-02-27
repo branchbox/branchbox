@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `branchbox init` now interactively prompts for 1Password credential references (`OP_GITHUB_REF`, `OP_SIGNING_KEY_REF`) and persists them to `.devcontainer/.env`, eliminating the need to manually export environment variables.
+- References are validated live via `op read` during setup; users can re-run `branchbox init --update` to reconfigure.
+- `init-host.sh` now sources persisted references from `.devcontainer/.env` with automatic fallback to the main worktree's copy for feature worktrees.
+- BranchBox's own devcontainer now includes the 1Password bootstrap flow (`initializeCommand`, `postStartCommand`, secret mounts) matching the stack templates.
+
+### Fixed
+- Pre-built devcontainer images for Rails and Node.js no longer have a broken `PATH` caused by `${containerEnv:PATH}` being baked literally into the image instead of resolved at runtime (#58).
+
 ## [0.8.0] - 2026-02-17
 
 ### Added

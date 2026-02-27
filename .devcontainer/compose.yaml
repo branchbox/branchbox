@@ -19,6 +19,9 @@ services:
     - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude:/home/vscode/.claude
     - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/claude.json:/home/vscode/.claude.json
     - ${SHARED_CONFIG_DIR:-../..}/.ai-agents/gh:/home/vscode/.config/gh
+    - ./.github-token.env:/home/vscode/.github-token.env:ro
+    - ./.git-signing-key:/home/vscode/.git-signing-key:ro
+    - ./.gitconfig.env:/home/vscode/.gitconfig.env:ro
     ports:
     - "50515:50515"
     - "8787:8787"
@@ -27,6 +30,8 @@ services:
       - path: ../.env
         required: false
       - path: .branchbox.env
+        required: false
+      - path: .github-token.env
         required: false
     environment:
       DOCKER_CONTAINER: 'true'

@@ -29,6 +29,8 @@ services:
         required: false
       - path: .branchbox.env
         required: false
+      - path: .github-token.env
+        required: false
     environment:
       # Disable Solid Queue Puma plugin by default (enable if you have queue DB configured)
       SOLID_QUEUE_IN_PUMA: ${SOLID_QUEUE_IN_PUMA:-false}

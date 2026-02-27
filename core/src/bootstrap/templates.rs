@@ -385,6 +385,15 @@ mod tests {
     }
 
     #[test]
+    fn init_host_template_sources_devcontainer_env() {
+        let script = onepassword_init_host_script().expect("init-host template");
+        assert!(
+            script.contains("DEVCONTAINER_OP_ENV"),
+            "init-host.sh should source .devcontainer/.env for persisted OP refs"
+        );
+    }
+
+    #[test]
     fn compose_templates_have_consistent_image_pattern() {
         let expected_patterns = [
             (

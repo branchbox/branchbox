@@ -26,6 +26,8 @@ services:
         required: false
       - path: .branchbox.env
         required: false
+      - path: .github-token.env
+        required: false
     environment:
       DOCKER_CONTAINER: 'true'
       RUST_BACKTRACE: '1'
