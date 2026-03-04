@@ -3,7 +3,7 @@
 //! Provides minimal, blocking HTTP helpers for provisioning and cleaning up
 //! Cloudflare tunnels and DNS records during feature workflow execution.
 
-use crate::{Error, Result};
+use crate::{env_placeholders::looks_like_env_placeholder, Error, Result};
 use reqwest::{
     blocking::Client,
     header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
@@ -14,6 +14,12 @@ use serde_json::json;
 
 const API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const USER_AGENT_VALUE: &str = "branchbox/feature-workflow";
+
+fn is_valid_cloudflare_account_id(value: &str) -> bool {
+    value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
 
 /// Cloudflare HTTP client wrapper.
 #[derive(Debug, Clone)]
@@ -35,16 +41,37 @@ impl CloudflareClient {
         account_id: impl Into<String>,
         api_base: impl Into<String>,
     ) -> Result<Self> {
-        let api_token = api_token.into();
-        let account_id = account_id.into();
+        let api_token = api_token.into().trim().to_string();
+        let account_id = account_id.into().trim().to_string();
         let api_base = api_base.into();
 
-        if api_token.trim().is_empty() {
+        if api_token.is_empty() {
             return Err(Error::validation("Cloudflare API token is empty"));
         }
 
-        if account_id.trim().is_empty() {
+        if looks_like_env_placeholder(&api_token) {
+            return Err(Error::validation(format!(
+                "Cloudflare API token appears to be unresolved placeholder '{}'",
+                api_token
+            )));
+        }
+
+        if account_id.is_empty() {
             return Err(Error::validation("Cloudflare account id is empty"));
+        }
+
+        if looks_like_env_placeholder(&account_id) {
+            return Err(Error::validation(format!(
+                "Cloudflare account id appears to be unresolved placeholder '{}'",
+                account_id
+            )));
+        }
+
+        if !is_valid_cloudflare_account_id(&account_id) {
+            return Err(Error::validation(format!(
+                "Cloudflare account id contains invalid characters: '{}'",
+                account_id
+            )));
         }
 
         let mut headers = HeaderMap::new();
@@ -460,6 +487,36 @@ mod tests {
     fn test_client_new_valid() {
         let result = CloudflareClient::new("test_token", "test_account");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_client_new_invalid_account_characters() {
+        let result = CloudflareClient::new("token123", "../account");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("contains invalid characters"));
+    }
+
+    #[test]
+    fn test_client_new_placeholder_token() {
+        let result = CloudflareClient::new("${CLOUDFLARE_API_TOKEN}", "account123");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unresolved placeholder"));
+    }
+
+    #[test]
+    fn test_client_new_placeholder_account() {
+        let result = CloudflareClient::new("token123", "${CLOUDFLARE_ACCOUNT_ID}");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unresolved placeholder"));
     }
 
     #[test]

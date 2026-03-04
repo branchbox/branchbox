@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod cloudflare;
 pub mod config;
 pub mod devcontainer_runtime;
+pub(crate) mod env_placeholders;
 pub mod error;
 pub mod git;
 pub mod modules;
