@@ -161,25 +161,19 @@ impl<'a> CloudflaredProvider<'a> {
     }
 
     fn account_id(&self) -> Result<String> {
-        if let Some(configured) = self.config.account_id.as_ref().map(String::as_str) {
-            return Self::resolve_secret_value(
-                configured,
-                "Cloudflare account ID",
-                CLOUDFLARE_ACCOUNT_ID_VAR,
-            );
-        }
+        let env_var_value = std::env::var(CLOUDFLARE_ACCOUNT_ID_VAR).ok();
+        let raw_value = self
+            .config
+            .account_id
+            .as_deref()
+            .or(env_var_value.as_deref())
+            .ok_or_else(|| Error::validation("Cloudflare account ID missing from configuration"))?;
 
-        if let Ok(env_account_id) = std::env::var(CLOUDFLARE_ACCOUNT_ID_VAR) {
-            return Self::resolve_secret_value(
-                &env_account_id,
-                "Cloudflare account ID",
-                CLOUDFLARE_ACCOUNT_ID_VAR,
-            );
-        }
-
-        Err(Error::validation(
-            "Cloudflare account ID missing from configuration",
-        ))
+        Self::resolve_secret_value(
+            raw_value,
+            "Cloudflare account ID",
+            CLOUDFLARE_ACCOUNT_ID_VAR,
+        )
     }
 
     fn build_client(&self) -> Result<CloudflareClient> {
