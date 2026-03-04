@@ -3,7 +3,7 @@
 //! Provides minimal, blocking HTTP helpers for provisioning and cleaning up
 //! Cloudflare tunnels and DNS records during feature workflow execution.
 
-use crate::{Error, Result};
+use crate::{env_placeholders::looks_like_env_placeholder, Error, Result};
 use reqwest::{
     blocking::Client,
     header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
@@ -14,34 +14,6 @@ use serde_json::json;
 
 const API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const USER_AGENT_VALUE: &str = "branchbox/feature-workflow";
-
-fn is_valid_env_var_name(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    if first != '_' && !first.is_ascii_alphabetic() {
-        return false;
-    }
-
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
-}
-
-fn looks_like_env_placeholder(value: &str) -> bool {
-    let value = value.trim();
-    if let Some(candidate) = value
-        .strip_prefix("${")
-        .and_then(|raw| raw.strip_suffix('}'))
-    {
-        return is_valid_env_var_name(candidate);
-    }
-
-    value
-        .strip_prefix('$')
-        .map(is_valid_env_var_name)
-        .unwrap_or(false)
-}
 
 /// Cloudflare HTTP client wrapper.
 #[derive(Debug, Clone)]

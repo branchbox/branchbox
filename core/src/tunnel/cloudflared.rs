@@ -9,6 +9,7 @@ use super::{
     TunnelStatus,
 };
 use crate::cloudflare::{CloudflareClient, TunnelProvision, TunnelSummary};
+use crate::env_placeholders::parse_env_reference;
 use crate::{config::CloudflaredConfig, Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,33 +52,6 @@ impl<'a> CloudflaredProvider<'a> {
         self.account_id().is_ok()
     }
 
-    fn is_valid_env_var_name(value: &str) -> bool {
-        let mut chars = value.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-
-        if first != '_' && !first.is_ascii_alphabetic() {
-            return false;
-        }
-
-        chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
-    }
-
-    fn parse_env_reference(value: &str) -> Option<&str> {
-        if let Some(env_name) = value
-            .strip_prefix("${")
-            .and_then(|raw| raw.strip_suffix('}'))
-            .filter(|candidate| Self::is_valid_env_var_name(candidate))
-        {
-            return Some(env_name);
-        }
-
-        value
-            .strip_prefix('$')
-            .filter(|candidate| Self::is_valid_env_var_name(candidate))
-    }
-
     fn resolve_secret_value(
         raw_value: &str,
         field_name: &str,
@@ -92,7 +66,7 @@ impl<'a> CloudflaredProvider<'a> {
             return Err(Error::validation(format!("{field_name} is empty")));
         }
 
-        let Some(referenced_env) = Self::parse_env_reference(&normalized) else {
+        let Some(referenced_env) = parse_env_reference(&normalized) else {
             return Ok(normalized);
         };
 
