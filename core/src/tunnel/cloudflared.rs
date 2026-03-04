@@ -13,6 +13,10 @@ use crate::{config::CloudflaredConfig, Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const CLOUDFLARE_ACCOUNT_ID_VAR: &str = "CLOUDFLARE_ACCOUNT_ID";
+const CLOUDFLARE_API_TOKEN_VAR: &str = "CLOUDFLARE_API_TOKEN";
+const CLOUDFLARE_API_KEY_VAR: &str = "CLOUDFLARE_API_KEY";
+
 /// Cloudflared provider wrapping the workspace-level configuration.
 #[derive(Debug)]
 pub struct CloudflaredProvider<'a> {
@@ -40,13 +44,75 @@ impl<'a> CloudflaredProvider<'a> {
     }
 
     fn has_automation_credentials(&self) -> bool {
-        self.config
-            .account_id
-            .as_ref()
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-            && self.config.api_token_path.is_some()
-            && !self.config.manual_instructions
+        if self.config.api_token_path.is_none() || self.config.manual_instructions {
+            return false;
+        }
+
+        self.account_id().is_ok()
+    }
+
+    fn is_valid_env_var_name(value: &str) -> bool {
+        let mut chars = value.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+
+        if first != '_' && !first.is_ascii_alphabetic() {
+            return false;
+        }
+
+        chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    }
+
+    fn parse_env_reference(value: &str) -> Option<&str> {
+        if let Some(env_name) = value
+            .strip_prefix("${")
+            .and_then(|raw| raw.strip_suffix('}'))
+            .filter(|candidate| Self::is_valid_env_var_name(candidate))
+        {
+            return Some(env_name);
+        }
+
+        value
+            .strip_prefix('$')
+            .filter(|candidate| Self::is_valid_env_var_name(candidate))
+    }
+
+    fn resolve_secret_value(
+        raw_value: &str,
+        field_name: &str,
+        expected_env_var: &str,
+    ) -> Result<String> {
+        let normalized = raw_value
+            .trim()
+            .trim_matches(['"', '\''])
+            .trim()
+            .to_string();
+        if normalized.is_empty() {
+            return Err(Error::validation(format!("{field_name} is empty")));
+        }
+
+        let Some(referenced_env) = Self::parse_env_reference(&normalized) else {
+            return Ok(normalized);
+        };
+
+        if referenced_env != expected_env_var {
+            return Err(Error::validation(format!(
+                "{field_name} uses unsupported placeholder '{}'; expected '${}' or '${{{}}}'.",
+                normalized, expected_env_var, expected_env_var
+            )));
+        }
+
+        let resolved = std::env::var(referenced_env).unwrap_or_default();
+        let resolved = resolved.trim();
+        if resolved.is_empty() || resolved == normalized {
+            return Err(Error::validation(format!(
+                "{field_name} is set to unresolved placeholder '{}'; set {expected_env_var} or store a literal value.",
+                normalized
+            )));
+        }
+
+        Ok(resolved.to_string())
     }
 
     fn manual_steps(
@@ -99,10 +165,18 @@ impl<'a> CloudflaredProvider<'a> {
 
         for line in content.lines() {
             if let Some(value) = line.strip_prefix("CLOUDFLARE_API_TOKEN=") {
-                return Ok(value.trim().trim_matches(['"', '\'']).to_string());
+                return Self::resolve_secret_value(
+                    value,
+                    "Cloudflare API token",
+                    CLOUDFLARE_API_TOKEN_VAR,
+                );
             }
             if let Some(value) = line.strip_prefix("CLOUDFLARE_API_KEY=") {
-                return Ok(value.trim().trim_matches(['"', '\'']).to_string());
+                return Self::resolve_secret_value(
+                    value,
+                    "Cloudflare API key",
+                    CLOUDFLARE_API_KEY_VAR,
+                );
             }
         }
 
@@ -113,12 +187,25 @@ impl<'a> CloudflaredProvider<'a> {
     }
 
     fn account_id(&self) -> Result<String> {
-        self.config
-            .account_id
-            .as_ref()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::validation("Cloudflare account ID missing from configuration"))
+        if let Some(configured) = self.config.account_id.as_ref().map(String::as_str) {
+            return Self::resolve_secret_value(
+                configured,
+                "Cloudflare account ID",
+                CLOUDFLARE_ACCOUNT_ID_VAR,
+            );
+        }
+
+        if let Ok(env_account_id) = std::env::var(CLOUDFLARE_ACCOUNT_ID_VAR) {
+            return Self::resolve_secret_value(
+                &env_account_id,
+                "Cloudflare account ID",
+                CLOUDFLARE_ACCOUNT_ID_VAR,
+            );
+        }
+
+        Err(Error::validation(
+            "Cloudflare account ID missing from configuration",
+        ))
     }
 
     fn build_client(&self) -> Result<CloudflareClient> {
@@ -242,9 +329,11 @@ impl<'a> TunnelProvider for CloudflaredProvider<'a> {
     fn provision(&self, intent: &ProvisioningIntent<'_>) -> Result<ProvisioningOutcome> {
         if !self.has_automation_credentials() {
             let reason = if self.config.manual_instructions {
-                "Cloudflare automation disabled during init; follow manual steps."
+                "Cloudflare automation disabled during init; follow manual steps.".to_string()
+            } else if let Err(err) = self.account_id() {
+                format!("Cloudflare credentials invalid: {}", err)
             } else {
-                "Cloudflare credentials missing; manual tunnel provisioning required."
+                "Cloudflare credentials missing; manual tunnel provisioning required.".to_string()
             };
             return Ok(ProvisioningOutcome::Manual(
                 self.manual_steps(intent, reason),
@@ -653,5 +742,216 @@ mod tests {
         dns_records.assert();
 
         std::env::remove_var("BRANCHBOX_CLOUDFLARE_API_BASE");
+    }
+
+    #[test]
+    fn placeholder_account_id_without_env_stays_manual() {
+        let _guard = CLOUDFLARE_API_BASE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+
+        let mut config = CloudflaredConfig {
+            manual_instructions: false,
+            account_id: Some("${CLOUDFLARE_ACCOUNT_ID}".into()),
+            dns_zone: Some("example.com".into()),
+            ..Default::default()
+        };
+
+        let temp = TempDir::new().unwrap();
+        let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
+        fs::create_dir_all(credentials_path.parent().unwrap()).unwrap();
+        fs::write(&credentials_path, "CLOUDFLARE_API_TOKEN=test-token\n").unwrap();
+        config.api_token_path = Some(credentials_path);
+
+        std::env::remove_var(CLOUDFLARE_ACCOUNT_ID_VAR);
+
+        let provider = CloudflaredProvider::new(&config, temp.path());
+        let intent = ProvisioningIntent {
+            workspace_root: temp.path(),
+            feature_name: "feature/login",
+            hostname: "login.dev.example.com",
+            service_url: "web:3000",
+        };
+
+        let outcome = provider.provision(&intent).unwrap();
+        assert!(matches!(outcome, ProvisioningOutcome::Manual(_)));
+    }
+
+    #[test]
+    fn placeholder_account_id_resolves_from_environment() {
+        let _guard = CLOUDFLARE_API_BASE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+
+        let mut config = CloudflaredConfig {
+            manual_instructions: false,
+            account_id: Some("${CLOUDFLARE_ACCOUNT_ID}".into()),
+            dns_zone: Some("example.com".into()),
+            ..Default::default()
+        };
+
+        let temp = TempDir::new().unwrap();
+        let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
+        fs::create_dir_all(credentials_path.parent().unwrap()).unwrap();
+        fs::write(&credentials_path, "CLOUDFLARE_API_TOKEN=test-token\n").unwrap();
+        config.api_token_path = Some(credentials_path);
+
+        std::env::set_var(CLOUDFLARE_ACCOUNT_ID_VAR, "acct-from-env");
+
+        let mut server = Server::new();
+        let base = format!("{}/client/v4", server.url());
+        std::env::set_var("BRANCHBOX_CLOUDFLARE_API_BASE", &base);
+
+        let find = server
+            .mock("GET", "/client/v4/accounts/acct-from-env/cfd_tunnel")
+            .match_query(Matcher::UrlEncoded(
+                "name".into(),
+                "branchbox-feature-login".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[]}"#)
+            .create();
+
+        let create = server
+            .mock("POST", "/client/v4/accounts/acct-from-env/cfd_tunnel")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":{"id":"tunnel-id","name":"branchbox-feature-login","token":"connector-token"}}"#)
+            .create();
+
+        let configure = server
+            .mock(
+                "PUT",
+                "/client/v4/accounts/acct-from-env/cfd_tunnel/tunnel-id/configurations",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":{}}"#)
+            .create();
+
+        let zones = server
+            .mock("GET", "/client/v4/zones")
+            .match_query(Matcher::UrlEncoded("name".into(), "example.com".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[{"id":"zone-id"}]}"#)
+            .create();
+
+        let records = server
+            .mock("GET", "/client/v4/zones/zone-id/dns_records")
+            .match_query(Matcher::UrlEncoded(
+                "name".into(),
+                "login.dev.example.com".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"errors":[],"result":[]}"#)
+            .create();
+
+        let create_record = server
+            .mock("POST", "/client/v4/zones/zone-id/dns_records")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"success":true,"errors":[],"result":{"id":"dns-id","content":"target"}}"#,
+            )
+            .create();
+
+        let provider = CloudflaredProvider::new(&config, temp.path());
+        let intent = ProvisioningIntent {
+            workspace_root: temp.path(),
+            feature_name: "feature/login",
+            hostname: "login.dev.example.com",
+            service_url: "web:3000",
+        };
+
+        let outcome = provider.provision(&intent).unwrap();
+        assert!(matches!(outcome, ProvisioningOutcome::Automated { .. }));
+
+        find.assert();
+        create.assert();
+        configure.assert();
+        zones.assert();
+        records.assert();
+        create_record.assert();
+
+        std::env::remove_var(CLOUDFLARE_ACCOUNT_ID_VAR);
+        std::env::remove_var("BRANCHBOX_CLOUDFLARE_API_BASE");
+    }
+
+    #[test]
+    fn placeholder_api_token_without_env_returns_error() {
+        let _guard = CLOUDFLARE_API_BASE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+
+        let mut config = CloudflaredConfig {
+            manual_instructions: false,
+            account_id: Some("acct".into()),
+            dns_zone: Some("example.com".into()),
+            ..Default::default()
+        };
+
+        let temp = TempDir::new().unwrap();
+        let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
+        fs::create_dir_all(credentials_path.parent().unwrap()).unwrap();
+        fs::write(
+            &credentials_path,
+            "CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}\n",
+        )
+        .unwrap();
+        config.api_token_path = Some(credentials_path);
+
+        std::env::remove_var(CLOUDFLARE_API_TOKEN_VAR);
+
+        let provider = CloudflaredProvider::new(&config, temp.path());
+        let err = provider
+            .load_api_token()
+            .expect_err("unresolved token placeholder should fail");
+
+        assert!(
+            err.to_string().contains("unresolved placeholder"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn placeholder_api_token_resolves_from_environment() {
+        let _guard = CLOUDFLARE_API_BASE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+
+        let mut config = CloudflaredConfig {
+            manual_instructions: false,
+            account_id: Some("acct".into()),
+            dns_zone: Some("example.com".into()),
+            ..Default::default()
+        };
+
+        let temp = TempDir::new().unwrap();
+        let credentials_path = temp.path().join(".branchbox/secure/cloudflared.env");
+        fs::create_dir_all(credentials_path.parent().unwrap()).unwrap();
+        fs::write(
+            &credentials_path,
+            "CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}\n",
+        )
+        .unwrap();
+        config.api_token_path = Some(credentials_path);
+
+        std::env::set_var(CLOUDFLARE_API_TOKEN_VAR, "token-from-env");
+
+        let provider = CloudflaredProvider::new(&config, temp.path());
+        let token = provider
+            .load_api_token()
+            .expect("placeholder token should resolve");
+        assert_eq!(token, "token-from-env");
+
+        std::env::remove_var(CLOUDFLARE_API_TOKEN_VAR);
     }
 }
