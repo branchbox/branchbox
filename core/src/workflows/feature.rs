@@ -851,12 +851,35 @@ impl FeatureWorkflow {
             ));
         }
 
-        let provider_name = metadata
+        let configured_provider = config
+            .tunnel
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| "cloudflared".to_string());
+        let configured_provider = Self::normalize_tunnel_provider_name(&configured_provider)
+            .unwrap_or(configured_provider.as_str())
+            .to_string();
+
+        let stored_provider = metadata
             .tunnel
             .as_ref()
-            .map(|state| state.provider.clone())
-            .or_else(|| config.tunnel.default_provider.clone())
-            .unwrap_or_else(|| "cloudflared".to_string());
+            .map(|state| state.provider.trim().to_string())
+            .filter(|provider| !provider.is_empty());
+
+        let provider_name = stored_provider
+            .as_deref()
+            .and_then(Self::normalize_tunnel_provider_name)
+            .map(str::to_string)
+            .unwrap_or_else(|| configured_provider.clone());
+
+        if let Some(stored) = stored_provider.as_ref() {
+            if Self::normalize_tunnel_provider_name(stored).is_none() {
+                warnings.push(format!(
+                    "Stored tunnel provider '{}' is unsupported; using configured provider '{}'",
+                    stored, configured_provider
+                ));
+            }
+        }
 
         let hostname = self.resolve_tunnel_hostname(&metadata)?;
         let service_url = self.resolve_service_url();
@@ -1402,8 +1425,19 @@ impl FeatureWorkflow {
         }
 
         let message = format!("feature-start: changes for {}", work_feature);
-        let push = Command::new("git")
-            .args(["stash", "push", "--no-include-untracked", "-m", &message])
+        let mut push_cmd = Command::new("git");
+        push_cmd
+            .arg("stash")
+            .arg("push")
+            .arg("--no-include-untracked")
+            .arg("-m")
+            .arg(&message)
+            .arg("--")
+            .arg(".");
+        for pathspec in Self::stash_excluded_pathspecs() {
+            push_cmd.arg(pathspec);
+        }
+        let push = push_cmd
             .current_dir(&self.repo_root)
             .output()
             .map_err(|err| Error::git(format!("Failed to invoke git stash: {}", err)))?;
@@ -1508,6 +1542,13 @@ impl FeatureWorkflow {
                 vec![warning]
             }
         }
+    }
+
+    fn stash_excluded_pathspecs() -> [&'static str; 2] {
+        [
+            ":(exclude).branchbox/config.json",
+            ":(exclude).branchbox/registry.json",
+        ]
     }
 
     fn link_env_into_devcontainer(&self, worktree_path: &Path) -> Result<()> {
@@ -1955,6 +1996,14 @@ impl FeatureWorkflow {
         }
 
         Ok(None)
+    }
+
+    fn normalize_tunnel_provider_name(provider: &str) -> Option<&'static str> {
+        if provider.eq_ignore_ascii_case("cloudflared") {
+            Some("cloudflared")
+        } else {
+            None
+        }
     }
 
     fn invoke_tunnel_provider(
@@ -3599,6 +3648,7 @@ fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CloudflaredConfig;
     use serde_json::Value;
     use serde_yaml::Value as YamlValue;
     use std::fs;
@@ -4152,6 +4202,93 @@ mod tests {
     }
 
     #[test]
+    fn tunnel_open_falls_back_to_configured_provider_when_stored_provider_is_unsupported() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        fs::create_dir_all(repo_path.join(".branchbox/secure")).unwrap();
+        fs::write(
+            repo_path.join(".branchbox/secure/cloudflared.env"),
+            "CLOUDFLARE_API_TOKEN=test-token\n",
+        )
+        .unwrap();
+
+        let mut config = BranchBoxConfig::default();
+        config.tunnel.default_provider = Some("cloudflared".to_string());
+        config.tunnel.providers.cloudflared = Some(CloudflaredConfig {
+            account_id: Some("${CLOUDFLARE_ACCOUNT_ID}".to_string()),
+            api_token_path: Some(PathBuf::from(".branchbox/secure/cloudflared.env")),
+            dns_zone: Some("example.com".to_string()),
+            manual_instructions: false,
+            ..Default::default()
+        });
+        config.save(repo_path).unwrap();
+
+        let store = FeatureStateStore::new(repo_path);
+        let now = Utc::now();
+        let worktree_path = repo_path.parent().unwrap().join("lashdesk-videos");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        store
+            .record_start(FeatureMetadata {
+                work_feature: "lashdesk-videos".to_string(),
+                branch_name: "feature/lashdesk-videos".to_string(),
+                worktree_path: worktree_path.clone(),
+                base_branch: Some("main".to_string()),
+                feature_url: Some("amidship-lashdesk-videos.example.com".to_string()),
+                compose_project_name: Some("amidship-lashdesk-videos".to_string()),
+                env_path: Some(worktree_path.join(".env")),
+                status: FeatureStatus::Active,
+                created_at: now,
+                updated_at: now,
+                removed_at: None,
+                tunnel: Some(FeatureTunnelState::disabled(
+                    Some("manual".to_string()),
+                    "Tunnel requires manual setup",
+                )),
+                color: None,
+                pr_number: None,
+                last_commit: None,
+                devcontainer_outdated: false,
+                last_sync_at: None,
+                sync_strategy: None,
+                start_mode: StartMode::Full,
+                prompt_seed: None,
+                module_outcomes: Vec::new(),
+                last_summary_rendered_at: None,
+                adapter: None,
+            })
+            .unwrap();
+
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .tunnel_open(TunnelOpenRequest {
+                work_feature: "lashdesk-videos".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(summary.state.provider, "cloudflared");
+        assert_eq!(summary.state.status, FeatureTunnelStatus::Manual);
+        assert!(
+            summary.warnings.iter().any(|warning| warning.contains(
+                "Stored tunnel provider 'manual' is unsupported; using configured provider 'cloudflared'"
+            )),
+            "expected unsupported-provider fallback warning, got {:?}",
+            summary.warnings
+        );
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unresolved placeholder")),
+            "expected unresolved-placeholder warning, got {:?}",
+            summary.warnings
+        );
+    }
+
+    #[test]
     fn feature_start_creates_worktree_and_env() {
         let temp = setup_test_repo();
         let repo_path = temp.path();
@@ -4392,6 +4529,83 @@ mod tests {
         assert!(String::from_utf8_lossy(&stash_list.stdout)
             .trim()
             .is_empty());
+    }
+
+    #[test]
+    fn feature_start_keeps_branchbox_config_changes_in_main_worktree() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
+
+        let mut config = BranchBoxConfig::default();
+        config.tunnel.providers.cloudflared = Some(CloudflaredConfig {
+            account_id: Some("${CLOUDFLARE_ACCOUNT_ID}".to_string()),
+            api_token_path: Some(PathBuf::from(".branchbox/secure/cloudflared.env")),
+            dns_zone: Some("example.com".to_string()),
+            manual_instructions: false,
+            ..Default::default()
+        });
+        config.save(repo_path).unwrap();
+
+        Command::new("git")
+            .args(["add", ".branchbox/config.json"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Track BranchBox config"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Simulate `init --update` rewriting account_id to a literal before feature start.
+        config.tunnel.providers.cloudflared = Some(CloudflaredConfig {
+            account_id: Some("acct-123".to_string()),
+            api_token_path: Some(PathBuf::from(".branchbox/secure/cloudflared.env")),
+            dns_zone: Some("example.com".to_string()),
+            manual_instructions: false,
+            ..Default::default()
+        });
+        config.save(repo_path).unwrap();
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        let worktree_path = repo_path.parent().unwrap().join("stash-config-main");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("stash-config-main".to_string()),
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        let main_config = BranchBoxConfig::load(repo_path).unwrap();
+        assert_eq!(
+            main_config
+                .tunnel
+                .providers
+                .cloudflared
+                .as_ref()
+                .and_then(|cloudflared| cloudflared.account_id.as_deref()),
+            Some("acct-123"),
+            "main worktree config should retain updated literal account id"
+        );
+
+        let feature_config = BranchBoxConfig::load(&summary.worktree_path).unwrap();
+        assert_eq!(
+            feature_config
+                .tunnel
+                .providers
+                .cloudflared
+                .as_ref()
+                .and_then(|cloudflared| cloudflared.account_id.as_deref()),
+            Some("${CLOUDFLARE_ACCOUNT_ID}"),
+            "feature worktree should keep committed config state"
+        );
     }
 
     #[test]
