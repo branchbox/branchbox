@@ -27,6 +27,10 @@ print_error() {
   echo -e "${RED}Error: $1${NC}" >&2
 }
 
+print_warning() {
+  echo -e "${YELLOW}Warning: $1${NC}" >&2
+}
+
 require_tools() {
   if ! has_command tar; then
     print_error "Required command not found: tar"
@@ -187,6 +191,40 @@ install_binary() {
   local source_binary="$1"
   local target_dir="$2"
 
+  warn_existing_bb_command() {
+    local alias_dir="$1"
+    local alias_path="$alias_dir/bb"
+    local existing_bb
+    existing_bb=$(command -v bb 2>/dev/null || true)
+
+    if [ -z "$existing_bb" ] || [ "$existing_bb" = "$alias_path" ]; then
+      return
+    fi
+
+    if [[ "$existing_bb" == */* ]]; then
+      print_warning "Detected existing 'bb' command at $existing_bb. BranchBox will install alias at $alias_path; PATH precedence decides which one runs."
+    else
+      print_warning "Detected existing shell entry for 'bb' ($existing_bb). BranchBox will still install alias at $alias_path."
+    fi
+  }
+
+  install_bb_alias() {
+    local alias_dir="$1"
+    local use_sudo="${2:-0}"
+    local alias_path="$alias_dir/bb"
+
+    if [ -e "$alias_path" ] && [ ! -L "$alias_path" ]; then
+      print_warning "$alias_path exists and is not a symlink; skipping bb alias creation"
+      return
+    fi
+
+    if [ "$use_sudo" = "1" ]; then
+      sudo ln -sfn "$BINARY_NAME" "$alias_path"
+    else
+      ln -sfn "$BINARY_NAME" "$alias_path"
+    fi
+  }
+
   if [ ! -f "$source_binary" ]; then
     print_error "Extracted binary not found: $source_binary"
     exit 1
@@ -196,6 +234,8 @@ install_binary() {
     echo "Installing to $target_dir (no sudo required)"
     mv "$source_binary" "$target_dir/$BINARY_NAME"
     chmod +x "$target_dir/$BINARY_NAME"
+    warn_existing_bb_command "$target_dir"
+    install_bb_alias "$target_dir"
     return
   fi
 
@@ -204,6 +244,8 @@ install_binary() {
     sudo mkdir -p "$target_dir"
     sudo mv "$source_binary" "$target_dir/$BINARY_NAME"
     sudo chmod +x "$target_dir/$BINARY_NAME"
+    warn_existing_bb_command "$target_dir"
+    install_bb_alias "$target_dir" "1"
     return
   fi
 
@@ -212,6 +254,8 @@ install_binary() {
   echo "Installing to $target_dir (user installation)"
   mv "$source_binary" "$target_dir/$BINARY_NAME"
   chmod +x "$target_dir/$BINARY_NAME"
+  warn_existing_bb_command "$target_dir"
+  install_bb_alias "$target_dir"
 
   case ":$PATH:" in
     *":$target_dir:"*)
@@ -328,6 +372,7 @@ main() {
   echo ""
   echo "Verify installation:"
   echo "  $BINARY_NAME --version"
+  echo "  bb --version"
   echo ""
   echo "Get started:"
   echo "  $BINARY_NAME --help"

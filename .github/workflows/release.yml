@@ -209,6 +209,7 @@ jobs:
 
           # Copy binary
           cp target/${{ matrix.target }}/release/branchbox "${ARCHIVE_NAME}/"
+          cp target/${{ matrix.target }}/release/branchbox "${ARCHIVE_NAME}/bb"
 
           # Copy documentation
           cp README.md LICENSE "${ARCHIVE_NAME}/"
@@ -229,6 +230,7 @@ jobs:
 
           # Copy binary
           Copy-Item target/${{ matrix.target }}/release/branchbox.exe "$ARCHIVE_NAME/"
+          Copy-Item target/${{ matrix.target }}/release/branchbox.exe "$ARCHIVE_NAME/bb.exe"
 
           # Copy documentation
           Copy-Item README.md,LICENSE "$ARCHIVE_NAME/"
@@ -465,6 +467,7 @@ jobs:
                 abort "Failed to update checksum for #{arch} in #{path}"
               end
             end
+            contents.gsub!(/^\s*bin\.install\s+"branchbox"(?:,\s*"bb")?\s*$/, '    bin.install "branchbox", "bb"')
             File.write(path, contents)
           RUBY
 
