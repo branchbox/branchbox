@@ -45,10 +45,17 @@ use crate::modules::{default_port_for_stack, detect_main_service};
 use crate::{Error, Result};
 use dialoguer::console::Term;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password};
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
+const CLOUDFLARE_API_BASE_ENV: &str = "BRANCHBOX_CLOUDFLARE_API_BASE";
+const CLOUDFLARE_INIT_USER_AGENT: &str = "branchbox/init";
 
 /// Initialization workflow orchestrator
 ///
@@ -222,6 +229,29 @@ pub enum DevcontainerStatus {
 
     /// Not present (skipped by user)
     None,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudflareAccountsResponse {
+    success: bool,
+    #[serde(default)]
+    result: Vec<CloudflareAccountSummary>,
+    #[serde(default)]
+    errors: Vec<CloudflareApiError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudflareAccountSummary {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudflareApiError {
+    #[allow(dead_code)]
+    code: Option<u32>,
+    message: Option<String>,
 }
 
 impl InitWorkflow {
@@ -1009,9 +1039,27 @@ impl InitWorkflow {
             }
 
             if let Some(cloudflared) = config.tunnel.providers.cloudflared.as_mut() {
+                if cloudflared.api_token_path.is_none()
+                    && CloudflaredConfig::default_credentials_path(workspace_path).exists()
+                {
+                    cloudflared.api_token_path =
+                        Some(PathBuf::from(".branchbox/secure/cloudflared.env"));
+                }
+
+                if self.options.update {
+                    if let Some(msg) =
+                        self.auto_resolve_cloudflare_account_id(workspace_path, cloudflared)?
+                    {
+                        Self::append_warning(&mut warning, msg);
+                    }
+                }
+
                 if cloudflared.api_token_path.is_none() {
                     cloudflared.manual_instructions = true;
-                    warning = Some("Cloudflare credentials not provided; BranchBox will emit manual tunnel setup instructions until configured.".to_string());
+                    Self::append_warning(
+                        &mut warning,
+                        "Cloudflare credentials not provided; BranchBox will emit manual tunnel setup instructions until configured.".to_string(),
+                    );
                 }
             }
         } else {
@@ -1064,8 +1112,11 @@ impl InitWorkflow {
                         .with_prompt("Cloudflare account ID")
                         .with_initial_text(cloudflared.account_id.clone().unwrap_or_default())
                         .validate_with(|input: &String| -> std::result::Result<(), &str> {
-                            if input.trim().is_empty() {
+                            let trimmed = input.trim();
+                            if trimmed.is_empty() {
                                 Err("Account ID cannot be empty")
+                            } else if InitWorkflow::parse_env_reference(trimmed).is_some() {
+                                Err("Account ID must be a literal value, not an env placeholder")
                             } else {
                                 Ok(())
                             }
@@ -1153,7 +1204,10 @@ impl InitWorkflow {
                 } else {
                     cloudflared.api_token_path = None;
                     cloudflared.manual_instructions = true;
-                    warning = Some("Cloudflare credentials skipped; BranchBox will emit manual tunnel setup instructions until configured.".to_string());
+                    Self::append_warning(
+                        &mut warning,
+                        "Cloudflare credentials skipped; BranchBox will emit manual tunnel setup instructions until configured.".to_string(),
+                    );
                 }
             } else {
                 config.tunnel.providers.cloudflared = None;
@@ -1186,6 +1240,244 @@ impl InitWorkflow {
         }
 
         Ok(warning)
+    }
+
+    fn append_warning(target: &mut Option<String>, message: String) {
+        if let Some(existing) = target.as_mut() {
+            existing.push(' ');
+            existing.push_str(&message);
+        } else {
+            *target = Some(message);
+        }
+    }
+
+    fn is_valid_env_var_name(value: &str) -> bool {
+        let mut chars = value.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+
+        if first != '_' && !first.is_ascii_alphabetic() {
+            return false;
+        }
+
+        chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    }
+
+    fn parse_env_reference(value: &str) -> Option<&str> {
+        if let Some(env_name) = value
+            .strip_prefix("${")
+            .and_then(|raw| raw.strip_suffix('}'))
+            .filter(|candidate| Self::is_valid_env_var_name(candidate))
+        {
+            return Some(env_name);
+        }
+
+        value
+            .strip_prefix('$')
+            .filter(|candidate| Self::is_valid_env_var_name(candidate))
+    }
+
+    fn resolve_cloudflare_api_base() -> String {
+        std::env::var(CLOUDFLARE_API_BASE_ENV)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| CLOUDFLARE_API_BASE.to_string())
+    }
+
+    fn cloudflared_credentials_paths(
+        workspace_path: &Path,
+        configured_path: Option<&PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+
+        if let Some(path) = configured_path {
+            let normalized = if path.is_absolute() {
+                path.clone()
+            } else {
+                workspace_path.join(path)
+            };
+            candidates.push(normalized);
+        }
+
+        let default_path = CloudflaredConfig::default_credentials_path(workspace_path);
+        if !candidates.iter().any(|existing| existing == &default_path) {
+            candidates.push(default_path);
+        }
+
+        candidates
+    }
+
+    fn read_env_file_value(path: &Path, key: &str) -> Result<Option<String>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(path)?;
+        for line in content.lines() {
+            if let Some(value) = line.strip_prefix(&format!("{key}=")) {
+                let normalized = value.trim().trim_matches(['"', '\'']).trim().to_string();
+                if !normalized.is_empty() {
+                    return Ok(Some(normalized));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn read_cloudflare_api_token(
+        workspace_path: &Path,
+        configured_path: Option<&PathBuf>,
+    ) -> Result<Option<String>> {
+        for path in Self::cloudflared_credentials_paths(workspace_path, configured_path) {
+            if let Some(token) = Self::read_env_file_value(&path, "CLOUDFLARE_API_TOKEN")? {
+                return Ok(Some(token));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn fetch_cloudflare_accounts(api_token: &str) -> Result<Vec<CloudflareAccountSummary>> {
+        let mut headers = HeaderMap::new();
+        let auth_value =
+            HeaderValue::from_str(&format!("Bearer {}", api_token.trim())).map_err(|err| {
+                Error::validation(format!("Invalid Cloudflare API token header: {}", err))
+            })?;
+        headers.insert(AUTHORIZATION, auth_value);
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(CLOUDFLARE_INIT_USER_AGENT),
+        );
+
+        let client = Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|err| {
+                Error::other(format!("Failed to build Cloudflare HTTP client: {}", err))
+            })?;
+
+        let url = format!(
+            "{}/accounts",
+            Self::resolve_cloudflare_api_base().trim_end_matches('/')
+        );
+        let response: CloudflareAccountsResponse = client
+            .get(url)
+            .send()
+            .map_err(|err| Error::other(format!("Cloudflare API request failed: {}", err)))?
+            .json()
+            .map_err(|err| {
+                Error::other(format!(
+                    "Failed to parse Cloudflare account list response: {}",
+                    err
+                ))
+            })?;
+
+        if !response.success {
+            let details = response
+                .errors
+                .into_iter()
+                .filter_map(|entry| entry.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if details.is_empty() {
+                return Err(Error::validation("Cloudflare API rejected account lookup"));
+            }
+            return Err(Error::validation(format!(
+                "Cloudflare API rejected account lookup: {}",
+                details
+            )));
+        }
+
+        Ok(response.result)
+    }
+
+    fn auto_resolve_cloudflare_account_id(
+        &self,
+        workspace_path: &Path,
+        cloudflared: &mut CloudflaredConfig,
+    ) -> Result<Option<String>> {
+        let Some(raw_account_id) = cloudflared.account_id.as_ref() else {
+            return Ok(None);
+        };
+
+        let trimmed = raw_account_id.trim().to_string();
+        let Some(var_name) = Self::parse_env_reference(&trimmed).map(ToString::to_string) else {
+            return Ok(None);
+        };
+
+        if let Ok(env_value) = std::env::var(&var_name) {
+            let env_value = env_value.trim();
+            if !env_value.is_empty() && Self::parse_env_reference(env_value).is_none() {
+                cloudflared.account_id = Some(env_value.to_string());
+                return Ok(Some(format!(
+                    "Resolved Cloudflare account ID from {} during --update.",
+                    var_name
+                )));
+            }
+        }
+
+        for path in
+            Self::cloudflared_credentials_paths(workspace_path, cloudflared.api_token_path.as_ref())
+        {
+            if let Some(file_account_id) =
+                Self::read_env_file_value(&path, "CLOUDFLARE_ACCOUNT_ID")?
+            {
+                if Self::parse_env_reference(&file_account_id).is_none() {
+                    cloudflared.account_id = Some(file_account_id);
+                    return Ok(Some(format!(
+                        "Resolved Cloudflare account ID from {} during --update.",
+                        path.display()
+                    )));
+                }
+            }
+        }
+
+        let Some(api_token) =
+            Self::read_cloudflare_api_token(workspace_path, cloudflared.api_token_path.as_ref())?
+        else {
+            return Ok(Some(format!(
+                "Cloudflare account ID placeholder '{}' is unresolved; set a literal value for tunnel.providers.cloudflared.account_id.",
+                trimmed
+            )));
+        };
+
+        match Self::fetch_cloudflare_accounts(&api_token) {
+            Ok(accounts) if accounts.len() == 1 => {
+                let account = accounts.into_iter().next().unwrap();
+                cloudflared.account_id = Some(account.id.clone());
+                Ok(Some(format!(
+                    "Resolved Cloudflare account ID from Cloudflare API during --update: {}",
+                    account.id
+                )))
+            }
+            Ok(accounts) if accounts.is_empty() => Ok(Some(
+                "Cloudflare API token could not access any accounts; set tunnel.providers.cloudflared.account_id explicitly.".to_string(),
+            )),
+            Ok(accounts) => {
+                let display = accounts
+                    .iter()
+                    .map(|account| {
+                        account
+                            .name
+                            .as_ref()
+                            .map(|name| format!("{} ({})", name, account.id))
+                            .unwrap_or_else(|| account.id.clone())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(Some(format!(
+                    "Cloudflare API token can access multiple accounts ({}); set tunnel.providers.cloudflared.account_id explicitly.",
+                    display
+                )))
+            }
+            Err(err) => Ok(Some(format!(
+                "Failed to auto-resolve Cloudflare account ID during --update: {}",
+                err
+            ))),
+        }
     }
 
     fn prompt_for_api_token(theme: &ColorfulTheme) -> Result<String> {
@@ -1855,6 +2147,7 @@ impl Default for InitSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
     use std::ffi::OsStr;
     use tempfile::TempDir;
 
@@ -2165,6 +2458,81 @@ mod tests {
         let summary = update_workflow.execute().unwrap();
 
         assert!(summary.workspace_path.exists());
+    }
+
+    #[test]
+    fn test_execute_update_mode_resolves_cloudflare_account_id_from_api_token() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+
+        let initial_options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            skip_devcontainer: true,
+            ..Default::default()
+        };
+        let mut initial_workflow = InitWorkflow::new(initial_options);
+        initial_workflow.execute().unwrap();
+
+        fs::create_dir_all(repo_path.join(".branchbox/secure")).unwrap();
+        fs::write(
+            repo_path.join(".branchbox/secure/cloudflared.env"),
+            "CLOUDFLARE_API_TOKEN=test-token\n",
+        )
+        .unwrap();
+
+        let mut config = BranchBoxConfig::load(&repo_path).unwrap();
+        config.tunnel.default_provider = Some("cloudflared".to_string());
+        config.tunnel.providers.cloudflared = Some(CloudflaredConfig {
+            account_id: Some("${CLOUDFLARE_ACCOUNT_ID}".to_string()),
+            api_token_path: Some(PathBuf::from(".branchbox/secure/cloudflared.env")),
+            manual_instructions: false,
+            dns_zone: Some("example.com".to_string()),
+            ..Default::default()
+        });
+        config.save(&repo_path).unwrap();
+
+        let mut server = Server::new();
+        let accounts_mock = server
+            .mock("GET", "/client/v4/accounts")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"success":true,"errors":[],"result":[{"id":"acct-123","name":"Test Account"}]}"#,
+            )
+            .create();
+
+        let base = format!("{}/client/v4", server.url());
+        let _base_guard = EnvVarGuard::set(CLOUDFLARE_API_BASE_ENV, &base);
+
+        let update_options = InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            update: true,
+            non_interactive: true,
+            skip_devcontainer: true,
+            ..Default::default()
+        };
+        let mut update_workflow = InitWorkflow::new(update_options);
+        let summary = update_workflow.execute().unwrap();
+
+        accounts_mock.assert();
+
+        let updated = BranchBoxConfig::load(&repo_path).unwrap();
+        let cloudflared = updated
+            .tunnel
+            .providers
+            .cloudflared
+            .expect("cloudflared provider");
+        assert_eq!(cloudflared.account_id.as_deref(), Some("acct-123"));
+        assert!(
+            summary.warnings.iter().any(|warning| {
+                warning.contains(
+                    "Resolved Cloudflare account ID from Cloudflare API during --update: acct-123",
+                )
+            }),
+            "expected account-id auto-resolution warning, got {:?}",
+            summary.warnings
+        );
     }
 
     #[test]
