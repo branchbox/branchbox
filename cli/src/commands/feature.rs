@@ -33,6 +33,9 @@ pub enum FeatureCommands {
 
     /// List known feature worktrees from the registry
     List(FeatureListArgs),
+
+    /// Tear down all active feature worktrees
+    Prune(FeaturePruneArgs),
 }
 
 #[derive(Args)]
@@ -151,11 +154,43 @@ pub struct FeatureListArgs {
     pub json: bool,
 }
 
+#[derive(Args)]
+pub struct FeaturePruneArgs {
+    /// Repository path (defaults to current directory)
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Show which features would be removed without applying teardown
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip confirmation prompt
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+
+    /// Keep git branches after removing worktrees
+    #[arg(long)]
+    pub keep_branch: bool,
+
+    /// Delete git branches after removing worktrees
+    #[arg(long, conflicts_with = "keep_branch")]
+    pub delete_branch: bool,
+
+    /// Move specs to completed during teardown
+    #[arg(long)]
+    pub complete_spec: bool,
+
+    /// Emit verbose telemetry (e.g. Cloudflare operations)
+    #[arg(long)]
+    pub telemetry: bool,
+}
+
 pub fn execute(command: FeatureCommands) -> Result<()> {
     match command {
         FeatureCommands::Start(args) => run_start(args),
         FeatureCommands::Teardown(args) => run_teardown(args),
         FeatureCommands::List(args) => run_list(args),
+        FeatureCommands::Prune(args) => run_prune(args),
     }
 }
 
@@ -568,6 +603,113 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn run_prune(args: FeaturePruneArgs) -> Result<()> {
+    let FeaturePruneArgs {
+        repo,
+        dry_run,
+        yes,
+        keep_branch,
+        delete_branch,
+        complete_spec,
+        telemetry,
+    } = args;
+
+    let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
+    let workflow = FeatureWorkflow::new(&repo_path)?;
+    let mut features = workflow.list_features()?;
+    features.retain(|feature| feature.status == FeatureStatus::Active);
+
+    if features.is_empty() {
+        println!("ℹ️  No active features to prune.");
+        return Ok(());
+    }
+
+    println!(
+        "🧹 Preparing to prune {} active feature worktree(s):",
+        features.len()
+    );
+    for feature in &features {
+        println!("  - {}", feature.work_feature);
+    }
+
+    if dry_run {
+        println!("ℹ️  Dry run only; no teardown executed.");
+        return Ok(());
+    }
+
+    if !yes {
+        if !Term::stdout().is_term() {
+            bail!(
+                "Refusing to prune in non-interactive mode without --yes. Rerun with --yes to confirm."
+            );
+        }
+
+        let proceed = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Tear down all {} active features now?",
+                features.len()
+            ))
+            .default(false)
+            .interact()?;
+        if !proceed {
+            bail!("Prune aborted.");
+        }
+    }
+
+    let config = BranchBoxConfig::load(workflow.repo_root()).unwrap_or_default();
+    let default_delete_branch = config.feature.teardown.delete_branch_by_default;
+    let should_delete_branch = if keep_branch {
+        false
+    } else if delete_branch {
+        true
+    } else {
+        default_delete_branch
+    };
+
+    let mut failed = Vec::new();
+    let total = features.len();
+
+    for feature in features {
+        println!();
+        println!("→ Pruning {}", feature.work_feature);
+
+        let request = TeardownRequest {
+            work_feature: feature.work_feature.clone(),
+            branch_prefix: derive_branch_prefix(&feature),
+            delete_branch: should_delete_branch,
+            force_delete_branch: should_delete_branch,
+            force_remove: true,
+            force_remove_modules: true,
+            complete_spec,
+            telemetry,
+        };
+
+        match workflow.teardown(request) {
+            Ok(summary) => print_teardown_summary(&summary),
+            Err(err) => {
+                eprintln!("✗ Failed to prune '{}': {}", feature.work_feature, err);
+                failed.push((feature.work_feature, err.to_string()));
+            }
+        }
+    }
+
+    println!();
+    if failed.is_empty() {
+        println!("✓ Pruned {} feature(s).", total);
+        return Ok(());
+    }
+
+    eprintln!(
+        "Completed prune with failures ({}/{} failed):",
+        failed.len(),
+        total
+    );
+    for (feature, reason) in failed {
+        eprintln!("  - {}: {}", feature, reason);
+    }
+    bail!("Prune completed with failures.")
+}
+
 fn handle_teardown_error(
     err: CoreError,
     workflow: &FeatureWorkflow,
@@ -623,6 +765,19 @@ fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
     } else {
         format!("{}/{}", prefix, work_feature)
     }
+}
+
+fn derive_branch_prefix(feature: &FeatureMetadata) -> Option<String> {
+    let suffix = format!("/{}", feature.work_feature);
+    if let Some(prefix) = feature.branch_name.strip_suffix(&suffix) {
+        return Some(prefix.to_string());
+    }
+
+    if feature.branch_name == feature.work_feature {
+        return Some(String::new());
+    }
+
+    None
 }
 
 fn local_branch_exists(repo_root: &Path, branch_name: &str) -> bool {

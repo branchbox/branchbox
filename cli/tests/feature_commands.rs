@@ -506,3 +506,85 @@ fn feature_start_minimal_defers_default_agent_launch() {
         "Default coding agent launch skipped (devcontainer not provisioned yet). Run `branchbox devcontainer sync` first."
     ));
 }
+
+#[test]
+fn features_alias_accepts_plural_subcommand() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+    let work_feature = "features-alias";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+
+    branchbox_cmd!(repo_path)
+        .args(["feature", "start", work_feature])
+        .assert()
+        .success();
+
+    branchbox_cmd!(repo_path)
+        .args(["features", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(work_feature));
+
+    branchbox_cmd!(repo_path)
+        .args([
+            "feature",
+            "teardown",
+            work_feature,
+            "--delete-branch",
+            "--force",
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        !worktree_path.exists(),
+        "expected worktree to be removed during teardown"
+    );
+}
+
+#[test]
+fn prune_command_tears_down_all_active_features() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+    let feature_one = "prune-one";
+    let feature_two = "prune-two";
+    let worktree_one = test_repo.worktree_parent().join(feature_one);
+    let worktree_two = test_repo.worktree_parent().join(feature_two);
+
+    branchbox_cmd!(repo_path)
+        .args(["feature", "start", feature_one])
+        .assert()
+        .success();
+
+    branchbox_cmd!(repo_path)
+        .args(["feature", "start", feature_two])
+        .assert()
+        .success();
+
+    branchbox_cmd!(repo_path)
+        .args(["prune", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pruned 2 feature(s)."));
+
+    assert!(
+        !worktree_one.exists() && !worktree_two.exists(),
+        "expected both worktrees to be removed by prune"
+    );
+
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "list", "--status", "active", "--json"])
+        .output()
+        .expect("feature list active --json");
+    assert!(
+        output.status.success(),
+        "expected feature list active --json to succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value =
+        serde_json::from_slice(&output.stdout).expect("parse active feature list JSON");
+    let active = payload
+        .as_array()
+        .expect("active list should serialize as array");
+    assert!(active.is_empty(), "expected no active features after prune");
+}

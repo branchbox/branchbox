@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use commands::agent as agent_commands;
 use commands::agent::AgentCommands;
 use commands::devcontainer::{self, DevcontainerCommands};
-use commands::feature::{self, FeatureCommands};
+use commands::feature::{self, FeatureCommands, FeaturePruneArgs};
 use commands::init::{self, InitArgs};
 use commands::tunnel::{self, TunnelCommands};
 use std::path::PathBuf;
@@ -47,8 +47,11 @@ enum Commands {
     Name(NameCommands),
 
     /// Manage feature worktrees
-    #[command(subcommand)]
+    #[command(subcommand, alias = "features")]
     Feature(FeatureCommands),
+
+    /// Tear down all active feature worktrees
+    Prune(FeaturePruneArgs),
 
     /// Manage tunnels for existing features
     #[command(subcommand)]
@@ -126,6 +129,10 @@ fn main() -> Result<()> {
 
         Commands::Feature(feature_cmd) => {
             feature::execute(feature_cmd)?;
+        }
+
+        Commands::Prune(args) => {
+            feature::run_prune(args)?;
         }
 
         Commands::Tunnel(tunnel_cmd) => {

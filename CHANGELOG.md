@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-03-05
+
+### Added
+- `branchbox prune` and `branchbox feature prune` to tear down all active feature worktrees in one command, with `--dry-run` and `--yes` support for safe automation.
+- Added a `features` alias for the `feature` command group so `branchbox features list` works.
+
+### Changed
+- Installer now creates a `bb` alias symlink to `branchbox` and warns when another `bb` command already exists in `PATH`.
+- Release packaging now ships `bb`/`bb.exe` alongside `branchbox`, and Homebrew formula automation updates install lines to include both binaries.
+
 ## [0.9.0] - 2026-02-27
 
 ### Added
