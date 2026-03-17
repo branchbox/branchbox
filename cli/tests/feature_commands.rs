@@ -197,6 +197,85 @@ fn feature_start_list_teardown_end_to_end() {
 }
 
 #[test]
+fn feature_start_rejects_container_without_override() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args(["feature", "start", "container-rejected"])
+        .output()
+        .expect("run feature start in container");
+
+    assert!(
+        !output.status.success(),
+        "feature start should fail host validation without override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must be run on the host machine"),
+        "expected host validation error, got: {stderr}"
+    );
+}
+
+#[test]
+fn feature_start_allows_container_with_override_flag() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args([
+            "feature",
+            "start",
+            "container-allowed",
+            "--allow-container",
+            "--json",
+        ])
+        .output()
+        .expect("run feature start --allow-container");
+
+    assert!(
+        output.status.success(),
+        "feature start should succeed with --allow-container: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary: Value =
+        serde_json::from_slice(&output.stdout).expect("parse feature start JSON summary");
+    assert_eq!(summary["work_feature"], "container-allowed");
+}
+
+#[test]
+fn feature_start_allows_container_with_no_host_check_alias() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args([
+            "feature",
+            "start",
+            "container-allowed-alias",
+            "--no-host-check",
+            "--json",
+        ])
+        .output()
+        .expect("run feature start --no-host-check");
+
+    assert!(
+        output.status.success(),
+        "feature start should succeed with --no-host-check: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+#[test]
 fn feature_start_minimal_mode_json_summary() {
     let test_repo = init_test_repo();
     let repo_path = test_repo.path();

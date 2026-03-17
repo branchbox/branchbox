@@ -92,6 +92,10 @@ pub struct FeatureStartArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Allow running feature start from inside a containerized environment
+    #[arg(long, alias = "no-host-check")]
+    pub allow_container: bool,
+
     /// Suppress summary output (text mode only)
     #[arg(long = "no-summary")]
     pub no_summary: bool,
@@ -209,6 +213,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         prompt,
         default_prompt,
         json,
+        allow_container,
         no_summary,
     } = args;
 
@@ -254,10 +259,37 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         prompt_seed: prompt_seed.clone(),
     };
 
+    let _host_validation_override = HostValidationOverride::new(allow_container);
     let summary = workflow.start(request)?;
     print_start_summary(&summary, json, no_summary)?;
 
     Ok(())
+}
+
+struct HostValidationOverride {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl HostValidationOverride {
+    fn new(enabled: bool) -> Option<Self> {
+        if !enabled {
+            return None;
+        }
+
+        let previous = env::var_os("BRANCHBOX_SKIP_HOST_VALIDATION");
+        env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        Some(Self { previous })
+    }
+}
+
+impl Drop for HostValidationOverride {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", previous);
+        } else {
+            env::remove_var("BRANCHBOX_SKIP_HOST_VALIDATION");
+        }
+    }
 }
 
 fn run_list(args: FeatureListArgs) -> Result<()> {
