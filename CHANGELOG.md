@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-03-16
+
+### Added
+- `branchbox feature start --allow-container` (alias `--no-host-check`) allows running feature start from inside a containerized environment (e.g., devcontainers with Docker socket mounted), enabling programmatic workspace provisioning for coding agent orchestration (#65).
+
 ## [0.9.3] - 2026-03-05
 
 ### Added

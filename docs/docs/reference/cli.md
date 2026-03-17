@@ -217,6 +217,7 @@ Options:
       --prompt <PROMPT>                Provide an optional prompt seed for automation/agent hand-off
       --default-prompt                 Use the default minimal-mode prompt shortcut (only valid with --minimal/--fast)
       --json                           Emit JSON summary payload instead of human-readable text
+      --allow-container                Allow running feature start from inside a containerized environment
       --no-summary                     Suppress summary output (text mode only)
   -h, --help                           Print help
 ```
