@@ -275,6 +275,197 @@ fn feature_start_allows_container_with_no_host_check_alias() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn feature_teardown_rejects_container_without_override() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    // Create a feature (bypassing host check for setup).
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "start", "container-td-test", "--json"])
+        .output()
+        .expect("run feature start");
+    assert!(output.status.success(), "feature start should succeed");
+
+    // Teardown WITHOUT override — should fail.
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args(["feature", "teardown", "container-td-test"])
+        .output()
+        .expect("run feature teardown in container");
+
+    assert!(
+        !output.status.success(),
+        "feature teardown should fail host validation without override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must be run on the host machine"),
+        "expected host validation error, got: {stderr}"
+    );
+}
+
+#[test]
+fn feature_teardown_allows_container_with_override_flag() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    // Create a feature (bypassing host check for setup).
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "start", "container-td-allowed", "--json"])
+        .output()
+        .expect("run feature start");
+    assert!(output.status.success(), "feature start should succeed");
+
+    // Teardown WITH --allow-container — should succeed.
+    // Also pass --force to bypass the dirty-worktree guard (devcontainer files synced during start).
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args([
+            "feature",
+            "teardown",
+            "container-td-allowed",
+            "--allow-container",
+            "--force",
+        ])
+        .output()
+        .expect("run feature teardown --allow-container");
+
+    assert!(
+        output.status.success(),
+        "feature teardown should succeed with --allow-container: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn feature_teardown_allows_container_with_no_host_check_alias() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    // Create a feature (bypassing host check for setup).
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "start", "container-td-alias", "--json"])
+        .output()
+        .expect("run feature start");
+    assert!(output.status.success(), "feature start should succeed");
+
+    // Teardown WITH --no-host-check alias — should succeed.
+    // Also pass --force to bypass the dirty-worktree guard (devcontainer files synced during start).
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args([
+            "feature",
+            "teardown",
+            "container-td-alias",
+            "--no-host-check",
+            "--force",
+        ])
+        .output()
+        .expect("run feature teardown --no-host-check");
+
+    assert!(
+        output.status.success(),
+        "feature teardown should succeed with --no-host-check: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn feature_prune_rejects_container_without_override() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    // Create a feature (bypassing host check for setup).
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "start", "container-prune-test", "--json"])
+        .output()
+        .expect("run feature start");
+    assert!(output.status.success(), "feature start should succeed");
+
+    // Prune WITHOUT override — should fail.
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args(["feature", "prune", "--yes"])
+        .output()
+        .expect("run feature prune in container");
+
+    assert!(
+        !output.status.success(),
+        "feature prune should fail host validation without override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must be run on the host machine"),
+        "expected host validation error, got: {stderr}"
+    );
+}
+
+#[test]
+fn feature_prune_allows_container_with_override_flag() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    // Create a feature (bypassing host check for setup).
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "start", "container-prune-allowed", "--json"])
+        .output()
+        .expect("run feature start");
+    assert!(output.status.success(), "feature start should succeed");
+
+    // Prune WITH --allow-container — should succeed.
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args(["feature", "prune", "--yes", "--allow-container"])
+        .output()
+        .expect("run feature prune --allow-container");
+
+    assert!(
+        output.status.success(),
+        "feature prune should succeed with --allow-container: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn feature_prune_allows_container_with_no_host_check_alias() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+
+    // Create a feature (bypassing host check for setup).
+    let output = branchbox_cmd!(repo_path)
+        .args(["feature", "start", "container-prune-alias", "--json"])
+        .output()
+        .expect("run feature start");
+    assert!(output.status.success(), "feature start should succeed");
+
+    // Prune WITH --no-host-check alias — should succeed.
+    let output = Command::new(cargo_bin!("branchbox"))
+        .current_dir(repo_path)
+        .env("DOCKER_CONTAINER", "1")
+        .env("RUST_LOG", "off")
+        .args(["feature", "prune", "--yes", "--no-host-check"])
+        .output()
+        .expect("run feature prune --no-host-check");
+
+    assert!(
+        output.status.success(),
+        "feature prune should succeed with --no-host-check: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn feature_start_minimal_mode_json_summary() {
     let test_repo = init_test_repo();
