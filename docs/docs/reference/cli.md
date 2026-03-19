@@ -187,6 +187,7 @@ Commands:
   start     Create a new feature worktree and run module setup
   teardown  Tear down an existing feature worktree
   list      List known feature worktrees from the registry
+  prune     Tear down all active feature worktrees
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -256,7 +257,27 @@ Options:
       --force-delete-branch            Force-delete the git branch even if it is not fully merged (`git branch -D`)
       --complete-spec                  Move spec to completed during teardown
       --telemetry                      Emit verbose telemetry (e.g. Cloudflare operations)
+      --allow-container                Allow running feature teardown from inside a containerized environment
   -h, --help                           Print help
+```
+
+## branchbox feature prune
+
+```text
+Tear down all active feature worktrees
+
+Usage: branchbox feature prune [OPTIONS]
+
+Options:
+      --repo <REPO>      Repository path (defaults to current directory)
+      --dry-run          Show which features would be removed without applying teardown
+  -y, --yes              Skip confirmation prompt
+      --keep-branch      Keep git branches after removing worktrees
+      --delete-branch    Delete git branches after removing worktrees
+      --complete-spec    Move specs to completed during teardown
+      --telemetry        Emit verbose telemetry (e.g. Cloudflare operations)
+      --allow-container  Allow running feature prune from inside a containerized environment
+  -h, --help             Print help
 ```
 
 ## branchbox tunnel

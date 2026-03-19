@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-03-19
+
+### Fixed
+- `branchbox feature teardown` and `branchbox feature prune` now accept `--allow-container` (alias `--no-host-check`), matching `feature start`. Previously, features started inside a container could not be torn down from the same environment.
+
 ## [0.10.0] - 2026-03-16
 
 ### Added
