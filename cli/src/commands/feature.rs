@@ -137,6 +137,10 @@ pub struct FeatureTeardownArgs {
     /// Emit verbose telemetry (e.g. Cloudflare operations)
     #[arg(long)]
     pub telemetry: bool,
+
+    /// Allow running feature teardown from inside a containerized environment
+    #[arg(long, alias = "no-host-check")]
+    pub allow_container: bool,
 }
 
 #[derive(Args)]
@@ -579,6 +583,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         force_delete_branch,
         complete_spec,
         telemetry,
+        allow_container,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
@@ -611,6 +616,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         maybe_prompt_force_delete_branch(&repo_path, &config, &mut request)?;
     }
 
+    let _host_validation_override = HostValidationOverride::new(allow_container);
     let summary = match workflow.teardown(request.clone()) {
         Ok(summary) => summary,
         Err(err) => handle_teardown_error(err, &workflow, &mut request)?,
