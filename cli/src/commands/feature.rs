@@ -273,9 +273,11 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
     } else if no_move_changes || reuse {
         false
     } else {
-        !json
-            && Term::stderr().is_term()
-            && workflow.has_uncommitted_tracked_changes()?
+        let is_interactive_session = !json && Term::stderr().is_term();
+        let has_dirty_changes =
+            is_interactive_session && workflow.has_uncommitted_tracked_changes()?;
+
+        has_dirty_changes
             && Confirm::with_theme(&ColorfulTheme::default())
                 .with_prompt("Move uncommitted tracked changes to the new feature worktree?")
                 .default(false)
