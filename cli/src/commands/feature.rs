@@ -99,6 +99,14 @@ pub struct FeatureStartArgs {
     /// Suppress summary output (text mode only)
     #[arg(long = "no-summary")]
     pub no_summary: bool,
+
+    /// Move uncommitted tracked changes to the new feature worktree
+    #[arg(long = "move-changes")]
+    pub move_changes: bool,
+
+    /// Keep uncommitted tracked changes in the current worktree (skip prompt)
+    #[arg(long = "no-move-changes", conflicts_with = "move_changes")]
+    pub no_move_changes: bool,
 }
 
 #[derive(Args)]
@@ -223,6 +231,8 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         json,
         allow_container,
         no_summary,
+        move_changes,
+        no_move_changes,
     } = args;
 
     let mode = if minimal || fast {
@@ -255,6 +265,21 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
 
+    // Determine whether to move uncommitted changes to the new worktree.
+    // Explicit flags take priority; otherwise prompt interactively (default: no).
+    let should_move_changes = if move_changes {
+        true
+    } else if no_move_changes || reuse {
+        false
+    } else if !json && workflow.has_uncommitted_tracked_changes().unwrap_or(false) {
+        Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Move uncommitted tracked changes to the new feature worktree?")
+            .default(false)
+            .interact_on(&Term::stderr())?
+    } else {
+        false
+    };
+
     let request = StartRequest {
         name,
         title,
@@ -265,6 +290,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         skip_modules,
         mode,
         prompt_seed: prompt_seed.clone(),
+        move_changes: should_move_changes,
     };
 
     let _host_validation_override = HostValidationOverride::new(allow_container);

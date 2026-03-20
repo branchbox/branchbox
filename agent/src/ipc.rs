@@ -144,6 +144,7 @@ async fn dispatch(
             skip_modules,
             minimal,
             prompt,
+            move_changes,
         } => {
             let request = ops::build_start_request(ops::StartRequestParams {
                 name,
@@ -159,6 +160,7 @@ async fn dispatch(
                     StartMode::Full
                 },
                 prompt_seed: prompt,
+                move_changes,
             });
 
             let summary = ops::start_feature(config, repo_path, request)?;
@@ -247,6 +249,8 @@ enum AgentRequest {
         minimal: bool,
         #[serde(default)]
         prompt: Option<String>,
+        #[serde(default)]
+        move_changes: bool,
     },
     TeardownFeature {
         #[serde(default)]

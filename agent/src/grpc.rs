@@ -90,6 +90,7 @@ impl FeatureService for GrpcFeatureService {
                 _ => StartMode::Full,
             },
             prompt_seed: optional_string(req.prompt_seed),
+            move_changes: req.move_changes,
         });
 
         let summary = ops::start_feature(&self.config, repo_path, start_req).map_err(to_status)?;

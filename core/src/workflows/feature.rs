@@ -161,6 +161,9 @@ pub struct StartRequest {
     pub mode: StartMode,
     /// Optional prompt seed captured for agent/automation hand-off
     pub prompt_seed: Option<String>,
+    /// Move uncommitted tracked changes from the current worktree to the new feature worktree.
+    /// When false (the default), changes are left in the current worktree untouched.
+    pub move_changes: bool,
 }
 
 /// Result of running feature start workflow.
@@ -300,6 +303,28 @@ impl FeatureWorkflow {
         &self.repo_root
     }
 
+    /// Returns true when the main worktree has uncommitted changes to tracked files.
+    ///
+    /// Untracked files are intentionally ignored (they are never stashed).
+    pub fn has_uncommitted_tracked_changes(&self) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=no"])
+            .current_dir(&self.repo_root)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to check git status: {}", err)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::git(format!(
+                "git status exited with error: {}",
+                stderr.trim()
+            )));
+        }
+
+        let changes = String::from_utf8_lossy(&output.stdout);
+        Ok(!changes.trim().is_empty())
+    }
+
     /// Start a feature, creating a new git worktree and running module setup.
     pub fn start(&self, request: StartRequest) -> Result<StartSummary> {
         self.ensure_host_environment()?;
@@ -390,7 +415,7 @@ impl FeatureWorkflow {
             warnings.push(format!("Git worktree path fix failed: {}", err));
         }
 
-        let stash_state = if !reuse_existing {
+        let stash_state = if !reuse_existing && request.move_changes {
             match self.capture_stash(&work_feature) {
                 Ok(state) => state,
                 Err(err) => {
@@ -4309,6 +4334,7 @@ mod tests {
         let summary = workflow
             .start(StartRequest {
                 name: Some("test-feature".to_string()),
+                move_changes: true,
                 ..StartRequest::default()
             })
             .unwrap();
@@ -4486,6 +4512,61 @@ mod tests {
             })
             .unwrap();
         assert!(teardown_summary.adapter_cleanup_warnings.is_empty());
+    }
+
+    #[test]
+    fn feature_start_leaves_tracked_changes_in_main_by_default() {
+        let temp = setup_test_repo();
+        let repo_path = temp.path();
+        fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        copy_repo_devcontainer(repo_path);
+
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        // Modify a tracked file
+        fs::write(repo_path.join("README.md"), "# Test Repo\nlocal change\n").unwrap();
+
+        let worktree_path = repo_path.parent().unwrap().join("no-move");
+        if worktree_path.exists() {
+            fs::remove_dir_all(&worktree_path).unwrap();
+        }
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        assert!(workflow.has_uncommitted_tracked_changes().unwrap());
+
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("no-move".to_string()),
+                // move_changes defaults to false
+                ..StartRequest::default()
+            })
+            .unwrap();
+
+        // Tracked changes should stay in the main worktree, not be moved
+        let main_readme = fs::read_to_string(repo_path.join("README.md")).unwrap();
+        assert!(
+            main_readme.contains("local change"),
+            "tracked changes should remain in main worktree"
+        );
+
+        // Feature worktree gets the clean committed version
+        let worktree_readme = fs::read_to_string(summary.worktree_path.join("README.md")).unwrap();
+        assert_eq!(
+            worktree_readme, "# Test Repo\n",
+            "feature worktree should have committed version, not local changes"
+        );
+
+        // No stash should have been created
+        let stash_list = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&stash_list.stdout)
+                .trim()
+                .is_empty(),
+            "no stash entries should exist"
+        );
     }
 
     #[test]

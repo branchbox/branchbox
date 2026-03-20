@@ -29,6 +29,7 @@ message StartRequest {
   repeated string skip_modules = 8;
   string mode = 9;
   string prompt_seed = 10;
+  bool move_changes = 11;
 }
 
 message StartResponse {

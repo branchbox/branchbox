@@ -67,6 +67,7 @@ pub struct StartRequestParams {
     pub skip_modules: Vec<String>,
     pub mode: StartMode,
     pub prompt_seed: Option<String>,
+    pub move_changes: bool,
 }
 
 pub fn build_start_request(params: StartRequestParams) -> StartRequest {
@@ -80,6 +81,7 @@ pub fn build_start_request(params: StartRequestParams) -> StartRequest {
         skip_modules: params.skip_modules,
         mode: params.mode,
         prompt_seed: params.prompt_seed,
+        move_changes: params.move_changes,
     }
 }
 
