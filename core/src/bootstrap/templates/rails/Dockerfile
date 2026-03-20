@@ -38,7 +38,7 @@ RUN mkdir -p /etc/apt/keyrings && \
     rm -rf /var/lib/apt/lists/*
 
 # Install mise for Ruby version management (reads .ruby-version, .mise.toml, .tool-versions)
-RUN curl https://mise.run | sh && \
+RUN curl --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 120 https://mise.run | sh && \
     /root/.local/bin/mise settings set experimental true && \
     /root/.local/bin/mise settings set legacy_version_file true && \
     echo 'eval "$(/root/.local/bin/mise activate bash)"' >> /etc/bash.bashrc
@@ -46,15 +46,17 @@ RUN curl https://mise.run | sh && \
 USER vscode
 
 # Install mise for vscode user
-RUN curl https://mise.run | sh && \
+RUN curl --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 120 https://mise.run | sh && \
     /home/vscode/.local/bin/mise settings set experimental true && \
     /home/vscode/.local/bin/mise settings set legacy_version_file true && \
     echo 'eval "$(/home/vscode/.local/bin/mise activate bash)"' >> ~/.bashrc && \
     echo 'eval "$(/home/vscode/.local/bin/mise activate zsh)"' >> ~/.zshrc
 
-# Pre-install common Ruby versions to speed up first run
-# Projects can override via .ruby-version or .mise.toml
-RUN /home/vscode/.local/bin/mise install ruby@3.3 ruby@3.4 && \
-    /home/vscode/.local/bin/mise use --global ruby@3.3
+# Pre-install latest stable Ruby; projects override via .ruby-version or .mise.toml
+# MISE_RUBY_COMPILE=0 prefers precompiled binaries over compiling from source,
+# which avoids flaky ~4-min compilation failures in CI.
+ENV MISE_RUBY_COMPILE=0
+RUN /home/vscode/.local/bin/mise install ruby@latest && \
+    /home/vscode/.local/bin/mise use --global ruby@latest
 
 ENV PATH="/home/vscode/.local/bin:/home/vscode/.local/share/mise/shims:$PATH"
