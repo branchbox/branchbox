@@ -1430,22 +1430,7 @@ impl FeatureWorkflow {
     fn capture_stash(&self, work_feature: &str) -> Result<StashState> {
         let stash_before = self.current_stash_oid()?;
 
-        let status = Command::new("git")
-            .args(["status", "--porcelain", "--untracked-files=no"])
-            .current_dir(&self.repo_root)
-            .output()
-            .map_err(|err| Error::git(format!("Failed to check git status: {}", err)))?;
-
-        if !status.status.success() {
-            let stderr = String::from_utf8_lossy(&status.stderr);
-            return Err(Error::git(format!(
-                "git status exited with error: {}",
-                stderr.trim()
-            )));
-        }
-
-        let changes = String::from_utf8_lossy(&status.stdout);
-        if changes.trim().is_empty() {
+        if !self.has_uncommitted_tracked_changes()? {
             return Ok(StashState::default());
         }
 
