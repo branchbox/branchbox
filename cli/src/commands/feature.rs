@@ -271,7 +271,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         true
     } else if no_move_changes || reuse {
         false
-    } else if !json && workflow.has_uncommitted_tracked_changes().unwrap_or(false) {
+    } else if !json && workflow.has_uncommitted_tracked_changes()? {
         Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt("Move uncommitted tracked changes to the new feature worktree?")
             .default(false)
