@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker SBX workspaces now start the repository devcontainer inside the sandbox, execute coding agents in that devcontainer, bridge nested Compose services to collision-safe host ports, recover mappings after sandbox restart, and remove provider-owned state during teardown.
 - Worktree `.git` pointers are restored to portable relative paths after repository lifecycle hooks run inside a devcontainer.
 
+### Fixed
+- Upgraded the shared HTTP client to reqwest 0.12 and patched Rustls dependencies, resolving the `rustls-webpki` certificate-validation and CRL vulnerabilities reported by the repository security audit.
+
 ### Documentation
 - Documented the distinction between devcontainers and outer isolation runtimes, experimental SBX requirements, runtime configuration and command execution, and the account-free local VM direction using Colima/Lima.
 
