@@ -175,6 +175,10 @@ Your feature now has:
 - Its own devcontainer  
 - Its own environment variables  
 
+When you run `branchbox feature teardown <name>`, BranchBox resolves the actual Compose project
+created for that worktree—including the distinct project name used by the devcontainer CLI—and
+verifies its containers, network, and volumes are removed before deleting the worktree.
+
 Prefer a disposable sample project?
 
 ```bash

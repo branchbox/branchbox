@@ -59,6 +59,7 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 - Keep `GIT_BRANCH` env writes allow-listed to env-safe ref characters (not only “remove control chars”).
 - Avoid fixed compose `name` or `container_name` values in templates; worktrees must remain parallel-safe.
 - Preserve compatibility by supporting both `docker compose` and `docker-compose` in workflow/module orchestration.
+- On feature teardown, restore the managed Compose identity from `.devcontainer/.branchbox.env`, discover devcontainer CLI project names only through an exact `devcontainer.local_folder` match, and verify owned containers, networks, and volumes are gone before deleting the worktree.
 - For manual harnesses, resolve devcontainer service names with JSONC-safe parsing plus compose-file fallback; do not assume strict JSON or plugin-only compose.
 - When helper logic is shared across harnesses, extract it into `scripts/lib/*.sh` rather than duplicating functions.
 - When editing harnesses/docs, keep `scripts/manual-*.md` and `docs/docs/getting-started/manual-*.md` in sync in the same change.

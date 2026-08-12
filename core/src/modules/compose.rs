@@ -8,6 +8,8 @@
 
 use super::Module;
 use crate::{Error, Result};
+use std::collections::BTreeSet;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -60,64 +62,147 @@ impl ComposeModule {
         Ok(())
     }
 
-    /// Cleanup orphaned containers
-    fn cleanup_orphaned_containers(&self) -> Result<()> {
-        // Remove orphaned containers
-        let output = Command::new("docker")
-            .args([
-                "ps",
-                "-a",
-                "--filter",
-                &format!(
-                    "label=com.docker.compose.project={}",
-                    self.compose_project_name
-                ),
-                "--format",
-                "{{.ID}}",
-            ])
-            .output()
-            .map_err(|e| Error::validation(format!("Failed to list containers: {}", e)))?;
+    fn env_value(path: &Path, key: &str) -> Option<String> {
+        let contents = fs::read_to_string(path).ok()?;
+        contents.lines().find_map(|line| {
+            let (candidate, value) = line.trim().split_once('=')?;
+            if candidate.trim() != key {
+                return None;
+            }
+            let value = value.trim();
+            Some(
+                value
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+                    .or_else(|| {
+                        value
+                            .strip_prefix('"')
+                            .and_then(|value| value.strip_suffix('"'))
+                    })
+                    .unwrap_or(value)
+                    .to_string(),
+            )
+        })
+    }
 
-        if output.status.success() {
-            let container_ids = String::from_utf8_lossy(&output.stdout);
-            if !container_ids.trim().is_empty() {
-                tracing::info!("Removing orphaned containers...");
-                for id in container_ids.lines() {
-                    let _ = Command::new("docker")
-                        .args(["rm", "-f", id.trim()])
-                        .output();
+    fn docker_output(args: &[&str], description: &str) -> Result<std::process::Output> {
+        Command::new("docker")
+            .args(args)
+            .output()
+            .map_err(|err| Error::validation(format!("Failed to {description}: {err}")))
+    }
+
+    fn output_lines(output: &std::process::Output, description: &str) -> Result<Vec<String>> {
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Failed to {description}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    fn is_compose_project_name(value: &str) -> bool {
+        value
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+            && value.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || matches!(character, '-' | '_')
+            })
+    }
+
+    /// Discover the Compose projects created by the devcontainer CLI for this exact worktree.
+    fn discover_devcontainer_projects(&self, feature_dir: &Path) -> Result<BTreeSet<String>> {
+        let mut workspace_paths = BTreeSet::from([feature_dir.to_string_lossy().to_string()]);
+        if let Ok(canonical) = feature_dir.canonicalize() {
+            workspace_paths.insert(canonical.to_string_lossy().to_string());
+        }
+
+        let mut projects = BTreeSet::new();
+        for workspace_path in workspace_paths {
+            let filter = format!("label=devcontainer.local_folder={workspace_path}");
+            let output = Self::docker_output(
+                &[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &filter,
+                    "--format",
+                    "{{.Label \"com.docker.compose.project\"}}",
+                ],
+                "discover devcontainer Compose projects",
+            )?;
+            projects.extend(
+                Self::output_lines(&output, "discover devcontainer Compose projects")?
+                    .into_iter()
+                    .filter(|project| Self::is_compose_project_name(project)),
+            );
+        }
+        Ok(projects)
+    }
+
+    fn project_resource_ids(&self, project: &str, kind: &str) -> Result<Vec<String>> {
+        let filter = format!("label=com.docker.compose.project={project}");
+        let args = match kind {
+            "container" => vec!["ps", "-a", "--filter", &filter, "--format", "{{.ID}}"],
+            "network" => vec!["network", "ls", "--filter", &filter, "--format", "{{.ID}}"],
+            "volume" => vec!["volume", "ls", "--filter", &filter, "--format", "{{.Name}}"],
+            _ => {
+                return Err(Error::validation(format!(
+                    "Unknown Docker resource: {kind}"
+                )))
+            }
+        };
+        let output = Self::docker_output(&args, &format!("list {kind}s for project '{project}'"))?;
+        Self::output_lines(&output, &format!("list {kind}s for project '{project}'"))
+    }
+
+    /// Remove and verify only resources bearing an exact, owned Compose project label.
+    fn cleanup_project_resources(&self, project: &str) -> Result<()> {
+        for (kind, remove_args) in [
+            ("container", vec!["rm", "-f"]),
+            ("network", vec!["network", "rm"]),
+            ("volume", vec!["volume", "rm"]),
+        ] {
+            for id in self.project_resource_ids(project, kind)? {
+                let mut args = remove_args.clone();
+                args.push(&id);
+                let output = Self::docker_output(
+                    &args,
+                    &format!("remove {kind} '{id}' for project '{project}'"),
+                )?;
+                if !output.status.success() {
+                    tracing::warn!(
+                        "Failed to remove {} '{}' for project '{}': {}",
+                        kind,
+                        id,
+                        project,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
                 }
             }
         }
 
-        // Remove orphaned networks
-        let output = Command::new("docker")
-            .args([
-                "network",
-                "ls",
-                "--filter",
-                &format!(
-                    "label=com.docker.compose.project={}",
-                    self.compose_project_name
-                ),
-                "--format",
-                "{{.ID}}",
-            ])
-            .output()
-            .map_err(|e| Error::validation(format!("Failed to list networks: {}", e)))?;
-
-        if output.status.success() {
-            let network_ids = String::from_utf8_lossy(&output.stdout);
-            if !network_ids.trim().is_empty() {
-                tracing::info!("Removing orphaned networks...");
-                for id in network_ids.lines() {
-                    let _ = Command::new("docker")
-                        .args(["network", "rm", id.trim()])
-                        .output();
-                }
+        let mut remaining = Vec::new();
+        for kind in ["container", "network", "volume"] {
+            for id in self.project_resource_ids(project, kind)? {
+                remaining.push(format!("{kind}:{id}"));
             }
         }
-
+        if !remaining.is_empty() {
+            return Err(Error::validation(format!(
+                "Docker teardown left resources for Compose project '{project}': {}",
+                remaining.join(", ")
+            )));
+        }
         Ok(())
     }
 
@@ -175,6 +260,42 @@ impl ComposeModule {
                 }),
         }
     }
+
+    fn down_project(&self, feature_dir: &Path, compose_file: &Path, project: &str) -> Result<()> {
+        let compose_file = compose_file
+            .to_str()
+            .ok_or_else(|| Error::validation("Compose file path is not valid UTF-8"))?;
+        let project_dir = feature_dir.join(".devcontainer");
+        let project_dir = project_dir
+            .to_str()
+            .ok_or_else(|| Error::validation("Compose project path is not valid UTF-8"))?;
+        let env_file = feature_dir.join(".devcontainer/.branchbox.env");
+        let env_file_string = env_file.to_string_lossy().to_string();
+        let mut args = Vec::new();
+        if env_file.exists() {
+            args.extend(["--env-file", env_file_string.as_str()]);
+        }
+        args.extend([
+            "--project-name",
+            project,
+            "-f",
+            compose_file,
+            "--project-directory",
+            project_dir,
+            "down",
+            "--volumes",
+            "--remove-orphans",
+        ]);
+        let output = self.run_compose_command(feature_dir, &args)?;
+        if !output.status.success() {
+            tracing::warn!(
+                "Docker Compose down failed for '{}'; trying exact label cleanup: {}",
+                project,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        self.cleanup_project_resources(project)
+    }
 }
 
 impl Default for ComposeModule {
@@ -205,10 +326,13 @@ impl Module for ComposeModule {
 
         // Set compose project name and devcontainer name
         let base_prefix = std::env::var("BASE_PREFIX").unwrap_or_else(|_| "app".to_string());
-        self.compose_project_name = std::env::var("COMPOSE_PROJECT_NAME")
-            .unwrap_or_else(|_| format!("{}-{}", base_prefix, work_feature));
-        self.devcontainer_name = std::env::var("DEVCONTAINER_NAME")
-            .unwrap_or_else(|_| format!("{}-{}", base_prefix, work_feature));
+        let managed_env = feature_dir.join(".devcontainer/.branchbox.env");
+        self.compose_project_name = Self::env_value(&managed_env, "COMPOSE_PROJECT_NAME")
+            .or_else(|| std::env::var("COMPOSE_PROJECT_NAME").ok())
+            .unwrap_or_else(|| format!("{}-{}", base_prefix, work_feature));
+        self.devcontainer_name = Self::env_value(&managed_env, "DEVCONTAINER_NAME")
+            .or_else(|| std::env::var("DEVCONTAINER_NAME").ok())
+            .unwrap_or_else(|| format!("{}-{}", base_prefix, work_feature));
 
         // Find compose file
         if main_dir.join(".devcontainer/compose.yaml").exists() {
@@ -252,36 +376,22 @@ impl Module for ComposeModule {
         let compose_file = feature_dir
             .join(".devcontainer")
             .join(&self.compose_file_name);
-        let compose_file_str = compose_file
-            .to_str()
-            .ok_or_else(|| Error::validation("Compose file path is not valid UTF-8".to_string()))?;
-
-        if compose_file.exists() {
-            // Check if containers are running
-            let ps_output =
-                self.run_compose_command(feature_dir, &["-f", compose_file_str, "ps", "--quiet"])?;
-
-            if ps_output.status.success() && !ps_output.stdout.is_empty() {
-                tracing::info!("Stopping containers for {}...", self.compose_project_name);
-
-                let down_output =
-                    self.run_compose_command(feature_dir, &["-f", compose_file_str, "down", "-v"])?;
-
-                if down_output.status.success() {
-                    tracing::info!("Containers stopped and removed");
-                } else {
-                    tracing::warn!("Failed to stop some containers");
-                }
-            } else {
-                tracing::info!("No running containers found");
-            }
-        } else {
+        if !compose_file.exists() {
             tracing::info!("No compose file found, skipping container cleanup");
+            return Ok(());
         }
 
-        // Clean up orphaned containers
-        self.cleanup_orphaned_containers()?;
+        let mut projects = self.discover_devcontainer_projects(feature_dir)?;
+        projects.insert(self.compose_project_name.clone());
+        for project in projects {
+            tracing::info!(
+                "Removing Docker resources for Compose project '{}'...",
+                project
+            );
+            self.down_project(feature_dir, &compose_file, &project)?;
+        }
 
+        tracing::info!("Containers, networks, and volumes removed");
         Ok(())
     }
 
@@ -398,6 +508,30 @@ mod tests {
     }
 
     #[test]
+    fn test_init_restores_managed_compose_identity() {
+        let main_dir = TempDir::new().unwrap();
+        let feature_dir = main_dir.path().join("feature-test");
+        std::fs::create_dir_all(feature_dir.join(".devcontainer")).unwrap();
+        std::fs::create_dir_all(main_dir.path().join(".devcontainer")).unwrap();
+        std::fs::write(
+            main_dir.path().join(".devcontainer/compose.yaml"),
+            "version: '3'",
+        )
+        .unwrap();
+        std::fs::write(
+            feature_dir.join(".devcontainer/.branchbox.env"),
+            "COMPOSE_PROJECT_NAME=persisted-project\nDEVCONTAINER_NAME='persisted-container'\n",
+        )
+        .unwrap();
+
+        let mut module = ComposeModule::new();
+        module.init(main_dir.path(), &feature_dir).unwrap();
+
+        assert_eq!(module.compose_project_name, "persisted-project");
+        assert_eq!(module.devcontainer_name, "persisted-container");
+    }
+
+    #[test]
     fn test_name() {
         let module = ComposeModule::new();
         assert_eq!(module.name(), "compose");
@@ -501,7 +635,7 @@ services:
 
     #[test]
     #[ignore]
-    fn test_cleanup_orphaned_containers() {
+    fn test_cleanup_project_resources() {
         let main_dir = TempDir::new().unwrap();
         let feature_dir = main_dir.path().join("test-cleanup");
         std::fs::create_dir(&feature_dir).unwrap();
@@ -510,7 +644,7 @@ services:
         module.compose_project_name = "branchbox-test-orphan-cleanup".to_string();
 
         // Should succeed even if no orphaned containers exist
-        let result = module.cleanup_orphaned_containers();
+        let result = module.cleanup_project_resources("branchbox-test-orphan-cleanup");
         assert!(result.is_ok());
     }
 

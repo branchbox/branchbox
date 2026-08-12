@@ -38,10 +38,10 @@ Document pass/fail status in the release PR. If you change or add an adapter, ex
 ## Coverage Matrix
 
 1. **Init & bootstrap** – seeds a sample Rust repo, runs `branchbox init`, records generated artifacts in git, and boots the root devcontainer.
-2. **Feature A (manual tunnel)** – exercises the default path where Cloudflare credentials are absent. Validates specs, registry insertion, devcontainer sync, and ensures the tunnel module reports “skipped”.
+2. **Feature A (manual tunnel)** – exercises the default path where Cloudflare credentials are absent. Boots the workspace through the devcontainer CLI, validates specs, registry insertion and sync, and ensures the tunnel module reports “skipped”.
 3. **Feature B (Cloudflared)** – seeds fake Cloudflare credentials/config, enforces the tunnel module, boots the feature devcontainer, and asserts `.devcontainer/.cloudflared.env` contents and registry metadata. After `branchbox devcontainer sync` runs, the harness confirms both worktrees pick up the change (real sync plus dry-run log scanning).
 4. **Feature B teardown** – removes the Cloudflared worktree, ensuring `.cloudflared.env` and registry fields disappear.
-5. **Dirty teardown guard** – appends a comment to Feature A’s devcontainer file before teardown so the CLI warns about dirty files, then repeats with `--force`. This is intentional; expect the first teardown to fail before the automatic retry.
+5. **Dirty teardown and Docker cleanup** – appends a comment to Feature A’s devcontainer file before teardown so the CLI warns about dirty files, then repeats with `--force`. The harness captures the devcontainer CLI's reported Compose project and verifies its labels leave no containers, networks, or volumes. The initial failure before the automatic retry is intentional.
 6. **Credential-loss fallback (Feature C)** – deletes `.branchbox/secure/cloudflared.env` and flips config back to manual instructions, starts another feature, verifies the tunnel module downgrades to “skipped”, then tears it down.
 
 ## Debugging Tips
@@ -52,7 +52,7 @@ Document pass/fail status in the release PR. If you change or add an adapter, ex
 | Custom binaries | Set `BRANCHBOX_BIN=/path/to/custom/branchbox` to reuse a prebuilt CLI. |
 | Feature names | Override `FEATURE_NAME`, `SECONDARY_FEATURE_NAME`, or `FALLBACK_FEATURE_NAME` if you need deterministic names while debugging. |
 | Logs | All key command logs land in `$TMP/logs/` (init/start/teardown, devcontainer sync, etc.). Tail them instead of rerunning when possible. |
-| Docker cleanup | The script tracks every `docker compose up` and tears them down automatically. If you exit early, run `docker ps --format '{{.Names}}' | grep cli-e2e` to clean up stragglers. |
+| Docker cleanup | The script tracks both `docker compose` and devcontainer CLI workspaces and tears them down automatically. If you exit early, inspect resources with the `com.docker.compose.project` label before cleaning up stragglers. |
 
 ## Common Failures
 

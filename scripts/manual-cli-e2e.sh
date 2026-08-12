@@ -107,6 +107,7 @@ mkdir -p "$LOG_DIR"
 BUGS=()
 COMPOSE_STACKS=()
 COMPOSE_CMD=()
+DEVCONTAINER_WORKSPACES=()
 
 function cleanup() {
   if [[ "${PRETEND}" == "1" ]]; then
@@ -114,6 +115,14 @@ function cleanup() {
       rm -rf "$TMP_ROOT"
     fi
     return
+  fi
+
+  if ((${#DEVCONTAINER_WORKSPACES[@]} > 0)); then
+    for workspace in "${DEVCONTAINER_WORKSPACES[@]}"; do
+      if [[ -d "$workspace" ]]; then
+        devcontainer down --workspace-folder "$workspace" >/dev/null 2>&1 || true
+      fi
+    done
   fi
 
   for compose_file in "${COMPOSE_STACKS[@]}"; do
@@ -178,11 +187,18 @@ This is a minimal project used by `scripts/manual-cli-e2e.sh` to exercise the ge
 EOF_GENERIC
       ;;
     rails)
+      mkdir -p "$SOURCE_DIR/bin"
       cat >"$SOURCE_DIR/Gemfile" <<'EOF_GEM'
 source "https://rubygems.org"
 
 gem "rails", "~> 7.1.0"
 EOF_GEM
+      cat >"$SOURCE_DIR/bin/setup" <<'EOF_SETUP'
+#!/bin/sh
+set -eu
+echo "BranchBox CLI e2e Rails setup"
+EOF_SETUP
+      chmod +x "$SOURCE_DIR/bin/setup"
       cat >"$SOURCE_DIR/README.md" <<'EOF_RAILS'
 # BranchBox CLI E2E Sample (Rails)
 
@@ -255,6 +271,17 @@ function assert_file_not_exists() {
   local path="$1"
   if [[ -e "$path" ]]; then
     record_bug "Expected file to be absent but found: $path"
+  fi
+}
+
+function assert_no_compose_project_resources() {
+  local project="$1"
+  local containers networks volumes
+  containers="$(docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')"
+  networks="$(docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}')"
+  volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}')"
+  if [[ -n "$containers$networks$volumes" ]]; then
+    record_bug "Compose project $project leaked resources after feature teardown (containers: ${containers:-none}; networks: ${networks:-none}; volumes: ${volumes:-none})"
   fi
 }
 
@@ -355,6 +382,7 @@ require_cmd cargo
 require_cmd jq
 if [[ "$PRETEND" == "0" ]]; then
   require_cmd docker
+  require_cmd devcontainer
   configure_compose_command
 fi
 
@@ -567,18 +595,22 @@ SECONDARY_COMPOSE="$SECONDARY_DIR/.devcontainer/compose.yaml"
 SECONDARY_DEVCONTAINER_JSON="$SECONDARY_DIR/.devcontainer/devcontainer.json"
 
 if [[ "$PRETEND" == "0" && -f "$FEATURE_COMPOSE" && -f "$FEATURE_DEVCONTAINER_JSON" ]]; then
-  FEATURE_SERVICE="$(resolve_devcontainer_service "$FEATURE_DEVCONTAINER_JSON" "$FEATURE_COMPOSE" "rust-dev")"
-  log "Booting feature devcontainer service '$FEATURE_SERVICE'"
-  if "${COMPOSE_CMD[@]}" -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" up -d --build >/dev/null; then
-    COMPOSE_STACKS+=("$FEATURE_COMPOSE")
-    if ! "${COMPOSE_CMD[@]}" -f "$FEATURE_COMPOSE" --project-directory "$(dirname "$FEATURE_COMPOSE")" exec -T "$FEATURE_SERVICE" git --version >/dev/null; then
-      record_bug "git binary missing inside feature devcontainer (service $FEATURE_SERVICE)"
+  FEATURE_DEVCONTAINER_PROJECT=""
+  log "Booting feature through the devcontainer CLI"
+  if FEATURE_DEVCONTAINER_UP="$(devcontainer up --workspace-folder "$FEATURE_DIR")"; then
+    DEVCONTAINER_WORKSPACES+=("$FEATURE_DIR")
+    if ! devcontainer exec --workspace-folder "$FEATURE_DIR" git --version >/dev/null; then
+      record_bug "git binary missing inside feature devcontainer"
+    fi
+    FEATURE_DEVCONTAINER_PROJECT="$(printf '%s\n' "$FEATURE_DEVCONTAINER_UP" | jq -r 'select(.outcome == "success") | .composeProjectName // empty' | tail -n 1)"
+    if [[ -z "$FEATURE_DEVCONTAINER_PROJECT" ]]; then
+      record_bug "devcontainer CLI did not report its Compose project for $FEATURE_DIR"
     fi
   else
-    record_bug "docker compose up failed for feature devcontainer (see $FEATURE_COMPOSE)"
+    record_bug "devcontainer up failed for feature workspace $FEATURE_DIR"
   fi
 else
-  pretend_step "Would build and verify feature devcontainer"
+  pretend_step "Would build and verify feature through the devcontainer CLI"
 fi
 
 if [[ "$PRETEND" == "0" ]]; then
@@ -874,6 +906,10 @@ if [[ "$PRETEND" == "0" ]]; then
 
   if git -C "$MAIN_DIR" branch --list "$FEATURE_BRANCH" | grep -q "$FEATURE_BRANCH"; then
     record_bug "branch $FEATURE_BRANCH still present after teardown"
+  fi
+
+  if [[ -n "$FEATURE_DEVCONTAINER_PROJECT" ]]; then
+    assert_no_compose_project_resources "$FEATURE_DEVCONTAINER_PROJECT"
   fi
 
   if [[ -f "$REGISTRY_PATH" ]]; then

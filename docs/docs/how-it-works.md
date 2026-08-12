@@ -183,7 +183,7 @@ BranchBox:
 1. **Runs module teardown** (in reverse order)
    - Specs: Optionally moves spec to `completed/`
    - Tunnel: Removes tunnel configuration
-   - Compose: (No-op, containers stop when worktree removed)
+   - Compose: Discovers the worktree's actual devcontainer Compose project, then removes its containers, networks, and volumes
    - Devcontainer: (No-op)
 
 :::note[Database Persistence]
@@ -204,6 +204,11 @@ The database module does **not** automatically delete databases on teardown. Fea
 | **Ports** | Each Compose project gets its own port mappings |
 | **Environment** | `.env` copied and customized per feature |
 | **Database** | Database module creates feature-specific DB |
+
+During teardown, BranchBox matches the exact `devcontainer.local_folder` Docker label before acting
+on a devcontainer CLI project. It also restores the BranchBox-managed project name from
+`.devcontainer/.branchbox.env`. Teardown verifies that no containers, networks, or volumes with
+either owned project label remain before removing the worktree.
 
 ---
 
