@@ -455,6 +455,7 @@ Use this checklist for each release:
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| 0.11.0 | 2026-08-12 | Minor | Add pluggable workspace runtimes with experimental Docker SBX isolation and account-free container defaults |
 | 0.10.1 | 2026-03-19 | Patch | Extend `--allow-container` to `feature teardown` and `feature prune` for full container lifecycle |
 | 0.10.0 | 2026-03-16 | Minor | Allow `feature start` inside containers via `--allow-container` flag for coding agent orchestration |
 | 0.9.0 | 2026-02-27 | Minor | Interactive 1Password setup in `branchbox init`, PATH fix for pre-built images, compose env_file for GITHUB_TOKEN |

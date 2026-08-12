@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-12
+
 ### Added
 - Pluggable workspace runtime providers with the existing account-free container workflow as the default and experimental Docker SBX support for microVM-isolated workspaces.
 - `branchbox feature start --runtime <container|sbx|local-vm>` runtime selection through the CLI and `.branchbox/config.json` defaults.
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Upgraded the shared HTTP client to reqwest 0.12 and patched Rustls dependencies, resolving the `rustls-webpki` certificate-validation and CRL vulnerabilities reported by the repository security audit.
+- Fixed the agent E2E harness on macOS Bash 3 when `--cp-stub` is used without additional CLI arguments.
 
 ### Documentation
 - Documented the distinction between devcontainers and outer isolation runtimes, experimental SBX requirements, runtime configuration and command execution, and the account-free local VM direction using Colima/Lima.
