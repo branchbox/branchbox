@@ -306,8 +306,9 @@ jobs:
 
       - name: Consolidate checksums
         run: |
-          # Collect all individual checksums into a single file
-          find artifacts -name "*.sha256" -exec cat {} \; > checksums.txt
+          # Collect all individual checksums and normalize Windows CRLF output so
+          # checksums.txt can be consumed by sha256sum/shasum on every platform.
+          find artifacts -name "*.sha256" -exec cat {} \; | tr -d '\r' > checksums.txt
           cat checksums.txt
 
       - name: Upload release assets
