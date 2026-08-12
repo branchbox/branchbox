@@ -183,6 +183,28 @@ branchbox init
 branchbox feature start "Demo Feature"
 ```
 
+### Choose the workspace isolation boundary
+
+BranchBox keeps the repository-defined devcontainer separate from the runtime that contains it.
+Existing projects continue to use the local, account-free `container` provider by default:
+
+```bash
+# Existing behavior (default)
+branchbox feature start "Add OAuth" --runtime container
+
+# Experimental Docker Sandboxes microVM boundary
+branchbox feature start "Add OAuth" --runtime sbx
+
+# Run a coding agent inside the active feature's recorded runtime
+branchbox feature exec add-oauth -- codex
+```
+
+The optional `sbx` provider requires an installed and authenticated Docker Sandboxes CLI. SBX
+authentication affects only explicitly selected SBX workspaces; normal BranchBox workflows do not
+require a Docker account. `local-vm` is reserved for the planned account-free Colima/Lima backend.
+See [How It Works](https://branchbox.dev/docs/how-it-works) for runtime topology,
+configuration, port publication, and lifecycle details.
+
 ---
 
 ## Devcontainer Workflow

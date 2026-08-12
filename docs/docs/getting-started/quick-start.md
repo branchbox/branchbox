@@ -117,6 +117,21 @@ You're now in a fully isolated workspace:
 
 Run your app, make changes, commit freely. Your main workspace is untouched.
 
+## Optional: Use an SBX MicroVM
+
+The default `container` runtime remains local and account-free. If you have installed and signed in
+to Docker Sandboxes, you can place the complete devcontainer and Compose stack inside an SBX VM:
+
+```bash
+branchbox feature start "Isolated agent task" --runtime sbx
+branchbox feature exec isolated-agent-task -- codex
+```
+
+BranchBox records the sandbox identity and actual host-port mappings for the feature. An SBX login
+problem affects only `--runtime sbx`; it does not block the default workflow. See
+**[How It Works](../how-it-works.md#runtime-providers)** for provider configuration and lifecycle
+details.
+
 ## See All Your Features
 
 ```bash

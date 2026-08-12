@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use worktree_core::runtime::RuntimeMetadata;
 use worktree_core::workflows::feature::{
     AdapterSummary, FeatureMetadata, FeatureTunnelState, ModuleOutcome, ModuleOutcomeRecord,
     ModuleStatus, ModuleTeardownReport, StartMode, StartSummary, TeardownSummary,
@@ -340,6 +341,7 @@ struct FeatureRecord {
     pr_number: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter: Option<AdapterPayload>,
+    runtime: RuntimeMetadata,
 }
 
 impl From<FeatureMetadata> for FeatureRecord {
@@ -374,6 +376,7 @@ impl From<FeatureMetadata> for FeatureRecord {
             module_outcomes: meta.module_outcomes,
             pr_number: meta.pr_number,
             adapter: meta.adapter.map(AdapterPayload::from),
+            runtime: meta.runtime,
         }
     }
 }
@@ -403,6 +406,7 @@ struct StartFeaturePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     tunnel: Option<TunnelPayload>,
     generated_at: String,
+    runtime: RuntimeMetadata,
 }
 
 impl From<StartSummary> for StartFeaturePayload {
@@ -431,6 +435,7 @@ impl From<StartSummary> for StartFeaturePayload {
             adapter: summary.adapter.map(AdapterPayload::from),
             tunnel: summary.tunnel.map(TunnelPayload::from),
             generated_at: summary.generated_at.to_rfc3339(),
+            runtime: summary.runtime,
         }
     }
 }

@@ -34,7 +34,13 @@ A distributed development environment orchestrator that manages git worktrees an
 │        ┌───────▼──────────┐                  │
 │        │ Worktree Core    │                  │
 │        │ (Rust library)   │                  │
-│        └──────────────────┘                  │
+│        └───────┬──────────┘                  │
+│                │ RuntimeProvider             │
+│      ┌─────────┼──────────┐                  │
+│      │         │          │                  │
+│ container   local-vm     sbx                 │
+│ (default)  (reserved) (experimental)         │
+│      └─────────┴──────────┘                  │
 └──────────────────────────────────────────────┘
                  │
                  │ Batched events / heartbeats
@@ -58,6 +64,7 @@ A distributed development environment orchestrator that manages git worktrees an
 - `git`: Git worktree operations
 - `docker`: Docker Compose orchestration
 - `cloudflare`: Cloudflare Tunnel API client
+- `runtime`: Outer workspace isolation providers, lifecycle metadata, command routing, and host-port publication
 
 **Key Features**:
 - Stack detection (Rails, Node.js, Generic)
@@ -67,6 +74,9 @@ A distributed development environment orchestrator that manages git worktrees an
 - Template rendering for devcontainer configs
 - Opinionated devcontainer layout that mounts the parent worktree tree at `/workspaces` so per-feature folders resolve consistently inside containers
 - Reads optional `APP_NAME`/`APP_SLUG` settings from `.env` to align compose/devcontainer naming with the host project and propagates them to Docker Compose container names
+- Keeps the devcontainer definition independent of the outer runtime boundary. The default provider
+  preserves host-container behavior; experimental SBX starts the devcontainer and its nested Compose
+  stack inside a named sandbox, routes commands into the devcontainer, and bridges published ports.
 
 **Distribution**:
 - Published to crates.io as `worktree-core`

@@ -33,7 +33,7 @@ Set `BRANCHBOX_SKIP_HOST_VALIDATION=1` while running these steps so the workflow
 3. **Bring up the main devcontainer**
    - Ensure `main/.env` exists (copy from `.env.sample` if needed) so `docker compose` can load the env file list.
    - Run `docker compose -f main/.devcontainer/compose.yaml up -d --build` (supply `--project-directory main/.devcontainer` if you prefer explicit context).
-   - `docker compose exec rust-dev git --version` should succeed, confirming the container has git and the repo bind mount.
+   - Resolve the service named by `devcontainer.json`, then run `docker compose exec <service> git --version`. This should succeed, confirming the container has git and the repo bind mount.
    - Tear down with `docker compose ... down -v --remove-orphans`.
 
 4. **Start a feature worktree**
@@ -58,7 +58,7 @@ The repository ships `scripts/manual-cli-e2e.sh`, which runs the entire flow abo
 - Builds `branchbox` if needed.
 - Seeds a throwaway git repo under `$(mktemp)` and forces `branchbox init` to reorganize into a sibling temp directory.
 - Brings main + feature devcontainers up via `docker compose`, confirming git works inside both containers.
-- Starts a feature, validates registry/git state, then tears it down with `--delete-branch --complete-spec`.
+- Starts three feature worktrees covering the normal, Cloudflared, and credential-loss fallback paths; validates registry/git state and tears each one down.
 - Ensures `.devcontainer/.branchbox.env` exists in both the main worktree and its feature copy so per-worktree overrides stay intact.
 - Injects JSONC comments into `devcontainer.json` to confirm BranchBox accepts commented configs before syncing.
 - Exercises `branchbox devcontainer sync --dry-run` with `copy` and `symlink` strategies so downstream tooling can rely on the command.
@@ -78,11 +78,14 @@ Usage:
 # Pretend/dry-run (log steps, skip BranchBox + Docker)
 ./scripts/manual-cli-e2e.sh --mode pretend
 
+# Select a stack (rust, generic, rails, or node)
+./scripts/manual-cli-e2e.sh --stack generic
+
 # Spin up the HTTP drain stub and verify acks
 ./scripts/manual-agent-e2e.sh --cp-stub
 ```
 
-`--mode verbose` enables shell tracing and passes verbose flags to BranchBox commands so you can watch every git/module operation. `--mode pretend` is a safe dry-run that logs each action without invoking BranchBox or Docker while still performing lightweight repo scaffolding under `/tmp`. Combine any mode with `KEEP_E2E_TMP=1` to preserve the temporary workspace for manual inspection.
+`--mode verbose` enables shell tracing and passes verbose flags to BranchBox commands so you can watch every git/module operation. `--mode pretend` is a safe dry-run that logs each action without invoking BranchBox or Docker while still performing lightweight repo scaffolding under `/tmp`. `--stack` selects the generated template and the harness resolves the matching Compose service from `devcontainer.json`. Combine any mode with `KEEP_E2E_TMP=1` to preserve the temporary workspace for manual inspection. The script avoids Bash-4-only case-conversion syntax so the same commands work with the Bash version shipped by macOS.
 
 `--cp-stub` starts a disposable Python HTTP server inside the devcontainer, points the agent’s `BRANCHBOX_CP_ENDPOINT` at it, and prints both the stub log and the `control_plane_status.last_ack_event_id` cursor once the CLI harness finishes. Use this whenever you want to see the durable-ack logic in action or reproduce control-plane failures locally.
 

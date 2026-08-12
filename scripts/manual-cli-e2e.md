@@ -15,10 +15,10 @@
 ./scripts/manual-cli-e2e.sh --mode pretend
 
 # Target a specific stack (default: rust)
-STACK=generic ./scripts/manual-cli-e2e.sh --mode verbose --stack generic
+./scripts/manual-cli-e2e.sh --mode verbose --stack generic
 ```
 
-Supported stacks today: `rust` (default), `generic`, `rails`, and `node`. Pass `--stack <stack>` or set `STACK=<stack>` to override; CI runs a matrix so template regressions surface quickly.
+Supported stacks today: `rust` (default), `generic`, `rails`, and `node`. Pass `--stack <stack>` or set `STACK=<stack>` to override; the harness resolves the corresponding Compose service from `devcontainer.json`. CI runs a matrix so template regressions surface quickly. Argument normalization remains compatible with the Bash version bundled with macOS.
 
 ## Release-blocking matrix
 

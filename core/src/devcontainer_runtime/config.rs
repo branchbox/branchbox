@@ -209,6 +209,28 @@ pub enum PortForward {
     },
 }
 
+impl PortForward {
+    /// Resolve a devcontainer forward-port declaration into a host/container
+    /// pair suitable for an outer runtime boundary.
+    pub fn runtime_mapping(&self) -> Option<(u16, u16)> {
+        match self {
+            Self::Number(port) => Some((*port, *port)),
+            Self::String(value) => {
+                if let Ok(port) = value.parse::<u16>() {
+                    return Some((port, port));
+                }
+                let (host, container) = value.rsplit_once(':')?;
+                Some((host.parse().ok()?, container.parse().ok()?))
+            }
+            Self::Object {
+                container_port,
+                host_port,
+                ..
+            } => Some((host_port.unwrap_or(*container_port), *container_port)),
+        }
+    }
+}
+
 /// Lifecycle command - can be string, array, or object
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -414,5 +436,26 @@ mod tests {
         let (config, path) = DevcontainerConfig::load(temp_dir.path()).unwrap();
         assert_eq!(config.name, Some("Test".to_string()));
         assert!(path.ends_with("devcontainer.json"));
+    }
+
+    #[test]
+    fn test_forward_ports_resolve_runtime_mappings() {
+        assert_eq!(
+            PortForward::Number(3000).runtime_mapping(),
+            Some((3000, 3000))
+        );
+        assert_eq!(
+            PortForward::String("8080:3000".to_string()).runtime_mapping(),
+            Some((8080, 3000))
+        );
+        assert_eq!(
+            PortForward::Object {
+                container_port: 5432,
+                host_port: None,
+                label: None,
+            }
+            .runtime_mapping(),
+            Some((5432, 5432))
+        );
     }
 }
