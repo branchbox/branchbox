@@ -8,6 +8,7 @@ The CLI smoke test below exercises the full BranchBox workflow on a disposable r
 ## Prerequisites
 
 - Docker Engine + `docker compose`
+- Dev Container CLI (`devcontainer`)
 - Rust toolchain (so `cargo build -p branchbox-cli` succeeds)
 - `jq` (used by the automation script to read `devcontainer.json`)
 - Host machine can run privileged containers (the generated devcontainer enables Docker-in-Docker)
@@ -43,11 +44,11 @@ Set `BRANCHBOX_SKIP_HOST_VALIDATION=1` while running these steps so the workflow
      - Git branch `feature/cli-e2e-smoke`.
      - `.devcontainer/` copied to the feature, `.env` duplicated with feature-specific `APP_URL`/`COMPOSE_PROJECT_NAME`.
      - Specs module creates/updates `docs/features/in-progress/cli-e2e-smoke.md`.
-   - Build the feature devcontainer via `docker compose -f <feature>/.devcontainer/compose.yaml up -d --build` and verify `git --version` inside the container.
+   - Build the feature with `devcontainer up --workspace-folder <feature>` and verify `git --version` with `devcontainer exec`. Capture `composeProjectName` from the CLI's success JSON; depending on the environment overlay, it may be the persisted BranchBox name or the CLI's `<feature>_devcontainer` default.
 
 5. **Teardown and verify cleanup**
    - Run `branchbox feature teardown cli-e2e-smoke --delete-branch --complete-spec`.
-   - Confirm the feature directory is gone, `git branch --list feature/cli-e2e-smoke` returns empty, the devcontainer directory vanished with the worktree, and the spec moved from `docs/features/in-progress/` to `docs/features/completed/`.
+   - Confirm the feature directory is gone, `git branch --list feature/cli-e2e-smoke` returns empty, the spec moved from `docs/features/in-progress/` to `docs/features/completed/`, and Docker label queries for the captured Compose project return no containers, networks, or volumes.
 
 Document every discrepancy (missing `main/`, failed container launch, stale branches, etc.) before releasing.
 
@@ -57,7 +58,8 @@ The repository ships `scripts/manual-cli-e2e.sh`, which runs the entire flow abo
 
 - Builds `branchbox` if needed.
 - Seeds a throwaway git repo under `$(mktemp)` and forces `branchbox init` to reorganize into a sibling temp directory.
-- Brings main + feature devcontainers up via `docker compose`, confirming git works inside both containers.
+- Brings the main stack up via `docker compose` and Feature A up through the devcontainer CLI, confirming git works inside both containers.
+- Captures Feature A's actual Compose project from the devcontainer CLI success response and verifies teardown removes its containers, networks, and volumes.
 - Starts three feature worktrees covering the normal, Cloudflared, and credential-loss fallback paths; validates registry/git state and tears each one down.
 - Ensures `.devcontainer/.branchbox.env` exists in both the main worktree and its feature copy so per-worktree overrides stay intact.
 - Injects JSONC comments into `devcontainer.json` to confirm BranchBox accepts commented configs before syncing.

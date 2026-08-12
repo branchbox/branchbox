@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ "${USE_CP_STUB}" -eq 1 ]]; then
-  CP_STUB_LOG="$(mktemp /tmp/branchbox-cp-stub.XXXXXX.log)"
+  CP_STUB_LOG="$(mktemp /tmp/branchbox-cp-stub-log.XXXXXX)"
   CP_STUB_PORT="${BRANCHBOX_CP_STUB_PORT:-50550}"
   export CP_STUB_PORT
   export CP_STUB_LOG

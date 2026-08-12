@@ -166,6 +166,64 @@ esac
     (temp, binary, state, log)
 }
 
+#[cfg(unix)]
+fn create_fake_docker() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+    let temp = TempDir::new().expect("create fake docker temp dir");
+    let binary = temp.path().join("docker");
+    let state = temp.path().join("devcontainer-project");
+    let log = temp.path().join("calls.log");
+    fs::write(
+        &binary,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+
+case "${1:-}" in
+  version)
+    exit 0
+    ;;
+  compose)
+    shift
+    case " $* " in
+      *" config "*) exit 0 ;;
+      *" ps "*)
+        case " $* " in
+          *" -p $(cat "$FAKE_DOCKER_STATE" 2>/dev/null || true) "*)
+            if [ -f "$FAKE_DOCKER_STATE" ]; then printf '%s\n' fake-container-id; fi
+            ;;
+        esac
+        ;;
+      *" down "*)
+        if [ -f "$FAKE_DOCKER_STATE" ]; then
+          project=$(cat "$FAKE_DOCKER_STATE")
+          case " $* " in
+            *" -p $project "*|*" --project-name $project "*) rm -f "$FAKE_DOCKER_STATE" ;;
+          esac
+        fi
+        ;;
+    esac
+    ;;
+  ps)
+    if [ -f "$FAKE_DOCKER_STATE" ]; then
+      project=$(cat "$FAKE_DOCKER_STATE")
+      case " $* " in
+        *"label=devcontainer.local_folder="*) printf '%s\n' "$project" ;;
+        *"label=com.docker.compose.project=$project"*) printf '%s\n' fake-container-id ;;
+      esac
+    fi
+    ;;
+  network|volume|rm)
+    ;;
+esac
+"#,
+    )
+    .expect("write fake docker");
+    let mut permissions = fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&binary, permissions).unwrap();
+    (temp, binary, state, log)
+}
+
 #[test]
 fn feature_start_list_teardown_end_to_end() {
     let test_repo = init_test_repo();
@@ -251,6 +309,61 @@ fn feature_start_list_teardown_end_to_end() {
     assert!(
         completed_spec.exists(),
         "expected spec to move to completed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn feature_teardown_removes_devcontainer_cli_compose_project() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let repo_path = test_repo.path();
+    let work_feature = "devcontainer-cleanup";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (fake_docker, _binary, state, log) = create_fake_docker();
+    let path = format!(
+        "{}:{}",
+        fake_docker.path().display(),
+        std::env::var("PATH").expect("PATH is set")
+    );
+
+    branchbox_cmd!(
+        repo_path,
+        "PATH" => &path,
+        "FAKE_DOCKER_STATE" => &state,
+        "FAKE_DOCKER_LOG" => &log,
+    )
+    .args(["feature", "start", work_feature, "--skip-module", "tunnel"])
+    .assert()
+    .success();
+
+    fs::write(&state, format!("{work_feature}_devcontainer"))
+        .expect("simulate devcontainer CLI compose project");
+
+    branchbox_cmd!(
+        repo_path,
+        "PATH" => &path,
+        "FAKE_DOCKER_STATE" => &state,
+        "FAKE_DOCKER_LOG" => &log,
+    )
+    .args([
+        "feature",
+        "teardown",
+        work_feature,
+        "--force",
+        "--force-delete-branch",
+    ])
+    .assert()
+    .success();
+
+    assert!(
+        !worktree_path.exists(),
+        "feature worktree should be removed"
+    );
+    assert!(
+        !state.exists(),
+        "teardown leaked the devcontainer CLI compose project; docker calls:\n{}",
+        fs::read_to_string(log).unwrap_or_default()
     );
 }
 
