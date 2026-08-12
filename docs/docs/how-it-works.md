@@ -47,7 +47,73 @@ BranchBox:
    - **Tunnel**: Provisions a Cloudflare tunnel (if available)
    - **Specs**: Moves feature spec from `backlog/` to `in-progress/`
 5. **Copies your `.env`** with updated values (`APP_URL`, `COMPOSE_PROJECT_NAME`)
-6. **Registers the feature** in `.branchbox/registry.json`
+6. **Prepares the selected workspace runtime** (the existing container workflow by default)
+   - With `sbx`, creates a project-scoped sandbox, publishes `forwardPorts`, and runs
+     `devcontainer up` inside the sandbox's Docker daemon
+   - Bridges each published VM port to the matching nested Compose service; occupied host ports
+     are replaced with available ports and the resolved mappings are recorded in the registry
+7. **Registers the feature** in `.branchbox/registry.json`
+
+## Runtime Providers
+
+Runtime providers describe the outer execution boundary for a workspace. This is separate from a
+devcontainer, which describes the tools and services inside the developer environment.
+
+```bash
+# Existing behavior; this remains the default and requires no Docker Sandboxes account
+branchbox feature start add-oauth --runtime container
+
+# Experimental Docker Sandboxes microVM boundary
+branchbox feature start add-oauth --runtime sbx
+```
+
+The `sbx` provider detects the Docker Sandboxes CLI and authentication before changing the
+repository. If SBX is unavailable, only the explicitly selected SBX start fails; normal BranchBox
+workflows remain account-free. `local-vm` is reserved for the future account-free microVM backend
+and currently returns a clear not-implemented error.
+
+Commands can be routed through the runtime recorded for an active feature. This is also how an
+SBX-backed coding agent is kept inside the sandbox boundary:
+
+```bash
+branchbox feature exec add-oauth -- codex
+
+# Capture stdout, stderr, and the exit code for automation
+branchbox feature exec add-oauth --json -- codex --version
+```
+
+When `BRANCHBOX_DEFAULT_AGENT_CMD` is configured, the automatic agent launch uses the same runtime
+route. Container-backed features retain the existing local execution behavior.
+
+Projects can set a default in `.branchbox/config.json`:
+
+```json
+{
+  "runtime": {
+    "provider": "container"
+  }
+}
+```
+
+### Account-free local VM direction
+
+The reserved `local-vm` provider has been evaluated against three local options:
+
+- [Lima](https://lima-vm.io/docs/examples/containers/) provides the lowest-level building blocks:
+  Linux VMs, filesystem sharing, container engines, and port forwarding. It offers the most control,
+  but BranchBox would own more provisioning and Docker-context integration.
+- [Colima](https://github.com/abiosoft/colima) layers named instances, a Docker runtime, mounts, and
+  automatic port forwarding over Lima. It is the recommended first prototype because the existing
+  Compose and devcontainer commands can continue to target a Docker-compatible socket without a
+  hosted account.
+- [Podman machine](https://podman.io/docs/installation) also supplies a local VM on macOS, but its
+  Podman API introduces more Compose/devcontainer compatibility risk for the initial backend.
+
+The intended next increment is therefore a project-scoped Colima profile behind the existing
+provider trait. It must pass the same lifecycle contract proven for SBX: start a full Compose-based
+devcontainer, execute the coding agent inside it, expose collision-safe host ports, survive restart,
+and remove only provider-owned state. Direct Lima remains the fallback if Colima's profile or socket
+model prevents per-worktree isolation.
 
 ## Stack Detection
 
@@ -91,7 +157,10 @@ BranchBox tracks features in `.branchbox/registry.json`:
       "branch_name": "feature/add-oauth",
       "worktree_path": "/path/to/add-oauth",
       "status": "Active",
-      "mode": "full",
+      "start_mode": "full",
+      "runtime": {
+        "provider": "container"
+      },
       "created_at": "2025-01-07T10:30:00Z",
       "updated_at": "2025-01-07T10:30:00Z"
     }

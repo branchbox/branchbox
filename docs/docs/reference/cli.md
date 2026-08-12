@@ -188,6 +188,7 @@ Commands:
   teardown  Tear down an existing feature worktree
   list      List known feature worktrees from the registry
   prune     Tear down all active feature worktrees
+  exec      Execute a command through a feature's runtime provider
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -220,6 +221,7 @@ Options:
       --json                           Emit JSON summary payload instead of human-readable text
       --allow-container                Allow running feature start from inside a containerized environment
       --no-summary                     Suppress summary output (text mode only)
+      --runtime <PROVIDER>             Workspace isolation runtime (container, sbx, or reserved local-vm)
   -h, --help                           Print help
 ```
 
@@ -236,6 +238,25 @@ Options:
       --all              Include removed features even if --status is not provided
       --json             Emit JSON output instead of human-readable summary
   -h, --help             Print help
+```
+
+## branchbox feature exec
+
+Use `--` before the command when it has its own flags.
+
+```text
+Execute a command through a feature's runtime provider
+
+Usage: branchbox feature exec [OPTIONS] <NAME> <COMMAND>...
+
+Arguments:
+  <NAME>        Dasherized feature name
+  <COMMAND>...  Command and arguments to execute
+
+Options:
+      --repo <REPO>  Repository path (defaults to current directory)
+      --json         Emit captured command output as JSON
+  -h, --help         Print help
 ```
 
 ## branchbox feature teardown

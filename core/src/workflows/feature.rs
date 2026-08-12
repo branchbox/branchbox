@@ -1,9 +1,11 @@
 use crate::{
     adapters,
     config::BranchBoxConfig,
+    devcontainer_runtime::DevcontainerConfig,
     git::GitWorktree,
     modules::{self, ModuleHandle, SpecStatus},
     naming,
+    runtime::{self, RuntimeContext, RuntimeMetadata, RuntimePort, RuntimeProviderKind},
     tunnel::{
         cloudflared::CloudflaredProvider, ProvisioningIntent, ProvisioningOutcome,
         TunnelDescriptor, TunnelProvider,
@@ -161,6 +163,8 @@ pub struct StartRequest {
     pub mode: StartMode,
     /// Optional prompt seed captured for agent/automation hand-off
     pub prompt_seed: Option<String>,
+    /// Optional execution-boundary override. Defaults to project configuration.
+    pub runtime: Option<RuntimeProviderKind>,
 }
 
 /// Result of running feature start workflow.
@@ -179,6 +183,7 @@ pub struct StartSummary {
     pub color: Option<String>,
     pub mode: StartMode,
     pub prompt_seed: Option<String>,
+    pub runtime: RuntimeMetadata,
     pub module_outcomes: Vec<ModuleOutcome>,
     pub skipped_modules: Vec<ModuleSkipRecord>,
     pub generated_at: DateTime<Utc>,
@@ -306,6 +311,9 @@ impl FeatureWorkflow {
 
         let work_feature = self.resolve_work_feature(&request)?;
         let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_default();
+        let runtime_kind = request.runtime.unwrap_or(config.runtime.provider);
+        let runtime_provider = runtime::provider(runtime_kind)?;
+        runtime_provider.validate()?;
         let branch_prefix = request
             .branch_prefix
             .clone()
@@ -529,6 +537,47 @@ impl FeatureWorkflow {
         let env_path = env_outcome.env_path.clone();
         let feature_url = env_outcome.feature_url.clone();
         let compose_project_name = env_outcome.compose_project_name.clone();
+        let project_name = self
+            .repo_root
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("workspace");
+        let fallback_runtime_name = format!("{project_name}-{work_feature}");
+        let runtime_name = compose_project_name
+            .as_deref()
+            .unwrap_or(&fallback_runtime_name);
+        let workspace_mount_path = worktree_path.parent().unwrap_or(&worktree_path);
+        let published_ports = runtime_ports(&worktree_path);
+        let runtime_context = RuntimeContext {
+            work_feature: &work_feature,
+            worktree_path: &worktree_path,
+            runtime_name,
+            workspace_mount_path,
+            published_ports: &published_ports,
+        };
+        let runtime_metadata = runtime_provider.prepare(&runtime_context)?;
+        let environment_result =
+            runtime_provider.start_environment(&runtime_context, &runtime_metadata);
+
+        // Repository lifecycle hooks may rewrite the shared worktree .git file
+        // to an absolute in-container path. Convert it back to BranchBox's
+        // host/container-portable relative form before either returning or
+        // attempting cleanup after a failed startup.
+        if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
+            tracing::warn!("Failed to restore git worktree path: {}", err);
+            warnings.push(format!("Git worktree path restore failed: {}", err));
+        }
+
+        if let Err(err) = environment_result {
+            if let Err(cleanup_err) = runtime_provider.destroy(&runtime_metadata) {
+                tracing::warn!(
+                    "Failed to clean up runtime after environment startup failure: {}",
+                    cleanup_err
+                );
+            }
+            return Err(err);
+        }
 
         // Service URL priority: cloudflared config > adapter detection > default
         let service_url_for_tunnel = self
@@ -602,6 +651,7 @@ impl FeatureWorkflow {
             module_outcomes: module_outcome_records.clone(),
             last_summary_rendered_at: Some(summary_generated_at),
             adapter: adapter_summary.clone(),
+            runtime: runtime_metadata.clone(),
         }) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -632,6 +682,7 @@ impl FeatureWorkflow {
             color: summary_color,
             mode: request.mode,
             prompt_seed: request.prompt_seed.clone(),
+            runtime: runtime_metadata,
             module_outcomes,
             skipped_modules: skip_records,
             generated_at: summary_generated_at,
@@ -661,6 +712,11 @@ impl FeatureWorkflow {
         let branch_prefix = branch_prefix.or_else(|| Some(config.feature.branch_prefix.clone()));
         let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
+        let runtime_metadata = self
+            .state
+            .get_feature(&work_feature)?
+            .map(|metadata| metadata.runtime)
+            .unwrap_or_default();
         let worktree_exists = worktree_path.exists();
         if !worktree_exists && !force_remove {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
@@ -746,6 +802,16 @@ impl FeatureWorkflow {
             warnings.push(message);
         }
 
+        match runtime::provider(runtime_metadata.provider)
+            .and_then(|provider| provider.destroy(&runtime_metadata))
+        {
+            Ok(()) => {}
+            Err(err) => warnings.push(format!(
+                "Runtime '{}' teardown failed: {}",
+                runtime_metadata.provider, err
+            )),
+        }
+
         let mut worktree_removed = false;
         if worktree_exists {
             match self.git.remove(&worktree_path, force_remove) {
@@ -824,8 +890,48 @@ impl FeatureWorkflow {
     /// List feature metadata from the registry, sorted by most recently updated.
     pub fn list_features(&self) -> Result<Vec<FeatureMetadata>> {
         let mut entries = self.state.list_features()?;
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
         Ok(entries)
+    }
+
+    /// Execute a command through the runtime associated with an active feature.
+    pub fn exec_runtime(
+        &self,
+        work_feature: &str,
+        command: &[String],
+    ) -> Result<runtime::RuntimeExecResult> {
+        if command.is_empty() {
+            return Err(Error::validation("Runtime command cannot be empty"));
+        }
+        let metadata = self
+            .state
+            .get_feature(work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
+        if metadata.status != FeatureStatus::Active {
+            return Err(Error::validation(format!(
+                "Feature '{work_feature}' is not active"
+            )));
+        }
+        let provider = runtime::provider(metadata.runtime.provider)?;
+        provider.exec(&metadata.runtime, &metadata.worktree_path, command)
+    }
+
+    /// Execute an interactive command through an active feature's runtime.
+    pub fn exec_runtime_interactive(&self, work_feature: &str, command: &[String]) -> Result<i32> {
+        if command.is_empty() {
+            return Err(Error::validation("Runtime command cannot be empty"));
+        }
+        let metadata = self
+            .state
+            .get_feature(work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
+        if metadata.status != FeatureStatus::Active {
+            return Err(Error::validation(format!(
+                "Feature '{work_feature}' is not active"
+            )));
+        }
+        let provider = runtime::provider(metadata.runtime.provider)?;
+        provider.exec_interactive(&metadata.runtime, &metadata.worktree_path, command)
     }
 
     /// Open (provision) a tunnel for an existing feature.
@@ -2704,6 +2810,23 @@ fn ensure_trailing_newline(file: &mut File) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
+fn runtime_ports(worktree_path: &Path) -> Vec<RuntimePort> {
+    let Ok((config, _)) = DevcontainerConfig::load(worktree_path) else {
+        return Vec::new();
+    };
+
+    let mut ports: Vec<RuntimePort> = config
+        .forward_ports
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|port| port.runtime_mapping())
+        .map(|(host, runtime)| RuntimePort { host, runtime })
+        .collect();
+    ports.sort_unstable_by_key(|port| (port.host, port.runtime));
+    ports.dedup();
+    ports
+}
+
 fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
     let content = fs::read_to_string(path)?;
     if let Some(pos) = content.find("# Feature-specific configuration") {
@@ -3283,6 +3406,10 @@ pub struct FeatureMetadata {
     /// Adapter information captured at start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter: Option<AdapterSummary>,
+    /// Execution boundary used for this workspace. Missing data from older
+    /// registries defaults to the compatibility `container` provider.
+    #[serde(default)]
+    pub runtime: RuntimeMetadata,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3936,6 +4063,7 @@ mod tests {
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
             adapter: None,
+            runtime: RuntimeMetadata::default(),
         };
 
         store.record_start(metadata.clone()).unwrap();
@@ -3975,6 +4103,7 @@ mod tests {
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
             adapter: None,
+            runtime: RuntimeMetadata::default(),
         };
 
         store.record_start(metadata).unwrap();
@@ -4016,6 +4145,7 @@ mod tests {
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
             adapter: None,
+            runtime: RuntimeMetadata::default(),
         };
 
         store.record_start(metadata1).unwrap();
@@ -4045,6 +4175,7 @@ mod tests {
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
             adapter: None,
+            runtime: RuntimeMetadata::default(),
         };
 
         store.record_start(metadata2).unwrap();
@@ -4087,6 +4218,7 @@ mod tests {
             module_outcomes: Vec::new(),
             last_summary_rendered_at: None,
             adapter: None,
+            runtime: RuntimeMetadata::default(),
         };
 
         store.record_start(metadata).unwrap();
@@ -4257,6 +4389,7 @@ mod tests {
                 module_outcomes: Vec::new(),
                 last_summary_rendered_at: None,
                 adapter: None,
+                runtime: RuntimeMetadata::default(),
             })
             .unwrap();
 

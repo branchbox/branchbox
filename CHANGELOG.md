@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Pluggable workspace runtime providers with the existing account-free container workflow as the default and experimental Docker SBX support for microVM-isolated workspaces.
+- `branchbox feature start --runtime <container|sbx|local-vm>` runtime selection through the CLI and `.branchbox/config.json` defaults.
+- `branchbox feature exec` for captured or interactive command execution through the runtime recorded for an active feature.
+- Runtime provider, runtime identity, and resolved host-port mappings in feature registry records, CLI summaries, JSON output, and agent IPC payloads.
+
+### Changed
+- Docker SBX workspaces now start the repository devcontainer inside the sandbox, execute coding agents in that devcontainer, bridge nested Compose services to collision-safe host ports, recover mappings after sandbox restart, and remove provider-owned state during teardown.
+- Worktree `.git` pointers are restored to portable relative paths after repository lifecycle hooks run inside a devcontainer.
+
+### Fixed
+- Upgraded the shared HTTP client to reqwest 0.12 and patched Rustls dependencies, resolving the `rustls-webpki` certificate-validation and CRL vulnerabilities reported by the repository security audit.
+
+### Documentation
+- Documented the distinction between devcontainers and outer isolation runtimes, experimental SBX requirements, runtime configuration and command execution, and the account-free local VM direction using Colima/Lima.
+
+### Testing
+- Added a fake-SBX full CLI lifecycle test covering provisioning, port publication, devcontainer startup, agent execution, and teardown.
+- Verified a real Agentify Compose/devcontainer stack inside Docker SBX, including Codex execution, Rails/PostgreSQL access, host-port bridging, restart/reuse, and cleanup.
+- Kept the disposable multi-feature CLI and agent E2E harness portable across macOS Bash and stack-specific Compose service names.
+
 ## [0.10.1] - 2026-03-19
 
 ### Fixed
@@ -68,7 +89,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 - Updated manual E2E docs and release guidance to include the 1Password-specific harness and required environment inputs for issue #45 style validation.
-
 ## [0.7.0] - 2026-01-14
 
 ### Added

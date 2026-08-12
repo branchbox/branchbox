@@ -4,7 +4,7 @@
 //! stored under `.branchbox/config.json`. It currently focuses on tunnel
 //! defaults, leaving room for future workspace metadata.
 
-use crate::Result;
+use crate::{runtime::RuntimeProviderKind, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,9 @@ pub struct BranchBoxConfig {
 
     #[serde(default)]
     pub feature: FeatureSettings,
+
+    #[serde(default)]
+    pub runtime: RuntimeSettings,
 }
 
 impl Default for BranchBoxConfig {
@@ -34,8 +37,17 @@ impl Default for BranchBoxConfig {
             tunnel: TunnelSettings::default(),
             editor: EditorSettings::default(),
             feature: FeatureSettings::default(),
+            runtime: RuntimeSettings::default(),
         }
     }
+}
+
+/// Workspace execution-boundary defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RuntimeSettings {
+    /// Runtime used when `feature start --runtime` is not supplied.
+    #[serde(default)]
+    pub provider: RuntimeProviderKind,
 }
 
 impl BranchBoxConfig {
@@ -304,5 +316,18 @@ mod tests {
         assert!(config.feature.teardown.delete_branch_by_default);
         assert!(!config.feature.teardown.force_delete_unmerged_by_default);
         assert!(config.feature.teardown.prompt_force_delete_unmerged);
+    }
+
+    #[test]
+    fn legacy_config_defaults_to_container_runtime() {
+        let config: BranchBoxConfig = serde_json::from_str(r#"{"version":"1"}"#).unwrap();
+        assert_eq!(config.runtime.provider, RuntimeProviderKind::Container);
+    }
+
+    #[test]
+    fn runtime_provider_can_be_configured() {
+        let config: BranchBoxConfig =
+            serde_json::from_str(r#"{"version":"1","runtime":{"provider":"sbx"}}"#).unwrap();
+        assert_eq!(config.runtime.provider, RuntimeProviderKind::Sbx);
     }
 }

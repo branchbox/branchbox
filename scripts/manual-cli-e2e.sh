@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-MODE="${MODE,,}"
+MODE="$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')"
 case "$MODE" in
   regular) ;;
   verbose) SCRIPT_VERBOSE=1 ;;
@@ -71,7 +71,7 @@ case "$MODE" in
     ;;
 esac
 
-STACK="${STACK,,}"
+STACK="$(printf '%s' "$STACK" | tr '[:upper:]' '[:lower:]')"
 case "$STACK" in
   rust|generic|rails|node) ;;
   *)

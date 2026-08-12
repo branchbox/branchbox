@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 macro_rules! branchbox_cmd {
     ($repo:expr $(, $key:expr => $value:expr )* $(,)?) => {{
         let mut cmd = Command::new(cargo_bin!("branchbox"));
@@ -64,7 +67,8 @@ impl TestRepo {
             devcontainer.join("devcontainer.json"),
             r#"{
   "name": "test",
-  "image": "mcr.microsoft.com/vscode/devcontainers/base:ubuntu"
+  "image": "mcr.microsoft.com/vscode/devcontainers/base:ubuntu",
+  "forwardPorts": [3000]
 }
 "#,
         )
@@ -106,6 +110,60 @@ fn init_test_repo() -> TestRepo {
         _temp_dir: temp_dir,
         repo_path,
     }
+}
+
+#[cfg(unix)]
+fn create_fake_sbx() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+    let temp = TempDir::new().expect("create fake sbx temp dir");
+    let binary = temp.path().join("sbx");
+    let state = temp.path().join("state");
+    let log = temp.path().join("calls.log");
+    fs::write(
+        &binary,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$FAKE_SBX_LOG"
+case "$1" in
+  ls)
+    if [ -f "$FAKE_SBX_STATE" ]; then cat "$FAKE_SBX_STATE"; fi
+    ;;
+  create)
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = "--name" ]; then
+        printf '%s\n' "$argument" > "$FAKE_SBX_STATE"
+        break
+      fi
+      previous="$argument"
+    done
+    ;;
+  ports)
+    ;;
+  exec)
+    case "$*" in
+      *"devcontainer up"*)
+        printf '%s\n' '{"outcome":"success","containerId":"fake-container-id"}'
+        ;;
+      *)
+        printf '%s\n' "fake-sbx-command-ok"
+        ;;
+    esac
+    ;;
+  rm)
+    rm -f "$FAKE_SBX_STATE"
+    ;;
+  *)
+    printf '%s\n' "unexpected fake sbx command: $*" >&2
+    exit 2
+    ;;
+esac
+"#,
+    )
+    .expect("write fake sbx");
+    let mut permissions = fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&binary, permissions).unwrap();
+    (temp, binary, state, log)
 }
 
 #[test]
@@ -498,6 +556,10 @@ fn feature_start_minimal_mode_json_summary() {
     assert_eq!(summary["mode"], Value::String("minimal".into()));
     assert_eq!(summary["work_feature"], Value::String(work_feature.into()));
     assert_eq!(summary["prompt_seed"], Value::String("Quick seed".into()));
+    assert_eq!(
+        summary["runtime"]["provider"],
+        Value::String("container".into())
+    );
 
     let skipped_modules = summary["skipped_modules"]
         .as_array()
@@ -538,6 +600,10 @@ fn feature_start_minimal_mode_json_summary() {
     let first = &features[0];
     assert_eq!(first["start_mode"], Value::String("minimal".into()));
     assert_eq!(first["prompt_seed"], Value::String("Quick seed".into()));
+    assert_eq!(
+        first["runtime"]["provider"],
+        Value::String("container".into())
+    );
     let module_outcomes = first["module_outcomes"]
         .as_array()
         .expect("module_outcomes should be an array");
@@ -565,6 +631,119 @@ fn feature_start_minimal_mode_json_summary() {
         !worktree_path.exists(),
         "expected worktree directory removed during teardown"
     );
+}
+
+#[test]
+fn unsupported_runtime_fails_before_creating_worktree() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+    let work_feature = "local-vm-probe";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+
+    branchbox_cmd!(repo_path)
+        .args(["feature", "start", work_feature, "--runtime", "local-vm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Runtime provider 'local-vm' is reserved but not implemented yet",
+        ));
+
+    assert!(!worktree_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_runtime_full_cli_lifecycle() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let repo_path = test_repo.path();
+    let work_feature = "sbx-e2e";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    let output = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--json",
+    ])
+    .output()
+    .expect("start feature through fake sbx");
+    assert!(
+        output.status.success(),
+        "SBX feature start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary: Value = serde_json::from_slice(&output.stdout).expect("parse SBX start JSON");
+    assert_eq!(summary["runtime"]["provider"], "sbx");
+    assert!(summary["runtime"]["runtime_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("branchbox-"));
+    let published_host = summary["runtime"]["published_ports"][0]["host"]
+        .as_u64()
+        .expect("published host port");
+    assert!((1..=u16::MAX as u64).contains(&published_host));
+    assert_eq!(summary["runtime"]["published_ports"][0]["runtime"], 3000);
+    assert!(worktree_path.exists());
+
+    let exec_output = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "exec",
+        work_feature,
+        "--json",
+        "--",
+        "codex",
+        "--version",
+    ])
+    .output()
+    .expect("execute coding-agent probe through fake sbx");
+    assert!(exec_output.status.success());
+    let exec_result: Value =
+        serde_json::from_slice(&exec_output.stdout).expect("parse runtime exec JSON");
+    assert_eq!(exec_result["exit_code"], 0);
+    assert!(exec_result["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("fake-sbx-command-ok"));
+
+    branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+    assert!(!worktree_path.exists());
+    assert!(!fake_state.exists());
+
+    let calls = fs::read_to_string(fake_log).expect("read fake sbx calls");
+    assert!(calls.contains("create shell"));
+    assert!(calls.contains("ports branchbox-"));
+    assert!(calls.contains(&format!("--publish {published_host}:3000")));
+    assert!(calls.contains("exec --workdir"));
+    assert!(calls.contains("bash -lc"));
+    assert!(calls.contains("env -u NPM_CONFIG_PREFIX npx"));
+    assert!(calls.contains("@devcontainers/cli exec --workspace-folder ."));
+    assert!(calls.contains("branchbox-port-proxy fake-container-id 3000"));
+    assert!(calls.contains("codex --version"));
+    assert!(calls.contains("rm --force branchbox-"));
 }
 
 #[test]

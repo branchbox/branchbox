@@ -12,6 +12,7 @@ use std::{
 };
 use worktree_core::{
     config::BranchBoxConfig,
+    runtime::{self, RuntimeProviderKind},
     workflows::feature::{
         FeatureMetadata, FeatureStatus, FeatureTunnelStatus, FeatureWorkflow, ModuleOutcome,
         ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus, StartMode, StartRequest, StartSummary,
@@ -36,6 +37,9 @@ pub enum FeatureCommands {
 
     /// Tear down all active feature worktrees
     Prune(FeaturePruneArgs),
+
+    /// Execute a command through a feature's runtime provider
+    Exec(FeatureExecArgs),
 }
 
 #[derive(Args)]
@@ -99,6 +103,10 @@ pub struct FeatureStartArgs {
     /// Suppress summary output (text mode only)
     #[arg(long = "no-summary")]
     pub no_summary: bool,
+
+    /// Workspace isolation runtime (container, sbx, or reserved local-vm)
+    #[arg(long, value_name = "PROVIDER")]
+    pub runtime: Option<RuntimeProviderKind>,
 }
 
 #[derive(Args)]
@@ -197,13 +205,50 @@ pub struct FeaturePruneArgs {
     pub allow_container: bool,
 }
 
+#[derive(Args)]
+pub struct FeatureExecArgs {
+    /// Dasherized feature name
+    pub name: String,
+
+    /// Repository path (defaults to current directory)
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Emit captured command output as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Command and arguments to execute
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    pub command: Vec<String>,
+}
+
 pub fn execute(command: FeatureCommands) -> Result<()> {
     match command {
         FeatureCommands::Start(args) => run_start(args),
         FeatureCommands::Teardown(args) => run_teardown(args),
         FeatureCommands::List(args) => run_list(args),
         FeatureCommands::Prune(args) => run_prune(args),
+        FeatureCommands::Exec(args) => run_exec(args),
     }
+}
+
+fn run_exec(args: FeatureExecArgs) -> Result<()> {
+    let repo_path = args.repo.unwrap_or_else(|| PathBuf::from("."));
+    let workflow = FeatureWorkflow::new(&repo_path)?;
+    let result = workflow.exec_runtime(&args.name, &args.command)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        print!("{}", result.stdout);
+        eprint!("{}", result.stderr);
+    }
+
+    if result.exit_code != 0 {
+        bail!("Runtime command exited with status {}", result.exit_code);
+    }
+    Ok(())
 }
 
 fn run_start(args: FeatureStartArgs) -> Result<()> {
@@ -223,6 +268,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         json,
         allow_container,
         no_summary,
+        runtime,
     } = args;
 
     let mode = if minimal || fast {
@@ -265,6 +311,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         skip_modules,
         mode,
         prompt_seed: prompt_seed.clone(),
+        runtime,
     };
 
     let _host_validation_override = HostValidationOverride::new(allow_container);
@@ -395,6 +442,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         "Feature",
         "Status",
         "Mode",
+        "Runtime",
         "Prompt",
         "Modules",
         "Branch",
@@ -432,6 +480,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             feature.work_feature.clone(),
             feature.status.to_string(),
             feature.start_mode.to_string(),
+            feature.runtime.provider.to_string(),
             prompt,
             module_health,
             feature.branch_name.clone(),
@@ -986,6 +1035,7 @@ fn print_start_summary(
             "prompt_seed": summary.prompt_seed.as_ref(),
             "feature_url": summary.feature_url.as_ref(),
             "compose_project_name": summary.compose_project_name.as_ref(),
+            "runtime": &summary.runtime,
             "env_path": summary.env_path.as_ref().map(|path| path.display().to_string()),
             "color": summary.color.as_ref(),
             "module_outcomes": module_outcomes_json,
@@ -1070,6 +1120,12 @@ fn print_start_checklist(
         "✅",
         "ready",
         summary.branch_name.clone(),
+    ));
+    rows.push(ChecklistRow::new(
+        "Runtime",
+        "✅",
+        "ready",
+        summary.runtime.provider.to_string(),
     ));
 
     if let Some(color) = summary.color.as_ref() {
@@ -1651,7 +1707,7 @@ fn maybe_launch_default_agent(summary: &StartSummary, plan: &AgentPlan, json_out
                 command,
                 summary.worktree_path.display()
             );
-            match launch_agent_process(command, &summary.worktree_path) {
+            match launch_agent_process(command, summary) {
                 Ok(()) => println!("✅ Agent session completed successfully."),
                 Err(err) => println!("⚠️  Default coding agent command failed: {err}"),
             }
@@ -1683,7 +1739,7 @@ fn devcontainer_status_from_metadata(feature: &FeatureMetadata) -> Option<Module
     devcontainer_status!(&feature.module_outcomes)
 }
 
-fn launch_agent_process(command_line: &str, cwd: &Path) -> Result<()> {
+fn launch_agent_process(command_line: &str, summary: &StartSummary) -> Result<()> {
     let parts = split_command_line(command_line)
         .map_err(|err| anyhow!("failed to parse BRANCHBOX_DEFAULT_AGENT_CMD: {}", err))?;
 
@@ -1691,20 +1747,13 @@ fn launch_agent_process(command_line: &str, cwd: &Path) -> Result<()> {
         bail!("BRANCHBOX_DEFAULT_AGENT_CMD must include an executable name");
     }
 
-    let mut command = Command::new(&parts[0]);
-    if parts.len() > 1 {
-        command.args(&parts[1..]);
-    }
-    command.current_dir(cwd);
+    let provider = runtime::provider(summary.runtime.provider)?;
+    let exit_code = provider.exec_interactive(&summary.runtime, &summary.worktree_path, &parts)?;
 
-    let status = command
-        .status()
-        .with_context(|| format!("failed to launch {}", parts[0]))?;
-
-    if status.success() {
+    if exit_code == 0 {
         Ok(())
     } else {
-        Err(anyhow!("command exited with status {}", status))
+        Err(anyhow!("command exited with status {}", exit_code))
     }
 }
 

@@ -80,6 +80,7 @@ pub fn build_start_request(params: StartRequestParams) -> StartRequest {
         skip_modules: params.skip_modules,
         mode: params.mode,
         prompt_seed: params.prompt_seed,
+        runtime: None,
     }
 }
 
