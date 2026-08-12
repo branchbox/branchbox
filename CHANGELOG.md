@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-12
+
 ### Fixed
 - `branchbox feature teardown` now discovers the Compose project created by the devcontainer CLI from the worktree's exact Docker label, restores BranchBox's persisted Compose identity across CLI processes, removes containers, networks, and volumes, and reports an error if owned resources remain.
 
