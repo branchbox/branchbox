@@ -25,7 +25,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-set -- "${CLI_ARGS[@]}"
+if ((${#CLI_ARGS[@]} > 0)); then
+  set -- "${CLI_ARGS[@]}"
+else
+  set --
+fi
 
 cleanup() {
   if [[ -n "${AGENT_PID:-}" ]]; then
