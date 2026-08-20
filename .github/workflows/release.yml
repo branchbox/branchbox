@@ -295,9 +295,34 @@ jobs:
             *.sha256
           retention-days: 1
 
+  build-local-vm-image:
+    name: Build local-vm guest image
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install image build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y e2fsprogs jq
+      - name: Build digest-addressed guest image
+        run: scripts/local-vm/build-image.sh
+      - name: Package guest image
+        run: |
+          archive="branchbox-local-vm-image-${{ needs.create-release.outputs.version }}-x86_64.tar.gz"
+          tar -C target/local-vm-image -czf "$archive" vmlinux rootfs.ext4 manifest.json
+          sha256sum "$archive" >"$archive.sha256"
+      - name: Upload guest image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-vm-image
+          path: |
+            branchbox-local-vm-image-*.tar.gz
+            branchbox-local-vm-image-*.sha256
+          retention-days: 1
+
   publish-release:
     name: Publish Release
-    needs: [create-release, build-release]
+    needs: [create-release, build-release, build-local-vm-image]
     runs-on: ubuntu-latest
 
     steps:
@@ -323,7 +348,7 @@ jobs:
           # Enable nullglob so non-matching patterns expand to nothing
           shopt -s nullglob
 
-          for dir in binary-*; do
+          for dir in binary-* local-vm-image; do
             if [[ -d "$dir" ]]; then
               cd "$dir"
               for file in *.tar.gz *.zip; do

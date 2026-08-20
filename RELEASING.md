@@ -200,6 +200,7 @@ git push origin v1.0.0
    - `branchbox-1.0.0-aarch64-apple-darwin.tar.gz`
    - `branchbox-1.0.0-x86_64-pc-windows-msvc.zip`
    - `checksums.txt`
+   - `branchbox-local-vm-image-X.Y.Z-x86_64.tar.gz` (digest-addressed Firecracker guest artifacts)
 
 3. **Test installation on each platform:**
 

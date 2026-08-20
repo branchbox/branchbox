@@ -151,6 +151,7 @@ Expected artifacts:
 - `branchbox-X.Y.Z-aarch64-apple-darwin.tar.gz`
 - `branchbox-X.Y.Z-x86_64-pc-windows-msvc.zip`
 - `checksums.txt`
+- `branchbox-local-vm-image-X.Y.Z-x86_64.tar.gz`
 
 ### Step 8: Verify Docs Deployment
 
