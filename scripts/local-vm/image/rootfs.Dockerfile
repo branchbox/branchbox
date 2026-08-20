@@ -9,7 +9,10 @@ RUN apt-get update \
        rsync socat sudo systemd systemd-sysv tini \
     && npm install --global "@devcontainers/cli@${DEVCONTAINER_CLI_VERSION}" \
     && npm cache clean --force \
-    && useradd --create-home --shell /bin/bash --uid 1000 branchbox \
+    && existing_user=$(getent passwd 1000 | cut -d: -f1) \
+    && existing_group=$(id -gn "$existing_user") \
+    && usermod --login branchbox --home /home/branchbox --move-home --shell /bin/bash "$existing_user" \
+    && groupmod --new-name branchbox "$existing_group" \
     && usermod -aG docker branchbox \
     && printf 'branchbox ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/branchbox \
     && chmod 0440 /etc/sudoers.d/branchbox \

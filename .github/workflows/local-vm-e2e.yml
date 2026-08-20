@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: docker/setup-buildx-action@v3
       - name: Enable KVM access
         run: |
           test -e /dev/kvm
@@ -42,6 +43,8 @@ jobs:
           sudo install -m 0755 "release-${FIRECRACKER_VERSION}-x86_64/firecracker-${FIRECRACKER_VERSION}-x86_64" /usr/local/bin/firecracker
           sudo install -m 0755 "release-${FIRECRACKER_VERSION}-x86_64/jailer-${FIRECRACKER_VERSION}-x86_64" /usr/local/bin/jailer
       - name: Build digest-addressed guest image
+        env:
+          BRANCHBOX_LOCAL_VM_GHA_CACHE: '1'
         run: scripts/local-vm/build-image.sh
       - name: Install guest image
         run: |
@@ -52,5 +55,5 @@ jobs:
       - name: Prove no host artifacts remain
         if: always()
         run: |
-          ! pgrep -af firecracker
+          ! pgrep -x firecracker
           ! ip -o link show | grep -q 'bb[0-9a-f]\{10\}'

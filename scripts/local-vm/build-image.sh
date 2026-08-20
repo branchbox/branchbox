@@ -26,8 +26,16 @@ done
 }
 
 mkdir -p "$OUTPUT_DIR"
-docker build --file "$SCRIPT_DIR/image/kernel.Dockerfile" --output "type=local,dest=$BUILD_DIR/kernel" "$SCRIPT_DIR/image"
-docker build --file "$SCRIPT_DIR/image/rootfs.Dockerfile" --tag branchbox-local-vm-rootfs:build "$SCRIPT_DIR/image"
+kernel_cache=()
+rootfs_cache=()
+if [[ "${BRANCHBOX_LOCAL_VM_GHA_CACHE:-}" == 1 ]]; then
+  kernel_cache=(--cache-from type=gha,scope=branchbox-local-vm-kernel --cache-to type=gha,scope=branchbox-local-vm-kernel,mode=max)
+  rootfs_cache=(--cache-from type=gha,scope=branchbox-local-vm-rootfs --cache-to type=gha,scope=branchbox-local-vm-rootfs,mode=max)
+fi
+docker buildx build "${kernel_cache[@]}" --file "$SCRIPT_DIR/image/kernel.Dockerfile" \
+  --output "type=local,dest=$BUILD_DIR/kernel" "$SCRIPT_DIR/image"
+docker buildx build "${rootfs_cache[@]}" --file "$SCRIPT_DIR/image/rootfs.Dockerfile" \
+  --tag branchbox-local-vm-rootfs:build --load "$SCRIPT_DIR/image"
 ROOTFS_CONTAINER=$(docker create branchbox-local-vm-rootfs:build)
 docker export "$ROOTFS_CONTAINER" --output "$BUILD_DIR/rootfs.tar"
 

@@ -302,9 +302,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
       - name: Install image build prerequisites
         run: sudo apt-get update && sudo apt-get install -y e2fsprogs jq
       - name: Build digest-addressed guest image
+        env:
+          BRANCHBOX_LOCAL_VM_GHA_CACHE: '1'
         run: scripts/local-vm/build-image.sh
       - name: Package guest image
         run: |
