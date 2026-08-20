@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Release changelog generation now authenticates git-cliff GitHub API requests with the scoped
+  workflow token, avoiding anonymous API rate-limit failures during publication.
+
 ## [0.12.1] - 2026-08-20
 
 ### Fixed
