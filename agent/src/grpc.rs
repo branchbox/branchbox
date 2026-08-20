@@ -11,6 +11,9 @@ use worktree_core::workflows::feature::{
     ModuleTeardownReport, StartMode, StartSummary, TeardownSummary,
 };
 
+// Tonic's generated client methods return `tonic::Status` by value. Rust 1.98's expanded
+// `result_large_err` lint flags those generated signatures, which BranchBox cannot reshape.
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("branchbox.agent");
 }
