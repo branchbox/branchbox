@@ -59,18 +59,26 @@ echo '==> Proving two concurrent app + Postgres + Redis stacks and host port iso
 mkdir -p "$STACK_REPO/.devcontainer"
 git_identity "$STACK_REPO"
 printf '# multi-service local-vm fixture\n' >"$STACK_REPO/README.md"
-printf '%s\n' '{"name":"stack","dockerComposeFile":"compose.yaml","service":"app","workspaceFolder":"/workspaces/WORKSPACE","forwardPorts":[3000],"postStartCommand":"nohup python3 -m http.server 3000 >/tmp/branchbox-http.log 2>&1 &"}' \
+printf '%s\n' '{"name":"stack","dockerComposeFile":"compose.yaml","service":"app","workspaceFolder":"/workspaces/WORKSPACE","forwardPorts":[3000]}' \
   >"$STACK_REPO/.devcontainer/devcontainer.json"
 cat >"$STACK_REPO/.devcontainer/compose.yaml" <<'YAML'
 services:
   app:
-    image: mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
+    image: mcr.microsoft.com/devcontainers/base:ubuntu
     command: sleep infinity
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+  web:
+    image: python:3.12-alpine
+    working_dir: /workspace
+    command: python -m http.server 3000
+    volumes:
+      - ..:/workspace:ro
+    expose:
+      - "3000"
   postgres:
     image: postgres:17-alpine
     environment:
