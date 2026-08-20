@@ -216,6 +216,50 @@ esac
 }
 
 #[cfg(unix)]
+fn create_fake_local_vm() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+    let temp = TempDir::new().expect("create fake local-vm temp dir");
+    let binary = temp.path().join("branchbox-local-vm");
+    let state = temp.path().join("state");
+    let log = temp.path().join("calls.log");
+    fs::write(
+        &binary,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$FAKE_LOCAL_VM_LOG"
+case "$1" in
+  validate) ;;
+  prepare)
+    printf '%s\n' 'branchbox-fake-local-vm' > "$FAKE_LOCAL_VM_STATE"
+    printf '%s\n' '{"runtime_id":"branchbox-fake-local-vm","published_ports":[{"host":33123,"runtime":3000}],"monitor":"Firecracker v1.16.1","kernel_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rootfs_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+    ;;
+  exists)
+    [ -f "$FAKE_LOCAL_VM_STATE" ]
+    ;;
+  start|probe)
+    [ -f "$FAKE_LOCAL_VM_STATE" ]
+    ;;
+  exec|exec-interactive)
+    [ -f "$FAKE_LOCAL_VM_STATE" ]
+    printf '%s\n' 'local-vm-command-ok'
+    ;;
+  destroy)
+    rm -f "$FAKE_LOCAL_VM_STATE"
+    ;;
+  *)
+    printf '%s\n' "unexpected fake local-vm command: $*" >&2
+    exit 2
+    ;;
+esac
+"#,
+    )
+    .expect("write fake local-vm driver");
+    let mut permissions = fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&binary, permissions).unwrap();
+    (temp, binary, state, log)
+}
+
+#[cfg(unix)]
 fn create_fake_docker() -> (TempDir, PathBuf, PathBuf, PathBuf) {
     let temp = TempDir::new().expect("create fake docker temp dir");
     let binary = temp.path().join("docker");
@@ -795,22 +839,86 @@ fn feature_start_minimal_mode_json_summary() {
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn unsupported_runtime_fails_before_creating_worktree() {
+fn local_vm_runtime_full_cli_lifecycle_reports_immutable_artifacts() {
     let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
     let repo_path = test_repo.path();
-    let work_feature = "local-vm-probe";
+    let work_feature = "local-vm-e2e";
     let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (_fake_temp, fake_driver, fake_state, fake_log) = create_fake_local_vm();
 
-    branchbox_cmd!(repo_path)
-        .args(["feature", "start", work_feature, "--runtime", "local-vm"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Runtime provider 'local-vm' is reserved but not implemented yet",
-        ));
+    let start = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_LOCAL_VM_DRIVER_PATH" => &fake_driver,
+        "FAKE_LOCAL_VM_STATE" => &fake_state,
+        "FAKE_LOCAL_VM_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "local-vm",
+        "--json",
+    ])
+    .output()
+    .expect("start local-vm feature");
+    assert!(
+        start.status.success(),
+        "local-vm start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let summary: Value = serde_json::from_slice(&start.stdout).expect("parse start metadata");
+    assert_eq!(summary["runtime"]["provider"], "local-vm");
+    assert_eq!(summary["runtime"]["runtime_id"], "branchbox-fake-local-vm");
+    assert_eq!(
+        summary["runtime"]["version"]["monitor"],
+        "Firecracker v1.16.1"
+    );
+    assert_eq!(summary["runtime"]["published_ports"][0]["host"], 33123);
+
+    let exec = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_LOCAL_VM_DRIVER_PATH" => &fake_driver,
+        "FAKE_LOCAL_VM_STATE" => &fake_state,
+        "FAKE_LOCAL_VM_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "exec",
+        work_feature,
+        "--json",
+        "--",
+        "git",
+        "status",
+    ])
+    .output()
+    .expect("exec through local-vm");
+    assert!(exec.status.success());
+    let result: Value = serde_json::from_slice(&exec.stdout).expect("parse exec metadata");
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(result["stdout"], "local-vm-command-ok\n");
+
+    branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_LOCAL_VM_DRIVER_PATH" => &fake_driver,
+        "FAKE_LOCAL_VM_STATE" => &fake_state,
+        "FAKE_LOCAL_VM_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
 
     assert!(!worktree_path.exists());
+    assert!(!fake_state.exists());
+    let calls = fs::read_to_string(fake_log).expect("read fake local-vm calls");
+    assert!(calls.contains("validate"));
+    assert!(calls.contains("prepare"));
+    assert!(calls.contains("start branchbox-fake-local-vm"));
+    assert!(calls.contains("exec branchbox-fake-local-vm"));
+    assert!(calls.contains("destroy branchbox-fake-local-vm"));
 }
 
 #[cfg(unix)]

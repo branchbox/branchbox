@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# BranchBox's account-free Linux/KVM Firecracker driver. This file is installed beside the
+# `branchbox` executable in release archives. It deliberately has no Docker host socket access;
+# Docker and devcontainers run only inside the disposable guest.
+
+STATE_ROOT="${BRANCHBOX_LOCAL_VM_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/branchbox/local-vm}"
+IMAGE_ROOT="${BRANCHBOX_LOCAL_VM_IMAGE_DIR:-/var/lib/branchbox/local-vm/images/current}"
+JAIL_ROOT="${BRANCHBOX_LOCAL_VM_JAIL_DIR:-/var/lib/branchbox/local-vm/jailer}"
+FIRECRACKER_BIN="${BRANCHBOX_FIRECRACKER_PATH:-$(command -v firecracker 2>/dev/null || true)}"
+JAILER_BIN="${BRANCHBOX_JAILER_PATH:-$(command -v jailer 2>/dev/null || true)}"
+SSH_USER="${BRANCHBOX_LOCAL_VM_SSH_USER:-branchbox}"
+PREPARE_CLEANUP_ID=''
+
+die() {
+  printf 'branchbox-local-vm: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command '$1' is unavailable"
+}
+
+runtime_id() {
+  local normalized digest
+  normalized=$(printf '%s' "$1" | tr '[:upper:]_' '[:lower:]-' | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//')
+  digest=$(printf '%s' "$1" | sha256sum | cut -c1-10)
+  printf 'branchbox-%s-%s\n' "${normalized:0:32}" "$digest"
+}
+
+runtime_dir() {
+  printf '%s/%s\n' "$STATE_ROOT" "$1"
+}
+
+metadata_value() {
+  jq -er "$2" "$(runtime_dir "$1")/metadata.json"
+}
+
+ssh_args() {
+  local id=$1 dir guest_ip
+  dir=$(runtime_dir "$id")
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  printf '%s\0' \
+    -i "$dir/id_ed25519" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes \
+    -o "UserKnownHostsFile=$dir/known_hosts" \
+    -o ConnectTimeout=5 \
+    "${SSH_USER}@${guest_ip}"
+}
+
+rsync_shell() {
+  local id=$1 dir
+  dir=$(runtime_dir "$id")
+  printf 'ssh -i %q -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%q -o ConnectTimeout=5' \
+    "$dir/id_ed25519" "$dir/known_hosts"
+}
+
+guest() {
+  local id=$1
+  shift
+  local -a args=()
+  while IFS= read -r -d '' arg; do args+=("$arg"); done < <(ssh_args "$id")
+  ssh "${args[@]}" -- "$@"
+}
+
+sync_to_guest() {
+  local id=$1 workspace=$2 parent guest_ip rsh
+  parent=$(dirname "$workspace")
+  guest "$id" sudo mkdir -p "$workspace"
+  guest "$id" sudo chown -R "${SSH_USER}:${SSH_USER}" "$parent"
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  rsh=$(rsync_shell "$id")
+  rsync -a -s --delete --exclude '.branchbox/local-vm' -e "$rsh" \
+    "$workspace/" "${SSH_USER}@${guest_ip}:$workspace/"
+}
+
+sync_from_guest() {
+  local id=$1 workspace=$2 guest_ip rsh
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  rsh=$(rsync_shell "$id")
+  rsync -a -s --delete --exclude '.branchbox/local-vm' -e "$rsh" \
+    "${SSH_USER}@${guest_ip}:$workspace/" "$workspace/"
+}
+
+inject_credentials() {
+  local id=$1 source=${BRANCHBOX_LOCAL_VM_INJECT_DIR:-} guest_ip rsh
+  [[ -n "$source" ]] || return 0
+  [[ -d "$source" ]] || die "BRANCHBOX_LOCAL_VM_INJECT_DIR is not a directory: $source"
+  guest "$id" sudo install -d -m 0700 -o "$SSH_USER" -g "$SSH_USER" /run/branchbox/credentials
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  rsh=$(rsync_shell "$id")
+  rsync -a -s --delete --chmod=F600,D700 -e "$rsh" \
+    "$source/" "${SSH_USER}@${guest_ip}:/run/branchbox/credentials/"
+}
+
+sha256_file() {
+  sha256sum "$1" | awk '{print $1}'
+}
+
+validate_manifest() {
+  local manifest="$IMAGE_ROOT/manifest.json" kernel="$IMAGE_ROOT/vmlinux" rootfs="$IMAGE_ROOT/rootfs.ext4"
+  [[ -f "$manifest" && -f "$kernel" && -f "$rootfs" ]] || die \
+    "approved kernel/rootfs artifacts are missing under $IMAGE_ROOT; run scripts/local-vm/build-image.sh"
+  local expected_kernel expected_rootfs actual_kernel actual_rootfs
+  expected_kernel=$(jq -er '.kernel_sha256' "$manifest")
+  expected_rootfs=$(jq -er '.rootfs_sha256' "$manifest")
+  actual_kernel=$(sha256_file "$kernel")
+  actual_rootfs=$(sha256_file "$rootfs")
+  [[ "$actual_kernel" == "$expected_kernel" ]] || die "kernel digest does not match manifest"
+  [[ "$actual_rootfs" == "$expected_rootfs" ]] || die "rootfs digest does not match manifest"
+}
+
+cmd_validate() {
+  [[ "$(uname -s)" == Linux ]] || die "local-vm requires a Linux host"
+  [[ "$(uname -m)" == x86_64 ]] || die "local-vm phase 1 supports x86_64 hosts only"
+  [[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is unavailable or inaccessible"
+  [[ -n "$FIRECRACKER_BIN" && -x "$FIRECRACKER_BIN" ]] || die "firecracker is not installed"
+  [[ -n "$JAILER_BIN" && -x "$JAILER_BIN" ]] || die "jailer is not installed"
+  require_cmd ip
+  require_cmd iptables
+  require_cmd jq
+  require_cmd rsync
+  require_cmd sha256sum
+  require_cmd socat
+  require_cmd ssh
+  require_cmd ssh-keygen
+  require_cmd sudo
+  require_cmd sysctl
+  sudo -n true >/dev/null 2>&1 || die "passwordless sudo is required for jailer and TAP/NAT lifecycle"
+  [[ "$(sysctl -n net.ipv4.ip_forward)" == 1 ]] || die \
+    "IPv4 forwarding is disabled; set net.ipv4.ip_forward=1 before using local-vm"
+  validate_manifest
+  "$FIRECRACKER_BIN" --version
+  "$JAILER_BIN" --version
+}
+
+allocate_network() {
+  local id=$1 octet candidate
+  octet=$((16#$(printf '%s' "$id" | sha256sum | cut -c1-2) % 240 + 10))
+  for _ in $(seq 1 240); do
+    candidate="172.30.${octet}"
+    if ! ip route show | grep -Fq "${candidate}.0/30"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+    octet=$((octet % 249 + 1))
+  done
+  die "could not allocate a collision-free local-vm subnet"
+}
+
+resolve_ports() {
+  python3 - "$1" <<'PY'
+import json, socket, sys
+resolved = []
+for item in json.loads(sys.argv[1]):
+    preferred = int(item["host"])
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", preferred))
+    except OSError:
+        sock.bind(("127.0.0.1", 0))
+    resolved.append({"host": sock.getsockname()[1], "runtime": int(item["runtime"])})
+    sock.close()
+print(json.dumps(resolved, separators=(",", ":")))
+PY
+}
+
+inject_runtime_key() {
+  local rootfs=$1 public_key=$2 mount_dir
+  mount_dir=$(mktemp -d)
+  sudo -n mount -o loop "$rootfs" "$mount_dir"
+  sudo -n install -d -m 700 -o 1000 -g 1000 "$mount_dir/home/$SSH_USER/.ssh"
+  sudo -n install -m 600 -o 1000 -g 1000 "$public_key" \
+    "$mount_dir/home/$SSH_USER/.ssh/authorized_keys"
+  sudo -n umount "$mount_dir"
+  rmdir "$mount_dir"
+}
+
+setup_network() {
+  local tap=$1 host_ip=$2
+  sudo -n ip tuntap add dev "$tap" mode tap user "$(id -u)"
+  sudo -n ip addr add "${host_ip}/30" dev "$tap"
+  sudo -n ip link set "$tap" up
+  sudo -n iptables -w -A FORWARD -i "$tap" -d 10.0.0.0/8 -j REJECT
+  sudo -n iptables -w -A FORWARD -i "$tap" -d 172.16.0.0/12 ! -d "${host_ip%.*}.0/30" -j REJECT
+  sudo -n iptables -w -A FORWARD -i "$tap" -d 192.168.0.0/16 -j REJECT
+  sudo -n iptables -w -A FORWARD -i "$tap" -d 169.254.0.0/16 -j REJECT
+  sudo -n iptables -w -A FORWARD -i "$tap" -j ACCEPT
+  sudo -n iptables -w -A FORWARD -o "$tap" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo -n iptables -w -A INPUT -i "$tap" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo -n iptables -w -A INPUT -i "$tap" -j REJECT
+  sudo -n iptables -w -t nat -A POSTROUTING -s "${host_ip%.*}.0/30" ! -d "${host_ip%.*}.0/30" -j MASQUERADE
+}
+
+teardown_network() {
+  local tap=$1 host_ip=$2 subnet="${host_ip%.*}.0/30"
+  sudo -n iptables -w -t nat -D POSTROUTING -s "$subnet" ! -d "$subnet" -j MASQUERADE 2>/dev/null || true
+  sudo -n iptables -w -D INPUT -i "$tap" -j REJECT 2>/dev/null || true
+  sudo -n iptables -w -D INPUT -i "$tap" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -o "$tap" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -i "$tap" -j ACCEPT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -i "$tap" -d 169.254.0.0/16 -j REJECT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -i "$tap" -d 192.168.0.0/16 -j REJECT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -i "$tap" -d 172.16.0.0/12 ! -d "$subnet" -j REJECT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -i "$tap" -d 10.0.0.0/8 -j REJECT 2>/dev/null || true
+  sudo -n ip link delete "$tap" 2>/dev/null || true
+}
+
+wait_for_guest() {
+  local id=$1 dir guest_ip
+  dir=$(runtime_dir "$id")
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  ssh-keygen -R "$guest_ip" -f "$dir/known_hosts" >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do
+    ssh-keyscan -T 2 -H "$guest_ip" >"$dir/known_hosts.tmp" 2>/dev/null || true
+    if [[ -s "$dir/known_hosts.tmp" ]]; then
+      mv "$dir/known_hosts.tmp" "$dir/known_hosts"
+      if guest "$id" true >/dev/null 2>&1; then return; fi
+    fi
+    sleep 1
+  done
+  die "Firecracker guest $id did not become SSH-ready"
+}
+
+cmd_prepare() {
+  local requested_name=$1 workspace_root=$2 worktree=$3 ports_json=$4
+  cmd_validate >/dev/null
+  local id dir network host_ip guest_ip tap jail rootfs kernel monitor kernel_sha rootfs_sha ports
+  id=$(runtime_id "$requested_name")
+  dir=$(runtime_dir "$id")
+  if [[ -f "$dir/metadata.json" ]] && cmd_exists "$id"; then
+    cat "$dir/prepare.json"
+    return
+  fi
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  ssh-keygen -q -t ed25519 -N '' -f "$dir/id_ed25519"
+  network=$(allocate_network "$id")
+  host_ip="${network}.1"
+  guest_ip="${network}.2"
+  tap="bb$(printf '%s' "$id" | sha256sum | cut -c1-10)"
+  ports=$(resolve_ports "$ports_json")
+  kernel_sha=$(jq -er '.kernel_sha256' "$IMAGE_ROOT/manifest.json")
+  rootfs_sha=$(jq -er '.rootfs_sha256' "$IMAGE_ROOT/manifest.json")
+  monitor=$($FIRECRACKER_BIN --version | head -n1)
+  jq -n --arg id "$id" --arg workspace_root "$workspace_root" --arg worktree "$worktree" \
+    --arg host_ip "$host_ip" --arg guest_ip "$guest_ip" --arg tap "$tap" --argjson ports "$ports" \
+    '{runtime_id:$id,workspace_root:$workspace_root,worktree:$worktree,host_ip:$host_ip,guest_ip:$guest_ip,tap:$tap,published_ports:$ports}' \
+    >"$dir/metadata.json"
+  PREPARE_CLEANUP_ID=$id
+  trap 'status=$?; trap - ERR; cmd_destroy "$PREPARE_CLEANUP_ID" >/dev/null 2>&1 || true; exit "$status"' ERR
+  jq -n --arg runtime_id "$id" --arg monitor "$monitor" --arg kernel_sha256 "$kernel_sha" \
+    --arg rootfs_sha256 "$rootfs_sha" --argjson published_ports "$ports" \
+    '{runtime_id:$runtime_id,published_ports:$published_ports,monitor:$monitor,kernel_sha256:$kernel_sha256,rootfs_sha256:$rootfs_sha256}' \
+    >"$dir/prepare.json"
+  rootfs="$dir/rootfs.ext4"
+  cp --reflink=auto --sparse=always "$IMAGE_ROOT/rootfs.ext4" "$rootfs"
+  inject_runtime_key "$rootfs" "$dir/id_ed25519.pub"
+  setup_network "$tap" "$host_ip"
+  jail="$JAIL_ROOT/firecracker/$id/root"
+  sudo -n install -d -m 700 "$jail"
+  sudo -n install -m 400 "$IMAGE_ROOT/vmlinux" "$jail/vmlinux"
+  sudo -n install -m 600 "$rootfs" "$jail/rootfs.ext4"
+  sudo -n tee "$jail/config.json" >/dev/null <<JSON
+{"boot-source":{"kernel_image_path":"/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off nomodules rw root=/dev/vda ip=${guest_ip}::${host_ip}:255.255.255.252::eth0:off"},"drives":[{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":false}],"machine-config":{"vcpu_count":${BRANCHBOX_LOCAL_VM_VCPUS:-2},"mem_size_mib":${BRANCHBOX_LOCAL_VM_MEMORY_MIB:-4096},"smt":false},"network-interfaces":[{"iface_id":"eth0","guest_mac":"06:00:ac:1e:$(printf '%02x' "${network##*.}"):02","host_dev_name":"${tap}"}]}
+JSON
+  sudo -n chmod 600 "$jail/config.json"
+  sudo -n chown "$(id -u):$(id -g)" "$jail/vmlinux" "$jail/rootfs.ext4" "$jail/config.json"
+  sudo -n "$JAILER_BIN" --id "$id" --exec-file "$FIRECRACKER_BIN" --uid "$(id -u)" \
+    --gid "$(id -g)" --cgroup-version 2 --chroot-base-dir "$JAIL_ROOT" --daemonize -- \
+    --api-sock run/firecracker.socket --config-file config.json
+  wait_for_guest "$id"
+  sync_to_guest "$id" "$workspace_root"
+  inject_credentials "$id"
+  trap - ERR
+  PREPARE_CLEANUP_ID=''
+  cat "$dir/prepare.json"
+}
+
+cmd_exists() {
+  local id=$1 dir pid_file
+  dir=$(runtime_dir "$id")
+  [[ -f "$dir/metadata.json" ]] || return 1
+  pid_file="$JAIL_ROOT/firecracker/$id/root/run/firecracker.pid"
+  [[ -r "$pid_file" ]] || return 1
+  kill -0 "$(cat "$pid_file")" 2>/dev/null
+}
+
+devcontainer_command() {
+  cat <<'SH'
+if command -v devcontainer >/dev/null 2>&1; then
+  exec devcontainer "$@"
+elif command -v npx >/dev/null 2>&1; then
+  exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli "$@"
+else
+  echo 'BranchBox local-vm guest image requires devcontainer or npx' >&2
+  exit 127
+fi
+SH
+}
+
+start_port_proxies() {
+  local id=$1 container_id=$2 dir guest_ip host_port runtime_port pid_file
+  dir=$(runtime_dir "$id")
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  mkdir -p "$dir/proxies"
+  while IFS=$'\t' read -r host_port runtime_port; do
+    guest "$id" bash -s -- "$container_id" "$runtime_port" <<'SH'
+set -euo pipefail
+container_id=$1
+runtime_port=$2
+proxy_name="branchbox-port-proxy-${runtime_port}"
+network_id=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id")
+target_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")
+docker rm -f "$proxy_name" >/dev/null 2>&1 || true
+for candidate_id in $(docker ps --filter "network=${network_id}" -q); do
+  exposed_ports=$(docker inspect -f '{{json .Config.ExposedPorts}}' "$candidate_id")
+  case "$exposed_ports" in
+    *\"${runtime_port}/tcp\"*)
+      target_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$candidate_id")
+      break
+      ;;
+  esac
+done
+exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" \
+  -p "${runtime_port}:${runtime_port}" alpine/socat -dd \
+  "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_ip}:${runtime_port}"
+SH
+    pid_file="$dir/proxies/${host_port}.pid"
+    if [[ -f "$pid_file" ]]; then kill "$(cat "$pid_file")" 2>/dev/null || true; fi
+    nohup socat "TCP-LISTEN:${host_port},bind=127.0.0.1,fork,reuseaddr" \
+      "TCP:${guest_ip}:${runtime_port}" >"$dir/proxies/${host_port}.log" 2>&1 &
+    printf '%s\n' "$!" >"$pid_file"
+  done < <(jq -r '.published_ports[] | [.host,.runtime] | @tsv' "$dir/metadata.json")
+}
+
+cmd_start() {
+  local id=$1 worktree=$2 workspace_root output container_id
+  cmd_exists "$id" || die "runtime '$id' does not exist"
+  workspace_root=$(metadata_value "$id" '.workspace_root')
+  sync_to_guest "$id" "$workspace_root"
+  inject_credentials "$id"
+  output=$(guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer up \
+    --workspace-folder "$worktree" --log-format json)
+  printf '%s\n' "$output"
+  container_id=$(printf '%s\n' "$output" | jq -r 'select(.containerId != null) | .containerId' | tail -n1)
+  [[ -n "$container_id" ]] || die "devcontainer startup did not return a container ID"
+  start_port_proxies "$id" "$container_id"
+}
+
+cmd_probe() {
+  local id=$1 worktree=$2
+  cmd_exists "$id" || return 1
+  guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
+    --workspace-folder "$worktree" true >/dev/null
+}
+
+cmd_exec() {
+  local id=$1 worktree=$2
+  shift 2
+  [[ "${1:-}" == -- ]] || die "exec requires -- before the command"
+  shift
+  [[ $# -gt 0 ]] || die "exec command cannot be empty"
+  local workspace_root status=0
+  workspace_root=$(metadata_value "$id" '.workspace_root')
+  sync_to_guest "$id" "$workspace_root"
+  guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
+    --workspace-folder "$worktree" /bin/sh -lc \
+    'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
+    branchbox-devcontainer-shell "$@" || status=$?
+  sync_from_guest "$id" "$workspace_root"
+  return "$status"
+}
+
+cmd_exec_interactive() {
+  local id=$1 worktree=$2
+  shift 2
+  [[ "${1:-}" == -- ]] || die "exec-interactive requires -- before the command"
+  shift
+  [[ $# -gt 0 ]] || die "interactive command cannot be empty"
+  local workspace_root guest_ip status=0
+  workspace_root=$(metadata_value "$id" '.workspace_root')
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  sync_to_guest "$id" "$workspace_root"
+  local -a args=()
+  while IFS= read -r -d '' arg; do args+=("$arg"); done < <(ssh_args "$id")
+  ssh -tt "${args[@]}" -- bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
+    --workspace-folder "$worktree" /bin/sh -lc \
+    'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
+    branchbox-devcontainer-shell "$@" || status=$?
+  sync_from_guest "$id" "$workspace_root"
+  return "$status"
+}
+
+cmd_destroy() {
+  local id=$1 dir workspace_root tap host_ip pid_file
+  dir=$(runtime_dir "$id")
+  [[ -d "$dir" ]] || return 0
+  workspace_root=$(metadata_value "$id" '.workspace_root' 2>/dev/null || true)
+  tap=$(metadata_value "$id" '.tap' 2>/dev/null || true)
+  host_ip=$(metadata_value "$id" '.host_ip' 2>/dev/null || true)
+  if cmd_exists "$id" && [[ -n "$workspace_root" && -d "$workspace_root" ]]; then
+    sync_from_guest "$id" "$workspace_root" || true
+  fi
+  if [[ -d "$dir/proxies" ]]; then
+    while IFS= read -r pid_file; do kill "$(cat "$pid_file")" 2>/dev/null || true; done \
+      < <(find "$dir/proxies" -type f -name '*.pid')
+  fi
+  pid_file="$JAIL_ROOT/firecracker/$id/root/run/firecracker.pid"
+  if [[ -r "$pid_file" ]]; then sudo -n kill "$(cat "$pid_file")" 2>/dev/null || true; fi
+  [[ -n "$tap" && -n "$host_ip" ]] && teardown_network "$tap" "$host_ip"
+  sudo -n find "$JAIL_ROOT/firecracker/$id" -depth -delete 2>/dev/null || true
+  find "$dir" -depth -delete
+}
+
+case "${1:-}" in
+  validate) shift; cmd_validate "$@" ;;
+  prepare) shift; [[ $# -eq 4 ]] || die "prepare requires name, workspace root, worktree, and ports JSON"; cmd_prepare "$@" ;;
+  exists) shift; [[ $# -eq 1 ]] || die "exists requires runtime ID"; cmd_exists "$@" ;;
+  start) shift; [[ $# -eq 2 ]] || die "start requires runtime ID and worktree"; cmd_start "$@" ;;
+  probe) shift; [[ $# -eq 2 ]] || die "probe requires runtime ID and worktree"; cmd_probe "$@" ;;
+  exec) shift; cmd_exec "$@" ;;
+  exec-interactive) shift; cmd_exec_interactive "$@" ;;
+  destroy) shift; [[ $# -eq 1 ]] || die "destroy requires runtime ID"; cmd_destroy "$@" ;;
+  *) die "expected validate, prepare, exists, start, probe, exec, exec-interactive, or destroy" ;;
+esac

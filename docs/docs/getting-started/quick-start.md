@@ -140,6 +140,18 @@ See
 **[How It Works](../how-it-works.md#runtime-providers)** for provider configuration and lifecycle
 details.
 
+On an x86_64 Linux/KVM execution node, use the account-free Firecracker provider after installing
+its pinned guest image:
+
+```bash
+branchbox feature start "Isolated local agent task" --runtime local-vm
+branchbox feature exec isolated-local-agent-task -- codex
+```
+
+Unlike SBX, `local-vm` needs no Docker account. It requires `/dev/kvm`, Firecracker/jailer, and the
+digest-verified image described in
+**[How It Works](../how-it-works.md#account-free-firecracker-local-vm)**.
+
 ## See All Your Features
 
 ```bash

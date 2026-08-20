@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SBX failed-start diagnostics can retain the sandbox and nested build cache with
   `--keep-runtime-on-failure`, retry it with `--reuse-runtime`, report retained/degraded/orphaned
   health in `feature list`, and remove retained runtimes through normal teardown/prune lifecycle.
+- The account-free `local-vm` provider now runs repository devcontainers and Compose stacks inside
+  fresh jailed Firecracker VMs on x86_64 Linux/KVM, including captured/interactive execution,
+  collision-safe ports and TAP networks, explicit scoped credential injection, digest-addressed
+  guest artifacts, workspace synchronization, restricted host/private-network access, and
+  deterministic teardown.
 
 ### Fixed
 

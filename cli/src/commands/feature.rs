@@ -121,7 +121,7 @@ pub struct FeatureStartArgs {
     #[arg(long = "no-summary")]
     pub no_summary: bool,
 
-    /// Workspace isolation runtime (container, sbx, or reserved local-vm)
+    /// Workspace isolation runtime (container, sbx, or Linux/KVM local-vm)
     #[arg(long, value_name = "PROVIDER")]
     pub runtime: Option<RuntimeProviderKind>,
 }

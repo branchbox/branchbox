@@ -199,6 +199,9 @@ branchbox feature start "Add OAuth" --runtime container
 # Experimental Docker Sandboxes microVM boundary
 branchbox feature start "Add OAuth" --runtime sbx
 
+# Account-free Firecracker boundary on x86_64 Linux/KVM hosts
+branchbox feature start "Add OAuth" --runtime local-vm
+
 # Run a coding agent inside the active feature's recorded runtime
 branchbox feature exec add-oauth -- codex
 ```
@@ -213,8 +216,16 @@ paying the sandbox/devcontainer build cost. SBX exec reconciles a stopped devcon
 its login-shell toolchain environment. Optional incompatible sidecars can be excluded with
 `runtime.sbx.run_services`; required Compose dependencies still start. Failed sandboxes can be kept
 with `--keep-runtime-on-failure` and retried with `--reuse-runtime`. If an older BranchBox version may have logged a credential during
-a failed SBX startup, rotate that credential with its provider. `local-vm` is reserved for the
-planned account-free Colima/Lima backend.
+a failed SBX startup, rotate that credential with its provider.
+
+The `local-vm` provider directly creates a fresh jailed Firecracker VM on x86_64 Linux/KVM hosts,
+then runs Docker, devcontainers, Compose dependencies, and coding tools inside the guest. It uses
+digest-verified kernel/rootfs artifacts, copies back workspace changes after commands, allocates
+collision-safe TAP networks and host ports, blocks guest-initiated access to host/private/metadata
+networks, and deletes its VM, TAP, proxies, key, and writable rootfs during teardown. It is
+account-free and never mounts the host Docker socket or persistent human credential directories.
+See the local-vm setup and image build instructions in
+[How It Works](https://branchbox.dev/docs/how-it-works#account-free-firecracker-local-vm).
 See [How It Works](https://branchbox.dev/docs/how-it-works) for runtime topology,
 configuration, port publication, and lifecycle details.
 

@@ -224,7 +224,7 @@ Options:
       --json                           Emit JSON summary payload instead of human-readable text
       --allow-container                Allow running feature start from inside a containerized environment
       --no-summary                     Suppress summary output (text mode only)
-      --runtime <PROVIDER>             Workspace isolation runtime (container, sbx, or reserved local-vm)
+      --runtime <PROVIDER>             Workspace isolation runtime (container, sbx, or Linux/KVM local-vm)
   -h, --help                           Print help
 ```
 

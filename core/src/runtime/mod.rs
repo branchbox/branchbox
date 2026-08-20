@@ -15,6 +15,9 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+mod local_vm;
+use local_vm::LocalVmRuntimeProvider;
+
 /// Runtime implementations selectable for a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -63,6 +66,17 @@ pub struct RuntimeMetadata {
     pub runtime_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published_ports: Vec<RuntimePort>,
+    /// Immutable runtime artifact/version evidence supplied by VM-backed providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<RuntimeVersionMetadata>,
+}
+
+/// Version and digest evidence for a VM runtime boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeVersionMetadata {
+    pub monitor: String,
+    pub kernel_sha256: String,
+    pub rootfs_sha256: String,
 }
 
 impl Default for RuntimeMetadata {
@@ -71,6 +85,7 @@ impl Default for RuntimeMetadata {
             provider: RuntimeProviderKind::Container,
             runtime_id: None,
             published_ports: Vec::new(),
+            version: None,
         }
     }
 }
@@ -172,9 +187,7 @@ pub fn provider(kind: RuntimeProviderKind) -> Result<Box<dyn RuntimeProvider>> {
     match kind {
         RuntimeProviderKind::Container => Ok(Box::new(ContainerRuntimeProvider)),
         RuntimeProviderKind::Sbx => Ok(Box::new(SbxRuntimeProvider::new()?)),
-        RuntimeProviderKind::LocalVm => Err(Error::validation(
-            "Runtime provider 'local-vm' is reserved but not implemented yet; use 'container' or experimental 'sbx'",
-        )),
+        RuntimeProviderKind::LocalVm => Ok(Box::new(LocalVmRuntimeProvider::new()?)),
     }
 }
 
@@ -759,6 +772,7 @@ impl RuntimeProvider for SbxRuntimeProvider {
             provider: self.kind(),
             runtime_id: Some(sandbox_name),
             published_ports,
+            version: None,
         })
     }
 
@@ -984,6 +998,7 @@ exit 42
             provider: RuntimeProviderKind::Sbx,
             runtime_id: Some("branchbox-redaction-test".to_string()),
             published_ports: Vec::new(),
+            version: None,
         };
 
         let error = provider
