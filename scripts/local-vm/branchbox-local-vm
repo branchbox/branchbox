@@ -91,6 +91,30 @@ sync_from_guest() {
     "${SSH_USER}@${guest_ip}:$workspace/" "$workspace/"
 }
 
+sync_git_from_guest() {
+  local id=$1 repo_root=$2 guest_ip rsh
+  guest_ip=$(metadata_value "$id" '.guest_ip')
+  rsh=$(rsync_shell "$id")
+  rsync -a -s -e "$rsh" \
+    "${SSH_USER}@${guest_ip}:$repo_root/.git/" "$repo_root/.git/"
+}
+
+sync_runtime_to_guest() {
+  local id=$1 repo_root worktree
+  repo_root=$(metadata_value "$id" '.repo_root')
+  worktree=$(metadata_value "$id" '.worktree')
+  sync_to_guest "$id" "$repo_root"
+  sync_to_guest "$id" "$worktree"
+}
+
+sync_runtime_from_guest() {
+  local id=$1 repo_root worktree
+  repo_root=$(metadata_value "$id" '.repo_root')
+  worktree=$(metadata_value "$id" '.worktree')
+  sync_git_from_guest "$id" "$repo_root"
+  sync_from_guest "$id" "$worktree"
+}
+
 inject_credentials() {
   local id=$1 source=${BRANCHBOX_LOCAL_VM_INJECT_DIR:-} guest_ip rsh
   [[ -n "$source" ]] || return 0
@@ -129,6 +153,7 @@ cmd_validate() {
   require_cmd iptables
   require_cmd jq
   require_cmd curl
+  require_cmd git
   require_cmd rsync
   require_cmd sha256sum
   require_cmd socat
@@ -276,7 +301,7 @@ wait_for_guest() {
 cmd_prepare() {
   local requested_name=$1 workspace_root=$2 worktree=$3 ports_json=$4
   cmd_validate >/dev/null
-  local id dir network host_ip guest_ip tap jail rootfs kernel monitor kernel_sha rootfs_sha ports
+  local id dir network host_ip guest_ip tap jail rootfs kernel monitor kernel_sha rootfs_sha ports common_git repo_root
   id=$(runtime_id "$requested_name")
   dir=$(runtime_dir "$id")
   if [[ -f "$dir/metadata.json" ]] && cmd_exists "$id"; then
@@ -294,9 +319,11 @@ cmd_prepare() {
   kernel_sha=$(jq -er '.kernel_sha256' "$IMAGE_ROOT/manifest.json")
   rootfs_sha=$(jq -er '.rootfs_sha256' "$IMAGE_ROOT/manifest.json")
   monitor=$($FIRECRACKER_BIN --version | head -n1)
-  jq -n --arg id "$id" --arg workspace_root "$workspace_root" --arg worktree "$worktree" \
+  common_git=$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)
+  repo_root=$(dirname "$common_git")
+  jq -n --arg id "$id" --arg workspace_root "$workspace_root" --arg repo_root "$repo_root" --arg worktree "$worktree" \
     --arg host_ip "$host_ip" --arg guest_ip "$guest_ip" --arg tap "$tap" --argjson ports "$ports" \
-    '{runtime_id:$id,workspace_root:$workspace_root,worktree:$worktree,host_ip:$host_ip,guest_ip:$guest_ip,tap:$tap,published_ports:$ports}' \
+    '{runtime_id:$id,workspace_root:$workspace_root,repo_root:$repo_root,worktree:$worktree,host_ip:$host_ip,guest_ip:$guest_ip,tap:$tap,published_ports:$ports}' \
     >"$dir/metadata.json"
   PREPARE_CLEANUP_ID=$id
   trap 'status=$?; trap - EXIT; cmd_destroy "$PREPARE_CLEANUP_ID" >/dev/null 2>&1 || true; exit "$status"' EXIT
@@ -327,7 +354,7 @@ JSON
     --api-sock run/firecracker.socket --log-path run/firecracker.log --level Info
   start_microvm "$id" "$jail"
   wait_for_guest "$id"
-  sync_to_guest "$id" "$workspace_root"
+  sync_runtime_to_guest "$id"
   inject_credentials "$id"
   PREPARE_CLEANUP_ID=''
   trap - EXIT
@@ -392,13 +419,11 @@ SH
 }
 
 cmd_start() {
-  local id=$1 worktree=$2 workspace_root common_git repo_root repo_mount output container_id
+  local id=$1 worktree=$2 repo_root repo_mount output container_id
   cmd_exists "$id" || die "runtime '$id' does not exist"
-  workspace_root=$(metadata_value "$id" '.workspace_root')
-  sync_to_guest "$id" "$workspace_root"
+  repo_root=$(metadata_value "$id" '.repo_root')
+  sync_runtime_to_guest "$id"
   inject_credentials "$id"
-  common_git=$(guest "$id" git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)
-  repo_root=$(dirname "$common_git")
   repo_mount="type=bind,source=$repo_root,target=/workspaces/$(basename "$repo_root")"
   output=$(guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer up \
     --workspace-folder "$worktree" \
@@ -423,14 +448,13 @@ cmd_exec() {
   [[ "${1:-}" == -- ]] || die "exec requires -- before the command"
   shift
   [[ $# -gt 0 ]] || die "exec command cannot be empty"
-  local workspace_root status=0
-  workspace_root=$(metadata_value "$id" '.workspace_root')
-  sync_to_guest "$id" "$workspace_root"
+  local status=0
+  sync_runtime_to_guest "$id"
   guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
     --workspace-folder "$worktree" /bin/sh -lc \
     'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
     branchbox-devcontainer-shell "$@" || status=$?
-  sync_from_guest "$id" "$workspace_root"
+  sync_runtime_from_guest "$id"
   return "$status"
 }
 
@@ -440,10 +464,9 @@ cmd_exec_interactive() {
   [[ "${1:-}" == -- ]] || die "exec-interactive requires -- before the command"
   shift
   [[ $# -gt 0 ]] || die "interactive command cannot be empty"
-  local workspace_root guest_ip command status=0
-  workspace_root=$(metadata_value "$id" '.workspace_root')
+  local guest_ip command status=0
   guest_ip=$(metadata_value "$id" '.guest_ip')
-  sync_to_guest "$id" "$workspace_root"
+  sync_runtime_to_guest "$id"
   local -a args=()
   while IFS= read -r -d '' arg; do args+=("$arg"); done < <(ssh_args "$id")
   printf -v command '%q ' bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
@@ -451,19 +474,19 @@ cmd_exec_interactive() {
     'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
     branchbox-devcontainer-shell "$@"
   ssh -tt "${args[@]}" -- "$command" || status=$?
-  sync_from_guest "$id" "$workspace_root"
+  sync_runtime_from_guest "$id"
   return "$status"
 }
 
 cmd_destroy() {
-  local id=$1 dir workspace_root tap host_ip pid_file short_socket
+  local id=$1 dir worktree tap host_ip pid_file short_socket
   dir=$(runtime_dir "$id")
   [[ -d "$dir" ]] || return 0
-  workspace_root=$(metadata_value "$id" '.workspace_root' 2>/dev/null || true)
+  worktree=$(metadata_value "$id" '.worktree' 2>/dev/null || true)
   tap=$(metadata_value "$id" '.tap' 2>/dev/null || true)
   host_ip=$(metadata_value "$id" '.host_ip' 2>/dev/null || true)
-  if cmd_exists "$id" && [[ -n "$workspace_root" && -d "$workspace_root" ]]; then
-    sync_from_guest "$id" "$workspace_root" || true
+  if cmd_exists "$id" && [[ -n "$worktree" && -d "$worktree" ]]; then
+    sync_runtime_from_guest "$id" || true
   fi
   if [[ -d "$dir/proxies" ]]; then
     while IFS= read -r pid_file; do kill "$(cat "$pid_file")" 2>/dev/null || true; done \

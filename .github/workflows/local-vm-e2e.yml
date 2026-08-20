@@ -54,6 +54,7 @@ jobs:
         run: |
           state_dir=$(mktemp -d)
           workspace=$(mktemp -d)
+          git -C "$workspace" init -b main
           if BRANCHBOX_LOCAL_VM_STATE_DIR="$state_dir" \
             BRANCHBOX_LOCAL_VM_TEST_FAIL_AFTER_NETWORK=1 \
             scripts/local-vm/branchbox-local-vm prepare cleanup-probe "$workspace" "$workspace" '[]'; then
