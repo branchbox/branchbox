@@ -205,7 +205,11 @@ branchbox feature exec add-oauth -- codex
 
 The optional `sbx` provider requires an installed and authenticated Docker Sandboxes CLI. SBX
 authentication affects only explicitly selected SBX workspaces; normal BranchBox workflows do not
-require a Docker account. `local-vm` is reserved for the planned account-free Colima/Lima backend.
+require a Docker account. BranchBox filters rendered Compose configuration and environment values
+from SBX startup errors; inspect detailed failures inside the sandbox instead of copying expanded
+configuration into shared logs. If an older BranchBox version may have logged a credential during
+a failed SBX startup, rotate that credential with its provider. `local-vm` is reserved for the
+planned account-free Colima/Lima backend.
 See [How It Works](https://branchbox.dev/docs/how-it-works) for runtime topology,
 configuration, port publication, and lifecycle details.
 

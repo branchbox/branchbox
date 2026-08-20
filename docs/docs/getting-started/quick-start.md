@@ -128,7 +128,12 @@ branchbox feature exec isolated-agent-task -- codex
 ```
 
 BranchBox records the sandbox identity and actual host-port mappings for the feature. An SBX login
-problem affects only `--runtime sbx`; it does not block the default workflow. See
+problem affects only `--runtime sbx`; it does not block the default workflow. Startup errors retain
+an actionable error tail and exit status but omit rendered Compose configuration and redact expanded
+environment values. Inspect the sandbox-local devcontainer logs when more detail is needed. If you
+suspect an older BranchBox version copied a secret into terminal, agent, CI, or telemetry logs during
+a failed startup, rotate the affected credential with its provider and remove the durable log copy.
+See
 **[How It Works](../how-it-works.md#runtime-providers)** for provider configuration and lifecycle
 details.
 

@@ -142,6 +142,16 @@ case "$1" in
   exec)
     case "$*" in
       *"devcontainer up"*)
+        if [ "${FAKE_SBX_START_FAILURE:-}" = "1" ]; then
+          cat >&2 <<'EOF'
+services:
+  app:
+    environment:
+      ARBITRARY_CREDENTIAL: branchbox-cli-sentinel-secret-83d1
+[2026-08-20T00:00:00Z] Error: docker compose up failed because branchbox-cli-sentinel-secret-83d1 was rejected
+EOF
+          exit 42
+        fi
         printf '%s\n' '{"outcome":"success","containerId":"fake-container-id"}'
         ;;
       *)
@@ -857,6 +867,45 @@ fn sbx_runtime_full_cli_lifecycle() {
     assert!(calls.contains("branchbox-port-proxy fake-container-id 3000"));
     assert!(calls.contains("codex --version"));
     assert!(calls.contains("rm --force branchbox-"));
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_start_failure_never_exposes_compose_secrets_through_cli_json_mode() {
+    const SENTINEL: &str = "branchbox-cli-sentinel-secret-83d1";
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let repo_path = test_repo.path();
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    let output = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_START_FAILURE" => "1",
+    )
+    .args([
+        "feature",
+        "start",
+        "sbx-redaction",
+        "--runtime",
+        "sbx",
+        "--json",
+    ])
+    .output()
+    .expect("run failing SBX feature start");
+
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!combined.contains(SENTINEL), "secret leaked: {combined}");
+    assert!(!combined.contains("ARBITRARY_CREDENTIAL:"));
+    assert!(combined.contains("exit status 42"));
+    assert!(combined.contains("docker compose up failed"));
 }
 
 #[test]

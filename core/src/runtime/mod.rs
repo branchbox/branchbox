@@ -6,12 +6,14 @@
 //! that environment and its Docker/Compose workloads execute.
 
 use crate::{Error, Result};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 /// Runtime implementations selectable for a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -234,6 +236,8 @@ struct SbxRuntimeProvider {
 }
 
 impl SbxRuntimeProvider {
+    const MAX_FAILURE_DETAIL_LINES: usize = 12;
+    const MAX_FAILURE_DETAIL_BYTES: usize = 2_048;
     const DEVCONTAINER_EXEC: &'static str = "if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
     const PORT_PROXY_BOOTSTRAP: &'static str = r#"set -eu
 container_id="$1"
@@ -433,6 +437,154 @@ exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$net
             })
     }
 
+    fn devcontainer_failure_detail(output: &Output) -> String {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let environment_values = Self::expanded_environment_values(&stderr);
+        let mut actionable: Vec<&str> = stderr
+            .lines()
+            .filter(|line| Self::is_actionable_failure_line(line))
+            .rev()
+            .take(Self::MAX_FAILURE_DETAIL_LINES)
+            .collect();
+        actionable.reverse();
+
+        let mut detail = Self::redact_environment_assignments(&actionable.join("\n"));
+        for value in environment_values {
+            if !value.is_empty() {
+                detail = detail.replace(&value, "[REDACTED]");
+            }
+        }
+        if detail.len() > Self::MAX_FAILURE_DETAIL_BYTES {
+            let mut start = detail.len() - Self::MAX_FAILURE_DETAIL_BYTES;
+            while !detail.is_char_boundary(start) {
+                start += 1;
+            }
+            detail = format!("…{}", &detail[start..]);
+        }
+
+        let status = output
+            .status
+            .code()
+            .map_or_else(|| "signal".to_string(), |code| code.to_string());
+        if detail.trim().is_empty() {
+            format!(
+                "devcontainer command failed with exit status {status}; inspect sandbox-local devcontainer logs for details"
+            )
+        } else {
+            format!("devcontainer command failed with exit status {status}: {detail}")
+        }
+    }
+
+    fn is_actionable_failure_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let normalized = trimmed.to_ascii_lowercase();
+        let has_failure_marker = [
+            "error",
+            "failed",
+            "failure",
+            "fatal",
+            "denied",
+            "invalid",
+            "not found",
+            "cannot",
+            "could not",
+            "exit code",
+            "exited with",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker));
+        let explicitly_actionable = [
+            "error",
+            "failed",
+            "failure",
+            "fatal",
+            "docker:",
+            "devcontainer",
+            "unable",
+        ]
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix));
+
+        has_failure_marker
+            && (trimmed.starts_with('[') || (line.len() == trimmed.len() && explicitly_actionable))
+    }
+
+    fn expanded_environment_values(stderr: &str) -> Vec<String> {
+        let mut values = Vec::new();
+        let mut environment_indent = None;
+        for line in stderr.lines() {
+            let indentation = line.len() - line.trim_start().len();
+            let trimmed = line.trim_start();
+            if environment_indent.is_some_and(|indent| !trimmed.is_empty() && indentation <= indent)
+            {
+                environment_indent = None;
+            }
+            if trimmed == "environment:" || trimmed.starts_with("\"environment\": {") {
+                environment_indent = Some(indentation);
+                continue;
+            }
+            let within_environment = environment_indent
+                .is_some_and(|indent| !trimmed.is_empty() && indentation > indent);
+
+            for (index, delimiter) in line.match_indices([':', '=']) {
+                let before = &line[..index];
+                let key = before
+                    .trim_end()
+                    .rsplit(|character: char| {
+                        character.is_ascii_whitespace() || matches!(character, ',' | '{' | '[')
+                    })
+                    .next()
+                    .unwrap_or_default()
+                    .trim_matches(['\'', '"']);
+                if key.is_empty()
+                    || !key
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                    || !key.chars().next().is_some_and(|character| {
+                        character.is_ascii_alphabetic() || character == '_'
+                    })
+                    || (delimiter != "=" && !within_environment)
+                {
+                    continue;
+                }
+
+                let remainder = line[index + delimiter.len()..].trim_start();
+                let value = if let Some(quoted) = remainder.strip_prefix('"') {
+                    quoted.split('"').next().unwrap_or_default()
+                } else if let Some(quoted) = remainder.strip_prefix('\'') {
+                    quoted.split('\'').next().unwrap_or_default()
+                } else if within_environment && delimiter == ":" {
+                    remainder.trim_end_matches([',', '}', ']'])
+                } else {
+                    remainder
+                        .split(|character: char| {
+                            character.is_ascii_whitespace() || matches!(character, ',' | '}' | ']')
+                        })
+                        .next()
+                        .unwrap_or_default()
+                };
+                if !value.is_empty() && !values.iter().any(|existing| existing == value) {
+                    values.push(value.to_string());
+                }
+            }
+        }
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        values
+    }
+
+    fn redact_environment_assignments(detail: &str) -> String {
+        static ENV_ASSIGNMENT: OnceLock<Regex> = OnceLock::new();
+        let pattern = ENV_ASSIGNMENT.get_or_init(|| {
+            Regex::new(
+                r#"(?P<prefix>["']?[A-Z_][A-Z0-9_]*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}\]]+)"#,
+            )
+            .expect("environment redaction regex must compile")
+        });
+        pattern
+            .replace_all(detail, "${prefix}[REDACTED]")
+            .into_owned()
+    }
+
     fn start_port_proxy(
         &self,
         runtime_id: &str,
@@ -554,7 +706,7 @@ impl RuntimeProvider for SbxRuntimeProvider {
         if !output.status.success() {
             return Err(Error::validation(format!(
                 "Docker Sandboxes could not start the devcontainer in '{runtime_id}': {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                Self::devcontainer_failure_detail(&output)
             )));
         }
         let container_id = Self::devcontainer_id(&output)?;
@@ -745,5 +897,55 @@ mod tests {
 
         assert_ne!(mappings[0].host, occupied_port);
         assert_eq!(mappings[0].runtime, 3000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sbx_devcontainer_startup_errors_do_not_expose_expanded_environment_values() {
+        const SENTINEL: &str = "branchbox-sentinel-secret-7f9c";
+        let script = format!(
+            r#"#!/bin/sh
+cat >&2 <<'EOF'
+services:
+  app:
+    environment:
+      arbitraryCredential: {SENTINEL}
+      TUNNEL_TOKEN: another-sensitive-value
+      ERROR_REPORTING_DSN: third-sensitive-value
+[2026-08-20T00:00:00Z] Error: docker compose up failed because {SENTINEL} was rejected; TUNNEL_TOKEN=another-sensitive-value
+EOF
+exit 42
+"#
+        );
+        let (_temp, provider) = fake_sbx(&script);
+        let workspace = tempfile::tempdir().unwrap();
+        let metadata = RuntimeMetadata {
+            provider: RuntimeProviderKind::Sbx,
+            runtime_id: Some("branchbox-redaction-test".to_string()),
+            published_ports: Vec::new(),
+        };
+
+        let error = provider
+            .start_environment(
+                &RuntimeContext {
+                    work_feature: "redaction-test",
+                    worktree_path: workspace.path(),
+                    runtime_name: "redaction-test",
+                    workspace_mount_path: workspace.path(),
+                    published_ports: &[],
+                },
+                &metadata,
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(!error.contains(SENTINEL), "secret leaked in error: {error}");
+        assert!(!error.contains("another-sensitive-value"));
+        assert!(!error.contains("third-sensitive-value"));
+        assert!(!error.contains("services:"));
+        assert!(!error.contains("arbitraryCredential:"));
+        assert!(!error.contains("ERROR_REPORTING_DSN:"));
+        assert!(error.contains("exit status 42"));
+        assert!(error.contains("docker compose up failed"));
     }
 }

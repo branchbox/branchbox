@@ -72,6 +72,12 @@ repository. If SBX is unavailable, only the explicitly selected SBX start fails;
 workflows remain account-free. `local-vm` is reserved for the future account-free microVM backend
 and currently returns a clear not-implemented error.
 
+SBX startup failures are sanitized at the runtime boundary shared by text, JSON, agent, CI, and
+telemetry callers. BranchBox drops rendered Compose configuration, redacts environment-shaped
+assignments and values, and returns a bounded actionable tail plus the exit status. Detailed output
+stays in the sandbox-local devcontainer logs. Rotate any credential that may have appeared in a log
+created by an older BranchBox version.
+
 Commands can be routed through the runtime recorded for an active feature. This is also how an
 SBX-backed coding agent is kept inside the sandbox boundary:
 
