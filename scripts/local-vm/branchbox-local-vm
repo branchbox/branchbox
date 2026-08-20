@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # BranchBox's account-free Linux/KVM Firecracker driver. This file is installed beside the
 # `branchbox` executable in release archives. It deliberately has no Docker host socket access;
@@ -184,7 +184,7 @@ setup_network() {
   sudo -n ip addr add "${host_ip}/30" dev "$tap"
   sudo -n ip link set "$tap" up
   sudo -n iptables -w -A FORWARD -i "$tap" -d 10.0.0.0/8 -j REJECT
-  sudo -n iptables -w -A FORWARD -i "$tap" -d 172.16.0.0/12 ! -d "${host_ip%.*}.0/30" -j REJECT
+  sudo -n iptables -w -A FORWARD -i "$tap" -d 172.16.0.0/12 -j REJECT
   sudo -n iptables -w -A FORWARD -i "$tap" -d 192.168.0.0/16 -j REJECT
   sudo -n iptables -w -A FORWARD -i "$tap" -d 169.254.0.0/16 -j REJECT
   sudo -n iptables -w -A FORWARD -i "$tap" -j ACCEPT
@@ -203,7 +203,7 @@ teardown_network() {
   sudo -n iptables -w -D FORWARD -i "$tap" -j ACCEPT 2>/dev/null || true
   sudo -n iptables -w -D FORWARD -i "$tap" -d 169.254.0.0/16 -j REJECT 2>/dev/null || true
   sudo -n iptables -w -D FORWARD -i "$tap" -d 192.168.0.0/16 -j REJECT 2>/dev/null || true
-  sudo -n iptables -w -D FORWARD -i "$tap" -d 172.16.0.0/12 ! -d "$subnet" -j REJECT 2>/dev/null || true
+  sudo -n iptables -w -D FORWARD -i "$tap" -d 172.16.0.0/12 -j REJECT 2>/dev/null || true
   sudo -n iptables -w -D FORWARD -i "$tap" -d 10.0.0.0/8 -j REJECT 2>/dev/null || true
   sudo -n ip link delete "$tap" 2>/dev/null || true
 }
@@ -250,7 +250,7 @@ cmd_prepare() {
     '{runtime_id:$id,workspace_root:$workspace_root,worktree:$worktree,host_ip:$host_ip,guest_ip:$guest_ip,tap:$tap,published_ports:$ports}' \
     >"$dir/metadata.json"
   PREPARE_CLEANUP_ID=$id
-  trap 'status=$?; trap - ERR; cmd_destroy "$PREPARE_CLEANUP_ID" >/dev/null 2>&1 || true; exit "$status"' ERR
+  trap 'status=$?; trap - EXIT; cmd_destroy "$PREPARE_CLEANUP_ID" >/dev/null 2>&1 || true; exit "$status"' EXIT
   jq -n --arg runtime_id "$id" --arg monitor "$monitor" --arg kernel_sha256 "$kernel_sha" \
     --arg rootfs_sha256 "$rootfs_sha" --argjson published_ports "$ports" \
     '{runtime_id:$runtime_id,published_ports:$published_ports,monitor:$monitor,kernel_sha256:$kernel_sha256,rootfs_sha256:$rootfs_sha256}' \
@@ -259,6 +259,8 @@ cmd_prepare() {
   cp --reflink=auto --sparse=always "$IMAGE_ROOT/rootfs.ext4" "$rootfs"
   inject_runtime_key "$rootfs" "$dir/id_ed25519.pub"
   setup_network "$tap" "$host_ip"
+  [[ "${BRANCHBOX_LOCAL_VM_TEST_FAIL_AFTER_NETWORK:-}" != 1 ]] || \
+    die "injected failure after local-vm network setup"
   jail="$JAIL_ROOT/firecracker/$id/root"
   sudo -n install -d -m 700 "$jail"
   sudo -n install -m 400 "$IMAGE_ROOT/vmlinux" "$jail/vmlinux"
@@ -274,8 +276,8 @@ JSON
   wait_for_guest "$id"
   sync_to_guest "$id" "$workspace_root"
   inject_credentials "$id"
-  trap - ERR
   PREPARE_CLEANUP_ID=''
+  trap - EXIT
   cat "$dir/prepare.json"
 }
 
