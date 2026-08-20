@@ -6,7 +6,7 @@ ARG DEVCONTAINER_CLI_VERSION=0.80.3
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl docker.io git iproute2 iptables jq nodejs npm openssh-server \
-       rsync socat sudo systemd systemd-sysv tini \
+       rsync socat sudo systemd systemd-resolved systemd-sysv tini \
     && npm install --global "@devcontainers/cli@${DEVCONTAINER_CLI_VERSION}" \
     && npm cache clean --force \
     && existing_user=$(getent passwd 1000 | cut -d: -f1) \
