@@ -392,13 +392,18 @@ SH
 }
 
 cmd_start() {
-  local id=$1 worktree=$2 workspace_root output container_id
+  local id=$1 worktree=$2 workspace_root common_git repo_root repo_mount output container_id
   cmd_exists "$id" || die "runtime '$id' does not exist"
   workspace_root=$(metadata_value "$id" '.workspace_root')
   sync_to_guest "$id" "$workspace_root"
   inject_credentials "$id"
+  common_git=$(guest "$id" git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)
+  repo_root=$(dirname "$common_git")
+  repo_mount="type=bind,source=$repo_root,target=/workspaces/$(basename "$repo_root")"
   output=$(guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer up \
-    --workspace-folder "$worktree" --log-format json)
+    --workspace-folder "$worktree" \
+    --mount "$repo_mount" \
+    --log-format json)
   printf '%s\n' "$output"
   container_id=$(printf '%s\n' "$output" | jq -r 'select(.containerId != null) | .containerId' | tail -n1)
   [[ -n "$container_id" ]] || die "devcontainer startup did not return a container ID"
