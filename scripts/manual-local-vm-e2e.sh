@@ -64,7 +64,7 @@ printf '%s\n' '{"name":"stack","dockerComposeFile":"compose.yaml","service":"app
 cat >"$STACK_REPO/.devcontainer/compose.yaml" <<'YAML'
 services:
   app:
-    image: mcr.microsoft.com/devcontainers/base:ubuntu
+    image: mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
     command: sleep infinity
     depends_on:
       postgres:
