@@ -2750,41 +2750,42 @@ impl FeatureWorkflow {
             return Ok(());
         }
 
-        // Extract the main repo name from the current path
-        // Path format: /path/to/main/.git/worktrees/feature-name
-        let worktree_name = worktree_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| Error::validation("Cannot determine worktree name".to_string()))?;
+        let authoritative_target = fs::canonicalize(current_path).map_err(|err| {
+            Error::validation(format!(
+                "Cannot validate absolute gitdir target '{}'; preserving the original worktree pointer: {err}",
+                current_path
+            ))
+        })?;
+        let repository_worktrees = fs::canonicalize(self.repo_root.join(".git"))
+            .map_err(|err| {
+                Error::validation(format!(
+                    "Cannot validate repository Git metadata at '{}': {err}",
+                    self.repo_root.join(".git").display()
+                ))
+            })?
+            .join("worktrees");
+        if !authoritative_target.starts_with(&repository_worktrees) {
+            return Err(Error::validation(format!(
+                "Absolute gitdir target '{}' does not belong to repository '{}'; preserving the original worktree pointer",
+                authoritative_target.display(),
+                self.repo_root.display()
+            )));
+        }
 
-        // Try to find the main repo directory
-        let parent_dir = worktree_path
-            .parent()
-            .ok_or_else(|| Error::validation("Worktree has no parent directory".to_string()))?;
-
-        // Determine the main repo name from the absolute path
-        // Path format: /path/to/REPO_NAME/.git/worktrees/WORKTREE_NAME
-        let main_name = if parent_dir.join("main").exists() {
-            "main".to_string()
-        } else if let Some(git_idx) = current_path.find("/.git/worktrees/") {
-            // Extract REPO_NAME from the path
-            let before_git = &current_path[..git_idx];
-            if let Some(last_slash) = before_git.rfind('/') {
-                before_git[last_slash + 1..].to_string()
-            } else {
-                "main".to_string()
-            }
-        } else {
-            "main".to_string()
-        };
-
-        // Construct relative path using PathBuf for safer path manipulation
-        // Path: ../MAIN_NAME/.git/worktrees/WORKTREE_NAME
-        let mut relative_path = PathBuf::from("..");
-        relative_path.push(&main_name);
-        relative_path.push(".git");
-        relative_path.push("worktrees");
-        relative_path.push(worktree_name);
+        let canonical_worktree = fs::canonicalize(worktree_path).map_err(|err| {
+            Error::validation(format!(
+                "Cannot validate worktree directory '{}': {err}",
+                worktree_path.display()
+            ))
+        })?;
+        let relative_path = relative_path_between(&canonical_worktree, &authoritative_target)
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "Cannot construct a relative gitdir path from '{}' to '{}'; preserving the original worktree pointer",
+                    canonical_worktree.display(),
+                    authoritative_target.display()
+                ))
+            })?;
 
         // Convert to string for gitdir format (git expects forward slashes)
         let relative_path_str = relative_path
@@ -2792,8 +2793,23 @@ impl FeatureWorkflow {
             .ok_or_else(|| Error::validation("Invalid UTF-8 in worktree path".to_string()))?
             .replace('\\', "/"); // Ensure forward slashes on Windows
 
-        // Write the fixed path
-        let new_content = format!("gitdir: {}\n", relative_path_str);
+        let resolved_target = canonical_worktree.join(&relative_path);
+        let resolved_target = fs::canonicalize(&resolved_target).map_err(|err| {
+            Error::validation(format!(
+                "Rewritten gitdir target '{}' could not be validated; preserving the original worktree pointer: {err}",
+                resolved_target.display()
+            ))
+        })?;
+        if resolved_target != authoritative_target {
+            return Err(Error::validation(format!(
+                "Rewritten gitdir target '{}' does not match authoritative target '{}'; preserving the original worktree pointer",
+                resolved_target.display(),
+                authoritative_target.display()
+            )));
+        }
+
+        let new_gitdir_line = format!("gitdir: {relative_path_str}");
+        let new_content = content.replacen(gitdir_line, &new_gitdir_line, 1);
         write_text_file(&git_file, &new_content)?;
 
         tracing::info!(
@@ -2803,6 +2819,30 @@ impl FeatureWorkflow {
 
         Ok(())
     }
+}
+
+fn relative_path_between(from: &Path, to: &Path) -> Option<PathBuf> {
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+    let common = from_components
+        .iter()
+        .zip(&to_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common == 0 {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for component in &from_components[common..] {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &to_components[common..] {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
 }
 
 /// Helper to ensure the file ends with a newline before appending.
@@ -5522,14 +5562,9 @@ mod tests {
 
         // Write a .git file with absolute path
         let git_file = worktree_path.join(".git");
-        fs::write(
-            &git_file,
-            format!(
-                "gitdir: {}/main/.git/worktrees/feature-test\n",
-                repo_path.display()
-            ),
-        )
-        .unwrap();
+        let metadata_path = repo_path.join(".git/worktrees/feature-test");
+        fs::create_dir_all(&metadata_path).unwrap();
+        fs::write(&git_file, format!("gitdir: {}\n", metadata_path.display())).unwrap();
 
         // Create the workflow and fix the path
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
@@ -5538,7 +5573,7 @@ mod tests {
 
         // Verify the path was converted to relative
         let content = fs::read_to_string(&git_file).unwrap();
-        assert!(content.starts_with("gitdir: ../main/.git/worktrees/feature-test"));
+        assert!(content.starts_with("gitdir: ../.git/worktrees/feature-test"));
         assert!(!content.contains(repo_path.to_str().unwrap()));
     }
 
@@ -5606,32 +5641,91 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_git_worktree_path_non_standard_main_name() {
-        let temp_dir = setup_test_repo();
-        let repo_path = temp_dir.path();
+    fn test_fix_git_worktree_path_ignores_unrelated_sibling_main() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().join("agentify");
+        fs::create_dir_all(&repo_path).unwrap();
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        fs::write(repo_path.join("README.md"), "# Agentify\n").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        fs::create_dir_all(temp_dir.path().join("main/.git")).unwrap();
 
-        // Create a worktree with a non-standard main repo name
-        let worktree_path = repo_path.join("feature-test");
-        fs::create_dir_all(&worktree_path).unwrap();
-
-        // Simulate a main repo named "trunk" instead of "main"
+        let worktree_path = temp_dir.path().join("sandbox-devcontainer");
+        let created = Command::new("git")
+            .args(["worktree", "add", "-b", "feature/sandbox-devcontainer"])
+            .arg(&worktree_path)
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        assert!(created.status.success());
         let git_file = worktree_path.join(".git");
-        fs::write(
-            &git_file,
-            format!(
-                "gitdir: {}/trunk/.git/worktrees/feature-test\n",
-                repo_path.display()
-            ),
-        )
-        .unwrap();
 
-        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let workflow = FeatureWorkflow::new(&repo_path).unwrap();
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
-        // Verify it extracted "trunk" from the path
         let content = fs::read_to_string(&git_file).unwrap();
-        assert!(content.starts_with("gitdir: ../trunk/.git/worktrees/feature-test"));
+        assert_eq!(
+            content,
+            "gitdir: ../agentify/.git/worktrees/sandbox-devcontainer\n"
+        );
+        assert!(!content.contains("../main/"));
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&worktree_path)
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "repaired worktree is unusable: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_preserves_original_when_target_is_missing() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+        let git_file = worktree_path.join(".git");
+        let original = format!(
+            "gitdir: {}\n",
+            repo_path.join(".git/worktrees/missing").display()
+        );
+        fs::write(&git_file, &original).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let error = workflow
+            .fix_git_worktree_path(&worktree_path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("preserving the original worktree pointer"));
+        assert_eq!(fs::read_to_string(&git_file).unwrap(), original);
     }
 
     #[test]
