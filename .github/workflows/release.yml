@@ -61,6 +61,8 @@ jobs:
           cargo install git-cliff --locked
 
       - name: Generate changelog
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           # Generate only the changes since the last release tag.
           # Using --latest generates just the current release notes, not the full history.
