@@ -27,7 +27,7 @@ use crate::{Error, Result};
 use jsonc_parser::{parse_to_serde_value, ParseOptions};
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -58,6 +58,23 @@ pub struct DevcontainerModule {
     strategy: SyncStrategy,
     /// Files to exclude (e.g., .env is already symlinked separately)
     exclude: Vec<String>,
+    reuse_policy: ReuseSyncPolicy,
+    manifest_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ReuseSyncPolicy {
+    #[default]
+    Overwrite,
+    Fail,
+    Preserve,
+    Inspect,
+}
+
+fn stable_content_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 impl DevcontainerModule {
@@ -69,9 +86,79 @@ impl DevcontainerModule {
                 ".env".to_string(),
                 ".branchbox.env".to_string(),
                 ".cloudflared.env".to_string(),
+                "branchbox-sbx.json".to_string(),
                 ".gitignore".to_string(),
             ],
+            reuse_policy: ReuseSyncPolicy::Overwrite,
+            manifest_path: None,
         }
+    }
+
+    fn current_manifest(&self, target_dir: &Path) -> Result<BTreeMap<String, String>> {
+        let devcontainer = target_dir.join(".devcontainer");
+        let mut manifest = BTreeMap::new();
+        if !devcontainer.exists() {
+            return Ok(manifest);
+        }
+        for entry in WalkDir::new(&devcontainer)
+            .min_depth(1)
+            .into_iter()
+            .filter_entry(|entry| !self.is_excluded(entry.path()))
+        {
+            let entry = entry.map_err(|err| {
+                Error::validation(format!("Failed to inspect devcontainer files: {err}"))
+            })?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&devcontainer)
+                .map_err(|err| Error::validation(format!("Path strip failed: {err}")))?;
+            let bytes = std::fs::read(entry.path())?;
+            manifest.insert(
+                relative.to_string_lossy().replace('\\', "/"),
+                format!("{:016x}", stable_content_hash(&bytes)),
+            );
+        }
+        Ok(manifest)
+    }
+
+    fn divergence(&self, target_dir: &Path) -> Result<Vec<String>> {
+        let Some(path) = self.manifest_path.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if !path.exists() {
+            return Ok(vec![
+                "baseline unavailable (feature predates safe reuse tracking)".to_string(),
+            ]);
+        }
+        let baseline: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(path)?)
+            .map_err(|err| {
+                Error::validation(format!("Invalid devcontainer sync baseline: {err}"))
+            })?;
+        let current = self.current_manifest(target_dir)?;
+        let mut paths: Vec<String> = baseline
+            .keys()
+            .chain(current.keys())
+            .filter(|path| baseline.get(*path) != current.get(*path))
+            .cloned()
+            .collect();
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    fn write_manifest(&self, target_dir: &Path) -> Result<()> {
+        let Some(path) = self.manifest_path.as_ref() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let payload = serde_json::to_vec_pretty(&self.current_manifest(target_dir)?)?;
+        std::fs::write(path, payload)?;
+        Ok(())
     }
 
     /// Sync devcontainer files to target directory
@@ -229,7 +316,7 @@ impl Module for DevcontainerModule {
         project_dir.join(".devcontainer").exists()
     }
 
-    fn init(&mut self, main_dir: &Path, _feature_dir: &Path) -> Result<()> {
+    fn init(&mut self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
         self.source_dir = main_dir.join(".devcontainer");
 
         if !self.source_dir.exists() {
@@ -246,6 +333,24 @@ impl Module for DevcontainerModule {
                 _ => SyncStrategy::Copy,
             };
         }
+        self.reuse_policy = match std::env::var("BRANCHBOX_DEVCONTAINER_REUSE_POLICY")
+            .ok()
+            .as_deref()
+        {
+            Some("fail") => ReuseSyncPolicy::Fail,
+            Some("preserve") => ReuseSyncPolicy::Preserve,
+            Some("inspect") => ReuseSyncPolicy::Inspect,
+            _ => ReuseSyncPolicy::Overwrite,
+        };
+        let feature_name = feature_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("feature");
+        self.manifest_path = Some(
+            main_dir
+                .join(".branchbox/devcontainer-sync")
+                .join(format!("{feature_name}.json")),
+        );
 
         tracing::info!(
             "Devcontainer module initialized (strategy: {:?})",
@@ -256,12 +361,39 @@ impl Module for DevcontainerModule {
 
     fn setup(&self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
         tracing::info!("Syncing devcontainer configuration...");
+        if matches!(self.strategy, SyncStrategy::Copy)
+            && !matches!(self.reuse_policy, ReuseSyncPolicy::Overwrite)
+        {
+            let divergence = self.divergence(feature_dir)?;
+            if !divergence.is_empty() {
+                let paths = divergence.join(", ");
+                match self.reuse_policy {
+                    ReuseSyncPolicy::Preserve => {
+                        tracing::info!("Preserving feature-local devcontainer changes: {paths}");
+                        return Ok(());
+                    }
+                    ReuseSyncPolicy::Inspect => {
+                        return Err(Error::validation(format!(
+                            "Feature-local devcontainer changes: {paths}. Inspect with: git diff --no-index -- .devcontainer '{}'. Re-run with --devcontainer-reuse preserve or overwrite.",
+                            feature_dir.join(".devcontainer").display()
+                        )));
+                    }
+                    ReuseSyncPolicy::Fail => {
+                        return Err(Error::validation(format!(
+                            "Refusing to overwrite feature-local devcontainer changes: {paths}. Re-run with --devcontainer-reuse preserve, overwrite, or inspect."
+                        )));
+                    }
+                    ReuseSyncPolicy::Overwrite => {}
+                }
+            }
+        }
         let outcome = self.sync_to(feature_dir)?;
         if matches!(self.strategy, SyncStrategy::Symlink) {
             tracing::info!("Skipping workspace configuration (symlink strategy in use)");
         } else {
             self.configure_workspace_settings_impl(feature_dir)?;
         }
+        self.write_manifest(feature_dir)?;
         tracing::info!(
             "Synced {} devcontainer files ({:?})",
             outcome.synced_files.len(),

@@ -138,10 +138,27 @@ case "$1" in
     done
     ;;
   ports)
+    case "$*" in
+      *"--json"*) printf '%s\n' '[]' ;;
+    esac
     ;;
   exec)
     case "$*" in
       *"devcontainer up"*)
+        if [ "${FAKE_SBX_REQUIRE_RUN_SERVICES:-}" = "1" ]; then
+          override="$3/.devcontainer/branchbox-sbx.json"
+          if [ ! -f "$override" ] || ! grep -q '"runServices"' "$override" || ! grep -q '"app"' "$override" || grep -q '"tailscale"' "$override"; then
+            printf '%s\n' 'SBX runServices override was not prepared correctly' >&2
+            exit 45
+          fi
+        fi
+        if [ "${FAKE_SBX_REQUIRE_CLOUDFLARED_ENV:-}" = "1" ]; then
+          env_file="$3/.devcontainer/.cloudflared.env"
+          if [ ! -f "$env_file" ] || ! grep -q '^TUNNEL_TOKEN=branchbox-tunnel-order-sentinel$' "$env_file"; then
+            printf '%s\n' 'cloudflared environment was not prepared before devcontainer up' >&2
+            exit 43
+          fi
+        fi
         if [ "${FAKE_SBX_START_FAILURE:-}" = "1" ]; then
           cat >&2 <<'EOF'
 services:
@@ -152,9 +169,31 @@ services:
 EOF
           exit 42
         fi
-        printf '%s\n' '{"outcome":"success","containerId":"fake-container-id"}'
+        container_id="${FAKE_SBX_RECONCILE_CONTAINER_ID:-fake-container-id}"
+        printf '%s\n' "{\"outcome\":\"success\",\"containerId\":\"${container_id}\"}"
         ;;
       *)
+        if [ "${FAKE_SBX_PROBE_FAILURE:-}" = "1" ]; then
+          case "$*" in
+            *"devcontainer exec"*" true"*) exit 46 ;;
+          esac
+        fi
+        if [ "${FAKE_SBX_REQUIRE_LOGIN_SHELL:-}" = "1" ]; then
+          case "$*" in
+            *"devcontainer exec"*"-lic"*"ruby --version"*)
+              printf '%s\n' 'ruby 3.4.4 (mise)'
+              exit 0
+              ;;
+            *"ruby --version"*)
+              printf '%s\n' 'ruby is absent without the devcontainer login environment' >&2
+              exit 44
+              ;;
+          esac
+        fi
+        if [ -n "${FAKE_SBX_COMMAND_EXIT:-}" ] && printf '%s' "$*" | grep -q 'devcontainer exec'; then
+          printf '%s\n' 'simulated command failure' >&2
+          exit "$FAKE_SBX_COMMAND_EXIT"
+        fi
         printf '%s\n' "fake-sbx-command-ok"
         ;;
     esac
@@ -871,6 +910,599 @@ fn sbx_runtime_full_cli_lifecycle() {
 
 #[cfg(unix)]
 #[test]
+fn sbx_exec_reconciles_resumed_devcontainer_and_refreshes_port_proxy() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let work_feature = "sbx-resume";
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "start", work_feature, "--runtime", "sbx"])
+    .assert()
+    .success();
+
+    let degraded = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_PROBE_FAILURE" => "1",
+    )
+    .args(["feature", "list", "--json"])
+    .output()
+    .expect("inspect stopped devcontainer health");
+    let entries: Value = serde_json::from_slice(&degraded.stdout).expect("parse degraded list");
+    assert_eq!(entries[0]["status"], "degraded");
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_RECONCILE_CONTAINER_ID" => "resumed-container-id",
+    )
+    .args(["feature", "exec", work_feature, "--", "codex", "--version"])
+    .assert()
+    .success();
+
+    let calls = fs::read_to_string(&fake_log).expect("read fake SBX calls");
+    let reconciled_up = calls
+        .rfind("devcontainer up")
+        .expect("reconcile devcontainer up");
+    let command = calls.rfind("codex --version").expect("runtime command");
+    assert!(
+        reconciled_up < command,
+        "command ran before reconciliation: {calls}"
+    );
+    assert!(calls.contains("branchbox-port-proxy resumed-container-id 3000"));
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_exec_restores_login_toolchain_environment_and_reports_exit_status() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let work_feature = "sbx-login-env";
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "start", work_feature, "--runtime", "sbx"])
+    .assert()
+    .success();
+
+    let success = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_REQUIRE_LOGIN_SHELL" => "1",
+    )
+    .args([
+        "feature",
+        "exec",
+        work_feature,
+        "--json",
+        "--",
+        "ruby",
+        "--version",
+    ])
+    .output()
+    .expect("execute version-manager tool");
+    assert!(success.status.success());
+    let result: Value = serde_json::from_slice(&success.stdout).expect("parse exec JSON");
+    assert_eq!(result["exit_code"], 0);
+    assert!(result["stdout"].as_str().unwrap().contains("ruby 3.4.4"));
+
+    let failure = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_COMMAND_EXIT" => "23",
+    )
+    .args(["feature", "exec", work_feature, "--json", "--", "false"])
+    .output()
+    .expect("execute failing runtime command");
+    assert!(!failure.status.success());
+    let result: Value = serde_json::from_slice(&failure.stdout).expect("parse failing exec JSON");
+    assert_eq!(result["exit_code"], 23);
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_start_reuse_requires_explicit_devcontainer_conflict_policy() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    run_git(test_repo.path(), &["add", ".devcontainer"]);
+    run_git(
+        test_repo.path(),
+        &["commit", "-m", "Add devcontainer fixture"],
+    );
+    let work_feature = "sbx-reuse-customization";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_START_FAILURE" => "1",
+    )
+    .args(["feature", "start", work_feature, "--runtime", "sbx"])
+    .assert()
+    .failure();
+
+    let compose_path = worktree_path.join(".devcontainer/docker-compose.yml");
+    let customized = "services:\n  dev:\n    image: alpine:3.20\n    environment:\n      FEATURE_LOCAL: preserved\n";
+    fs::write(&compose_path, customized).expect("customize feature Compose file");
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--reuse",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "Refusing to overwrite feature-local devcontainer changes",
+    ));
+    assert_eq!(fs::read_to_string(&compose_path).unwrap(), customized);
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--reuse",
+        "--devcontainer-reuse",
+        "inspect",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("git diff --no-index"));
+    assert_eq!(fs::read_to_string(&compose_path).unwrap(), customized);
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--reuse",
+        "--devcontainer-reuse",
+        "preserve",
+    ])
+    .assert()
+    .success();
+    assert_eq!(fs::read_to_string(&compose_path).unwrap(), customized);
+
+    let registry: Value = serde_json::from_slice(
+        &fs::read(test_repo.path().join(".branchbox/registry.json"))
+            .expect("read feature registry"),
+    )
+    .expect("parse registry");
+    assert_eq!(
+        registry["features"][0]["sync_strategy"],
+        "copy:reuse-preserve"
+    );
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_failed_runtime_can_be_retained_reused_and_torn_down() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    run_git(test_repo.path(), &["add", ".devcontainer"]);
+    run_git(
+        test_repo.path(),
+        &["commit", "-m", "Add devcontainer fixture"],
+    );
+    let work_feature = "sbx-retained-retry";
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    let failed = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_START_FAILURE" => "1",
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--keep-runtime-on-failure",
+    ])
+    .output()
+    .expect("run retained SBX failure");
+    assert!(!failed.status.success());
+    let failure_text = String::from_utf8_lossy(&failed.stderr);
+    assert!(failure_text.contains("Retained SBX runtime"));
+    assert!(failure_text.contains("--reuse-runtime"));
+    assert!(fake_state.exists());
+
+    let list = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "list", "--json"])
+    .output()
+    .expect("list retained feature");
+    let entries: Value = serde_json::from_slice(&list.stdout).expect("parse retained list");
+    assert_eq!(entries[0]["status"], "failed_retained");
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--reuse-runtime",
+    ])
+    .assert()
+    .success();
+
+    let calls = fs::read_to_string(&fake_log).expect("read fake SBX calls");
+    assert_eq!(
+        calls.matches("create shell").count(),
+        1,
+        "runtime was recreated: {calls}"
+    );
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+    assert!(!fake_state.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn retained_sbx_runtime_is_reported_orphaned_when_boundary_disappears() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_START_FAILURE" => "1",
+    )
+    .args([
+        "feature",
+        "start",
+        "sbx-orphan",
+        "--runtime",
+        "sbx",
+        "--keep-runtime-on-failure",
+    ])
+    .assert()
+    .failure();
+    fs::remove_file(&fake_state).expect("simulate externally removed sandbox");
+
+    let list = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "list", "--json"])
+    .output()
+    .expect("list orphaned feature");
+    let entries: Value = serde_json::from_slice(&list.stdout).expect("parse orphan list");
+    assert_eq!(entries[0]["status"], "orphaned");
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_run_services_excludes_incompatible_sidecar_and_keeps_required_database() {
+    let test_repo = init_test_repo();
+    let devcontainer = test_repo.ensure_devcontainer_dir();
+    fs::write(
+        devcontainer.join("devcontainer.json"),
+        r#"{
+  "name": "compose-stack",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/repo"
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        devcontainer.join("compose.yaml"),
+        r#"services:
+  app:
+    image: alpine:3.19
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:17
+  tailscale:
+    image: tailscale/tailscale:latest
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - net_raw
+"#,
+    )
+    .unwrap();
+    run_git(test_repo.path(), &["add", ".devcontainer"]);
+    run_git(
+        test_repo.path(),
+        &["commit", "-m", "Add multi-service fixture"],
+    );
+    let work_feature = "sbx-optional-sidecar";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    let preflight = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "start", work_feature, "--runtime", "sbx"])
+    .output()
+    .expect("run unsupported-device preflight");
+    assert!(!preflight.status.success());
+    assert!(String::from_utf8_lossy(&preflight.stderr).contains("/dev/net/tun"));
+    assert!(!fake_state.exists());
+
+    fs::create_dir_all(test_repo.path().join(".branchbox")).unwrap();
+    fs::write(
+        test_repo.path().join(".branchbox/config.json"),
+        r#"{"runtime":{"sbx":{"run_services":["app"]}}}"#,
+    )
+    .unwrap();
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_REQUIRE_RUN_SERVICES" => "1",
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--reuse",
+    ])
+    .assert()
+    .success();
+
+    let override_config: Value = serde_json::from_slice(
+        &fs::read(worktree_path.join(".devcontainer/branchbox-sbx.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(override_config["runServices"], serde_json::json!(["app"]));
+    let compose = fs::read_to_string(worktree_path.join(".devcontainer/compose.yaml")).unwrap();
+    assert!(compose.contains("postgres"));
+    assert!(compose.contains("depends_on"));
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_materializes_required_cloudflared_env_before_runtime_creation() {
+    const TOKEN: &str = "branchbox-tunnel-order-sentinel";
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    fs::write(
+        test_repo.path().join(".devcontainer/docker-compose.yml"),
+        r#"services:
+  dev:
+    image: alpine:3.19
+    depends_on:
+      - cloudflared
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    env_file:
+      - .cloudflared.env
+"#,
+    )
+    .expect("write Compose fixture");
+    run_git(test_repo.path(), &["add", ".devcontainer"]);
+    run_git(
+        test_repo.path(),
+        &["commit", "-m", "Add required cloudflared fixture"],
+    );
+
+    let work_feature = "sbx-tunnel-order";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+    let output = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_REQUIRE_CLOUDFLARED_ENV" => "1",
+        "CLOUDFLARE_TUNNEL_TOKEN" => TOKEN,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--json",
+    ])
+    .output()
+    .expect("start SBX feature with required cloudflared env");
+
+    assert!(
+        output.status.success(),
+        "SBX feature start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!combined.contains(TOKEN), "tunnel token leaked: {combined}");
+    assert_eq!(
+        fs::read_to_string(worktree_path.join(".devcontainer/.cloudflared.env"))
+            .expect("read prepared tunnel env"),
+        format!("TUNNEL_TOKEN={TOKEN}\nDEV_HOSTNAME=dev-sbx-tunnel-order.example.com\n")
+    );
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force"])
+    .assert()
+    .success();
+}
+
+#[cfg(unix)]
+#[test]
+fn sbx_missing_required_cloudflare_credentials_fails_before_runtime_creation() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    fs::write(
+        test_repo
+            .path()
+            .join(".devcontainer/docker-compose.yml"),
+        "services:\n  dev:\n    image: alpine:3.19\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n    env_file:\n      - .cloudflared.env\n",
+    )
+    .expect("write Compose fixture");
+    run_git(test_repo.path(), &["add", ".devcontainer"]);
+    run_git(
+        test_repo.path(),
+        &["commit", "-m", "Add required cloudflared fixture"],
+    );
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    let output = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args([
+        "feature",
+        "start",
+        "sbx-tunnel-no-credentials",
+        "--runtime",
+        "sbx",
+        "--json",
+    ])
+    .output()
+    .expect("run SBX tunnel credential preflight");
+
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("Cloudflare credentials are not configured"));
+    assert!(combined.contains("no sandbox was created"));
+    assert!(!fake_state.exists());
+    let calls = fs::read_to_string(fake_log).expect("read fake SBX calls");
+    assert!(
+        !calls.contains("create shell"),
+        "runtime was created: {calls}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn sbx_start_failure_never_exposes_compose_secrets_through_cli_json_mode() {
     const SENTINEL: &str = "branchbox-cli-sentinel-secret-83d1";
     let test_repo = init_test_repo();
@@ -906,6 +1538,28 @@ fn sbx_start_failure_never_exposes_compose_secrets_through_cli_json_mode() {
     assert!(!combined.contains("ARBITRARY_CREDENTIAL:"));
     assert!(combined.contains("exit status 42"));
     assert!(combined.contains("docker compose up failed"));
+}
+
+#[test]
+fn keep_runtime_on_failure_rejects_non_sbx_runtime_before_creating_a_worktree() {
+    let test_repo = init_test_repo();
+    let work_feature = "container-retain-invalid";
+
+    let output = branchbox_cmd!(test_repo.path())
+        .args([
+            "feature",
+            "start",
+            work_feature,
+            "--runtime",
+            "container",
+            "--keep-runtime-on-failure",
+        ])
+        .output()
+        .expect("reject keep-runtime-on-failure for container runtime");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("only supported with the SBX runtime"));
+    assert!(!test_repo.worktree_parent().join(work_feature).exists());
 }
 
 #[test]

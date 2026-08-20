@@ -62,6 +62,10 @@ The devcontainer uses a pre-built image from GHCR by default (`ghcr.io/branchbox
 - Override behaviour per command with `BRANCHBOX_DEVCONTAINER_STRATEGY=copy|symlink branchbox feature start`.
 - Persist a different default by setting `BRANCHBOX_DEVCONTAINER_STRATEGY` in your `.env` (template comment provided in generated `env.sample` files).
 - Refresh existing worktrees whenever the main `.devcontainer/` changes: `branchbox devcontainer sync [--dry-run] [--strategy copy|symlink]`.
+- On `feature start --reuse`, copy mode compares the worktree against its last BranchBox sync
+  baseline. The safe default refuses divergence. Choose `--devcontainer-reuse preserve` to keep
+  feature-local edits, `overwrite` to replace them deliberately, or `inspect` to print the exact
+  diff command without changing files. The decision is recorded in the feature registry.
 
 ### Module Architecture Notes
 

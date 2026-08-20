@@ -133,6 +133,9 @@ an actionable error tail and exit status but omit rendered Compose configuration
 environment values. Inspect the sandbox-local devcontainer logs when more detail is needed. If you
 suspect an older BranchBox version copied a secret into terminal, agent, CI, or telemetry logs during
 a failed startup, rotate the affected credential with its provider and remove the durable log copy.
+Projects whose Compose stack requires `.devcontainer/.cloudflared.env` must configure Cloudflare
+credentials first; BranchBox materializes that file before SBX creation and otherwise stops before
+the sandbox build starts.
 See
 **[How It Works](../how-it-works.md#runtime-providers)** for provider configuration and lifecycle
 details.

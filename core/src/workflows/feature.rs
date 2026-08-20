@@ -1,7 +1,7 @@
 use crate::{
     adapters,
     config::BranchBoxConfig,
-    devcontainer_runtime::DevcontainerConfig,
+    devcontainer_runtime::{ComposeFileRef, DevcontainerConfig},
     git::GitWorktree,
     modules::{self, ModuleHandle, SpecStatus},
     naming,
@@ -156,6 +156,10 @@ pub struct StartRequest {
     pub base_branch: Option<String>,
     pub branch_prefix: Option<String>,
     pub reuse_existing: bool,
+    /// How copy-mode devcontainer divergence is handled while reusing a worktree.
+    pub devcontainer_reuse: DevcontainerReusePolicy,
+    /// Retain a failed outer runtime so a later retry can reuse its build cache and diagnostics.
+    pub keep_runtime_on_failure: bool,
     pub telemetry: bool,
     /// List of module names to skip during setup (e.g., "tunnel", "database")
     pub skip_modules: Vec<String>,
@@ -165,6 +169,42 @@ pub struct StartRequest {
     pub prompt_seed: Option<String>,
     /// Optional execution-boundary override. Defaults to project configuration.
     pub runtime: Option<RuntimeProviderKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DevcontainerReusePolicy {
+    #[default]
+    Fail,
+    Preserve,
+    Overwrite,
+    Inspect,
+}
+
+impl fmt::Display for DevcontainerReusePolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Fail => "fail",
+            Self::Preserve => "preserve",
+            Self::Overwrite => "overwrite",
+            Self::Inspect => "inspect",
+        })
+    }
+}
+
+impl FromStr for DevcontainerReusePolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fail" => Ok(Self::Fail),
+            "preserve" => Ok(Self::Preserve),
+            "overwrite" => Ok(Self::Overwrite),
+            "inspect" | "diff" => Ok(Self::Inspect),
+            other => Err(format!(
+                "unknown devcontainer reuse policy '{other}'; expected fail, preserve, overwrite, or inspect"
+            )),
+        }
+    }
 }
 
 /// Result of running feature start workflow.
@@ -312,6 +352,11 @@ impl FeatureWorkflow {
         let work_feature = self.resolve_work_feature(&request)?;
         let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_default();
         let runtime_kind = request.runtime.unwrap_or(config.runtime.provider);
+        if request.keep_runtime_on_failure && runtime_kind != RuntimeProviderKind::Sbx {
+            return Err(Error::validation(
+                "--keep-runtime-on-failure and --reuse-runtime are only supported with the SBX runtime",
+            ));
+        }
         let runtime_provider = runtime::provider(runtime_kind)?;
         runtime_provider.validate()?;
         let branch_prefix = request
@@ -502,13 +547,44 @@ impl FeatureWorkflow {
         if let Some(summary) = adapter_summary.as_ref() {
             std::env::set_var("SERVICE_URL", &summary.service_url);
         }
+        let previous_reuse_policy = std::env::var_os("BRANCHBOX_DEVCONTAINER_REUSE_POLICY");
+        let devcontainer_sync_strategy =
+            if std::env::var("BRANCHBOX_DEVCONTAINER_STRATEGY").as_deref() == Ok("symlink") {
+                "symlink"
+            } else {
+                "copy"
+            };
+        if reuse_existing {
+            std::env::set_var(
+                "BRANCHBOX_DEVCONTAINER_REUSE_POLICY",
+                request.devcontainer_reuse.to_string(),
+            );
+        } else {
+            std::env::remove_var("BRANCHBOX_DEVCONTAINER_REUSE_POLICY");
+        }
         let setup_outcome = self.run_module_setup(handles, &worktree_path, &forced_modules);
-        if !setup_outcome.warnings.is_empty() {
-            warnings.extend(setup_outcome.warnings.clone());
+        match previous_reuse_policy {
+            Some(value) => std::env::set_var("BRANCHBOX_DEVCONTAINER_REUSE_POLICY", value),
+            None => std::env::remove_var("BRANCHBOX_DEVCONTAINER_REUSE_POLICY"),
         }
         match previous_service_url {
             Some(value) => std::env::set_var("SERVICE_URL", value),
             None => std::env::remove_var("SERVICE_URL"),
+        }
+        if reuse_existing {
+            if let Some(conflict) = setup_outcome.executions.iter().find(|outcome| {
+                outcome.module.eq_ignore_ascii_case("devcontainer")
+                    && outcome.status == ModuleStatus::Failed
+                    && outcome.notes.iter().any(|note| {
+                        note.contains("feature-local devcontainer")
+                            || note.contains("Feature-local devcontainer")
+                    })
+            }) {
+                return Err(Error::validation(conflict.notes.join("; ")));
+            }
+        }
+        if !setup_outcome.warnings.is_empty() {
+            warnings.extend(setup_outcome.warnings.clone());
         }
         let mut module_outcomes = setup_outcome.executions.clone();
         for record in &skip_records {
@@ -549,6 +625,41 @@ impl FeatureWorkflow {
             .unwrap_or(&fallback_runtime_name);
         let workspace_mount_path = worktree_path.parent().unwrap_or(&worktree_path);
         let published_ports = runtime_ports(&worktree_path);
+
+        if runtime_kind == RuntimeProviderKind::Sbx {
+            prepare_sbx_devcontainer_config(&worktree_path, &config.runtime.sbx.run_services)?;
+        }
+
+        // Tunnel credentials are part of the Compose input. Materialize them before creating an
+        // outer runtime or asking devcontainers to validate/start the project.
+        let service_url_for_tunnel = self
+            .resolve_tunnel_service_url(adapter_summary.as_ref().map(|s| s.service_url.as_str()));
+        let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
+            skip_tunnel_provisioning,
+            &work_feature,
+            &worktree_path,
+            feature_url.as_deref(),
+            &service_url_for_tunnel,
+        )?;
+        if !tunnel_warnings.is_empty() {
+            warnings.append(&mut tunnel_warnings);
+        }
+        if runtime_kind == RuntimeProviderKind::Sbx
+            && tunnel_state.as_ref().is_some_and(|state| {
+                state.status == FeatureTunnelStatus::Disabled
+                    && state
+                        .notes
+                        .as_deref()
+                        .is_some_and(|notes| notes.contains("credentials are configured"))
+            })
+            && devcontainer_requires_cloudflared_env(&worktree_path)
+        {
+            return Err(Error::validation(
+                "SBX devcontainer requires .devcontainer/.cloudflared.env, but Cloudflare credentials are not configured. Set CLOUDFLARE_TUNNEL_TOKEN or configure tunnel.providers.cloudflared before retrying; no sandbox was created."
+                    .to_string(),
+            ));
+        }
+
         let runtime_context = RuntimeContext {
             work_feature: &work_feature,
             worktree_path: &worktree_path,
@@ -556,7 +667,13 @@ impl FeatureWorkflow {
             workspace_mount_path,
             published_ports: &published_ports,
         };
-        let runtime_metadata = runtime_provider.prepare(&runtime_context)?;
+        let runtime_metadata = match runtime_provider.prepare(&runtime_context) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                self.rollback_prepared_tunnel(tunnel_state.as_ref());
+                return Err(err);
+            }
+        };
         let environment_result =
             runtime_provider.start_environment(&runtime_context, &runtime_metadata);
 
@@ -570,27 +687,61 @@ impl FeatureWorkflow {
         }
 
         if let Err(err) = environment_result {
+            if request.keep_runtime_on_failure {
+                let now = Utc::now();
+                let module_outcome_records = module_outcomes
+                    .iter()
+                    .map(|outcome| ModuleOutcomeRecord {
+                        module: outcome.module.clone(),
+                        status: outcome.status,
+                        duration_ms: outcome.duration_ms,
+                        notes: outcome.notes.clone(),
+                        forced: outcome.forced,
+                        recorded_at: Some(now),
+                    })
+                    .collect();
+                self.state.record_start(FeatureMetadata {
+                    work_feature: work_feature.clone(),
+                    branch_name: branch_name.clone(),
+                    worktree_path: worktree_path.clone(),
+                    base_branch: base_branch.clone(),
+                    feature_url: feature_url.clone(),
+                    compose_project_name: compose_project_name.clone(),
+                    env_path: env_path.clone(),
+                    tunnel: tunnel_state.clone(),
+                    status: FeatureStatus::FailedRetained,
+                    created_at: now,
+                    updated_at: now,
+                    removed_at: None,
+                    color: Some(generate_feature_color(&work_feature)),
+                    pr_number: None,
+                    last_commit: get_last_commit_sha(&self.repo_root, &branch_name),
+                    devcontainer_outdated: false,
+                    last_sync_at: None,
+                    sync_strategy: Some(format!("{devcontainer_sync_strategy}:failed-retained")),
+                    start_mode: request.mode,
+                    prompt_seed: request.prompt_seed.clone(),
+                    module_outcomes: module_outcome_records,
+                    last_summary_rendered_at: None,
+                    adapter: adapter_summary.clone(),
+                    runtime: runtime_metadata.clone(),
+                })?;
+                return Err(Error::validation(format!(
+                    "{err}. Retained SBX runtime '{}'. Inspect it with `sbx exec {} bash`; retry with `branchbox feature start {} --runtime sbx --reuse-runtime`, or clean it with `branchbox feature teardown {} --force`.",
+                    runtime_metadata.runtime_id.as_deref().unwrap_or("unknown"),
+                    runtime_metadata.runtime_id.as_deref().unwrap_or("unknown"),
+                    work_feature,
+                    work_feature
+                )));
+            }
             if let Err(cleanup_err) = runtime_provider.destroy(&runtime_metadata) {
                 tracing::warn!(
                     "Failed to clean up runtime after environment startup failure: {}",
                     cleanup_err
                 );
             }
+            self.rollback_prepared_tunnel(tunnel_state.as_ref());
             return Err(err);
-        }
-
-        // Service URL priority: cloudflared config > adapter detection > default
-        let service_url_for_tunnel = self
-            .resolve_tunnel_service_url(adapter_summary.as_ref().map(|s| s.service_url.as_str()));
-        let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
-            skip_tunnel_provisioning,
-            &work_feature,
-            &worktree_path,
-            feature_url.as_deref(),
-            &service_url_for_tunnel,
-        )?;
-        if !tunnel_warnings.is_empty() {
-            warnings.append(&mut tunnel_warnings);
         }
 
         // Record tunnel provisioning as a module outcome so `feature list --json` can surface
@@ -645,7 +796,12 @@ impl FeatureWorkflow {
             last_commit,
             devcontainer_outdated: devcontainer_skipped,
             last_sync_at: None,
-            sync_strategy: None,
+            sync_strategy: reuse_existing.then(|| {
+                format!(
+                    "{devcontainer_sync_strategy}:reuse-{}",
+                    request.devcontainer_reuse
+                )
+            }),
             start_mode: request.mode,
             prompt_seed: request.prompt_seed.clone(),
             module_outcomes: module_outcome_records.clone(),
@@ -890,6 +1046,26 @@ impl FeatureWorkflow {
     /// List feature metadata from the registry, sorted by most recently updated.
     pub fn list_features(&self) -> Result<Vec<FeatureMetadata>> {
         let mut entries = self.state.list_features()?;
+        for entry in &mut entries {
+            if !matches!(
+                entry.status,
+                FeatureStatus::Active | FeatureStatus::FailedRetained
+            ) {
+                continue;
+            }
+            if let Ok(provider) = runtime::provider(entry.runtime.provider) {
+                let exists = provider.exists(&entry.runtime);
+                if exists.is_ok_and(|exists| !exists) {
+                    entry.status = FeatureStatus::Orphaned;
+                } else if entry.status == FeatureStatus::Active
+                    && provider
+                        .environment_ready(&entry.runtime, &entry.worktree_path)
+                        .is_ok_and(|ready| !ready)
+                {
+                    entry.status = FeatureStatus::Degraded;
+                }
+            }
+        }
         entries.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
         Ok(entries)
     }
@@ -1477,6 +1653,10 @@ impl FeatureWorkflow {
     fn is_module_managed_path(path: &str) -> bool {
         use std::ffi::OsStr;
 
+        if path == ".devcontainer/branchbox-sbx.json" {
+            return false;
+        }
+
         const MODULE_PREFIXES: [&str; 2] = [".devcontainer", "compose"];
         if MODULE_PREFIXES
             .iter()
@@ -2002,6 +2182,24 @@ impl FeatureWorkflow {
         }
 
         Ok((Some(state), warnings))
+    }
+
+    fn rollback_prepared_tunnel(&self, state: Option<&FeatureTunnelState>) {
+        let Some(state) = state else {
+            return;
+        };
+        let Some(descriptor) = state.descriptor.as_ref() else {
+            return;
+        };
+        let Ok(config) = BranchBoxConfig::load(&self.repo_root) else {
+            tracing::warn!("Could not load tunnel configuration for failed-start rollback");
+            return;
+        };
+        let runtime_descriptor = self.stored_descriptor_to_runtime(state, descriptor);
+        if let Err(err) = self.invoke_tunnel_teardown(&state.provider, &runtime_descriptor, &config)
+        {
+            tracing::warn!("Failed to roll back tunnel after environment startup failure: {err}");
+        }
     }
 
     fn resolve_tunnel_hostname(&self, metadata: &FeatureMetadata) -> Result<String> {
@@ -2850,6 +3048,140 @@ fn ensure_trailing_newline(file: &mut File) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
+fn devcontainer_requires_cloudflared_env(worktree_path: &Path) -> bool {
+    let devcontainer_dir = worktree_path.join(".devcontainer");
+    let Ok(entries) = fs::read_dir(devcontainer_dir) else {
+        return false;
+    };
+    entries.filter_map(std::result::Result::ok).any(|entry| {
+        let path = entry.path();
+        let supported = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| matches!(extension, "json" | "yaml" | "yml"));
+        supported
+            && fs::read_to_string(path)
+                .map(|content| content.contains(".cloudflared.env"))
+                .unwrap_or(false)
+    })
+}
+
+fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]) -> Result<()> {
+    let (config, config_path) = DevcontainerConfig::load(worktree_path)
+        .map_err(|err| Error::validation(format!("Could not inspect SBX devcontainer: {err}")))?;
+    let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
+    let compose_files: Vec<PathBuf> = match config.docker_compose_file.as_ref() {
+        Some(ComposeFileRef::Single(path)) => vec![devcontainer_dir.join(path)],
+        Some(ComposeFileRef::Multiple(paths)) => paths
+            .iter()
+            .map(|path| devcontainer_dir.join(path))
+            .collect(),
+        None => [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ]
+        .iter()
+        .map(|path| devcontainer_dir.join(path))
+        .filter(|path| path.exists())
+        .collect(),
+    };
+    let mut unsupported_services = Vec::new();
+    for compose_file in compose_files {
+        let Ok(content) = fs::read_to_string(&compose_file) else {
+            continue;
+        };
+        let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&content) else {
+            continue;
+        };
+        let Some(services) = document
+            .get("services")
+            .and_then(serde_yaml::Value::as_mapping)
+        else {
+            continue;
+        };
+        for (name, service) in services {
+            let Some(name) = name.as_str() else {
+                continue;
+            };
+            let requires_tun = service
+                .get("devices")
+                .and_then(serde_yaml::Value::as_sequence)
+                .is_some_and(|devices| {
+                    devices.iter().any(|device| {
+                        device
+                            .as_str()
+                            .is_some_and(|value| value.contains("/dev/net/tun"))
+                            || device.as_mapping().is_some_and(|mapping| {
+                                ["source", "target", "path"].iter().any(|key| {
+                                    mapping
+                                        .get(serde_yaml::Value::String((*key).to_string()))
+                                        .and_then(serde_yaml::Value::as_str)
+                                        .is_some_and(|value| value.contains("/dev/net/tun"))
+                                })
+                            })
+                    })
+                });
+            if requires_tun {
+                unsupported_services.push(name.to_string());
+            }
+        }
+    }
+    unsupported_services.sort();
+    unsupported_services.dedup();
+
+    if !unsupported_services.is_empty() && run_services.is_empty() {
+        return Err(Error::validation(format!(
+            "SBX does not expose /dev/net/tun required by Compose service(s): {}. Declare runtime.sbx.run_services in .branchbox/config.json with the primary devcontainer service; Compose will still start its required dependencies.",
+            unsupported_services.join(", ")
+        )));
+    }
+    if let Some(primary) = config.service.as_deref() {
+        if !run_services.is_empty() && !run_services.iter().any(|service| service == primary) {
+            return Err(Error::validation(format!(
+                "runtime.sbx.run_services must include primary devcontainer service '{primary}'"
+            )));
+        }
+    }
+    let selected_unsupported: Vec<_> = unsupported_services
+        .iter()
+        .filter(|service| run_services.iter().any(|selected| selected == *service))
+        .collect();
+    if !selected_unsupported.is_empty() {
+        return Err(Error::validation(format!(
+            "runtime.sbx.run_services selects SBX-incompatible /dev/net/tun service(s): {}",
+            selected_unsupported
+                .iter()
+                .map(|service| service.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    if run_services.is_empty() {
+        let generated = devcontainer_dir.join("branchbox-sbx.json");
+        if generated.exists() {
+            fs::remove_file(generated)?;
+        }
+        return Ok(());
+    }
+
+    let source = fs::read_to_string(&config_path)?;
+    let mut value = jsonc_parser::parse_to_serde_value(&source, &Default::default())
+        .map_err(|err| Error::validation(format!("Failed to parse devcontainer JSONC: {err:?}")))?
+        .ok_or_else(|| Error::validation("Devcontainer configuration is empty"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
+    object.insert("runServices".to_string(), serde_json::json!(run_services));
+    let rendered = serde_json::to_string_pretty(&value)?;
+    write_text_file(
+        &devcontainer_dir.join("branchbox-sbx.json"),
+        &format!("{rendered}\n"),
+    )?;
+    Ok(())
+}
+
 fn runtime_ports(worktree_path: &Path) -> Vec<RuntimePort> {
     let Ok((config, _)) = DevcontainerConfig::load(worktree_path) else {
         return Vec::new();
@@ -3229,6 +3561,9 @@ struct EnvOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum FeatureStatus {
     Active,
+    Degraded,
+    FailedRetained,
+    Orphaned,
     Removed,
 }
 
@@ -3236,6 +3571,9 @@ impl fmt::Display for FeatureStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FeatureStatus::Active => write!(f, "active"),
+            FeatureStatus::Degraded => write!(f, "degraded"),
+            FeatureStatus::FailedRetained => write!(f, "failed_retained"),
+            FeatureStatus::Orphaned => write!(f, "orphaned"),
             FeatureStatus::Removed => write!(f, "removed"),
         }
     }
@@ -3247,6 +3585,9 @@ impl FromStr for FeatureStatus {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "active" => Ok(FeatureStatus::Active),
+            "degraded" => Ok(FeatureStatus::Degraded),
+            "failed_retained" | "failed-retained" => Ok(FeatureStatus::FailedRetained),
+            "orphaned" => Ok(FeatureStatus::Orphaned),
             "removed" => Ok(FeatureStatus::Removed),
             _ => Err(ParseFeatureStatusError(s.to_string())),
         }
@@ -3260,7 +3601,7 @@ impl fmt::Display for ParseFeatureStatusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "invalid feature status '{}'; expected 'active' or 'removed'",
+                "invalid feature status '{}'; expected active, degraded, failed_retained, orphaned, or removed",
             self.0
         )
     }
@@ -3496,8 +3837,9 @@ impl FeatureStateStore {
             }
             metadata.created_at = existing.created_at;
             metadata.updated_at = now;
-            metadata.status = FeatureStatus::Active;
-            metadata.removed_at = None;
+            if metadata.status != FeatureStatus::Removed {
+                metadata.removed_at = None;
+            }
             if metadata.last_sync_at.is_none() {
                 metadata.last_sync_at = existing.last_sync_at;
             }

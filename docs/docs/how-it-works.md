@@ -78,6 +78,11 @@ assignments and values, and returns a bounded actionable tail plus the exit stat
 stays in the sandbox-local devcontainer logs. Rotate any credential that may have appeared in a log
 created by an older BranchBox version.
 
+Tunnel inputs are also a startup preflight. If the project's Compose configuration requires
+`.devcontainer/.cloudflared.env`, BranchBox writes the feature-specific file before creating the SBX
+sandbox. Without configured Cloudflare credentials, startup stops before the sandbox or
+devcontainer build begins and reports the supported credential setup options.
+
 Commands can be routed through the runtime recorded for an active feature. This is also how an
 SBX-backed coding agent is kept inside the sandbox boundary:
 
@@ -88,6 +93,23 @@ branchbox feature exec add-oauth -- codex
 branchbox feature exec add-oauth --json -- codex --version
 ```
 
+Before each SBX exec, BranchBox resumes the sandbox, reruns idempotent `devcontainer up`, and
+refreshes port proxies from the current container ID. The command then runs as the configured
+devcontainer user and working directory through that user's login shell, restoring PATH changes
+from Mise, asdf, nvm, and similar toolchain managers. `feature list` reports a stopped inner
+devcontainer as `degraded` instead of claiming it is fully active.
+
+For diagnostic retries, retain a failed sandbox and its nested Docker cache explicitly:
+
+```bash
+branchbox feature start add-oauth --runtime sbx --keep-runtime-on-failure
+branchbox feature start add-oauth --runtime sbx --reuse-runtime
+branchbox feature teardown add-oauth --force
+```
+
+The registry distinguishes `failed_retained`, `degraded`, and `orphaned` runtimes. Default failure
+cleanup remains unchanged, while teardown and prune include retained/orphaned entries.
+
 When `BRANCHBOX_DEFAULT_AGENT_CMD` is configured, the automatic agent launch uses the same runtime
 route. Container-backed features retain the existing local execution behavior.
 
@@ -96,10 +118,20 @@ Projects can set a default in `.branchbox/config.json`:
 ```json
 {
   "runtime": {
-    "provider": "container"
+    "provider": "sbx",
+    "sbx": {
+      "run_services": ["app"]
+    }
   }
 }
 ```
+
+`runtime.sbx.run_services` is an explicit SBX-only opt-out for unrelated host-integrated Compose
+sidecars. BranchBox generates an ignored runtime config containing devcontainers' `runServices`;
+Compose still starts dependencies declared by the selected primary service, such as Postgres and
+Redis. If a service requests `/dev/net/tun`, SBX preflight either confirms it is excluded or stops
+before sandbox creation with an actionable error. BranchBox never silently rewrites the source
+Compose file.
 
 ### Account-free local VM direction
 

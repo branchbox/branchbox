@@ -207,7 +207,12 @@ The optional `sbx` provider requires an installed and authenticated Docker Sandb
 authentication affects only explicitly selected SBX workspaces; normal BranchBox workflows do not
 require a Docker account. BranchBox filters rendered Compose configuration and environment values
 from SBX startup errors; inspect detailed failures inside the sandbox instead of copying expanded
-configuration into shared logs. If an older BranchBox version may have logged a credential during
+configuration into shared logs. When Compose requires `.devcontainer/.cloudflared.env`, BranchBox
+materializes it before sandbox creation; missing Cloudflare credentials fail that preflight without
+paying the sandbox/devcontainer build cost. SBX exec reconciles a stopped devcontainer and restores
+its login-shell toolchain environment. Optional incompatible sidecars can be excluded with
+`runtime.sbx.run_services`; required Compose dependencies still start. Failed sandboxes can be kept
+with `--keep-runtime-on-failure` and retried with `--reuse-runtime`. If an older BranchBox version may have logged a credential during
 a failed SBX startup, rotate that credential with its provider. `local-vm` is reserved for the
 planned account-free Colima/Lima backend.
 See [How It Works](https://branchbox.dev/docs/how-it-works) for runtime topology,

@@ -1993,6 +1993,7 @@ impl InitWorkflow {
             ".branchbox/secure/tunnels/",
             ".devcontainer/.branchbox.env",
             ".devcontainer/.cloudflared.env",
+            ".devcontainer/branchbox-sbx.json",
             ".devcontainer/.github-token.env",
             ".devcontainer/.git-signing-key",
             ".devcontainer/.gitconfig.env",
