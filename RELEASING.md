@@ -456,6 +456,7 @@ Use this checklist for each release:
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| 0.12.0 | 2026-08-20 | Minor | Add account-free Firecracker local VM isolation with full devcontainer and Compose lifecycle support |
 | 0.11.1 | 2026-08-12 | Patch | Remove devcontainer CLI Compose containers, networks, and volumes reliably during feature teardown |
 | 0.11.0 | 2026-08-12 | Minor | Add pluggable workspace runtimes with experimental Docker SBX isolation and account-free container defaults |
 | 0.10.1 | 2026-03-19 | Patch | Extend `--allow-container` to `feature teardown` and `feature prune` for full container lifecycle |
