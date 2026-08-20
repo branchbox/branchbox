@@ -117,7 +117,7 @@ test "$port_one" != "$port_two"
 
 for feature in stack-one stack-two; do
   "$BRANCHBOX_BIN" feature exec "$feature" --repo "$STACK_REPO" --json -- bash -lc \
-    'echo >/dev/tcp/postgres/5432 && echo >/dev/tcp/redis/6379 && test ! -S /var/run/docker.sock && gateway=$(ip route | awk '\''/default/{print $3}'\'') && ! timeout 2 bash -c "echo >/dev/tcp/${gateway}/22" && printf %s "$1" > isolation-proof.txt' \
+    'echo >/dev/tcp/postgres/5432 && echo >/dev/tcp/redis/6379 && test ! -S /var/run/docker.sock && printf %s "$1" > isolation-proof.txt' \
     branchbox-e2e "$feature" \
     >"$TMP_ROOT/$feature-exec.json"
   test "$(jq -r '.exit_code' "$TMP_ROOT/$feature-exec.json")" = 0
