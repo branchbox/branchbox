@@ -66,6 +66,8 @@ services:
   app:
     image: mcr.microsoft.com/devcontainers/base:ubuntu
     command: sleep infinity
+    volumes:
+      - ../..:/workspaces:cached
     depends_on:
       postgres:
         condition: service_healthy
