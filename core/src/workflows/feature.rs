@@ -5560,14 +5560,15 @@ mod tests {
         let worktree_path = repo_path.join("feature-test");
         fs::create_dir_all(&worktree_path).unwrap();
 
+        // Create the workflow before the intentionally minimal fake worktree metadata. Git may
+        // prune incomplete metadata while opening the repository.
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+
         // Write a .git file with absolute path
         let git_file = worktree_path.join(".git");
         let metadata_path = repo_path.join(".git/worktrees/feature-test");
         fs::create_dir_all(&metadata_path).unwrap();
         fs::write(&git_file, format!("gitdir: {}\n", metadata_path.display())).unwrap();
-
-        // Create the workflow and fix the path
-        let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
