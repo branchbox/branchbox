@@ -39,7 +39,7 @@ A distributed development environment orchestrator that manages git worktrees an
 │      ┌─────────┼──────────┐                  │
 │      │         │          │                  │
 │ container   local-vm     sbx                 │
-│ (default)  (reserved) (experimental)         │
+│ (default) (Firecracker) (experimental)       │
 │      └─────────┴──────────┘                  │
 └──────────────────────────────────────────────┘
                  │

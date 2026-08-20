@@ -1,0 +1,78 @@
+name: Local VM Firecracker E2E
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/src/runtime/**'
+      - 'scripts/local-vm/**'
+      - 'scripts/manual-local-vm-e2e.sh'
+      - '.github/workflows/local-vm-e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  firecracker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: docker/setup-buildx-action@v3
+      - name: Enable KVM access
+        run: |
+          test -e /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm
+      - name: Install host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables jq rsync socat e2fsprogs
+          sudo sysctl -w net.ipv4.ip_forward=1
+      - name: Install pinned Firecracker and jailer
+        env:
+          FIRECRACKER_VERSION: v1.16.1
+          FIRECRACKER_SHA256: 382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6
+        run: |
+          archive="firecracker-${FIRECRACKER_VERSION}-x86_64.tgz"
+          curl -fsSLO "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/${archive}"
+          printf '%s  %s\n' "$FIRECRACKER_SHA256" "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          sudo install -m 0755 "release-${FIRECRACKER_VERSION}-x86_64/firecracker-${FIRECRACKER_VERSION}-x86_64" /usr/local/bin/firecracker
+          sudo install -m 0755 "release-${FIRECRACKER_VERSION}-x86_64/jailer-${FIRECRACKER_VERSION}-x86_64" /usr/local/bin/jailer
+      - name: Build digest-addressed guest image
+        env:
+          BRANCHBOX_LOCAL_VM_GHA_CACHE: '1'
+        run: scripts/local-vm/build-image.sh
+      - name: Install guest image
+        run: |
+          sudo install -d -m 0755 /var/lib/branchbox/local-vm/images/current
+          sudo install -m 0644 target/local-vm-image/vmlinux target/local-vm-image/rootfs.ext4 target/local-vm-image/manifest.json /var/lib/branchbox/local-vm/images/current/
+      - name: Prove failed prepare leaves no host artifacts
+        run: |
+          state_dir=$(mktemp -d)
+          workspace=$(mktemp -d)
+          git -C "$workspace" init -b main
+          if BRANCHBOX_LOCAL_VM_STATE_DIR="$state_dir" \
+            BRANCHBOX_LOCAL_VM_TEST_FAIL_AFTER_NETWORK=1 \
+            scripts/local-vm/branchbox-local-vm prepare cleanup-probe "$workspace" "$workspace" '[]'; then
+            echo 'injected prepare failure unexpectedly succeeded' >&2
+            exit 1
+          fi
+          test -z "$(find "$state_dir" -mindepth 1 -print -quit)"
+          ! ip -o link show | grep -q 'bb[0-9a-f]\{10\}'
+      - name: Run full Firecracker lifecycle proof
+        run: scripts/manual-local-vm-e2e.sh
+      - name: Prove no host artifacts remain
+        if: always()
+        run: |
+          if pgrep -x firecracker; then
+            echo 'orphaned Firecracker process remains' >&2
+            exit 1
+          fi
+          if ip -o link show | grep -q 'bb[0-9a-f]\{10\}'; then
+            echo 'orphaned BranchBox TAP device remains' >&2
+            exit 1
+          fi

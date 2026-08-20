@@ -1,0 +1,15 @@
+[Unit]
+Description=Initialize disposable BranchBox guest identity
+Before=ssh.service docker.service
+Wants=systemd-networkd.service
+After=systemd-networkd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemd-machine-id-setup
+ExecStart=/usr/bin/ssh-keygen -A
+ExecStart=/usr/bin/install -d -m 0755 -o branchbox -g branchbox /workspaces
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

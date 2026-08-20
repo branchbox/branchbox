@@ -65,12 +65,16 @@ branchbox feature start add-oauth --runtime container
 
 # Experimental Docker Sandboxes microVM boundary
 branchbox feature start add-oauth --runtime sbx
+
+# Account-free Firecracker microVM boundary (x86_64 Linux/KVM)
+branchbox feature start add-oauth --runtime local-vm
 ```
 
 The `sbx` provider detects the Docker Sandboxes CLI and authentication before changing the
 repository. If SBX is unavailable, only the explicitly selected SBX start fails; normal BranchBox
-workflows remain account-free. `local-vm` is reserved for the future account-free microVM backend
-and currently returns a clear not-implemented error.
+workflows remain account-free. The `local-vm` provider is also account-free, but intentionally
+requires an x86_64 Linux host with writable `/dev/kvm`, passwordless `sudo` for narrowly scoped
+jailer/TAP lifecycle commands, Firecracker and jailer, and approved guest artifacts.
 
 SBX startup failures are sanitized at the runtime boundary shared by text, JSON, agent, CI, and
 telemetry callers. BranchBox drops rendered Compose configuration, redacts environment-shaped
@@ -133,25 +137,48 @@ Redis. If a service requests `/dev/net/tun`, SBX preflight either confirms it is
 before sandbox creation with an actionable error. BranchBox never silently rewrites the source
 Compose file.
 
-### Account-free local VM direction
+### Account-free Firecracker local VM
 
-The reserved `local-vm` provider has been evaluated against three local options:
+`local-vm` implements the same `RuntimeProvider` lifecycle without Docker SBX or a hosted account:
 
-- [Lima](https://lima-vm.io/docs/examples/containers/) provides the lowest-level building blocks:
-  Linux VMs, filesystem sharing, container engines, and port forwarding. It offers the most control,
-  but BranchBox would own more provisioning and Docker-context integration.
-- [Colima](https://github.com/abiosoft/colima) layers named instances, a Docker runtime, mounts, and
-  automatic port forwarding over Lima. It is the recommended first prototype because the existing
-  Compose and devcontainer commands can continue to target a Docker-compatible socket without a
-  hosted account.
-- [Podman machine](https://podman.io/docs/installation) also supplies a local VM on macOS, but its
-  Podman API introduces more Compose/devcontainer compatibility risk for the initial backend.
+```text
+BranchBox -> branchbox-local-vm -> jailer -> Firecracker VM
+                                          -> guest Docker Engine
+                                          -> devcontainer / Compose stack
+```
 
-The intended next increment is therefore a project-scoped Colima profile behind the existing
-provider trait. It must pass the same lifecycle contract proven for SBX: start a full Compose-based
-devcontainer, execute the coding agent inside it, expose collision-safe host ports, survive restart,
-and remove only provider-owned state. Direct Lima remains the fallback if Colima's profile or socket
-model prevents per-worktree isolation.
+Phase 1 supports x86_64 Linux/KVM. Install matching Firecracker and jailer binaries (the CI and
+image manifest pin v1.16.1), then build the versioned guest artifacts:
+
+```bash
+scripts/local-vm/build-image.sh
+sudo install -d -m 0755 /var/lib/branchbox/local-vm/images/current
+sudo install -m 0644 target/local-vm-image/{vmlinux,rootfs.ext4,manifest.json} \
+  /var/lib/branchbox/local-vm/images/current/
+branchbox feature start add-oauth --runtime local-vm
+```
+
+The build recipe pins the kernel, Firecracker guest configuration, Ubuntu base, and devcontainer
+CLI. `manifest.json` records kernel/rootfs SHA-256 digests; startup verifies both before mutation,
+and the registry/JSON API reports those digests with the Firecracker version.
+
+Each feature gets a disposable writable rootfs, one-time SSH key, TAP subnet, NAT policy, and host
+port proxies. The project directory is synchronized to the same absolute guest path before runtime
+commands and back afterward, preserving Git worktree changes without mounting host storage. Guest
+egress may reach the public network, but guest-initiated access to host, RFC1918, link-local, and
+metadata networks is rejected. The host Docker socket and shared `~/.codex`, `~/.claude`, and
+`~/.gh` directories are never mounted.
+
+Callers can explicitly inject scoped, disposable files by setting
+`BRANCHBOX_LOCAL_VM_INJECT_DIR`; they appear at `/run/branchbox/credentials` with owner-only
+permissions and are removed with the VM. This is an injection seam, not an ambient credential
+binding. `BRANCHBOX_LOCAL_VM_STATE_DIR`, `BRANCHBOX_LOCAL_VM_IMAGE_DIR`,
+`BRANCHBOX_LOCAL_VM_JAIL_DIR`, `BRANCHBOX_LOCAL_VM_VCPUS`, and
+`BRANCHBOX_LOCAL_VM_MEMORY_MIB` provide host-policy overrides.
+
+Run `scripts/manual-local-vm-e2e.sh` on a KVM host to prove single-container and concurrent
+app/Postgres/Redis workspaces, captured and interactive execution, port publication, network/socket
+isolation, immutable artifact reporting, and orphan-free teardown.
 
 ## Stack Detection
 
