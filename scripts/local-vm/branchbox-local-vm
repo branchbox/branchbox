@@ -66,8 +66,10 @@ guest() {
   local id=$1
   shift
   local -a args=()
+  local command
   while IFS= read -r -d '' arg; do args+=("$arg"); done < <(ssh_args "$id")
-  ssh "${args[@]}" -- "$@"
+  printf -v command '%q ' "$@"
+  ssh "${args[@]}" -- "$command"
 }
 
 sync_to_guest() {
@@ -433,16 +435,17 @@ cmd_exec_interactive() {
   [[ "${1:-}" == -- ]] || die "exec-interactive requires -- before the command"
   shift
   [[ $# -gt 0 ]] || die "interactive command cannot be empty"
-  local workspace_root guest_ip status=0
+  local workspace_root guest_ip command status=0
   workspace_root=$(metadata_value "$id" '.workspace_root')
   guest_ip=$(metadata_value "$id" '.guest_ip')
   sync_to_guest "$id" "$workspace_root"
   local -a args=()
   while IFS= read -r -d '' arg; do args+=("$arg"); done < <(ssh_args "$id")
-  ssh -tt "${args[@]}" -- bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
+  printf -v command '%q ' bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
     --workspace-folder "$worktree" /bin/sh -lc \
     'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
-    branchbox-devcontainer-shell "$@" || status=$?
+    branchbox-devcontainer-shell "$@"
+  ssh -tt "${args[@]}" -- "$command" || status=$?
   sync_from_guest "$id" "$workspace_root"
   return "$status"
 }
