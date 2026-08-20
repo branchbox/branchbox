@@ -48,6 +48,18 @@ pub struct RuntimeSettings {
     /// Runtime used when `feature start --runtime` is not supplied.
     #[serde(default)]
     pub provider: RuntimeProviderKind,
+
+    /// Docker Sandboxes-specific workspace policy.
+    #[serde(default)]
+    pub sbx: SbxRuntimeSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SbxRuntimeSettings {
+    /// Compose services explicitly started by devcontainers in SBX. Compose still starts their
+    /// declared dependencies, while unrelated host-integrated sidecars remain stopped.
+    #[serde(default)]
+    pub run_services: Vec<String>,
 }
 
 impl BranchBoxConfig {

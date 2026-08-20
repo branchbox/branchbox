@@ -14,9 +14,9 @@ use worktree_core::{
     config::BranchBoxConfig,
     runtime::{self, RuntimeProviderKind},
     workflows::feature::{
-        FeatureMetadata, FeatureStatus, FeatureTunnelStatus, FeatureWorkflow, ModuleOutcome,
-        ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus, StartMode, StartRequest, StartSummary,
-        TeardownRequest, TeardownSummary,
+        DevcontainerReusePolicy, FeatureMetadata, FeatureStatus, FeatureTunnelStatus,
+        FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus,
+        StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
     },
     Error as CoreError,
 };
@@ -66,6 +66,23 @@ pub struct FeatureStartArgs {
     /// Allow reusing an existing worktree directory
     #[arg(long)]
     pub reuse: bool,
+
+    /// Copy-mode conflict policy when reusing a worktree (fail, preserve, overwrite, inspect)
+    #[arg(
+        long,
+        value_name = "POLICY",
+        default_value = "fail",
+        requires = "reuse"
+    )]
+    pub devcontainer_reuse: DevcontainerReusePolicy,
+
+    /// Retain a failed SBX runtime and its build cache for inspection or retry
+    #[arg(long)]
+    pub keep_runtime_on_failure: bool,
+
+    /// Reuse a retained runtime (implies --reuse and --keep-runtime-on-failure)
+    #[arg(long, conflicts_with = "reuse")]
+    pub reuse_runtime: bool,
 
     /// Emit verbose telemetry (e.g. Cloudflare operations)
     #[arg(long)]
@@ -157,11 +174,11 @@ pub struct FeatureListArgs {
     #[arg(long)]
     pub repo: Option<PathBuf>,
 
-    /// Filter by status (active, removed)
+    /// Filter by status (active, degraded, failed_retained, orphaned, removed)
     #[arg(long)]
     pub status: Option<String>,
 
-    /// Include removed features even if --status is not provided
+    /// Include removed features (retained and orphaned features are shown by default)
     #[arg(long, conflicts_with = "status")]
     pub all: bool,
 
@@ -259,6 +276,9 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         branch_prefix,
         repo,
         reuse,
+        devcontainer_reuse,
+        keep_runtime_on_failure,
+        reuse_runtime,
         telemetry,
         skip_modules,
         minimal,
@@ -306,7 +326,9 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         title,
         base_branch: base,
         branch_prefix,
-        reuse_existing: reuse,
+        reuse_existing: reuse || reuse_runtime,
+        devcontainer_reuse,
+        keep_runtime_on_failure: keep_runtime_on_failure || reuse_runtime,
         telemetry,
         skip_modules,
         mode,
@@ -363,13 +385,25 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         .iter()
         .filter(|feature| feature.status == FeatureStatus::Active)
         .count();
-    let removed_count = total_count.saturating_sub(active_count);
+    let failed_count = features
+        .iter()
+        .filter(|feature| {
+            matches!(
+                feature.status,
+                FeatureStatus::Degraded | FeatureStatus::FailedRetained | FeatureStatus::Orphaned
+            )
+        })
+        .count();
+    let removed_count = features
+        .iter()
+        .filter(|feature| feature.status == FeatureStatus::Removed)
+        .count();
 
     if let Some(status_filter) = status.as_ref() {
         let parsed: FeatureStatus = status_filter.parse()?;
         features.retain(|feature| feature.status == parsed);
     } else if !all {
-        features.retain(|feature| feature.status == FeatureStatus::Active);
+        features.retain(|feature| feature.status != FeatureStatus::Removed);
     }
 
     if total_count == 0 {
@@ -391,7 +425,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             );
         } else if !all {
             println!(
-                "ℹ️  No active features. Use `branchbox feature list --all` to include removed entries."
+                "ℹ️  No active or retained features. Use `branchbox feature list --all` to include removed entries."
             );
         } else {
             println!("ℹ️  No features match the requested filters.");
@@ -434,8 +468,8 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
 
     let showing_count = entries.len();
     println!(
-        "📚 Feature registry — {} active · {} removed (showing {}/{})",
-        active_count, removed_count, showing_count, total_count
+        "📚 Feature registry — {} active · {} retained/orphaned · {} removed (showing {}/{})",
+        active_count, failed_count, removed_count, showing_count, total_count
     );
 
     let headers = [
@@ -709,15 +743,15 @@ pub fn run_prune(args: FeaturePruneArgs) -> Result<()> {
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
     let mut features = workflow.list_features()?;
-    features.retain(|feature| feature.status == FeatureStatus::Active);
+    features.retain(|feature| feature.status != FeatureStatus::Removed);
 
     if features.is_empty() {
-        println!("ℹ️  No active features to prune.");
+        println!("ℹ️  No active or retained features to prune.");
         return Ok(());
     }
 
     println!(
-        "🧹 Preparing to prune {} active feature worktree(s):",
+        "🧹 Preparing to prune {} active or retained feature worktree(s):",
         features.len()
     );
     for feature in &features {

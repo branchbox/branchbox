@@ -213,6 +213,9 @@ Options:
       --branch-prefix <BRANCH_PREFIX>  Override branch prefix (defaults to "feature")
       --repo <REPO>                    Repository path (defaults to current directory)
       --reuse                          Allow reusing an existing worktree directory
+      --devcontainer-reuse <POLICY>    Copy-mode conflict policy when reusing a worktree (fail, preserve, overwrite, inspect) [default: fail]
+      --keep-runtime-on-failure        Retain a failed SBX runtime and its build cache for inspection or retry
+      --reuse-runtime                  Reuse a retained runtime (implies --reuse and --keep-runtime-on-failure)
       --telemetry                      Emit verbose telemetry (e.g. Cloudflare operations)
       --skip-module <MODULE>           Skip specific modules during setup (can be specified multiple times) Available modules: compose, database, tunnel, specs
       --minimal                        Start feature workflow in minimal mode (skips heavyweight modules)
@@ -234,8 +237,8 @@ Usage: branchbox feature list [OPTIONS]
 
 Options:
       --repo <REPO>      Repository path (defaults to current directory)
-      --status <STATUS>  Filter by status (active, removed)
-      --all              Include removed features even if --status is not provided
+      --status <STATUS>  Filter by status (active, degraded, failed_retained, orphaned, removed)
+      --all              Include removed features (retained and orphaned features are shown by default)
       --json             Emit JSON output instead of human-readable summary
   -h, --help             Print help
 ```

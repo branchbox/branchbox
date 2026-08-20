@@ -120,6 +120,21 @@ pub trait RuntimeProvider {
         Ok(())
     }
 
+    /// Whether a recorded runtime still exists. Providers that do not own a separate boundary are
+    /// always available.
+    fn exists(&self, _metadata: &RuntimeMetadata) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// Whether the primary developer environment is currently ready for execution.
+    fn environment_ready(
+        &self,
+        _metadata: &RuntimeMetadata,
+        _worktree_path: &Path,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
     /// Create or reuse the execution boundary for a prepared worktree.
     fn prepare(&self, context: &RuntimeContext<'_>) -> Result<RuntimeMetadata>;
 
@@ -238,7 +253,9 @@ struct SbxRuntimeProvider {
 impl SbxRuntimeProvider {
     const MAX_FAILURE_DETAIL_LINES: usize = 12;
     const MAX_FAILURE_DETAIL_BYTES: usize = 2_048;
-    const DEVCONTAINER_EXEC: &'static str = "if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
+    const DEVCONTAINER_UP: &'static str = "set --; if [ -f .devcontainer/branchbox-sbx.json ]; then set -- --config .devcontainer/branchbox-sbx.json; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer up --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli up --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
+    const DEVCONTAINER_PROBE: &'static str = "config_args=''; if [ -f .devcontainer/branchbox-sbx.json ]; then config_args='--config .devcontainer/branchbox-sbx.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args true; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args true; else exit 127; fi";
+    const DEVCONTAINER_EXEC: &'static str = "config_args=''; if [ -f .devcontainer/branchbox-sbx.json ]; then config_args='--config .devcontainer/branchbox-sbx.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
     const PORT_PROXY_BOOTSTRAP: &'static str = r#"set -eu
 container_id="$1"
 runtime_port="$2"
@@ -611,6 +628,40 @@ exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$net
         }
         Ok(())
     }
+
+    fn start_devcontainer(&self, runtime_id: &str, worktree_path: &Path) -> Result<String> {
+        let worktree = worktree_path.to_string_lossy();
+        let output = self.run(&[
+            "exec",
+            "--workdir",
+            worktree.as_ref(),
+            runtime_id,
+            "bash",
+            "-lc",
+            Self::DEVCONTAINER_UP,
+        ])?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Docker Sandboxes could not start the devcontainer in '{runtime_id}': {}",
+                Self::devcontainer_failure_detail(&output)
+            )));
+        }
+        Self::devcontainer_id(&output)
+    }
+
+    fn reconcile_environment(
+        &self,
+        metadata: &RuntimeMetadata,
+        worktree_path: &Path,
+    ) -> Result<()> {
+        let runtime_id = self.runtime_id(metadata)?;
+        self.wake_sandbox(runtime_id)?;
+        let container_id = self.start_devcontainer(runtime_id, worktree_path)?;
+        for port in &metadata.published_ports {
+            self.start_port_proxy(runtime_id, &container_id, *port)?;
+        }
+        Ok(())
+    }
 }
 
 fn exec_result(output: Output) -> RuntimeExecResult {
@@ -628,6 +679,31 @@ impl RuntimeProvider for SbxRuntimeProvider {
 
     fn validate(&self) -> Result<()> {
         self.ensure_available().map(|_| ())
+    }
+
+    fn exists(&self, metadata: &RuntimeMetadata) -> Result<bool> {
+        let Some(runtime_id) = metadata.runtime_id.as_deref() else {
+            return Ok(false);
+        };
+        Ok(self
+            .ensure_available()?
+            .iter()
+            .any(|candidate| candidate == runtime_id))
+    }
+
+    fn environment_ready(&self, metadata: &RuntimeMetadata, worktree_path: &Path) -> Result<bool> {
+        let runtime_id = self.runtime_id(metadata)?;
+        let worktree = worktree_path.to_string_lossy();
+        let output = self.run(&[
+            "exec",
+            "--workdir",
+            worktree.as_ref(),
+            runtime_id,
+            "bash",
+            "-lc",
+            Self::DEVCONTAINER_PROBE,
+        ])?;
+        Ok(output.status.success())
     }
 
     fn prepare(&self, context: &RuntimeContext<'_>) -> Result<RuntimeMetadata> {
@@ -692,24 +768,7 @@ impl RuntimeProvider for SbxRuntimeProvider {
         metadata: &RuntimeMetadata,
     ) -> Result<()> {
         let runtime_id = self.runtime_id(metadata)?;
-        let worktree = context.worktree_path.to_string_lossy();
-        let bootstrap = "if command -v devcontainer >/dev/null 2>&1; then exec devcontainer up --workspace-folder .; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli up --workspace-folder .; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
-        let output = self.run(&[
-            "exec",
-            "--workdir",
-            worktree.as_ref(),
-            runtime_id,
-            "bash",
-            "-lc",
-            bootstrap,
-        ])?;
-        if !output.status.success() {
-            return Err(Error::validation(format!(
-                "Docker Sandboxes could not start the devcontainer in '{runtime_id}': {}",
-                Self::devcontainer_failure_detail(&output)
-            )));
-        }
-        let container_id = Self::devcontainer_id(&output)?;
+        let container_id = self.start_devcontainer(runtime_id, context.worktree_path)?;
         for port in &metadata.published_ports {
             self.start_port_proxy(runtime_id, &container_id, *port)?;
         }
@@ -727,6 +786,7 @@ impl RuntimeProvider for SbxRuntimeProvider {
         if command.is_empty() {
             return Err(Error::validation("Runtime command cannot be empty"));
         }
+        self.reconcile_environment(metadata, worktree_path)?;
         let mut args = vec![
             "exec".to_string(),
             "--workdir".to_string(),
@@ -752,6 +812,7 @@ impl RuntimeProvider for SbxRuntimeProvider {
         if command.is_empty() {
             return Err(Error::validation("Runtime command cannot be empty"));
         }
+        self.reconcile_environment(metadata, worktree_path)?;
         let worktree = worktree_path.to_string_lossy();
         let status = Command::new(&self.binary)
             .args(["exec", "--workdir", worktree.as_ref(), runtime_id])

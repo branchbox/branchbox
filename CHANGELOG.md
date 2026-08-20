@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- SBX failed-start diagnostics can retain the sandbox and nested build cache with
+  `--keep-runtime-on-failure`, retry it with `--reuse-runtime`, report retained/degraded/orphaned
+  health in `feature list`, and remove retained runtimes through normal teardown/prune lifecycle.
+
 ### Fixed
 
+- SBX execution now reconciles the devcontainer after sandbox resume, refreshes port proxies when
+  the container identity changes, and runs commands through the devcontainer user's login shell so
+  Mise/asdf/nvm-managed tools receive the same environment as an interactive terminal.
+- Copy-mode `feature start --reuse` now detects feature-local devcontainer divergence against the
+  last BranchBox sync baseline and requires an explicit fail/preserve/overwrite/inspect decision.
+- SBX can exclude incompatible optional Compose services through `runtime.sbx.run_services`,
+  preflights `/dev/net/tun` usage, and keeps required Compose dependencies intact.
+- SBX feature startup now provisions a required Cloudflare tunnel environment before creating the
+  sandbox or starting the devcontainer, and fails its credential preflight before an expensive
+  sandbox build when that required environment cannot be populated.
 - Worktree pointer repair now derives and validates the relative target from authoritative Git
   metadata instead of trusting an unrelated sibling directory named `main`.
 

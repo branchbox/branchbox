@@ -76,6 +76,8 @@ pub fn build_start_request(params: StartRequestParams) -> StartRequest {
         base_branch: params.base_branch,
         branch_prefix: params.branch_prefix,
         reuse_existing: params.reuse_existing,
+        devcontainer_reuse: Default::default(),
+        keep_runtime_on_failure: false,
         telemetry: params.telemetry,
         skip_modules: params.skip_modules,
         mode: params.mode,
