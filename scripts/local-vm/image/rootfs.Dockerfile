@@ -27,8 +27,7 @@ RUN apt-get update \
 COPY 20-eth0.network /etc/systemd/network/20-eth0.network
 COPY branchbox-firstboot.service /etc/systemd/system/branchbox-firstboot.service
 
-RUN systemctl enable branchbox-firstboot.service \
-    && ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+RUN systemctl enable branchbox-firstboot.service
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
