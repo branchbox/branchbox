@@ -9,8 +9,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-RUN curl -fsSLo linux.tar.xz "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
-    && curl -fsSLo firecracker.tar.gz "https://github.com/firecracker-microvm/firecracker/archive/refs/tags/${FIRECRACKER_VERSION}.tar.gz" \
+RUN curl --http1.1 --retry 5 --retry-delay 2 --retry-all-errors -fsSLo linux.tar.xz \
+      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+    && curl --http1.1 --retry 5 --retry-delay 2 --retry-all-errors -fsSLo firecracker.tar.gz \
+      "https://github.com/firecracker-microvm/firecracker/archive/refs/tags/${FIRECRACKER_VERSION}.tar.gz" \
     && tar -xf linux.tar.xz \
     && tar -xf firecracker.tar.gz
 
