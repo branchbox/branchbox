@@ -451,9 +451,7 @@ cmd_exec() {
   local status=0
   sync_runtime_to_guest "$id"
   guest "$id" bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
-    --workspace-folder "$worktree" /bin/sh -lc \
-    'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
-    branchbox-devcontainer-shell "$@" || status=$?
+    --workspace-folder "$worktree" "$@" || status=$?
   sync_runtime_from_guest "$id"
   return "$status"
 }
@@ -470,9 +468,7 @@ cmd_exec_interactive() {
   local -a args=()
   while IFS= read -r -d '' arg; do args+=("$arg"); done < <(ssh_args "$id")
   printf -v command '%q ' bash -lc "$(devcontainer_command)" branchbox-devcontainer exec \
-    --workspace-folder "$worktree" /bin/sh -lc \
-    'exec "${SHELL:-/bin/sh}" -lic '\''exec "$@"'\'' branchbox-login "$@"' \
-    branchbox-devcontainer-shell "$@"
+    --workspace-folder "$worktree" "$@"
   ssh -tt "${args[@]}" -- "$command" || status=$?
   sync_runtime_from_guest "$id"
   return "$status"

@@ -116,9 +116,12 @@ port_two=$(jq -er '.runtime.published_ports[] | select(.runtime == 3000) | .host
 test "$port_one" != "$port_two"
 
 for feature in stack-one stack-two; do
-  "$BRANCHBOX_BIN" feature exec "$feature" --repo "$STACK_REPO" --json -- /usr/bin/bash -c \
+  if ! "$BRANCHBOX_BIN" feature exec "$feature" --repo "$STACK_REPO" --json -- /usr/bin/bash -c \
     'echo >/dev/tcp/postgres/5432 && echo >/dev/tcp/redis/6379 && test ! -S /var/run/docker.sock && printf stack-proof > isolation-proof.txt' \
-    >"$TMP_ROOT/$feature-exec.json"
+    >"$TMP_ROOT/$feature-exec.json"; then
+    cat "$TMP_ROOT/$feature-exec.json" >&2
+    exit 1
+  fi
   test "$(jq -r '.exit_code' "$TMP_ROOT/$feature-exec.json")" = 0
   test "$(cat "$TMP_ROOT/$feature/isolation-proof.txt")" = stack-proof
   test -e "$TMP_ROOT/stack-one/.git"
