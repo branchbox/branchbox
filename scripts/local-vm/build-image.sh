@@ -45,7 +45,6 @@ sudo mount -o loop "$OUTPUT_DIR/rootfs.ext4" "$MOUNT_DIR"
 sudo tar -xf "$BUILD_DIR/rootfs.tar" -C "$MOUNT_DIR"
 sudo rm -f "$MOUNT_DIR/etc/resolv.conf"
 sudo ln -s /run/systemd/resolve/stub-resolv.conf "$MOUNT_DIR/etc/resolv.conf"
-sudo chown -R root:root "$MOUNT_DIR"
 sudo umount "$MOUNT_DIR"
 cp "$BUILD_DIR/kernel/vmlinux" "$OUTPUT_DIR/vmlinux"
 

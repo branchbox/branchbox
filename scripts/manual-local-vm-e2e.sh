@@ -122,7 +122,10 @@ echo '==> Proving deterministic teardown with no VM/TAP/disk/process orphan'
 "$BRANCHBOX_BIN" feature teardown stack-two --repo "$STACK_REPO" --force
 for runtime_id in "${RUNTIME_IDS[@]}"; do
   ! "$DRIVER" exists "$runtime_id"
-  ! pgrep -af "firecracker.*$runtime_id" >/dev/null
+  if pgrep -af "firecracker.*$runtime_id" >/dev/null; then
+    echo "orphaned Firecracker process remains for $runtime_id" >&2
+    exit 1
+  fi
   test ! -e "${BRANCHBOX_LOCAL_VM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/branchbox/local-vm}/$runtime_id"
 done
 RUNTIME_IDS=()

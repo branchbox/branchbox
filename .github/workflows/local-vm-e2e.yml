@@ -67,5 +67,11 @@ jobs:
       - name: Prove no host artifacts remain
         if: always()
         run: |
-          ! pgrep -x firecracker
-          ! ip -o link show | grep -q 'bb[0-9a-f]\{10\}'
+          if pgrep -x firecracker; then
+            echo 'orphaned Firecracker process remains' >&2
+            exit 1
+          fi
+          if ip -o link show | grep -q 'bb[0-9a-f]\{10\}'; then
+            echo 'orphaned BranchBox TAP device remains' >&2
+            exit 1
+          fi

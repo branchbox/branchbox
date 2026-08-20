@@ -121,6 +121,7 @@ cmd_validate() {
   require_cmd ip
   require_cmd iptables
   require_cmd jq
+  require_cmd curl
   require_cmd rsync
   require_cmd sha256sum
   require_cmd socat
@@ -208,8 +209,36 @@ teardown_network() {
   sudo -n ip link delete "$tap" 2>/dev/null || true
 }
 
+firecracker_put() {
+  local socket=$1 path=$2 payload=$3
+  curl --fail --silent --show-error --unix-socket "$socket" \
+    --request PUT --header 'Content-Type: application/json' --data "$payload" \
+    "http://localhost${path}" >/dev/null
+}
+
+start_microvm() {
+  local id=$1 jail=$2 socket="$jail/run/firecracker.socket" config="$jail/config.json" payload
+  for _ in $(seq 1 50); do
+    [[ -S "$socket" ]] && break
+    sleep 0.1
+  done
+  [[ -S "$socket" ]] || die "Firecracker API socket was not created for $id"
+
+  payload=$(jq -c '.["boot-source"]' "$config")
+  firecracker_put "$socket" /boot-source "$payload"
+  while IFS= read -r payload; do
+    firecracker_put "$socket" "/drives/$(jq -r '.drive_id' <<<"$payload")" "$payload"
+  done < <(jq -c '.drives[]' "$config")
+  firecracker_put "$socket" /machine-config "$(jq -c '.["machine-config"]' "$config")"
+  while IFS= read -r payload; do
+    firecracker_put "$socket" "/network-interfaces/$(jq -r '.iface_id' <<<"$payload")" "$payload"
+  done < <(jq -c '.["network-interfaces"][]' "$config")
+  firecracker_put "$socket" /serial '{"serial_out_path":"run/serial.log"}'
+  firecracker_put "$socket" /actions '{"action_type":"InstanceStart"}'
+}
+
 wait_for_guest() {
-  local id=$1 dir guest_ip
+  local id=$1 dir guest_ip jail tap
   dir=$(runtime_dir "$id")
   guest_ip=$(metadata_value "$id" '.guest_ip')
   ssh-keygen -R "$guest_ip" -f "$dir/known_hosts" >/dev/null 2>&1 || true
@@ -220,6 +249,14 @@ wait_for_guest() {
       if guest "$id" true >/dev/null 2>&1; then return; fi
     fi
     sleep 1
+  done
+  jail="$JAIL_ROOT/firecracker/$id/root"
+  tap=$(metadata_value "$id" '.tap')
+  printf '%s\n' "--- Firecracker diagnostics for $id ---" >&2
+  ip neigh show dev "$tap" >&2 || true
+  for log in "$jail/run/firecracker.log" "$jail/run/serial.log"; do
+    printf '%s\n' "--- ${log##*/} ---" >&2
+    sudo -n tail -n 120 "$log" >&2 2>/dev/null || true
   done
   die "Firecracker guest $id did not become SSH-ready"
 }
@@ -268,11 +305,15 @@ cmd_prepare() {
   sudo -n tee "$jail/config.json" >/dev/null <<JSON
 {"boot-source":{"kernel_image_path":"/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off nomodules rw root=/dev/vda ip=${guest_ip}::${host_ip}:255.255.255.252::eth0:off"},"drives":[{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":false}],"machine-config":{"vcpu_count":${BRANCHBOX_LOCAL_VM_VCPUS:-2},"mem_size_mib":${BRANCHBOX_LOCAL_VM_MEMORY_MIB:-4096},"smt":false},"network-interfaces":[{"iface_id":"eth0","guest_mac":"06:00:ac:1e:$(printf '%02x' "${network##*.}"):02","host_dev_name":"${tap}"}]}
 JSON
-  sudo -n chmod 600 "$jail/config.json"
-  sudo -n chown "$(id -u):$(id -g)" "$jail/vmlinux" "$jail/rootfs.ext4" "$jail/config.json"
+  sudo -n install -d -m 700 "$jail/run"
+  sudo -n touch "$jail/run/firecracker.log" "$jail/run/serial.log"
+  sudo -n chmod 600 "$jail/config.json" "$jail/run/firecracker.log" "$jail/run/serial.log"
+  sudo -n chown "$(id -u):$(id -g)" "$jail/vmlinux" "$jail/rootfs.ext4" "$jail/config.json" \
+    "$jail/run/firecracker.log" "$jail/run/serial.log"
   sudo -n "$JAILER_BIN" --id "$id" --exec-file "$FIRECRACKER_BIN" --uid "$(id -u)" \
     --gid "$(id -g)" --cgroup-version 2 --chroot-base-dir "$JAIL_ROOT" --daemonize -- \
-    --api-sock run/firecracker.socket --config-file config.json
+    --api-sock run/firecracker.socket --log-path run/firecracker.log --level Info
+  start_microvm "$id" "$jail"
   wait_for_guest "$id"
   sync_to_guest "$id" "$workspace_root"
   inject_credentials "$id"
@@ -285,7 +326,7 @@ cmd_exists() {
   local id=$1 dir pid_file
   dir=$(runtime_dir "$id")
   [[ -f "$dir/metadata.json" ]] || return 1
-  pid_file="$JAIL_ROOT/firecracker/$id/root/run/firecracker.pid"
+  pid_file="$JAIL_ROOT/firecracker/$id/root/firecracker.pid"
   [[ -r "$pid_file" ]] || return 1
   kill -0 "$(cat "$pid_file")" 2>/dev/null
 }
@@ -410,8 +451,15 @@ cmd_destroy() {
     while IFS= read -r pid_file; do kill "$(cat "$pid_file")" 2>/dev/null || true; done \
       < <(find "$dir/proxies" -type f -name '*.pid')
   fi
-  pid_file="$JAIL_ROOT/firecracker/$id/root/run/firecracker.pid"
-  if [[ -r "$pid_file" ]]; then sudo -n kill "$(cat "$pid_file")" 2>/dev/null || true; fi
+  pid_file="$JAIL_ROOT/firecracker/$id/root/firecracker.pid"
+  if [[ -r "$pid_file" ]]; then
+    sudo -n kill "$(cat "$pid_file")" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$(cat "$pid_file")" 2>/dev/null || break
+      sleep 0.1
+    done
+    sudo -n kill -KILL "$(cat "$pid_file")" 2>/dev/null || true
+  fi
   [[ -n "$tap" && -n "$host_ip" ]] && teardown_network "$tap" "$host_ip"
   sudo -n find "$JAIL_ROOT/firecracker/$id" -depth -delete 2>/dev/null || true
   find "$dir" -depth -delete
