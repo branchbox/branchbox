@@ -839,6 +839,52 @@ fn feature_start_minimal_mode_json_summary() {
     );
 }
 
+#[test]
+fn feature_start_json_keeps_diagnostics_on_stderr() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+    let work_feature = "json-diagnostics";
+
+    fs::remove_file(repo_path.join(".env")).expect("remove .env to trigger warning");
+
+    let output = branchbox_cmd!(repo_path, "RUST_LOG" => "warn")
+        .args([
+            "feature",
+            "start",
+            work_feature,
+            "--skip-module",
+            "tunnel",
+            "--json",
+        ])
+        .output()
+        .expect("run warning-producing feature start --json");
+
+    assert!(
+        output.status.success(),
+        "expected feature start to succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary: Value = serde_json::from_slice(&output.stdout)
+        .expect("diagnostics must not corrupt feature start JSON stdout");
+    assert_eq!(summary["work_feature"], Value::String(work_feature.into()));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("No .env found"),
+        "expected missing .env diagnostic on stderr"
+    );
+
+    branchbox_cmd!(repo_path)
+        .args([
+            "feature",
+            "teardown",
+            work_feature,
+            "--delete-branch",
+            "--force",
+        ])
+        .assert()
+        .success();
+}
+
 #[cfg(unix)]
 #[test]
 fn local_vm_runtime_full_cli_lifecycle_reports_immutable_artifacts() {

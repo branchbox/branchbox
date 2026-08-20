@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- CLI diagnostics now use stderr so `--json` stdout remains valid machine-readable JSON even when
+  `RUST_LOG` enables warnings or informational events.
+
 ## [0.12.0] - 2026-08-20
 
 ### Added
