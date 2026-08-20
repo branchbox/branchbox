@@ -8,6 +8,7 @@ set -Eeuo pipefail
 STATE_ROOT="${BRANCHBOX_LOCAL_VM_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/branchbox/local-vm}"
 IMAGE_ROOT="${BRANCHBOX_LOCAL_VM_IMAGE_DIR:-/var/lib/branchbox/local-vm/images/current}"
 JAIL_ROOT="${BRANCHBOX_LOCAL_VM_JAIL_DIR:-/var/lib/branchbox/local-vm/jailer}"
+SOCKET_ROOT="${BRANCHBOX_LOCAL_VM_SOCKET_DIR:-/run/branchbox-local-vm-$(id -u)}"
 FIRECRACKER_BIN="${BRANCHBOX_FIRECRACKER_PATH:-$(command -v firecracker 2>/dev/null || true)}"
 JAILER_BIN="${BRANCHBOX_JAILER_PATH:-$(command -v jailer 2>/dev/null || true)}"
 SSH_USER="${BRANCHBOX_LOCAL_VM_SSH_USER:-branchbox}"
@@ -31,6 +32,10 @@ runtime_id() {
 
 runtime_dir() {
   printf '%s/%s\n' "$STATE_ROOT" "$1"
+}
+
+api_socket_link() {
+  printf '%s/%s.sock\n' "$SOCKET_ROOT" "$(printf '%s' "$1" | sha256sum | cut -c1-16)"
 }
 
 metadata_value() {
@@ -217,24 +222,29 @@ firecracker_put() {
 }
 
 start_microvm() {
-  local id=$1 jail=$2 socket="$jail/run/firecracker.socket" config="$jail/config.json" payload
+  local id=$1 jail=$2 socket="$jail/run/firecracker.socket" short_socket config="$jail/config.json" payload
   for _ in $(seq 1 50); do
     [[ -S "$socket" ]] && break
     sleep 0.1
   done
   [[ -S "$socket" ]] || die "Firecracker API socket was not created for $id"
+  short_socket=$(api_socket_link "$id")
+  sudo -n install -d -m 700 -o "$(id -u)" -g "$(id -g)" "$SOCKET_ROOT"
+  rm -f "$short_socket"
+  ln -s "$socket" "$short_socket"
 
   payload=$(jq -c '.["boot-source"]' "$config")
-  firecracker_put "$socket" /boot-source "$payload"
+  firecracker_put "$short_socket" /boot-source "$payload"
   while IFS= read -r payload; do
-    firecracker_put "$socket" "/drives/$(jq -r '.drive_id' <<<"$payload")" "$payload"
+    firecracker_put "$short_socket" "/drives/$(jq -r '.drive_id' <<<"$payload")" "$payload"
   done < <(jq -c '.drives[]' "$config")
-  firecracker_put "$socket" /machine-config "$(jq -c '.["machine-config"]' "$config")"
+  firecracker_put "$short_socket" /machine-config "$(jq -c '.["machine-config"]' "$config")"
   while IFS= read -r payload; do
-    firecracker_put "$socket" "/network-interfaces/$(jq -r '.iface_id' <<<"$payload")" "$payload"
+    firecracker_put "$short_socket" "/network-interfaces/$(jq -r '.iface_id' <<<"$payload")" "$payload"
   done < <(jq -c '.["network-interfaces"][]' "$config")
-  firecracker_put "$socket" /serial '{"serial_out_path":"run/serial.log"}'
-  firecracker_put "$socket" /actions '{"action_type":"InstanceStart"}'
+  firecracker_put "$short_socket" /serial '{"serial_out_path":"run/serial.log"}'
+  firecracker_put "$short_socket" /actions '{"action_type":"InstanceStart"}'
+  rm -f "$short_socket"
 }
 
 wait_for_guest() {
@@ -438,7 +448,7 @@ cmd_exec_interactive() {
 }
 
 cmd_destroy() {
-  local id=$1 dir workspace_root tap host_ip pid_file
+  local id=$1 dir workspace_root tap host_ip pid_file short_socket
   dir=$(runtime_dir "$id")
   [[ -d "$dir" ]] || return 0
   workspace_root=$(metadata_value "$id" '.workspace_root' 2>/dev/null || true)
@@ -460,6 +470,8 @@ cmd_destroy() {
     done
     sudo -n kill -KILL "$(cat "$pid_file")" 2>/dev/null || true
   fi
+  short_socket=$(api_socket_link "$id")
+  rm -f "$short_socket"
   [[ -n "$tap" && -n "$host_ip" ]] && teardown_network "$tap" "$host_ip"
   sudo -n find "$JAIL_ROOT/firecracker/$id" -depth -delete 2>/dev/null || true
   find "$dir" -depth -delete
