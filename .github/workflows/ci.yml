@@ -80,7 +80,7 @@ jobs:
 
   agentify_runtime_artifact:
     name: Agentify Runtime Artifact
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: quality_checks
     env:
       SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

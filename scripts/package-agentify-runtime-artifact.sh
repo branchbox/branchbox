@@ -36,7 +36,7 @@ readonly binary_source="$(cd "$(dirname "${binary_argument}")" && pwd)/$(basenam
   echo "Branchbox input is not an x86_64 executable." >&2
   exit 1
 }
-for command in gzip jq sha256sum stat tar; do
+for command in gzip jq readelf sed sha256sum sort stat tar; do
   command -v "${command}" >/dev/null || {
     echo "Required packaging command is unavailable: ${command}" >&2
     exit 1
@@ -62,6 +62,17 @@ install -m 0755 "${binary_source}" "${staging_dir}/branchbox"
 readonly binary_sha256="$(sha256sum "${staging_dir}/branchbox" | awk '{print $1}')"
 readonly binary_size="$(stat -c '%s' "${staging_dir}/branchbox")"
 readonly cargo_lock_sha256="$(sha256sum "${repository_root}/Cargo.lock" | awk '{print $1}')"
+readonly minimum_glibc_version="$(
+  readelf --version-info "${staging_dir}/branchbox" |
+    grep -oE 'GLIBC_[0-9]+\.[0-9]+' |
+    sort -Vu |
+    tail -1 |
+    sed 's/^GLIBC_//' || true
+)"
+[[ "${minimum_glibc_version}" =~ ^[0-9]+\.[0-9]+$ ]] || {
+  echo "Unable to determine the Branchbox glibc runtime requirement." >&2
+  exit 1
+}
 
 jq -n \
   --arg schema_version "branchbox.agentify-runtime-artifact/1" \
@@ -69,6 +80,7 @@ jq -n \
   --arg source_commit "${source_commit}" \
   --arg target "${target}" \
   --arg cargo_lock_sha256 "${cargo_lock_sha256}" \
+  --arg minimum_glibc_version "${minimum_glibc_version}" \
   --arg binary_name "branchbox" \
   --arg binary_sha256 "${binary_sha256}" \
   --argjson binary_size_bytes "${binary_size}" \
@@ -78,6 +90,10 @@ jq -n \
     source_commit: $source_commit,
     target: $target,
     cargo_lock_sha256: $cargo_lock_sha256,
+    runtime_abi: {
+      family: "glibc",
+      minimum_version: $minimum_glibc_version
+    },
     binary: {
       name: $binary_name,
       sha256: $binary_sha256,
@@ -94,3 +110,4 @@ printf '%s  %s\n' "$(sha256sum "${archive_path}" | awk '{print $1}')" \
 
 echo "Packaged ${archive_path}"
 echo "Branchbox SHA-256: ${binary_sha256}"
+echo "Minimum glibc: ${minimum_glibc_version}"
