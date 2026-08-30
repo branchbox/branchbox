@@ -19,7 +19,14 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+mod in_guest;
 mod local_vm;
+pub(crate) use in_guest::recover_runtime_metadata as recover_in_guest_runtime_metadata;
+use in_guest::InGuestRuntimeProvider;
+pub use in_guest::{
+    load_in_guest_facade_plan, InGuestFacadePlan, InGuestLeaseRecord, InGuestRuntimeMetadata,
+    InGuestTunnelPlacement,
+};
 use local_vm::LocalVmRuntimeProvider;
 
 /// Runtime implementations selectable for a workspace.
@@ -32,6 +39,8 @@ pub enum RuntimeProviderKind {
     Container,
     /// Experimental Docker Sandboxes microVM backend.
     Sbx,
+    /// Devcontainer runtime inside an isolation boundary already owned by the caller.
+    InGuest,
     /// Reserved account-free local microVM backend.
     LocalVm,
 }
@@ -41,6 +50,7 @@ impl fmt::Display for RuntimeProviderKind {
         f.write_str(match self {
             Self::Container => "container",
             Self::Sbx => "sbx",
+            Self::InGuest => "in-guest",
             Self::LocalVm => "local-vm",
         })
     }
@@ -53,9 +63,10 @@ impl FromStr for RuntimeProviderKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "container" | "current" => Ok(Self::Container),
             "sbx" => Ok(Self::Sbx),
+            "in-guest" | "in_guest" | "devcontainer" => Ok(Self::InGuest),
             "local-vm" | "local_vm" => Ok(Self::LocalVm),
             other => Err(format!(
-                "unknown runtime provider '{other}'; expected container, sbx, or local-vm"
+                "unknown runtime provider '{other}'; expected container, sbx, in-guest, or local-vm"
             )),
         }
     }
@@ -70,6 +81,21 @@ pub struct RuntimeMetadata {
     pub runtime_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published_ports: Vec<RuntimePort>,
+    /// Primary devcontainer identity returned by the Dev Containers CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    /// Effective workspace folder inside the primary devcontainer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_folder: Option<String>,
+    /// Effective user selected by the devcontainer configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_user: Option<String>,
+    /// Explicit runtime devcontainer configuration used for all lifecycle operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<PathBuf>,
+    /// Agentify-owned outer-boundary and lease correlation for the in-guest provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_guest: Option<InGuestRuntimeMetadata>,
     /// Immutable runtime artifact/version evidence supplied by VM-backed providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<RuntimeVersionMetadata>,
@@ -89,6 +115,11 @@ impl Default for RuntimeMetadata {
             provider: RuntimeProviderKind::Container,
             runtime_id: None,
             published_ports: Vec::new(),
+            container_id: None,
+            workspace_folder: None,
+            container_user: None,
+            config_path: None,
+            in_guest: None,
             version: None,
         }
     }
@@ -115,6 +146,54 @@ pub struct RuntimeExecResult {
     pub stderr: String,
 }
 
+/// Deterministic resource residue observed after provider teardown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeResidue {
+    pub kind: String,
+    pub identifiers: Vec<String>,
+}
+
+/// Structured runtime teardown evidence returned to the caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeTeardownReport {
+    pub provider: RuntimeProviderKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
+    pub verified: bool,
+    pub residue_free: bool,
+    #[serde(default)]
+    pub residue: Vec<RuntimeResidue>,
+}
+
+impl RuntimeTeardownReport {
+    pub(crate) fn residue_free(provider: RuntimeProviderKind, runtime_id: Option<String>) -> Self {
+        Self {
+            provider,
+            runtime_id,
+            verified: true,
+            residue_free: true,
+            residue: Vec::new(),
+        }
+    }
+
+    pub fn unverified(
+        provider: RuntimeProviderKind,
+        runtime_id: Option<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider,
+            runtime_id,
+            verified: false,
+            residue_free: false,
+            residue: vec![RuntimeResidue {
+                kind: "teardown-error".to_string(),
+                identifiers: vec![reason.into()],
+            }],
+        }
+    }
+}
+
 /// Inputs shared by runtime implementations during workspace provisioning.
 #[derive(Debug)]
 pub struct RuntimeContext<'a> {
@@ -127,6 +206,9 @@ pub struct RuntimeContext<'a> {
     /// templates reference sibling worktrees and shared configuration here.
     pub workspace_mount_path: &'a Path,
     pub published_ports: &'a [RuntimePort],
+    /// Opaque supervisor-authored lease/materialization manifest. The path may be passed to the
+    /// provider; the file's secret material is never accepted as a CLI argument.
+    pub runtime_manifest_path: Option<&'a Path>,
 }
 
 /// Execution-boundary lifecycle contract.
@@ -161,7 +243,7 @@ pub trait RuntimeProvider {
     fn start_environment(
         &self,
         context: &RuntimeContext<'_>,
-        metadata: &RuntimeMetadata,
+        metadata: &mut RuntimeMetadata,
     ) -> Result<()>;
 
     /// Execute an arbitrary command in the workspace boundary.
@@ -181,8 +263,22 @@ pub trait RuntimeProvider {
         command: &[String],
     ) -> Result<i32>;
 
+    /// Execute a fixed coding-provider binary with name-only environment inheritance. Providers
+    /// that do not implement this trusted lane reject it instead of falling back to arbitrary exec.
+    fn exec_provider_interactive(
+        &self,
+        _metadata: &RuntimeMetadata,
+        _provider: &str,
+        _inherited_environment: &[String],
+        _args: &[String],
+    ) -> Result<i32> {
+        Err(Error::validation(
+            "This runtime does not support trusted coding-provider execution",
+        ))
+    }
+
     /// Remove provider-owned state before the BranchBox worktree is removed.
-    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<()>;
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport>;
 }
 
 /// Resolve a runtime provider without making optional provider dependencies
@@ -191,6 +287,7 @@ pub fn provider(kind: RuntimeProviderKind) -> Result<Box<dyn RuntimeProvider>> {
     match kind {
         RuntimeProviderKind::Container => Ok(Box::new(ContainerRuntimeProvider)),
         RuntimeProviderKind::Sbx => Ok(Box::new(SbxRuntimeProvider::new()?)),
+        RuntimeProviderKind::InGuest => Ok(Box::new(InGuestRuntimeProvider::new()?)),
         RuntimeProviderKind::LocalVm => Ok(Box::new(LocalVmRuntimeProvider::new()?)),
     }
 }
@@ -210,7 +307,7 @@ impl RuntimeProvider for ContainerRuntimeProvider {
     fn start_environment(
         &self,
         _context: &RuntimeContext<'_>,
-        _metadata: &RuntimeMetadata,
+        _metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
         Ok(())
     }
@@ -257,8 +354,11 @@ impl RuntimeProvider for ContainerRuntimeProvider {
         Ok(status.code().unwrap_or(-1))
     }
 
-    fn destroy(&self, _metadata: &RuntimeMetadata) -> Result<()> {
-        Ok(())
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
+        Ok(RuntimeTeardownReport::residue_free(
+            self.kind(),
+            metadata.runtime_id.clone(),
+        ))
     }
 }
 
@@ -876,18 +976,26 @@ impl RuntimeProvider for SbxRuntimeProvider {
             runtime_id: Some(sandbox_name),
             published_ports,
             version: None,
+            ..RuntimeMetadata::default()
         })
     }
 
     fn start_environment(
         &self,
         context: &RuntimeContext<'_>,
-        metadata: &RuntimeMetadata,
+        metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
-        let runtime_id = self.runtime_id(metadata)?;
-        let container_id = self.start_devcontainer(runtime_id, context.worktree_path)?;
+        let runtime_id = self.runtime_id(metadata)?.to_string();
+        let container_id = self.start_devcontainer(&runtime_id, context.worktree_path)?;
+        metadata.container_id = Some(container_id.clone());
+        metadata.workspace_folder = Some(context.worktree_path.to_string_lossy().into_owned());
+        metadata.config_path = Some(
+            context
+                .worktree_path
+                .join(".devcontainer/.devcontainer.json"),
+        );
         for port in &metadata.published_ports {
-            self.start_port_proxy(runtime_id, &container_id, *port)?;
+            self.start_port_proxy(&runtime_id, &container_id, *port)?;
         }
         Ok(())
     }
@@ -950,9 +1058,9 @@ impl RuntimeProvider for SbxRuntimeProvider {
         Ok(status.code().unwrap_or(-1))
     }
 
-    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<()> {
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
         let Some(runtime_id) = metadata.runtime_id.as_deref() else {
-            return Ok(());
+            return Ok(RuntimeTeardownReport::residue_free(self.kind(), None));
         };
         let output = self.run(&["rm", "--force", runtime_id])?;
         if !output.status.success() {
@@ -961,7 +1069,10 @@ impl RuntimeProvider for SbxRuntimeProvider {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        Ok(())
+        Ok(RuntimeTeardownReport::residue_free(
+            self.kind(),
+            Some(runtime_id.to_string()),
+        ))
     }
 }
 
@@ -1167,6 +1278,7 @@ mod tests {
                 runtime_name: "storefront-oauth-flow",
                 workspace_mount_path: workspace.path(),
                 published_ports: &ports,
+                runtime_manifest_path: None,
             })
             .unwrap();
 
@@ -1223,7 +1335,9 @@ exit 42
             runtime_id: Some("branchbox-redaction-test".to_string()),
             published_ports: Vec::new(),
             version: None,
+            ..RuntimeMetadata::default()
         };
+        let mut metadata = metadata;
 
         let error = provider
             .start_environment(
@@ -1233,8 +1347,9 @@ exit 42
                     runtime_name: "redaction-test",
                     workspace_mount_path: workspace.path(),
                     published_ports: &[],
+                    runtime_manifest_path: None,
                 },
-                &metadata,
+                &mut metadata,
             )
             .unwrap_err()
             .to_string();

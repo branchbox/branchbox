@@ -60,6 +60,8 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 - Avoid fixed compose `name` or `container_name` values in templates; worktrees must remain parallel-safe.
 - Preserve compatibility by supporting both `docker compose` and `docker-compose` in workflow/module orchestration.
 - On feature teardown, restore the managed Compose identity from `.devcontainer/.branchbox.env`, discover devcontainer CLI project names only through an exact `devcontainer.local_folder` match, and verify owned containers, networks, and volumes are gone before deleting the worktree.
+- In Agentify `in-guest` mode, persist workspace/Compose/proxy ownership before `devcontainer up`; failed-start and no-registry teardown must recover only exact Dev Containers/Compose label ownership, bypass repository modules/adapters, and remove the failed worktree and task branch.
+- Deliver typed `project-environment` materialization only to the primary Compose service with Compose 2.30+ raw `env_file`. Require canonical sorted uppercase single-line dotenv, reject runtime/provider control names, never shell-source or serialize values, and erase the source through provider teardown.
 - For manual harnesses, resolve devcontainer service names with JSONC-safe parsing plus compose-file fallback; do not assume strict JSON or plugin-only compose.
 - When helper logic is shared across harnesses, extract it into `scripts/lib/*.sh` rather than duplicating functions.
 - When editing harnesses/docs, keep `scripts/manual-*.md` and `docs/docs/getting-started/manual-*.md` in sync in the same change.

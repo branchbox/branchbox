@@ -1991,6 +1991,7 @@ impl InitWorkflow {
             ".branchbox/registry.json",
             ".branchbox/secure/",
             ".branchbox/secure/tunnels/",
+            ".branchbox/runtime/",
             ".devcontainer/.branchbox.env",
             ".devcontainer/.cloudflared.env",
             ".devcontainer/.branchbox-sbx-compose.yaml",
@@ -2563,6 +2564,7 @@ mod tests {
         let gitignore = fs::read_to_string(repo_path.join(".gitignore")).unwrap();
         assert!(gitignore.contains(".branchbox/registry.json"));
         assert!(gitignore.contains(".branchbox/secure/"));
+        assert!(gitignore.contains(".branchbox/runtime/"));
         assert!(gitignore.contains(".devcontainer/.branchbox.env"));
         assert!(gitignore.contains(".devcontainer/.cloudflared.env"));
         assert!(gitignore.contains(".devcontainer/.github-token.env"));

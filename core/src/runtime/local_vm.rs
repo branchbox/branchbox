@@ -7,7 +7,7 @@
 
 use super::{
     RuntimeContext, RuntimeExecResult, RuntimeMetadata, RuntimePort, RuntimeProvider,
-    RuntimeProviderKind, RuntimeVersionMetadata,
+    RuntimeProviderKind, RuntimeTeardownReport, RuntimeVersionMetadata,
 };
 use crate::{Error, Result};
 use regex::Regex;
@@ -136,13 +136,14 @@ impl RuntimeProvider for LocalVmRuntimeProvider {
                 kernel_sha256: prepared.kernel_sha256,
                 rootfs_sha256: prepared.rootfs_sha256,
             }),
+            ..RuntimeMetadata::default()
         })
     }
 
     fn start_environment(
         &self,
         context: &RuntimeContext<'_>,
-        metadata: &RuntimeMetadata,
+        metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
         let runtime_id = Self::runtime_id(metadata)?;
         self.checked(
@@ -207,12 +208,15 @@ impl RuntimeProvider for LocalVmRuntimeProvider {
         Ok(status.code().unwrap_or(-1))
     }
 
-    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<()> {
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
         let Some(runtime_id) = metadata.runtime_id.as_deref() else {
-            return Ok(());
+            return Ok(RuntimeTeardownReport::residue_free(self.kind(), None));
         };
-        self.checked("teardown", &["destroy", runtime_id])
-            .map(|_| ())
+        self.checked("teardown", &["destroy", runtime_id])?;
+        Ok(RuntimeTeardownReport::residue_free(
+            self.kind(),
+            Some(runtime_id.to_string()),
+        ))
     }
 }
 

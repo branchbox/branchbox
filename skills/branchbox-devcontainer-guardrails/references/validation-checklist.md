@@ -16,6 +16,15 @@ cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fa
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
 ```
 
+For Agentify `in-guest` lifecycle or project-environment changes, also run the focused adversarial
+coverage before the full suite:
+
+```bash
+cargo test -p worktree-core runtime::in_guest::tests --all-features
+cargo test -p worktree-core workflows::feature::tests::test_in_guest --all-features
+cargo test -p branchbox-cli --test feature_commands in_guest_ -- --nocapture
+```
+
 ## Release harness matrix (devcontainer)
 
 ```bash

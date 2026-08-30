@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an Agentify-oriented `in-guest` runtime that reconciles a BranchBox worktree and explicit
+  devcontainer facade inside an already-owned Firecracker guest, validates opaque lease file paths
+  and digests, publishes loopback-only ports, exposes correlated container/runtime identity, and
+  returns deterministic teardown residue evidence.
+- Add `feature exec-provider` for the fixed Codex executable with name-only
+  `OPENAI_API_KEY` inheritance into the configured devcontainer user/workspace.
+- Deliver one digest-verified, canonical project-environment materialization only to the primary
+  Compose service through a raw env file, without mounting or serializing its values.
+
+### Security
+
+- The in-guest facade runs before host-side repository lifecycle behavior, disables checkout hooks
+  and filter drivers, strips ambient host env/mount authority and Docker-outside-of-Docker, omits
+  repository tunnel sidecars, rejects dangerous Compose/build/extends/secondary-service authority,
+  and verifies the resolved and running container have no supervisor socket, credential-directory
+  mount, privileged host namespace, or persisted model key.
+
 ### Fixed
 
+- In-guest failed starts now pre-record and recover Dev Containers/Compose ownership, remove
+  dependency-only containers, networks, volumes, materializations, worktrees, and task branches,
+  and bypass repository modules/adapters during no-registry cleanup.
+- In-guest coding containers now receive a private, bounded 1 GiB shared-memory allocation while
+  repository shared-memory overrides and host IPC remain disabled.
 - Release changelog generation now authenticates git-cliff GitHub API requests with the scoped
   workflow token, avoiding anonymous API rate-limit failures during publication.
 

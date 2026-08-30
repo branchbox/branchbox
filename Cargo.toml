@@ -46,6 +46,7 @@ libc = "0.2"
 
 # Regex
 regex = "1.10"
+sha2 = "0.10"
 
 # Logging
 tracing = "0.1"

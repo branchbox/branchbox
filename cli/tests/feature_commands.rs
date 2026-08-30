@@ -317,6 +317,225 @@ esac
     (temp, binary, state, log)
 }
 
+#[cfg(unix)]
+struct FakeInGuestRuntime {
+    _temp: TempDir,
+    devcontainer: PathBuf,
+    docker: PathBuf,
+    resources: PathBuf,
+    log: PathBuf,
+}
+
+#[cfg(unix)]
+fn create_fake_in_guest_runtime() -> FakeInGuestRuntime {
+    let temp = TempDir::new().expect("create fake in-guest runtime");
+    let devcontainer = temp.path().join("devcontainer");
+    let docker = temp.path().join("docker");
+    let resources = temp.path().join("resources");
+    let log = temp.path().join("docker.log");
+    fs::create_dir_all(&resources).expect("create fake Docker resources");
+    fs::write(
+        &devcontainer,
+        r#"#!/bin/sh
+set -eu
+case "${1:-}" in
+  --version) printf '%s\n' '0.80.0' ;;
+  read-configuration)
+    printf '%s\n' '{"configuration":{"privileged":false}}'
+    ;;
+  up)
+    override="$FAKE_IN_GUEST_WORKSPACE/.devcontainer/.branchbox-sbx-compose.yaml"
+    if ! grep -q 'format: raw' "$override" || ! grep -Fq "$FAKE_IN_GUEST_PROJECT_ENVIRONMENT" "$override" || grep -q 'password with spaces' "$override"; then
+      printf '%s\n' 'project-environment env-file facade was not isolated correctly' >&2
+      exit 41
+    fi
+    touch "$FAKE_IN_GUEST_RESOURCES/partial-main"
+    touch "$FAKE_IN_GUEST_RESOURCES/partial-db"
+    touch "$FAKE_IN_GUEST_RESOURCES/partial-network"
+    touch "$FAKE_IN_GUEST_RESOURCES/partial-volume"
+    printf '%s\n' 'postCreateCommand failed after Compose dependencies started' >&2
+    exit 42
+    ;;
+  *) exit 0 ;;
+esac
+"#,
+    )
+    .expect("write fake devcontainer");
+    fs::write(
+        &docker,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$FAKE_IN_GUEST_DOCKER_LOG"
+resources="$FAKE_IN_GUEST_RESOURCES"
+workspace="$FAKE_IN_GUEST_WORKSPACE"
+project=agentify_runtime_generated
+
+case "${1:-}" in
+  info) exit 0 ;;
+  compose)
+    if [ "${2:-}" = "version" ]; then printf '%s\n' '2.30.0'; fi
+    ;;
+  ps)
+    case "$*" in
+      *"label=devcontainer.local_folder="*)
+        if [ -f "$resources/partial-main" ]; then
+          case "$*" in
+            *"com.docker.compose.project"*) printf 'partial-main\t%s\n' "$project" ;;
+            *) printf '%s\n' 'partial-main' ;;
+          esac
+        fi
+        ;;
+      *"label=com.docker.compose.project=$project"*)
+        [ ! -f "$resources/partial-main" ] || printf '%s\n' 'partial-main'
+        [ ! -f "$resources/partial-db" ] || printf '%s\n' 'partial-db'
+        ;;
+      *"label=com.docker.compose.project"*)
+        [ ! -f "$resources/partial-main" ] || printf 'partial-main\t%s\t%s/.devcontainer\t%s/.devcontainer/compose.yaml\n' "$project" "$workspace" "$workspace"
+        [ ! -f "$resources/partial-db" ] || printf 'partial-db\t%s\t%s/.devcontainer\t%s/.devcontainer/compose.yaml\n' "$project" "$workspace" "$workspace"
+        ;;
+    esac
+    ;;
+  network)
+    case "${2:-}" in
+      ls) [ ! -f "$resources/partial-network" ] || printf '%s\n' 'partial-network' ;;
+      rm) rm -f "$resources/${3:-}" ;;
+    esac
+    ;;
+  volume)
+    case "${2:-}" in
+      ls) [ ! -f "$resources/partial-volume" ] || printf '%s\n' 'partial-volume' ;;
+      rm) rm -f "$resources/${3:-}" ;;
+    esac
+    ;;
+  rm)
+    for identifier in "$@"; do
+      rm -f "$resources/$identifier"
+    done
+    ;;
+  inspect) exit 1 ;;
+esac
+"#,
+    )
+    .expect("write fake Docker");
+    for binary in [&devcontainer, &docker] {
+        let mut permissions = fs::metadata(binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(binary, permissions).unwrap();
+    }
+    FakeInGuestRuntime {
+        _temp: temp,
+        devcontainer,
+        docker,
+        resources,
+        log,
+    }
+}
+
+#[cfg(unix)]
+fn commit_in_guest_devcontainer(test_repo: &TestRepo) -> String {
+    let devcontainer = test_repo.ensure_devcontainer_dir();
+    fs::write(
+        devcontainer.join("devcontainer.json"),
+        r#"{
+  "name": "Agentify",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/main",
+  "forwardPorts": [3000],
+  "postCreateCommand": "false"
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        devcontainer.join("compose.yaml"),
+        r#"name: agentify
+services:
+  app:
+    image: alpine:3.19
+    command: sleep infinity
+    depends_on:
+      - postgres
+  postgres:
+    image: postgres:16
+"#,
+    )
+    .unwrap();
+    run_git(test_repo.path(), &["add", ".devcontainer"]);
+    run_git(
+        test_repo.path(),
+        &["commit", "-m", "Add in-guest devcontainer fixture"],
+    );
+    let output = StdCommand::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(test_repo.path())
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[cfg(unix)]
+fn write_in_guest_manifest(
+    root: &Path,
+    test_repo: &TestRepo,
+    work_feature: &str,
+    revision: &str,
+) -> PathBuf {
+    let manifest_path = root.join("branchbox-in-guest.json");
+    let materializations = root.join("materializations");
+    fs::create_dir_all(&materializations).unwrap();
+    let project_environment = materializations.join("project-environment.env");
+    fs::write(
+        &project_environment,
+        b"ACCOUNT_NAME=Matchup\nADMIN_EMAIL=admin@example.com\nADMIN_PASSWORD=$2b$12# password with spaces\n",
+    )
+    .unwrap();
+    let mut environment_permissions = fs::metadata(&project_environment).unwrap().permissions();
+    environment_permissions.set_mode(0o600);
+    fs::set_permissions(&project_environment, environment_permissions).unwrap();
+    let manifest = serde_json::json!({
+        "version": "1",
+        "run_id": format!("run-{work_feature}"),
+        "lease_id": "assignment-lease",
+        "outer_runtime_id": "outer-vm",
+        "workspace": test_repo.worktree_parent(),
+        "repository": {
+            "path": test_repo.path(),
+            "revision": revision
+        },
+        "task_branch": format!("feature/{work_feature}"),
+        "tunnel_placement": "outer",
+        "published_ports": [{"host": 3000, "runtime": 3000}],
+        "leases": [
+            {
+                "lease_id": "project-environment",
+                "scope": "project-environment",
+                "consumer": "app",
+                "materializations": [{
+                    "source_path": project_environment,
+                    "target_path": "/run/branchbox/leases/project-env",
+                    "sha256": "e54f59da53efa290bc6bf0f61b90ee9d56f947934b346600ad45311efa11d7b6"
+                }]
+            },
+            {
+                "lease_id": "outer-tunnel",
+                "scope": "platform-tunnel",
+                "consumer": "outer-connector",
+                "materializations": []
+            }
+        ]
+    });
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&manifest_path).unwrap().permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(&manifest_path, permissions).unwrap();
+    manifest_path
+}
+
 #[test]
 fn feature_start_list_teardown_end_to_end() {
     let test_repo = init_test_repo();
@@ -402,6 +621,258 @@ fn feature_start_list_teardown_end_to_end() {
     assert!(
         completed_spec.exists(),
         "expected spec to move to completed"
+    );
+}
+
+#[test]
+fn in_guest_start_requires_absolute_runtime_manifest_before_worktree_creation() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+    let worktree = test_repo
+        .worktree_parent()
+        .join("in-guest-missing-manifest");
+
+    branchbox_cmd!(repo_path)
+        .args([
+            "feature",
+            "start",
+            "in-guest-missing-manifest",
+            "--runtime",
+            "in-guest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires --runtime-manifest with a trusted guest path",
+        ));
+
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn runtime_manifest_is_rejected_for_non_in_guest_runtime() {
+    let test_repo = init_test_repo();
+    branchbox_cmd!(test_repo.path())
+        .args([
+            "feature",
+            "start",
+            "wrong-runtime-manifest",
+            "--runtime",
+            "container",
+            "--runtime-manifest",
+            "/run/agentify-runtime/branchbox-in-guest.json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--runtime-manifest is accepted only with --runtime in-guest",
+        ));
+}
+
+#[test]
+fn teardown_json_includes_verified_runtime_residue_contract() {
+    let test_repo = init_test_repo();
+    let repo_path = test_repo.path();
+    let work_feature = "teardown-json-runtime";
+    branchbox_cmd!(repo_path)
+        .args(["feature", "start", work_feature])
+        .assert()
+        .success();
+
+    let output = branchbox_cmd!(repo_path)
+        .args([
+            "feature",
+            "teardown",
+            work_feature,
+            "--delete-branch",
+            "--force",
+            "--json",
+        ])
+        .output()
+        .expect("feature teardown --json");
+    assert!(
+        output.status.success(),
+        "teardown failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("teardown JSON");
+    assert_eq!(payload["runtime_teardown"]["provider"], "container");
+    assert_eq!(payload["runtime_teardown"]["verified"], true);
+    assert_eq!(payload["runtime_teardown"]["residue_free"], true);
+    assert_eq!(
+        payload["runtime_teardown"]["residue"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn exec_provider_cli_accepts_fixed_provider_contract_before_feature_lookup() {
+    let test_repo = init_test_repo();
+    branchbox_cmd!(test_repo.path())
+        .args([
+            "feature",
+            "exec-provider",
+            "missing-feature",
+            "--provider",
+            "codex",
+            "--inherit-env",
+            "OPENAI_API_KEY",
+            "--",
+            "--version",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing-feature"));
+}
+
+#[cfg(unix)]
+#[test]
+fn in_guest_partial_start_failure_removes_compose_residue_worktree_and_branch() {
+    let test_repo = init_test_repo();
+    let revision = commit_in_guest_devcontainer(&test_repo);
+    let fake = create_fake_in_guest_runtime();
+    let assignment = TempDir::new().expect("create assignment directory");
+    let work_feature = "in-guest-partial-start";
+    let manifest = write_in_guest_manifest(assignment.path(), &test_repo, work_feature, &revision);
+    let worktree = test_repo.worktree_parent().join(work_feature);
+
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_DEVCONTAINER_PATH" => &fake.devcontainer,
+        "BRANCHBOX_DOCKER_PATH" => &fake.docker,
+        "FAKE_IN_GUEST_RESOURCES" => &fake.resources,
+        "FAKE_IN_GUEST_DOCKER_LOG" => &fake.log,
+        "FAKE_IN_GUEST_WORKSPACE" => &worktree,
+        "FAKE_IN_GUEST_PROJECT_ENVIRONMENT" => assignment.path().join("materializations/project-environment.env"),
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "in-guest",
+        "--runtime-manifest",
+        manifest.to_str().unwrap(),
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "postCreateCommand failed after Compose dependencies started",
+    ));
+
+    assert!(!worktree.exists(), "failed in-guest worktree leaked");
+    let branch = StdCommand::new("git")
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/feature/{work_feature}"),
+        ])
+        .current_dir(test_repo.path())
+        .status()
+        .unwrap();
+    assert!(!branch.success(), "failed in-guest task branch leaked");
+    assert_eq!(
+        fs::read_dir(&fake.resources).unwrap().count(),
+        0,
+        "partial Compose resources leaked; Docker calls:\n{}",
+        fs::read_to_string(&fake.log).unwrap_or_default()
+    );
+    assert!(
+        !assignment
+            .path()
+            .join("materializations/project-environment.env")
+            .exists(),
+        "failed-start cleanup leaked the project-environment materialization"
+    );
+    let provider_states = test_repo.path().join(".branchbox/runtime/in-guest");
+    assert!(
+        !provider_states.exists() || fs::read_dir(provider_states).unwrap().next().is_none(),
+        "successful failed-start cleanup should remove provider state"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
+    let test_repo = init_test_repo();
+    commit_in_guest_devcontainer(&test_repo);
+    let fake = create_fake_in_guest_runtime();
+    let work_feature = "in-guest-orphaned-start";
+    let branch_name = format!("feature/{work_feature}");
+    let worktree = test_repo.worktree_parent().join(work_feature);
+    let status = StdCommand::new("git")
+        .args(["worktree", "add", "-b", &branch_name])
+        .arg(&worktree)
+        .current_dir(test_repo.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    for resource in [
+        "partial-main",
+        "partial-db",
+        "partial-network",
+        "partial-volume",
+    ] {
+        fs::write(fake.resources.join(resource), b"").unwrap();
+    }
+    let state_dir = test_repo.path().join(".branchbox/runtime/in-guest");
+    fs::create_dir_all(&state_dir).unwrap();
+    let state_path = state_dir.join("orphaned-run.json");
+    let state = serde_json::json!({
+        "version": "1",
+        "manifest_path": "/run/agentify-runtime/branchbox-in-guest.json",
+        "worktree_path": worktree.clone(),
+        "workspace_paths": [worktree.clone()],
+        "config_path": worktree.join(".devcontainer/.devcontainer.json"),
+        "run_id": "orphaned-run",
+        "outer_runtime_id": "outer-vm",
+        "materializations": [],
+        "proxy_names": [],
+        "compose_projects": ["agentify"],
+        "container_id": null
+    });
+    fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    let mut permissions = fs::metadata(&state_path).unwrap().permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(&state_path, permissions).unwrap();
+
+    let output = branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_DEVCONTAINER_PATH" => &fake.devcontainer,
+        "BRANCHBOX_DOCKER_PATH" => &fake.docker,
+        "FAKE_IN_GUEST_RESOURCES" => &fake.resources,
+        "FAKE_IN_GUEST_DOCKER_LOG" => &fake.log,
+        "FAKE_IN_GUEST_WORKSPACE" => &worktree,
+    )
+    .args([
+        "feature",
+        "teardown",
+        work_feature,
+        "--delete-branch",
+        "--force",
+        "--force-delete-branch",
+        "--json",
+    ])
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "orphan teardown failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["runtime_teardown"]["provider"], "in-guest");
+    assert_eq!(payload["runtime_teardown"]["residue_free"], true);
+    assert_eq!(payload["module_reports"], serde_json::json!([]));
+    assert_eq!(payload["adapter_cleanup_warnings"], serde_json::json!([]));
+    assert!(!worktree.exists());
+    assert!(!state_path.exists());
+    assert_eq!(fs::read_dir(&fake.resources).unwrap().count(), 0);
+    let calls = fs::read_to_string(&fake.log).unwrap_or_default();
+    assert!(
+        !calls.lines().any(|line| line.starts_with("compose ")),
+        "no-registry in-guest teardown ran host-side Compose/modules:\n{calls}"
     );
 }
 
