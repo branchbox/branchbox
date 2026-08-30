@@ -78,6 +78,36 @@ jobs:
       - name: Build release
         run: cargo build --release --all-features --verbose
 
+  agentify_runtime_artifact:
+    name: Agentify Runtime Artifact
+    runs-on: ubuntu-latest
+    needs: quality_checks
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source commit
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_COMMIT}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build exact Branchbox runtime binary
+        run: cargo build --release --locked --package branchbox-cli
+      - name: Package commit-bound Agentify runtime artifact
+        run: |
+          scripts/package-agentify-runtime-artifact.sh \
+            target/release/branchbox \
+            dist/agentify-runtime \
+            "${SOURCE_COMMIT}"
+      - name: Upload commit-bound Agentify runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: branchbox-agentify-runtime-${{ env.SOURCE_COMMIT }}
+          path: dist/agentify-runtime/*
+          if-no-files-found: error
+          retention-days: 7
+
   unit_tests_extra:
     name: Unit Tests (extra targets)
     runs-on: ${{ matrix.os }}
