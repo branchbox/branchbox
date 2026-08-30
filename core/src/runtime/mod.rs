@@ -5,10 +5,14 @@
 //! describes the developer environment, while a runtime provider decides where
 //! that environment and its Docker/Compose workloads execute.
 
-use crate::{Error, Result};
+use crate::{
+    devcontainer_runtime::{DevcontainerConfig, MountConfig},
+    Error, Result,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -263,29 +267,37 @@ struct SbxRuntimeProvider {
     binary: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SbxHostFileProjection {
+    host_source: PathBuf,
+    sandbox_relative: PathBuf,
+}
+
 impl SbxRuntimeProvider {
     const MAX_FAILURE_DETAIL_LINES: usize = 12;
     const MAX_FAILURE_DETAIL_BYTES: usize = 2_048;
-    const DEVCONTAINER_UP: &'static str = "set --; if [ -f .devcontainer/branchbox-sbx.json ]; then set -- --config .devcontainer/branchbox-sbx.json; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer up --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli up --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
-    const DEVCONTAINER_PROBE: &'static str = "config_args=''; if [ -f .devcontainer/branchbox-sbx.json ]; then config_args='--config .devcontainer/branchbox-sbx.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args true; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args true; else exit 127; fi";
-    const DEVCONTAINER_EXEC: &'static str = "config_args=''; if [ -f .devcontainer/branchbox-sbx.json ]; then config_args='--config .devcontainer/branchbox-sbx.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
+    const DEVCONTAINER_UP: &'static str = "set --; if [ -f .devcontainer/.devcontainer.json ]; then set -- --config .devcontainer/.devcontainer.json; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer up --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli up --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
+    const DEVCONTAINER_PROBE: &'static str = "config_args=''; if [ -f .devcontainer/.devcontainer.json ]; then config_args='--config .devcontainer/.devcontainer.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args true; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args true; else exit 127; fi";
+    const DEVCONTAINER_EXEC: &'static str = "config_args=''; if [ -f .devcontainer/.devcontainer.json ]; then config_args='--config .devcontainer/.devcontainer.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
     const PORT_PROXY_BOOTSTRAP: &'static str = r#"set -eu
 container_id="$1"
 runtime_port="$2"
 proxy_name="branchbox-port-proxy-${runtime_port}"
 network_id=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id")
-target_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")
+target_host=$(docker inspect -f '{{.Name}}' "$container_id")
+target_host=${target_host#/}
 docker rm -f "$proxy_name" >/dev/null 2>&1 || true
 for candidate_id in $(docker ps --filter "network=${network_id}" -q); do
     exposed_ports=$(docker inspect -f '{{json .Config.ExposedPorts}}' "$candidate_id")
     case "$exposed_ports" in
         *\"${runtime_port}/tcp\"*)
-            target_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$candidate_id")
+            target_host=$(docker inspect -f '{{.Name}}' "$candidate_id")
+            target_host=${target_host#/}
             break
             ;;
     esac
 done
-exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "${runtime_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_ip}:${runtime_port}""#;
+exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "${runtime_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 
     fn new() -> Result<Self> {
         let binary = match std::env::var_os("BRANCHBOX_SBX_PATH") {
@@ -417,6 +429,90 @@ exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$net
                 "Docker Sandboxes could not start existing runtime '{sandbox_name}': {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
+        }
+        Ok(())
+    }
+
+    fn sandbox_home(&self, sandbox_name: &str) -> Result<PathBuf> {
+        let output = self.run(&["exec", sandbox_name, "sh", "-lc", "printf '%s' \"$HOME\""])?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Docker Sandboxes could not resolve the runtime home for '{sandbox_name}'"
+            )));
+        }
+        let home = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        if !home.is_absolute()
+            || home
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(Error::validation(format!(
+                "Docker Sandboxes returned an invalid runtime home for '{sandbox_name}'"
+            )));
+        }
+        Ok(home)
+    }
+
+    fn project_supported_host_files(&self, sandbox_name: &str, worktree_path: &Path) -> Result<()> {
+        if !worktree_path
+            .join(".devcontainer/devcontainer.json")
+            .exists()
+            && !worktree_path.join(".devcontainer.json").exists()
+        {
+            return Ok(());
+        }
+        let (config, _) = DevcontainerConfig::load(worktree_path).map_err(|err| {
+            Error::validation(format!(
+                "Could not inspect devcontainer mounts for SBX projection: {err}"
+            ))
+        })?;
+        let Some(mounts) = config.mounts.as_deref() else {
+            return Ok(());
+        };
+        let host_home = dirs::home_dir()
+            .ok_or_else(|| Error::validation("Cannot determine the host home directory"))?;
+        let projections = supported_sbx_host_file_projections(mounts, &host_home)?;
+        if projections.is_empty() {
+            return Ok(());
+        }
+        let sandbox_home = self.sandbox_home(sandbox_name)?;
+        for projection in projections {
+            let destination = sandbox_home.join(&projection.sandbox_relative);
+            let parent = destination.parent().ok_or_else(|| {
+                Error::validation("Cannot determine SBX projected-file parent directory")
+            })?;
+            let parent = parent.to_string_lossy();
+            let mkdir = self.run(&["exec", sandbox_name, "mkdir", "-p", parent.as_ref()])?;
+            if !mkdir.status.success() {
+                return Err(Error::validation(format!(
+                    "Docker Sandboxes could not prepare a public-key projection in '{sandbox_name}'"
+                )));
+            }
+
+            // A failed bind may have materialized the file path as an empty directory. Removing
+            // only that exact, empty, allowlisted public-key path makes retries self-healing.
+            let destination_text = destination.to_string_lossy();
+            let _ = self.run(&["exec", sandbox_name, "rmdir", destination_text.as_ref()]);
+            let source = projection.host_source.to_string_lossy();
+            let remote = format!("{sandbox_name}:{}", destination.display());
+            let copied = self.run(&["cp", source.as_ref(), &remote])?;
+            if !copied.status.success() {
+                return Err(Error::validation(format!(
+                    "Docker Sandboxes could not project an allowlisted public key into '{sandbox_name}'"
+                )));
+            }
+            let chmod = self.run(&[
+                "exec",
+                sandbox_name,
+                "chmod",
+                "0644",
+                destination_text.as_ref(),
+            ])?;
+            if !chmod.status.success() {
+                return Err(Error::validation(format!(
+                    "Docker Sandboxes could not secure a projected public key in '{sandbox_name}'"
+                )));
+            }
         }
         Ok(())
     }
@@ -768,6 +864,13 @@ impl RuntimeProvider for SbxRuntimeProvider {
             }
         }
 
+        if let Err(err) = self.project_supported_host_files(&sandbox_name, context.worktree_path) {
+            if created {
+                let _ = self.run(&["rm", "--force", &sandbox_name]);
+            }
+            return Err(err);
+        }
+
         Ok(RuntimeMetadata {
             provider: self.kind(),
             runtime_id: Some(sandbox_name),
@@ -862,6 +965,73 @@ impl RuntimeProvider for SbxRuntimeProvider {
     }
 }
 
+fn supported_sbx_host_file_projections(
+    mounts: &[MountConfig],
+    host_home: &Path,
+) -> Result<Vec<SbxHostFileProjection>> {
+    const LOCAL_HOME_PREFIX: &str = "${localEnv:HOME}/";
+    let mut projections = Vec::new();
+    for mount in mounts {
+        let source = match mount {
+            MountConfig::String(value) => {
+                let is_bind = value.split(',').any(|field| field.trim() == "type=bind");
+                if !is_bind {
+                    continue;
+                }
+                value.split(',').find_map(|field| {
+                    field
+                        .trim()
+                        .strip_prefix("source=")
+                        .or_else(|| field.trim().strip_prefix("src="))
+                })
+            }
+            MountConfig::Object {
+                mount_type, source, ..
+            } if mount_type.as_deref() == Some("bind") => source.as_deref(),
+            MountConfig::Object { .. } => None,
+        };
+        let Some(relative_source) =
+            source.and_then(|source| source.strip_prefix(LOCAL_HOME_PREFIX))
+        else {
+            continue;
+        };
+        let relative = Path::new(relative_source);
+        let components: Vec<_> = relative.components().collect();
+        let supported = components.len() == 2
+            && matches!(components[0], std::path::Component::Normal(name) if name == ".ssh")
+            && matches!(components[1], std::path::Component::Normal(_))
+            && relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".pub"));
+        if !supported {
+            continue;
+        }
+
+        let host_source = host_home.join(relative);
+        let metadata = fs::symlink_metadata(&host_source).map_err(|err| {
+            Error::validation(format!(
+                "Cannot inspect the configured SBX public-key mount '{}': {err}",
+                host_source.display()
+            ))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(Error::validation(format!(
+                "SBX public-key mount '{}' must be a regular file, not a directory or symbolic link",
+                host_source.display()
+            )));
+        }
+        let projection = SbxHostFileProjection {
+            host_source,
+            sandbox_relative: relative.to_path_buf(),
+        };
+        if !projections.contains(&projection) {
+            projections.push(projection);
+        }
+    }
+    Ok(projections)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,6 +1075,60 @@ mod tests {
             SbxRuntimeProvider::sandbox_name("Storefront_OAuth Flow"),
             "branchbox-storefront-oauth-flow"
         );
+    }
+
+    #[test]
+    fn sbx_projects_only_regular_public_keys_from_host_home_mounts() {
+        let host_home = tempfile::tempdir().unwrap();
+        let ssh = host_home.path().join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        let public_key = ssh.join("agentify-demo.pub");
+        std::fs::write(&public_key, "ssh-ed25519 test\n").unwrap();
+        std::fs::write(ssh.join("agentify-demo"), "private-material\n").unwrap();
+        let mounts = vec![
+            MountConfig::String(
+                "source=${localEnv:HOME}/.ssh/agentify-demo.pub,target=/home/dev/.ssh/agentify-demo.pub,type=bind"
+                    .to_string(),
+            ),
+            MountConfig::String(
+                "source=${localEnv:HOME}/.ssh/agentify-demo,target=/home/dev/.ssh/agentify-demo,type=bind"
+                    .to_string(),
+            ),
+        ];
+
+        let projections = supported_sbx_host_file_projections(&mounts, host_home.path()).unwrap();
+
+        assert_eq!(
+            projections,
+            vec![SbxHostFileProjection {
+                host_source: public_key,
+                sandbox_relative: PathBuf::from(".ssh/agentify-demo.pub"),
+            }]
+        );
+    }
+
+    #[test]
+    fn sbx_rejects_public_key_mounts_that_are_not_regular_files() {
+        let host_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(host_home.path().join(".ssh/not-a-file.pub")).unwrap();
+        let mounts = vec![MountConfig::Object {
+            mount_type: Some("bind".to_string()),
+            source: Some("${localEnv:HOME}/.ssh/not-a-file.pub".to_string()),
+            target: "/home/dev/.ssh/not-a-file.pub".to_string(),
+        }];
+
+        let error = supported_sbx_host_file_projections(&mounts, host_home.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must be a regular file"));
+    }
+
+    #[test]
+    fn sbx_port_proxy_uses_stable_container_names_instead_of_ephemeral_ips() {
+        assert!(SbxRuntimeProvider::PORT_PROXY_BOOTSTRAP.contains("{{.Name}}"));
+        assert!(SbxRuntimeProvider::PORT_PROXY_BOOTSTRAP.contains("TCP:${target_host}"));
+        assert!(!SbxRuntimeProvider::PORT_PROXY_BOOTSTRAP.contains(".IPAddress"));
     }
 
     #[test]

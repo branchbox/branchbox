@@ -146,7 +146,7 @@ case "$1" in
     case "$*" in
       *"devcontainer up"*)
         if [ "${FAKE_SBX_REQUIRE_RUN_SERVICES:-}" = "1" ]; then
-          override="$3/.devcontainer/branchbox-sbx.json"
+          override="$3/.devcontainer/.devcontainer.json"
           if [ ! -f "$override" ] || ! grep -q '"runServices"' "$override" || ! grep -q '"app"' "$override" || grep -q '"tailscale"' "$override"; then
             printf '%s\n' 'SBX runServices override was not prepared correctly' >&2
             exit 45
@@ -1449,6 +1449,8 @@ fn sbx_run_services_excludes_incompatible_sidecar_and_keeps_required_database() 
     image: alpine:3.19
     depends_on:
       - postgres
+    volumes:
+      - ../../main/.git:/workspaces/main/.git
   postgres:
     image: postgres:17
   tailscale:
@@ -1508,10 +1510,25 @@ fn sbx_run_services_excludes_incompatible_sidecar_and_keeps_required_database() 
     .success();
 
     let override_config: Value = serde_json::from_slice(
-        &fs::read(worktree_path.join(".devcontainer/branchbox-sbx.json")).unwrap(),
+        &fs::read(worktree_path.join(".devcontainer/.devcontainer.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(override_config["runServices"], serde_json::json!(["app"]));
+    assert_eq!(
+        override_config["dockerComposeFile"],
+        serde_json::json!(["compose.yaml", ".branchbox-sbx-compose.yaml"])
+    );
+    let sbx_compose =
+        fs::read_to_string(worktree_path.join(".devcontainer/.branchbox-sbx-compose.yaml"))
+            .unwrap();
+    assert!(sbx_compose.contains("restart: unless-stopped"));
+    assert!(sbx_compose.contains(&format!(
+        "source: {}",
+        fs::canonicalize(test_repo.path().join(".git"))
+            .unwrap()
+            .display()
+    )));
+    assert!(sbx_compose.contains("target: /workspaces/main/.git"));
     let compose = fs::read_to_string(worktree_path.join(".devcontainer/compose.yaml")).unwrap();
     assert!(compose.contains("postgres"));
     assert!(compose.contains("depends_on"));

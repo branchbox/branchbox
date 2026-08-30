@@ -1,7 +1,7 @@
 use crate::{
     adapters,
     config::BranchBoxConfig,
-    devcontainer_runtime::{ComposeFileRef, DevcontainerConfig},
+    devcontainer_runtime::DevcontainerConfig,
     git::GitWorktree,
     modules::{self, ModuleHandle, SpecStatus},
     naming,
@@ -627,7 +627,11 @@ impl FeatureWorkflow {
         let published_ports = runtime_ports(&worktree_path);
 
         if runtime_kind == RuntimeProviderKind::Sbx {
-            prepare_sbx_devcontainer_config(&worktree_path, &config.runtime.sbx.run_services)?;
+            prepare_sbx_devcontainer_config(
+                &self.repo_root,
+                &worktree_path,
+                &config.runtime.sbx.run_services,
+            )?;
         }
 
         // Tunnel credentials are part of the Compose input. Materialize them before creating an
@@ -1653,7 +1657,10 @@ impl FeatureWorkflow {
     fn is_module_managed_path(path: &str) -> bool {
         use std::ffi::OsStr;
 
-        if path == ".devcontainer/branchbox-sbx.json" {
+        if matches!(
+            path,
+            ".devcontainer/.devcontainer.json" | ".devcontainer/.branchbox-sbx-compose.yaml"
+        ) {
             return false;
         }
 
@@ -2948,12 +2955,6 @@ impl FeatureWorkflow {
             return Ok(());
         }
 
-        let authoritative_target = fs::canonicalize(current_path).map_err(|err| {
-            Error::validation(format!(
-                "Cannot validate absolute gitdir target '{}'; preserving the original worktree pointer: {err}",
-                current_path
-            ))
-        })?;
         let repository_worktrees = fs::canonicalize(self.repo_root.join(".git"))
             .map_err(|err| {
                 Error::validation(format!(
@@ -2962,6 +2963,31 @@ impl FeatureWorkflow {
                 ))
             })?
             .join("worktrees");
+        let current_target = Path::new(current_path);
+        let container_worktrees = Path::new("/workspaces/main/.git/worktrees");
+        let target_to_validate = match current_target.strip_prefix(container_worktrees) {
+            Ok(relative) => {
+                let components: Vec<_> = relative.components().collect();
+                if components.len() != 1
+                    || !matches!(components[0], std::path::Component::Normal(_))
+                {
+                    return Err(Error::validation(format!(
+                        "Container gitdir target '{}' is not a single repository worktree entry; preserving the original worktree pointer",
+                        current_path
+                    )));
+                }
+                repository_worktrees.join(relative)
+            }
+            Err(_) => current_target.to_path_buf(),
+        };
+
+        let authoritative_target = fs::canonicalize(&target_to_validate).map_err(|err| {
+            Error::validation(format!(
+                "Cannot validate gitdir target '{}' as '{}'; preserving the original worktree pointer: {err}",
+                current_path,
+                target_to_validate.display()
+            ))
+        })?;
         if !authoritative_target.starts_with(&repository_worktrees) {
             return Err(Error::validation(format!(
                 "Absolute gitdir target '{}' does not belong to repository '{}'; preserving the original worktree pointer",
@@ -3066,16 +3092,20 @@ fn devcontainer_requires_cloudflared_env(worktree_path: &Path) -> bool {
     })
 }
 
-fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]) -> Result<()> {
+const SBX_DEVCONTAINER_CONFIG: &str = ".devcontainer.json";
+const SBX_COMPOSE_OVERRIDE: &str = ".branchbox-sbx-compose.yaml";
+const CONTAINER_MAIN_GIT_TARGET: &str = "/workspaces/main/.git";
+
+fn prepare_sbx_devcontainer_config(
+    repo_root: &Path,
+    worktree_path: &Path,
+    run_services: &[String],
+) -> Result<()> {
     let (config, config_path) = DevcontainerConfig::load(worktree_path)
         .map_err(|err| Error::validation(format!("Could not inspect SBX devcontainer: {err}")))?;
     let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
-    let compose_files: Vec<PathBuf> = match config.docker_compose_file.as_ref() {
-        Some(ComposeFileRef::Single(path)) => vec![devcontainer_dir.join(path)],
-        Some(ComposeFileRef::Multiple(paths)) => paths
-            .iter()
-            .map(|path| devcontainer_dir.join(path))
-            .collect(),
+    let compose_references: Vec<String> = match config.docker_compose_file.as_ref() {
+        Some(reference) => reference.to_vec(),
         None => [
             "compose.yaml",
             "compose.yml",
@@ -3083,12 +3113,16 @@ fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]
             "docker-compose.yml",
         ]
         .iter()
-        .map(|path| devcontainer_dir.join(path))
-        .filter(|path| path.exists())
+        .filter(|path| devcontainer_dir.join(path).exists())
+        .map(|path| (*path).to_string())
         .collect(),
     };
+    let compose_files: Vec<PathBuf> = compose_references
+        .iter()
+        .map(|path| devcontainer_dir.join(path))
+        .collect();
     let mut unsupported_services = Vec::new();
-    for compose_file in compose_files {
+    for compose_file in &compose_files {
         let Ok(content) = fs::read_to_string(&compose_file) else {
             continue;
         };
@@ -3158,9 +3192,15 @@ fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]
                 .join(", ")
         )));
     }
-    if run_services.is_empty() {
-        let generated = devcontainer_dir.join("branchbox-sbx.json");
-        if generated.exists() {
+    let compose_override = prepare_sbx_compose_override(
+        repo_root,
+        devcontainer_dir,
+        config.service.as_deref(),
+        &compose_files,
+    )?;
+    let generated = devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG);
+    if run_services.is_empty() && compose_override.is_none() {
+        if generated.exists() && generated != config_path {
             fs::remove_file(generated)?;
         }
         return Ok(());
@@ -3173,13 +3213,132 @@ fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]
     let object = value
         .as_object_mut()
         .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
-    object.insert("runServices".to_string(), serde_json::json!(run_services));
+    if !run_services.is_empty() {
+        object.insert("runServices".to_string(), serde_json::json!(run_services));
+    }
+    if let Some(override_name) = compose_override {
+        let mut references = compose_references;
+        references.retain(|reference| reference != &override_name);
+        references.push(override_name);
+        object.insert(
+            "dockerComposeFile".to_string(),
+            serde_json::json!(references),
+        );
+    }
     let rendered = serde_json::to_string_pretty(&value)?;
-    write_text_file(
-        &devcontainer_dir.join("branchbox-sbx.json"),
-        &format!("{rendered}\n"),
-    )?;
+    if generated == config_path {
+        return Err(Error::validation(
+            "SBX runtime overlays for a top-level .devcontainer.json are not yet supported; move the source config to .devcontainer/devcontainer.json"
+                .to_string(),
+        ));
+    }
+    write_text_file(&generated, &format!("{rendered}\n"))?;
     Ok(())
+}
+
+fn prepare_sbx_compose_override(
+    repo_root: &Path,
+    devcontainer_dir: &Path,
+    primary_service: Option<&str>,
+    compose_files: &[PathBuf],
+) -> Result<Option<String>> {
+    let override_path = devcontainer_dir.join(SBX_COMPOSE_OVERRIDE);
+    let Some(primary_service) = primary_service else {
+        if override_path.exists() {
+            fs::remove_file(override_path)?;
+        }
+        return Ok(None);
+    };
+
+    let mut primary_found = false;
+    let mut replace_main_git_mount = false;
+    for compose_file in compose_files {
+        let Ok(source) = fs::read_to_string(compose_file) else {
+            continue;
+        };
+        let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&source) else {
+            continue;
+        };
+        let Some(service) = document
+            .get("services")
+            .and_then(|services| services.get(primary_service))
+        else {
+            continue;
+        };
+        primary_found = true;
+        replace_main_git_mount |= service
+            .get("volumes")
+            .and_then(serde_yaml::Value::as_sequence)
+            .is_some_and(|volumes| volumes.iter().any(compose_volume_targets_main_git));
+    }
+
+    if !primary_found {
+        if override_path.exists() {
+            fs::remove_file(override_path)?;
+        }
+        return Ok(None);
+    }
+
+    let mut service = serde_yaml::Mapping::new();
+    service.insert(
+        serde_yaml::Value::String("restart".to_string()),
+        serde_yaml::Value::String("unless-stopped".to_string()),
+    );
+    if replace_main_git_mount {
+        let authoritative_git = fs::canonicalize(repo_root.join(".git")).map_err(|err| {
+            Error::validation(format!(
+                "Cannot prepare the SBX Git metadata facade from '{}': {err}",
+                repo_root.join(".git").display()
+            ))
+        })?;
+        let mut volume = serde_yaml::Mapping::new();
+        volume.insert(
+            serde_yaml::Value::String("type".to_string()),
+            serde_yaml::Value::String("bind".to_string()),
+        );
+        volume.insert(
+            serde_yaml::Value::String("source".to_string()),
+            serde_yaml::Value::String(authoritative_git.to_string_lossy().into_owned()),
+        );
+        volume.insert(
+            serde_yaml::Value::String("target".to_string()),
+            serde_yaml::Value::String(CONTAINER_MAIN_GIT_TARGET.to_string()),
+        );
+        service.insert(
+            serde_yaml::Value::String("volumes".to_string()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(volume)]),
+        );
+    }
+
+    let mut services = serde_yaml::Mapping::new();
+    services.insert(
+        serde_yaml::Value::String(primary_service.to_string()),
+        serde_yaml::Value::Mapping(service),
+    );
+    let mut document = serde_yaml::Mapping::new();
+    document.insert(
+        serde_yaml::Value::String("services".to_string()),
+        serde_yaml::Value::Mapping(services),
+    );
+    let rendered = serde_yaml::to_string(&serde_yaml::Value::Mapping(document)).map_err(|err| {
+        Error::config(format!("Failed to serialize the SBX Compose facade: {err}"))
+    })?;
+    write_text_file(&override_path, &rendered)?;
+    Ok(Some(SBX_COMPOSE_OVERRIDE.to_string()))
+}
+
+fn compose_volume_targets_main_git(volume: &serde_yaml::Value) -> bool {
+    if let Some(short) = volume.as_str() {
+        return short
+            .split(':')
+            .any(|component| component == CONTAINER_MAIN_GIT_TARGET);
+    }
+    volume.as_mapping().is_some_and(|mapping| {
+        mapping
+            .get(serde_yaml::Value::String("target".to_string()))
+            .and_then(serde_yaml::Value::as_str)
+            == Some(CONTAINER_MAIN_GIT_TARGET)
+    })
 }
 
 fn runtime_ports(worktree_path: &Path) -> Vec<RuntimePort> {
@@ -6049,6 +6208,51 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_git_worktree_path_translates_container_main_metadata() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let metadata_path = repo_path.join(".git/worktrees/feature-test");
+        fs::create_dir_all(&metadata_path).unwrap();
+        let git_file = worktree_path.join(".git");
+        fs::write(
+            &git_file,
+            "gitdir: /workspaces/main/.git/worktrees/feature-test\n",
+        )
+        .unwrap();
+
+        workflow.fix_git_worktree_path(&worktree_path).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&git_file).unwrap(),
+            "gitdir: ../.git/worktrees/feature-test\n"
+        );
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_rejects_nested_container_metadata() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+        let git_file = worktree_path.join(".git");
+        let original = "gitdir: /workspaces/main/.git/worktrees/../config\n";
+        fs::write(&git_file, original).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let error = workflow
+            .fix_git_worktree_path(&worktree_path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not a single repository worktree entry"));
+        assert_eq!(fs::read_to_string(&git_file).unwrap(), original);
+    }
+
+    #[test]
     fn test_fix_git_worktree_path_preserves_original_when_target_is_missing() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
@@ -6069,6 +6273,128 @@ mod tests {
 
         assert!(error.contains("preserving the original worktree pointer"));
         assert_eq!(fs::read_to_string(&git_file).unwrap(), original);
+    }
+
+    #[test]
+    fn test_prepare_sbx_devcontainer_adds_git_and_restart_compose_facade() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{
+  "dockerComposeFile": "compose.yaml",
+  "service": "app"
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    image: alpine:3.19
+    volumes:
+      - ../../main/.git:/workspaces/main/.git
+"#,
+        )
+        .unwrap();
+
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &["app".to_string()]).unwrap();
+
+        let generated: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(generated["runServices"], serde_json::json!(["app"]));
+        assert_eq!(
+            generated["dockerComposeFile"],
+            serde_json::json!(["compose.yaml", SBX_COMPOSE_OVERRIDE])
+        );
+
+        let facade: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+        )
+        .unwrap();
+        let app = &facade["services"]["app"];
+        assert_eq!(app["restart"].as_str(), Some("unless-stopped"));
+        assert_eq!(
+            app["volumes"][0]["source"].as_str(),
+            Some(
+                fs::canonicalize(repo_path.join(".git"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            app["volumes"][0]["target"].as_str(),
+            Some(CONTAINER_MAIN_GIT_TARGET)
+        );
+        assert_eq!(app["volumes"][0]["type"].as_str(), Some("bind"));
+    }
+
+    #[test]
+    fn test_prepare_sbx_devcontainer_restarts_primary_without_git_facade() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.19\n",
+        )
+        .unwrap();
+
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &[]).unwrap();
+
+        let facade: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            facade["services"]["app"]["restart"].as_str(),
+            Some("unless-stopped")
+        );
+        assert!(facade["services"]["app"].get("volumes").is_none());
+    }
+
+    #[test]
+    fn test_prepare_sbx_devcontainer_removes_stale_runtime_facade() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let source_config = devcontainer_dir.join("devcontainer.json");
+        fs::write(
+            &source_config,
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.19\n",
+        )
+        .unwrap();
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &[]).unwrap();
+        assert!(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
+
+        fs::write(&source_config, r#"{"image":"alpine:3.19"}"#).unwrap();
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &[]).unwrap();
+
+        assert!(!devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(!devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
+        assert_eq!(
+            fs::read_to_string(source_config).unwrap(),
+            r#"{"image":"alpine:3.19"}"#
+        );
     }
 
     #[test]
