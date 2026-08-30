@@ -17,7 +17,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in docker jq mkfs.ext4 mountpoint sha256sum sudo; do
+for command in docker git gzip jq mkfs.ext4 mountpoint sha256sum stat sudo; do
   command -v "$command" >/dev/null 2>&1 || { echo "missing required command: $command" >&2; exit 1; }
 done
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || {
@@ -38,6 +38,7 @@ docker buildx build "${rootfs_cache[@]}" --file "$SCRIPT_DIR/image/rootfs.Docker
   --tag branchbox-local-vm-rootfs:build --load "$SCRIPT_DIR/image"
 ROOTFS_CONTAINER=$(docker create branchbox-local-vm-rootfs:build)
 docker export "$ROOTFS_CONTAINER" --output "$BUILD_DIR/rootfs.tar"
+gzip -n -9 -c "$BUILD_DIR/rootfs.tar" >"$OUTPUT_DIR/rootfs.tar.gz"
 
 truncate -s "${ROOTFS_SIZE_GIB}G" "$OUTPUT_DIR/rootfs.ext4"
 mkfs.ext4 -q -F -L branchbox-rootfs "$OUTPUT_DIR/rootfs.ext4"
@@ -50,14 +51,47 @@ cp "$BUILD_DIR/kernel/vmlinux" "$OUTPUT_DIR/vmlinux"
 
 kernel_sha=$(sha256sum "$OUTPUT_DIR/vmlinux" | awk '{print $1}')
 rootfs_sha=$(sha256sum "$OUTPUT_DIR/rootfs.ext4" | awk '{print $1}')
+rootfs_archive_sha=$(sha256sum "$OUTPUT_DIR/rootfs.tar.gz" | awk '{print $1}')
+rootfs_archive_size=$(stat -c '%s' "$OUTPUT_DIR/rootfs.tar.gz")
+source_commit=$(git -C "$REPO_ROOT" rev-parse HEAD)
+[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || {
+  echo 'local-vm guest base requires an exact lowercase Git source commit' >&2
+  exit 1
+}
 jq -n \
   --arg format_version '1' \
+  --arg schema_version 'branchbox.agentify-guest-base/1' \
+  --arg source_repository 'branchbox/branchbox' \
+  --arg source_commit "$source_commit" \
+  --arg target 'x86_64-unknown-linux-gnu' \
+  --arg base_os 'ubuntu-24.04' \
   --arg firecracker_version 'v1.16.1' \
   --arg kernel_version '6.1.155' \
   --arg devcontainer_cli_version '0.80.3' \
   --arg kernel_sha256 "$kernel_sha" \
   --arg rootfs_sha256 "$rootfs_sha" \
-  '{format_version:$format_version,firecracker_version:$firecracker_version,kernel_version:$kernel_version,devcontainer_cli_version:$devcontainer_cli_version,kernel_sha256:$kernel_sha256,rootfs_sha256:$rootfs_sha256}' \
+  --arg rootfs_archive_sha256 "$rootfs_archive_sha" \
+  --argjson rootfs_archive_size_bytes "$rootfs_archive_size" \
+  '{
+    format_version: $format_version,
+    schema_version: $schema_version,
+    source_repository: $source_repository,
+    source_commit: $source_commit,
+    target: $target,
+    base_os: $base_os,
+    firecracker_version: $firecracker_version,
+    kernel_version: $kernel_version,
+    devcontainer_cli_version: $devcontainer_cli_version,
+    kernel_sha256: $kernel_sha256,
+    rootfs_sha256: $rootfs_sha256,
+    rootfs_archive: {
+      name: "rootfs.tar.gz",
+      format: "docker-export-tar",
+      compression: "gzip",
+      sha256: $rootfs_archive_sha256,
+      size_bytes: $rootfs_archive_size_bytes
+    }
+  }' \
   >"$OUTPUT_DIR/manifest.json"
 
 printf 'Built BranchBox local-vm image in %s\n' "$OUTPUT_DIR"

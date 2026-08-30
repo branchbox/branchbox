@@ -17,8 +17,16 @@ jobs:
   firecracker:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test -z "$(git status --porcelain)"
       - uses: dtolnay/rust-toolchain@stable
       - uses: docker/setup-buildx-action@v3
       - name: Enable KVM access
@@ -76,3 +84,22 @@ jobs:
             echo 'orphaned BranchBox TAP device remains' >&2
             exit 1
           fi
+      - name: Verify Agentify guest-base provenance
+        run: |
+          manifest=target/local-vm-image/manifest.json
+          archive=target/local-vm-image/rootfs.tar.gz
+          test "$(jq -er '.schema_version' "$manifest")" = branchbox.agentify-guest-base/1
+          test "$(jq -er '.source_commit' "$manifest")" = "$SOURCE_COMMIT"
+          test "$(jq -er '.rootfs_archive.name' "$manifest")" = rootfs.tar.gz
+          test "$(jq -er '.rootfs_archive.size_bytes' "$manifest")" = "$(stat -c '%s' "$archive")"
+          test "$(jq -er '.rootfs_archive.sha256' "$manifest")" = "$(sha256sum "$archive" | awk '{print $1}')"
+      - name: Publish exact-head Agentify guest base
+        uses: actions/upload-artifact@v4
+        with:
+          name: branchbox-agentify-guest-base-${{ env.SOURCE_COMMIT }}
+          path: |
+            target/local-vm-image/rootfs.tar.gz
+            target/local-vm-image/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

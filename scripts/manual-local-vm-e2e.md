@@ -38,3 +38,7 @@ scripts/manual-local-vm-e2e.sh
 
 The GitHub workflow `.github/workflows/local-vm-e2e.yml` runs this same harness on an x64 Ubuntu KVM
 runner whenever local-vm implementation/image paths change and can also be dispatched manually.
+After the lifecycle and residue checks pass, it publishes `rootfs.tar.gz` plus `manifest.json` as
+`branchbox-agentify-guest-base-<source-commit>`. The manifest binds the archive digest and byte size to
+the exact BranchBox commit. This is the only guest-base handoff Agentify may consume; it must remove
+the local-VM SSH and sudo identity while installing its own managed runtime boundary.
