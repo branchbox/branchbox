@@ -8,7 +8,6 @@ lib/feature-start
 lib/feature-teardown
 **/*.rs.bk
 *.pdb
-Cargo.lock
 
 # IDE
 .vscode/
