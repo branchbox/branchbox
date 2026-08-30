@@ -3123,7 +3123,7 @@ fn prepare_sbx_devcontainer_config(
         .collect();
     let mut unsupported_services = Vec::new();
     for compose_file in &compose_files {
-        let Ok(content) = fs::read_to_string(&compose_file) else {
+        let Ok(content) = fs::read_to_string(compose_file) else {
             continue;
         };
         let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&content) else {
