@@ -129,6 +129,8 @@ wait "$stack_one_vsock_pid"
 wait "$stack_two_vsock_pid"
 test "$(jq -r '.guest_cid' "$TMP_ROOT/stack-one-vsock.json")" = 3
 test "$(jq -r '.guest_cid' "$TMP_ROOT/stack-two-vsock.json")" = 3
+test "$(jq -r '.uds_path' "$TMP_ROOT/stack-one-vsock.json")" = ./run/vsock
+test "$(jq -r '.uds_path' "$TMP_ROOT/stack-two-vsock.json")" = ./run/vsock
 test "$(jq -r '.runtime_id' "$TMP_ROOT/stack-one-vsock.json")" != \
   "$(jq -r '.runtime_id' "$TMP_ROOT/stack-two-vsock.json")"
 
