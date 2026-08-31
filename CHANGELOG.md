@@ -21,10 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The in-guest facade runs before host-side repository lifecycle behavior, disables checkout hooks
-  and filter drivers, strips ambient host env/mount authority and Docker-outside-of-Docker, omits
-  repository tunnel sidecars, rejects dangerous Compose/build/extends/secondary-service authority,
-  and verifies the resolved and running container have no supervisor socket, credential-directory
-  mount, privileged host namespace, or persisted model key.
+  and filter drivers, strips ambient host env/mount authority plus outside/in/from-Docker feature
+  aliases, omits repository tunnel sidecars, rejects dangerous Compose/build/extends/secondary-service
+  authority and local or remote Docker/containerd/Podman/BuildKit endpoints, and verifies the resolved
+  and running container have no supervisor socket, credential-directory mount, privileged host
+  namespace/device/capability, disabled confinement, persisted daemon endpoint, or model key.
 
 ### Fixed
 

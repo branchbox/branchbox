@@ -333,28 +333,7 @@ impl InGuestRuntimeProvider {
             ],
             Some(worktree_path),
         )?;
-        let configuration = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .rev()
-            .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .ok_or_else(|| {
-                Error::validation(
-                    "Dev Containers CLI did not return resolved configuration evidence",
-                )
-            })?;
-        let normalized = configuration.to_string().to_ascii_lowercase();
-        if normalized.contains("docker-outside-of-docker")
-            || normalized.contains("docker.sock")
-            || normalized.contains("containerd.sock")
-            || normalized.contains("/run/agentify-assignment")
-            || normalized.contains("initializecommand")
-            || normalized.contains("${localenv:")
-        {
-            return Err(Error::validation(
-                "Resolved devcontainer configuration reintroduced a host hook, ambient path, supervisor socket, or credential directory",
-            ));
-        }
-        Ok(())
+        validate_resolved_configuration(&output.stdout)
     }
 
     fn probe(&self, worktree_path: &Path, config_path: &Path) -> Result<bool> {
@@ -1679,6 +1658,54 @@ fn parse_container_id(output: &Output) -> Result<String> {
         })
 }
 
+fn validate_resolved_configuration(source: &[u8]) -> Result<()> {
+    let configuration = String::from_utf8_lossy(source)
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .ok_or_else(|| {
+            Error::validation("Dev Containers CLI did not return resolved configuration evidence")
+        })?;
+    let normalized = configuration.to_string().to_ascii_lowercase();
+    if contains_project_docker_reference(&normalized)
+        || normalized.contains("/run/agentify-assignment")
+        || normalized.contains("initializecommand")
+        || normalized.contains("${localenv:")
+    {
+        return Err(Error::validation(
+            "Resolved devcontainer configuration reintroduced a host hook, ambient path, container supervisor authority, or credential directory",
+        ));
+    }
+    Ok(())
+}
+
+fn contains_project_docker_reference(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    [
+        "docker-outside-of-docker",
+        "docker-in-docker",
+        "docker-from-docker",
+        "docker.sock",
+        "containerd.sock",
+        "podman.sock",
+        "buildkit.sock",
+        "buildkitd.sock",
+        "/var/run/docker",
+        "/run/docker",
+        "/var/lib/docker",
+        "/run/containerd",
+        "/var/lib/containerd",
+        "/run/podman",
+        "/run/buildkit",
+        "docker_host",
+        "container_host",
+        "containerd_address",
+        "buildkit_host",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
 fn validate_container_inspection(source: &[u8], allowed_sources: &BTreeSet<PathBuf>) -> Result<()> {
     let documents: serde_json::Value = serde_json::from_slice(source).map_err(|err| {
         Error::validation(format!(
@@ -1704,9 +1731,67 @@ fn validate_container_inspection(source: &[u8], allowed_sources: &BTreeSet<PathB
         .get("IpcMode")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|mode| mode == "host");
-    if privileged || host_pid || host_ipc {
+    let host_network = host
+        .get("NetworkMode")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|mode| mode == "host");
+    let host_cgroup = host
+        .get("CgroupnsMode")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|mode| mode == "host");
+    let host_user = host
+        .get("UsernsMode")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|mode| mode == "host");
+    let host_uts = host
+        .get("UTSMode")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|mode| mode == "host");
+    let elevated_capability = host
+        .get("CapAdd")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|capabilities| {
+            capabilities.iter().any(|capability| {
+                capability.as_str().is_some_and(|capability| {
+                    matches!(
+                        capability.to_ascii_uppercase().as_str(),
+                        "ALL" | "SYS_ADMIN" | "NET_ADMIN" | "SYS_PTRACE"
+                    )
+                })
+            })
+        });
+    let host_device = host
+        .get("Devices")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|devices| !devices.is_empty())
+        || host
+            .get("DeviceRequests")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|devices| !devices.is_empty());
+    let disabled_confinement = host
+        .get("SecurityOpt")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|options| {
+            options.iter().any(|option| {
+                option.as_str().is_some_and(|option| {
+                    let normalized = option.to_ascii_lowercase();
+                    normalized.contains("unconfined") || normalized.contains("label=disable")
+                })
+            })
+        });
+    if privileged
+        || host_pid
+        || host_ipc
+        || host_network
+        || host_cgroup
+        || host_user
+        || host_uts
+        || elevated_capability
+        || host_device
+        || disabled_confinement
+    {
         return Err(Error::validation(
-            "In-guest devcontainer resolved to a privileged host namespace",
+            "In-guest devcontainer resolved to privileged host authority",
         ));
     }
     let unsafe_mount = container
@@ -1731,20 +1816,31 @@ fn validate_container_inspection(source: &[u8], allowed_sources: &BTreeSet<PathB
             "In-guest devcontainer resolved a supervisor socket or credential-directory mount",
         ));
     }
-    let inherited_model_key = container
+    let inherited_forbidden_environment = container
         .get("Config")
         .and_then(|config| config.get("Env"))
         .and_then(serde_json::Value::as_array)
         .is_some_and(|environment| {
             environment.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .is_some_and(|entry| entry.starts_with("OPENAI_API_KEY="))
+                entry.as_str().is_some_and(|entry| {
+                    let name = entry.split('=').next().unwrap_or_default();
+                    name == "OPENAI_API_KEY"
+                        || matches!(
+                            name,
+                            "DOCKER_HOST"
+                                | "DOCKER_CONTEXT"
+                                | "DOCKER_CERT_PATH"
+                                | "DOCKER_TLS_VERIFY"
+                                | "CONTAINER_HOST"
+                                | "CONTAINERD_ADDRESS"
+                                | "BUILDKIT_HOST"
+                        )
+                })
             })
         });
-    if inherited_model_key {
+    if inherited_forbidden_environment {
         return Err(Error::validation(
-            "In-guest devcontainer may not persist OPENAI_API_KEY in its environment; use exec-provider name-only inheritance",
+            "In-guest devcontainer may not persist model identity or container supervisor endpoints in its environment",
         ));
     }
     Ok(())
@@ -1752,8 +1848,7 @@ fn validate_container_inspection(source: &[u8], allowed_sources: &BTreeSet<PathB
 
 fn contains_supervisor_mount(value: &str, allowed_sources: &BTreeSet<PathBuf>) -> bool {
     let normalized = value.to_ascii_lowercase();
-    normalized.contains("docker.sock")
-        || normalized.contains("containerd.sock")
+    contains_project_docker_reference(&normalized)
         || normalized == "/run/agentify-assignment"
         || normalized.starts_with("/run/agentify-assignment/")
         || ((normalized == "/run/agentify-runtime"
@@ -2092,6 +2187,9 @@ mod tests {
         for source in [
             "/var/run/docker.sock",
             "/run/containerd/containerd.sock",
+            "/run/podman/podman.sock",
+            "/run/buildkit/buildkitd.sock",
+            "/var/lib/docker",
             "/run/agentify-assignment/materializations",
             "/run/agentify-runtime",
         ] {
@@ -2100,6 +2198,94 @@ mod tests {
                 "Mounts": [{"Source": source, "Destination": "/unsafe"}],
                 "Config": {"Env": []}
             }]);
+            assert!(validate_container_inspection(
+                &serde_json::to_vec(&inspection).unwrap(),
+                &BTreeSet::new()
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn resolved_configuration_rejects_project_docker_aliases_and_remote_endpoints() {
+        for configuration in [
+            serde_json::json!({
+                "features": {"ghcr.io/devcontainers/features/docker-in-docker:2": {}}
+            }),
+            serde_json::json!({"containerEnv": {"DOCKER_HOST": "tcp://supervisor:2375"}}),
+            serde_json::json!({
+                "mounts": ["source=/run/podman/podman.sock,target=/run/podman/podman.sock,type=bind"]
+            }),
+        ] {
+            let output = format!("diagnostic line\n{configuration}\n");
+            assert!(
+                validate_resolved_configuration(output.as_bytes()).is_err(),
+                "unexpectedly accepted: {configuration}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_configuration_accepts_an_unprivileged_socket_free_facade() {
+        let configuration = serde_json::json!({
+            "configuration": {
+                "privileged": false,
+                "containerEnv": {"DB_HOST": "postgres"},
+                "features": {"ghcr.io/devcontainers/features/github-cli:1": {}}
+            }
+        });
+        validate_resolved_configuration(format!("{configuration}\n").as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn running_container_rejects_remote_daemon_environment_and_privilege_reintroduction() {
+        for inspection in [
+            serde_json::json!([{
+                "HostConfig": {"Privileged": false, "PidMode": "", "IpcMode": "private"},
+                "Mounts": [],
+                "Config": {"Env": ["DOCKER_HOST=tcp://supervisor:2375"]}
+            }]),
+            serde_json::json!([{
+                "HostConfig": {
+                    "Privileged": false,
+                    "PidMode": "",
+                    "IpcMode": "private",
+                    "CapAdd": ["SYS_ADMIN"]
+                },
+                "Mounts": [],
+                "Config": {"Env": []}
+            }]),
+            serde_json::json!([{
+                "HostConfig": {
+                    "Privileged": false,
+                    "PidMode": "",
+                    "IpcMode": "private",
+                    "NetworkMode": "host"
+                },
+                "Mounts": [],
+                "Config": {"Env": []}
+            }]),
+            serde_json::json!([{
+                "HostConfig": {
+                    "Privileged": false,
+                    "PidMode": "",
+                    "IpcMode": "private",
+                    "Devices": [{"PathOnHost": "/dev/kvm"}]
+                },
+                "Mounts": [],
+                "Config": {"Env": []}
+            }]),
+            serde_json::json!([{
+                "HostConfig": {
+                    "Privileged": false,
+                    "PidMode": "",
+                    "IpcMode": "private",
+                    "SecurityOpt": ["seccomp=unconfined"]
+                },
+                "Mounts": [],
+                "Config": {"Env": []}
+            }]),
+        ] {
             assert!(validate_container_inspection(
                 &serde_json::to_vec(&inspection).unwrap(),
                 &BTreeSet::new()

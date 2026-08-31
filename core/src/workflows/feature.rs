@@ -3474,11 +3474,7 @@ fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<
         .get_mut("features")
         .and_then(serde_json::Value::as_object_mut)
     {
-        features.retain(|feature, _| {
-            !feature
-                .to_ascii_lowercase()
-                .contains("docker-outside-of-docker")
-        });
+        features.retain(|feature, _| !is_project_docker_feature(feature));
     }
     if let Some(build) = object
         .get_mut("build")
@@ -3501,14 +3497,38 @@ fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<
         let mut index = 0;
         while index < run_args.len() {
             let argument = run_args[index].as_str().unwrap_or_default();
-            if matches!(argument, "--env-file" | "--volume" | "-v" | "--shm-size") {
+            if matches!(
+                argument,
+                "--env-file"
+                    | "--volume"
+                    | "-v"
+                    | "--mount"
+                    | "--shm-size"
+                    | "--device"
+                    | "--cap-add"
+                    | "--security-opt"
+                    | "--network"
+                    | "--network-mode"
+                    | "--pid"
+                    | "--ipc"
+                    | "--cgroupns"
+            ) {
                 index += 2;
                 continue;
             }
             let normalized = argument.to_ascii_lowercase();
             if normalized.starts_with("--env-file=")
                 || normalized.starts_with("--volume=")
+                || normalized.starts_with("--mount=")
                 || normalized.starts_with("--shm-size=")
+                || normalized.starts_with("--device=")
+                || normalized.starts_with("--cap-add=")
+                || normalized.starts_with("--security-opt=")
+                || normalized.starts_with("--network=")
+                || normalized.starts_with("--network-mode=")
+                || normalized.starts_with("--pid=")
+                || normalized.starts_with("--ipc=")
+                || normalized.starts_with("--cgroupns=")
                 || normalized == "--ipc=host"
                 || normalized == "--pid=host"
                 || normalized == "--privileged"
@@ -3523,6 +3543,17 @@ fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<
         *run_args = sanitized;
     }
     Ok(())
+}
+
+fn is_project_docker_feature(feature: &str) -> bool {
+    let normalized = feature.to_ascii_lowercase();
+    [
+        "docker-outside-of-docker",
+        "docker-in-docker",
+        "docker-from-docker",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 fn is_safe_nonsecret_container_environment(name: &str, value: &str) -> bool {
@@ -3575,7 +3606,15 @@ fn reject_supervisor_socket_references_yaml(value: &serde_yaml::Value) -> Result
             Ok(())
         }
         serde_yaml::Value::Mapping(values) => {
-            for value in values.values() {
+            for (key, value) in values {
+                if key
+                    .as_str()
+                    .is_some_and(contains_supervisor_socket_reference)
+                {
+                    return Err(Error::validation(
+                        "In-guest Compose may not configure container supervisor authority",
+                    ));
+                }
                 reject_supervisor_socket_references_yaml(value)?;
             }
             Ok(())
@@ -3734,7 +3773,26 @@ fn validate_in_guest_compose_security(
 
 fn contains_supervisor_socket_reference(value: &str) -> bool {
     let normalized = value.to_ascii_lowercase();
-    normalized.contains("docker.sock") || normalized.contains("containerd.sock")
+    [
+        "docker.sock",
+        "containerd.sock",
+        "podman.sock",
+        "buildkit.sock",
+        "buildkitd.sock",
+        "/var/run/docker",
+        "/run/docker",
+        "/var/lib/docker",
+        "/run/containerd",
+        "/var/lib/containerd",
+        "/run/podman",
+        "/run/buildkit",
+        "docker_host",
+        "container_host",
+        "containerd_address",
+        "buildkit_host",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 fn contains_supervisor_reference(value: &str) -> bool {
@@ -7446,6 +7504,8 @@ mod tests {
             "initializeCommand": "op read secret",
             "features": {
                 "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+                "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+                "ghcr.io/devcontainers-contrib/features/docker-from-docker:1": {},
                 "ghcr.io/devcontainers/features/node:1": {}
             },
             "containerEnv": {"OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"},
@@ -7456,7 +7516,8 @@ mod tests {
             ],
             "runArgs": [
                 "--env-file", "../.env", "--shm-size", "8g", "--shm-size=16g",
-                "--ipc=host", "--privileged", "--init"
+                "--ipc=host", "--network", "host", "--device=/dev/kvm",
+                "--cap-add", "SYS_ADMIN", "--privileged", "--init"
             ],
             "postCreateCommand": "bin/setup"
         });
@@ -7468,6 +7529,12 @@ mod tests {
         assert!(config.get("remoteEnv").is_none());
         assert!(config["features"]
             .get("ghcr.io/devcontainers/features/docker-outside-of-docker:1")
+            .is_none());
+        assert!(config["features"]
+            .get("ghcr.io/devcontainers/features/docker-in-docker:2")
+            .is_none());
+        assert!(config["features"]
+            .get("ghcr.io/devcontainers-contrib/features/docker-from-docker:1")
             .is_none());
         assert!(config["features"]
             .get("ghcr.io/devcontainers/features/node:1")
@@ -7613,6 +7680,21 @@ volumes:
                     &temp.path().join("repo")
                 )
                 .is_err(),
+                "unexpectedly accepted: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_in_guest_compose_rejects_alternate_supervisor_endpoints() {
+        for source in [
+            "services:\n  app:\n    environment: {DOCKER_HOST: tcp://supervisor:2375}\n",
+            "services:\n  app:\n    volumes: [/run/podman/podman.sock:/run/podman/podman.sock]\n",
+            "services:\n  app:\n    volumes: [/run/buildkit:/run/buildkit]\n",
+        ] {
+            let document: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+            assert!(
+                reject_supervisor_socket_references_yaml(&document).is_err(),
                 "unexpectedly accepted: {source}"
             );
         }

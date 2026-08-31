@@ -95,14 +95,14 @@ Before checkout, BranchBox validates the exact revision and rejects repository `
 The generated facade:
 
 - removes host-side `initializeCommand`, ambient `remoteEnv`, custom workspace/host mounts, env-file/runArg mounts, host IPC/PID, privileged mode, extra capabilities, and unsafe build authority;
-- removes `docker-outside-of-docker`, then inspects the Dev Containers merged configuration before startup to prove it was not reintroduced by feature resolution;
+- removes outside/in/from-Docker feature aliases and daemon-bearing run arguments, then inspects the Dev Containers merged configuration before startup to prove no alias, local Docker/containerd/Podman/BuildKit socket, or remote daemon endpoint was reintroduced by feature resolution;
 - preserves only non-secret literal connectivity settings such as `DB_HOST=postgres`, `PORT=3000`, and `RAILS_ENV=development`; secrets and interpolated values require a typed project-environment materialization;
 - replaces primary Compose env files and volumes, permits only workspace-contained binds plus the authoritative Git metadata facade, rejects `extends`, external volumes, privileged namespaces, dangerous build options, secondary-service host paths, and service secrets/configs;
 - disables cloudflared, Tailscale, ngrok, `/dev/net/tun`, and tunnel-named services with Compose `!override`, and removes dependency edges to them. The Agentify outer boundary owns the only platform connector;
 - gives the primary coding service a private, bounded 1 GiB `/dev/shm`; repository `--shm-size` overrides are removed and host IPC remains forbidden;
-- mounts non-environment manifest-approved individual files read-only; the typed project environment is available only as the primary service's raw env file. It never mounts the Docker/containerd socket or an Agentify supervisor directory.
+- mounts non-environment manifest-approved individual files read-only; the typed project environment is available only as the primary service's raw env file. It never mounts a Docker/containerd/Podman/BuildKit socket, daemon state directory, or Agentify supervisor directory.
 
-After startup, Docker inspection fails closed if the primary container is privileged, shares host PID/IPC, contains a supervisor socket/directory mount, or persists `OPENAI_API_KEY`. A readiness exec must also succeed. A repository primary command or container-side lifecycle hook that still assumes stripped SSH/1Password files produces an explicit startup failure; BranchBox does not report the environment ready.
+After startup, Docker inspection fails closed if the primary container is privileged, shares a host namespace, receives host devices or elevated capabilities, disables confinement, contains a supervisor socket/directory mount, persists a remote daemon endpoint, or persists `OPENAI_API_KEY`. A readiness exec must also succeed. A repository primary command or container-side lifecycle hook that still assumes stripped SSH/1Password files produces an explicit startup failure; BranchBox does not report the environment ready.
 
 Project Docker is deliberately `disabled`. Projects that require Docker must later use a task-scoped rootless/nested daemon that cannot see supervisor containers, volumes, assignment state, or credential bundles.
 
