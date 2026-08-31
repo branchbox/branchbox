@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OPENAI_API_KEY` inheritance into the configured devcontainer user/workspace.
 - Deliver one digest-verified, canonical project-environment materialization only to the primary
   Compose service through a raw env file, without mounting or serializing its values.
+- Add run-owned shared-directory and Unix tool-endpoint leases with exact read-only primary-container
+  bind evidence and residue-checked directory/socket cleanup.
 - Bind the Firecracker kernel config into the image manifest, require built-in virtio-vsock
   support, and prove a trusted guest-to-host transfer without exposing `/dev/vsock` to coding
   devcontainers.

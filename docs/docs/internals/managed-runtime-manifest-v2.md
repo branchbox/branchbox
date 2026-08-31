@@ -49,10 +49,64 @@ For example:
 The complete manifest also carries the run, outer-runtime, repository, branch, workspace, and
 published-port fields required by version 1.
 
+## Shared directory and tool endpoint leases
+
+Version 2 can also expose two provider-neutral, per-run channels to the primary devcontainer. A
+`shared-directory` lets an outer helper update a directory while the container sees a read-only
+bind. A `tool-endpoint` exposes either an owner-only directory or an owner-only Unix socket for
+requests. These live under the assignment's exact run directory and do not carry `sha256`, because
+their contents or socket state may change during the run:
+
+```json
+{
+  "version": "2",
+  "run_id": "run-id",
+  "leases": [
+    {
+      "lease_id": "shared_exchange",
+      "scope": "shared-directory",
+      "consumer": "primary-tool",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "materializations": [
+        {
+          "source_path": "/run/branchbox/managed/run-id/shared/exchange",
+          "target_path": "/run/branchbox/leases/shared/exchange"
+        }
+      ]
+    },
+    {
+      "lease_id": "request_endpoint",
+      "scope": "tool-endpoint",
+      "consumer": "primary-tool",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "materializations": [
+        {
+          "source_path": "/run/branchbox/managed/run-id/tool-endpoints/requests",
+          "target_path": "/run/branchbox/leases/tool-endpoints/requests"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The assignment must be stored directly in `/run/branchbox/managed/run-id/`. The run directory and
+every source-directory ancestor use mode `0700` and the assignment owner's UID. A shared source is
+a directory; a tool endpoint is a directory or Unix socket. Socket permissions must also remain
+owner-only.
+
 ## Security contract
 
-- The assignment and every materialization must be owner-only regular files. Materializations must
-  be siblings below the assignment's `materializations` directory and match their declared SHA-256.
+- The assignment and file materializations must be owner-only regular files. File materializations
+  are siblings below the assignment's `materializations` directory and match their declared
+  SHA-256.
+- Shared-directory and tool-endpoint leases are live, exact-run bindings. BranchBox rejects sources
+  outside the manifest's `run_id` directory, source ownership or type changes, overlapping sources,
+  targets outside the scope-specific BranchBox lease namespace, and ambient supervisor-authority or
+  secret paths.
+- The generated configuration mounts only manifest-declared source/target pairs. Final Docker
+  inspection must show every pair exactly once as a read-only bind on the primary container; a
+  missing, writable, mistargeted, duplicate, or unsigned managed mount fails startup.
 - A provider starts only when the requested executable and inherited environment exactly match one
   live `model-identity` lease. Provider-environment values are selected only for that lease's exact
   consumer.
@@ -64,9 +118,10 @@ published-port fields required by version 1.
   tree.
 - Provider execution starts from an empty process environment, adding only a fixed safe `PATH`, the
   exact signed inherited names, and the exact digest-bound provider-environment bindings.
-- Teardown removes every recorded materialization. Any file that cannot be removed is reported as
-  `lease-materialization` residue and prevents a residue-free teardown receipt.
+- Teardown removes every recorded materialization, including non-empty shared directories and Unix
+  sockets. Any source that cannot be removed is reported as `lease-materialization` residue and
+  prevents a residue-free teardown receipt.
 
 Version 1 remains accepted for existing integrations and retains its original fixed provider
 allowlist. New orchestrators should emit version 2 and place managed files below a run-specific
-directory such as `/run/branchbox/managed/<run-id>/materializations`.
+directory such as `/run/branchbox/managed/<run-id>/`.

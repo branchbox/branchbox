@@ -13,11 +13,11 @@ use crate::{devcontainer_runtime::DevcontainerConfig, Error, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -26,6 +26,8 @@ const MANAGED_MANIFEST_VERSION: &str = "2";
 const MANAGED_RUNTIME_ROOT: &str = "/run/branchbox/managed";
 const LEASE_TARGET_ROOT: &str = "/run/branchbox/leases";
 const PROJECT_ENVIRONMENT_TARGET: &str = "/run/branchbox/leases/project-env";
+const SHARED_DIRECTORY_TARGET_ROOT: &str = "/run/branchbox/leases/shared";
+const TOOL_ENDPOINT_TARGET_ROOT: &str = "/run/branchbox/leases/tool-endpoints";
 const MAX_PROVIDER_ENVIRONMENT_BINDINGS: usize = 16;
 const MAX_PROVIDER_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
 const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
@@ -121,9 +123,19 @@ impl InGuestFacadePlan {
 struct InGuestMount {
     source: PathBuf,
     target: MaterializationTarget,
-    sha256: String,
+    sha256: Option<String>,
+    source_kind: ManagedSourceKind,
     scope: LeaseScope,
     consumer: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+enum ManagedSourceKind {
+    #[default]
+    File,
+    Directory,
+    Socket,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +191,8 @@ enum LeaseScope {
     SourceControlIdentity,
     ProjectEnvironment,
     ProviderEnvironment,
+    SharedDirectory,
+    ToolEndpoint,
     PlatformTunnel,
 }
 
@@ -189,6 +203,8 @@ impl LeaseScope {
             Self::SourceControlIdentity => "source-control-identity",
             Self::ProjectEnvironment => "project-environment",
             Self::ProviderEnvironment => "provider-environment",
+            Self::SharedDirectory => "shared-directory",
+            Self::ToolEndpoint => "tool-endpoint",
             Self::PlatformTunnel => "platform-tunnel",
         }
     }
@@ -202,7 +218,8 @@ struct AssignedMaterialization {
     target_path: Option<PathBuf>,
     #[serde(default)]
     environment_name: Option<String>,
-    sha256: String,
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,7 +246,10 @@ struct ProviderState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StateMaterialization {
     source_path: PathBuf,
-    sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(default)]
+    source_kind: ManagedSourceKind,
 }
 
 #[derive(Debug, Default)]
@@ -496,22 +516,18 @@ impl InGuestRuntimeProvider {
             "devcontainer boundary inspection",
             &["inspect", container_id],
         )?;
-        let (allowed_sources, forbidden_environment) =
+        let (signed_bind_mounts, forbidden_environment) =
             if let Some(identity) = metadata.in_guest.as_ref() {
                 let state = Self::read_state(&identity.state_path)?;
                 let assignment = load_assignment(&state.manifest_path)?;
-                let environment_sources = assignment.provider_environment_sources();
-                let allowed_sources = state
-                    .materializations
-                    .into_iter()
-                    .map(|materialization| materialization.source_path)
-                    .filter(|source| !environment_sources.contains(source))
-                    .collect::<BTreeSet<_>>();
-                (allowed_sources, assignment.provider_environment_names())
+                (
+                    assignment.signed_bind_mounts(),
+                    assignment.provider_environment_names(),
+                )
             } else {
-                (BTreeSet::new(), BTreeSet::new())
+                (BTreeMap::new(), BTreeSet::new())
             };
-        validate_container_inspection(&output.stdout, &allowed_sources, &forbidden_environment)
+        validate_container_inspection(&output.stdout, &signed_bind_mounts, &forbidden_environment)
     }
 
     fn proxy_name(run_id: &str, runtime_port: u16) -> String {
@@ -738,10 +754,21 @@ impl InGuestRuntimeProvider {
     fn erase_materializations(&self, state: &ProviderState, residue: &mut Vec<RuntimeResidue>) {
         let mut remaining = Vec::new();
         for materialization in &state.materializations {
-            match fs::remove_file(&materialization.source_path) {
+            let removal = match materialization.source_kind {
+                ManagedSourceKind::Directory => fs::remove_dir_all(&materialization.source_path),
+                ManagedSourceKind::File | ManagedSourceKind::Socket => {
+                    fs::remove_file(&materialization.source_path)
+                }
+            };
+            match removal {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => remaining.push(materialization.source_path.display().to_string()),
+            }
+            if fs::symlink_metadata(&materialization.source_path).is_ok()
+                && !remaining.contains(&materialization.source_path.display().to_string())
+            {
+                remaining.push(materialization.source_path.display().to_string());
             }
         }
         if !remaining.is_empty() {
@@ -827,7 +854,12 @@ impl InGuestRuntimeProvider {
                 };
                 Ok(ProviderEnvironmentValue {
                     name: name.clone(),
-                    value: read_provider_environment_value(&mount.source, &mount.sha256)?,
+                    value: read_provider_environment_value(
+                        &mount.source,
+                        mount.sha256.as_deref().ok_or_else(|| {
+                            Error::validation("Provider environment binding is missing its digest")
+                        })?,
+                    )?,
                 })
             })
             .collect()
@@ -952,6 +984,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 .map(|mount| StateMaterialization {
                     source_path: mount.source.clone(),
                     sha256: mount.sha256.clone(),
+                    source_kind: mount.source_kind,
                 })
                 .collect(),
             proxy_names: context
@@ -1313,14 +1346,6 @@ impl LoadedAssignment {
         })
     }
 
-    fn provider_environment_sources(&self) -> BTreeSet<PathBuf> {
-        self.mounts
-            .iter()
-            .filter(|mount| mount.scope == LeaseScope::ProviderEnvironment)
-            .map(|mount| mount.source.clone())
-            .collect()
-    }
-
     fn provider_environment_names(&self) -> BTreeSet<String> {
         let mut names = self
             .manifest
@@ -1345,6 +1370,22 @@ impl LoadedAssignment {
             names.insert(LEGACY_PROVIDER_ENVIRONMENT.to_string());
         }
         names
+    }
+
+    fn signed_bind_mounts(&self) -> BTreeMap<(PathBuf, PathBuf), ManagedSourceKind> {
+        self.mounts
+            .iter()
+            .filter_map(|mount| {
+                let MaterializationTarget::File(target) = &mount.target else {
+                    return None;
+                };
+                matches!(
+                    mount.scope,
+                    LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+                )
+                .then_some(((mount.source.clone(), target.clone()), mount.source_kind))
+            })
+            .collect()
     }
 }
 
@@ -1395,11 +1436,14 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     let assignment_root = manifest_path.parent().ok_or_else(|| {
         Error::validation("In-guest assignment manifest must have a parent directory")
     })?;
-    let has_materializations = manifest
-        .leases
-        .iter()
-        .any(|lease| !lease.materializations.is_empty());
-    let materialization_root = if has_materializations {
+    let has_file_materializations = manifest.leases.iter().any(|lease| {
+        !lease.materializations.is_empty()
+            && !matches!(
+                lease.scope,
+                LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+            )
+    });
+    let materialization_root = if has_file_materializations {
         Some(
             fs::canonicalize(assignment_root.join("materializations")).map_err(|err| {
                 Error::validation(format!(
@@ -1432,10 +1476,15 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         if manifest.version == LEGACY_MANIFEST_VERSION
             && (!lease.inherited_environment.is_empty()
                 || lease.executable.is_some()
-                || lease.scope == LeaseScope::ProviderEnvironment)
+                || matches!(
+                    lease.scope,
+                    LeaseScope::ProviderEnvironment
+                        | LeaseScope::SharedDirectory
+                        | LeaseScope::ToolEndpoint
+                ))
         {
             return Err(Error::validation(
-                "Version 1 assignments cannot declare provider-environment bindings",
+                "Version 1 assignments cannot declare managed v2 bindings",
             ));
         }
         if lease.scope == LeaseScope::ModelIdentity {
@@ -1518,16 +1567,46 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 ));
             }
         }
+        if matches!(
+            lease.scope,
+            LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+        ) && (lease.materializations.len() != 1
+            || lease
+                .expires_at
+                .is_none_or(|expires_at| expires_at <= Utc::now()))
+        {
+            return Err(Error::validation(
+                "Managed directory and tool-endpoint leases require one live materialization",
+            ));
+        }
         for materialization in &lease.materializations {
-            let source = validate_private_regular_file(
-                &materialization.source_path,
-                "lease materialization",
-            )?;
-            if !source.starts_with(materialization_root.as_ref().expect("validated above")) {
-                return Err(Error::validation(
-                    "Lease materialization source escapes the assignment materializations directory",
-                ));
-            }
+            let (source, source_kind) = if matches!(
+                lease.scope,
+                LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+            ) {
+                if materialization.sha256.is_some() {
+                    return Err(Error::validation(
+                        "Managed directory and tool-endpoint leases must not declare a file digest",
+                    ));
+                }
+                validate_run_owned_managed_source(
+                    &manifest_path,
+                    &manifest.run_id,
+                    &materialization.source_path,
+                    lease.scope,
+                )?
+            } else {
+                let source = validate_private_regular_file(
+                    &materialization.source_path,
+                    "lease materialization",
+                )?;
+                if !source.starts_with(materialization_root.as_ref().expect("validated above")) {
+                    return Err(Error::validation(
+                        "Lease materialization source escapes the assignment materializations directory",
+                    ));
+                }
+                (source, ManagedSourceKind::File)
+            };
             let target = match (
                 materialization.target_path.as_ref(),
                 materialization.environment_name.as_ref(),
@@ -1540,6 +1619,12 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                         return Err(Error::validation(format!(
                             "Project-environment materialization target must be {PROJECT_ENVIRONMENT_TARGET}"
                         )));
+                    }
+                    if lease.scope == LeaseScope::SharedDirectory {
+                        validate_managed_mount_target(target, SHARED_DIRECTORY_TARGET_ROOT)?;
+                    }
+                    if lease.scope == LeaseScope::ToolEndpoint {
+                        validate_managed_mount_target(target, TOOL_ENDPOINT_TARGET_ROOT)?;
                     }
                     if !file_targets.insert(target.clone()) {
                         return Err(Error::validation(
@@ -1564,29 +1649,45 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     ));
                 }
             };
-            validate_sha256(&materialization.sha256)?;
-            let actual = file_sha256(&source)?;
-            if actual != materialization.sha256 {
-                return Err(Error::validation(format!(
-                    "Lease materialization digest mismatch for lease '{}'",
-                    lease.lease_id
-                )));
-            }
-            if !sources.insert(source.clone()) {
+            if let Some(expected_sha256) = materialization.sha256.as_deref() {
+                validate_sha256(expected_sha256)?;
+                let actual = file_sha256(&source)?;
+                if actual != expected_sha256 {
+                    return Err(Error::validation(format!(
+                        "Lease materialization digest mismatch for lease '{}'",
+                        lease.lease_id
+                    )));
+                }
+            } else if !matches!(
+                lease.scope,
+                LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+            ) {
                 return Err(Error::validation(
-                    "Lease materialization source and target paths must be unique",
+                    "File materializations require a SHA-256 digest",
+                ));
+            }
+            if sources.iter().any(|existing: &PathBuf| {
+                source.starts_with(existing) || existing.starts_with(&source)
+            }) || !sources.insert(source.clone())
+            {
+                return Err(Error::validation(
+                    "Lease materialization sources must be unique and non-overlapping",
                 ));
             }
             if lease.scope == LeaseScope::ProjectEnvironment {
                 validate_project_environment_file(&source)?;
             }
             if lease.scope == LeaseScope::ProviderEnvironment {
-                validate_provider_environment_value_file(&source, &materialization.sha256)?;
+                validate_provider_environment_value_file(
+                    &source,
+                    materialization.sha256.as_deref().expect("validated above"),
+                )?;
             }
             mounts.push(InGuestMount {
                 source,
                 target,
                 sha256: materialization.sha256.clone(),
+                source_kind,
                 scope: lease.scope,
                 consumer: lease.consumer.clone(),
             });
@@ -1600,6 +1701,10 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 "primary-env-file".to_string()
             } else if lease.scope == LeaseScope::ProviderEnvironment {
                 "provider-env".to_string()
+            } else if lease.scope == LeaseScope::SharedDirectory {
+                "primary-read-only-directory".to_string()
+            } else if lease.scope == LeaseScope::ToolEndpoint {
+                "primary-read-only-endpoint".to_string()
             } else if lease.materializations.is_empty() {
                 "outer".to_string()
             } else {
@@ -1693,6 +1798,158 @@ fn validate_private_regular_file(path: &Path, description: &str) -> Result<PathB
     fs::canonicalize(path).map_err(Into::into)
 }
 
+fn validate_run_owned_managed_source(
+    manifest_path: &Path,
+    run_id: &str,
+    source_path: &Path,
+    scope: LeaseScope,
+) -> Result<(PathBuf, ManagedSourceKind)> {
+    let run_root = manifest_path.parent().ok_or_else(|| {
+        Error::validation("Managed assignment manifest must have a run directory")
+    })?;
+    if run_root.file_name().and_then(|name| name.to_str()) != Some(run_id) {
+        return Err(Error::validation(
+            "Managed mount assignment directory must exactly match run_id",
+        ));
+    }
+    if !source_path.is_absolute()
+        || source_path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(Error::validation(
+            "Managed mount source must be an exact path below its assignment run directory",
+        ));
+    }
+    let source = fs::canonicalize(source_path)?;
+    let canonical_run_root = fs::canonicalize(run_root)?;
+    if !source.starts_with(&canonical_run_root) || source == canonical_run_root {
+        return Err(Error::validation(
+            "Managed mount source must be an exact path below its assignment run directory",
+        ));
+    }
+    if contains_ambient_authority_reference(&source.to_string_lossy()) {
+        return Err(Error::validation(
+            "Managed mount source may not expose ambient supervisor authority or secret paths",
+        ));
+    }
+
+    let manifest_owner = path_owner(&fs::metadata(manifest_path)?);
+    let run_owner = validate_private_directory(run_root, "assignment run directory")?;
+    if manifest_owner != run_owner {
+        return Err(Error::validation(
+            "Managed assignment manifest and run directory must have the same owner",
+        ));
+    }
+
+    let source_parent = source.parent().ok_or_else(|| {
+        Error::validation("Managed mount source must have a private parent directory")
+    })?;
+    let relative_parent = source_parent
+        .strip_prefix(&canonical_run_root)
+        .map_err(|_| {
+            Error::validation("Managed mount source escapes its assignment run directory")
+        })?;
+    let mut current = canonical_run_root.clone();
+    for component in relative_parent.components() {
+        let Component::Normal(component) = component else {
+            return Err(Error::validation(
+                "Managed mount source path is not normalized",
+            ));
+        };
+        current.push(component);
+        let owner = validate_private_directory(&current, "managed source directory")?;
+        if owner != run_owner {
+            return Err(Error::validation(
+                "Managed source directories must retain exact run ownership",
+            ));
+        }
+    }
+
+    let metadata = fs::symlink_metadata(&source)
+        .map_err(|err| Error::validation(format!("Cannot inspect managed mount source: {err}")))?;
+    if path_owner(&metadata) != run_owner {
+        return Err(Error::validation(
+            "Managed mount source must retain exact run ownership",
+        ));
+    }
+    let source_kind = managed_source_kind(&metadata).ok_or_else(|| {
+        Error::validation("Managed mount source must be a non-symlink directory or Unix socket")
+    })?;
+    if scope == LeaseScope::SharedDirectory && source_kind != ManagedSourceKind::Directory {
+        return Err(Error::validation(
+            "Shared-directory leases require an owner-only source directory",
+        ));
+    }
+    validate_managed_source_kind(&source, source_kind)?;
+    Ok((source, source_kind))
+}
+
+fn validate_private_directory(path: &Path, description: &str) -> Result<Option<u32>> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|err| Error::validation(format!("Cannot inspect {description}: {err}")))?;
+    if !metadata.file_type().is_dir() {
+        return Err(Error::validation(format!(
+            "In-guest {description} must be a non-symlink directory"
+        )));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o777 != 0o700 {
+        return Err(Error::validation(format!(
+            "In-guest {description} must use owner-only 0700 permissions"
+        )));
+    }
+    Ok(path_owner(&metadata))
+}
+
+fn path_owner(metadata: &fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        Some(metadata.uid())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+fn managed_source_kind(metadata: &fs::Metadata) -> Option<ManagedSourceKind> {
+    if metadata.file_type().is_dir() {
+        return Some(ManagedSourceKind::Directory);
+    }
+    #[cfg(unix)]
+    if metadata.file_type().is_socket() {
+        return Some(ManagedSourceKind::Socket);
+    }
+    None
+}
+
+fn validate_managed_source_kind(path: &Path, expected: ManagedSourceKind) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|err| Error::validation(format!("Cannot inspect managed mount source: {err}")))?;
+    if managed_source_kind(&metadata) != Some(expected) {
+        return Err(Error::validation(
+            "Managed mount source type changed after assignment validation",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode() & 0o777;
+        let safe = match expected {
+            ManagedSourceKind::Directory => mode == 0o700,
+            ManagedSourceKind::Socket => mode & 0o077 == 0 && mode & 0o600 == 0o600,
+            ManagedSourceKind::File => false,
+        };
+        if !safe {
+            return Err(Error::validation(
+                "Managed mount source no longer has owner-only permissions",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_lease_target(path: &Path) -> Result<()> {
     let root = Path::new(LEASE_TARGET_ROOT);
     if !path.is_absolute()
@@ -1700,11 +1957,27 @@ fn validate_lease_target(path: &Path) -> Result<()> {
         || path == root
         || path
             .components()
-            .any(|component| matches!(component, Component::ParentDir))
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
     {
         return Err(Error::validation(format!(
             "Lease target must be an individual path below {LEASE_TARGET_ROOT}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_managed_mount_target(path: &Path, root: &str) -> Result<()> {
+    let root = Path::new(root);
+    if path == root || !path.starts_with(root) {
+        return Err(Error::validation(format!(
+            "Managed mount target must be an individual path below {}",
+            root.display()
+        )));
+    }
+    if contains_ambient_authority_reference(&path.to_string_lossy()) {
+        return Err(Error::validation(
+            "Managed mount target may not expose ambient supervisor authority or secret paths",
+        ));
     }
     Ok(())
 }
@@ -2042,7 +2315,6 @@ fn validate_resolved_configuration(source: &[u8]) -> Result<()> {
     let normalized = configuration.to_string().to_ascii_lowercase();
     if contains_project_docker_reference(&normalized)
         || normalized.contains("/run/agentify-assignment")
-        || normalized.contains(MANAGED_RUNTIME_ROOT)
         || normalized.contains("initializecommand")
         || normalized.contains("${localenv:")
     {
@@ -2080,9 +2352,24 @@ fn contains_project_docker_reference(value: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
+fn contains_ambient_authority_reference(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    contains_project_docker_reference(&normalized)
+        || [
+            "/.gnupg",
+            "/.ssh",
+            "/run/secrets",
+            "/var/run/secrets",
+            "ssh_auth_sock",
+            "serviceaccount",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
 fn validate_container_inspection(
     source: &[u8],
-    allowed_sources: &BTreeSet<PathBuf>,
+    signed_bind_mounts: &BTreeMap<(PathBuf, PathBuf), ManagedSourceKind>,
     forbidden_environment: &BTreeSet<String>,
 ) -> Result<()> {
     let documents: serde_json::Value = serde_json::from_slice(source).map_err(|err| {
@@ -2172,26 +2459,58 @@ fn validate_container_inspection(
             "In-guest devcontainer resolved to privileged host authority",
         ));
     }
-    let unsafe_mount = container
+    let allowed_sources = signed_bind_mounts
+        .keys()
+        .map(|(source, _)| source.clone())
+        .collect::<BTreeSet<_>>();
+    let mut observed_signed_mounts = BTreeSet::new();
+    if let Some(mounts) = container
         .get("Mounts")
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|mounts| {
-            mounts.iter().any(|mount| {
-                let source = mount
-                    .get("Source")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                let destination = mount
-                    .get("Destination")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                contains_supervisor_mount(source, allowed_sources)
-                    || contains_supervisor_mount(destination, &BTreeSet::new())
-            })
-        });
-    if unsafe_mount {
+    {
+        for mount in mounts {
+            let source = mount
+                .get("Source")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let destination = mount
+                .get("Destination")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let key = (PathBuf::from(source), PathBuf::from(destination));
+            let signed_kind = signed_bind_mounts.get(&key);
+            let enters_managed_namespace = Path::new(source).starts_with(MANAGED_RUNTIME_ROOT)
+                || Path::new(destination).starts_with(LEASE_TARGET_ROOT);
+            if let Some(expected_kind) = signed_kind {
+                let bind_type =
+                    mount.get("Type").and_then(serde_json::Value::as_str) == Some("bind");
+                let read_only = mount.get("RW").and_then(serde_json::Value::as_bool) == Some(false);
+                if !bind_type
+                    || !read_only
+                    || !observed_signed_mounts.insert(key)
+                    || validate_managed_source_kind(Path::new(source), *expected_kind).is_err()
+                {
+                    return Err(Error::validation(
+                        "Managed lease mount lacks exact read-only bind evidence",
+                    ));
+                }
+            } else if enters_managed_namespace {
+                return Err(Error::validation(
+                    "In-guest devcontainer resolved an unsigned managed lease mount",
+                ));
+            }
+            if contains_supervisor_mount(source, &allowed_sources)
+                || contains_supervisor_mount(destination, &BTreeSet::new())
+            {
+                return Err(Error::validation(
+                    "In-guest devcontainer resolved a supervisor socket or credential-directory mount",
+                ));
+            }
+        }
+    }
+    if observed_signed_mounts.len() != signed_bind_mounts.len() {
         return Err(Error::validation(
-            "In-guest devcontainer resolved a supervisor socket or credential-directory mount",
+            "Managed lease mount is missing from the primary devcontainer inspection",
         ));
     }
     let inherited_forbidden_environment = container
@@ -2229,8 +2548,9 @@ fn contains_supervisor_mount(value: &str, allowed_sources: &BTreeSet<PathBuf>) -
     contains_project_docker_reference(&normalized)
         || normalized == "/run/agentify-assignment"
         || normalized.starts_with("/run/agentify-assignment/")
-        || normalized == MANAGED_RUNTIME_ROOT
-        || normalized.starts_with(&format!("{MANAGED_RUNTIME_ROOT}/"))
+        || ((normalized == MANAGED_RUNTIME_ROOT
+            || normalized.starts_with(&format!("{MANAGED_RUNTIME_ROOT}/")))
+            && !allowed_sources.contains(Path::new(value)))
         || ((normalized == "/run/agentify-runtime"
             || normalized.starts_with("/run/agentify-runtime/"))
             && !allowed_sources.contains(Path::new(value)))
@@ -2441,6 +2761,14 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn private_directory(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
     fn assignment_fixture(with_materialization: bool) -> (tempfile::TempDir, PathBuf, String) {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
@@ -2555,6 +2883,92 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn managed_mount_assignment_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf)
+    {
+        use std::os::unix::net::UnixListener;
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("repository");
+        private_directory(&repository);
+        let run_root = root.path().join("run_123");
+        private_directory(&run_root);
+        let shared_parent = run_root.join("shared");
+        let endpoint_parent = run_root.join("tool-endpoints");
+        private_directory(&shared_parent);
+        private_directory(&endpoint_parent);
+        let shared = shared_parent.join("exchange");
+        let endpoint_directory = endpoint_parent.join("requests");
+        let endpoint_socket = endpoint_parent.join("request-stream");
+        private_directory(&shared);
+        private_directory(&endpoint_directory);
+        let listener = UnixListener::bind(&endpoint_socket).unwrap();
+        let mut permissions = fs::metadata(&endpoint_socket).unwrap().permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(&endpoint_socket, permissions).unwrap();
+        drop(listener);
+
+        let manifest = serde_json::json!({
+            "version": "2",
+            "run_id": "run_123",
+            "lease_id": "assignment_123",
+            "outer_runtime_id": "runtime_123",
+            "workspace": workspace,
+            "repository": {
+                "path": repository,
+                "revision": "a".repeat(40)
+            },
+            "task_branch": "feature/coding-demo",
+            "tunnel_placement": "outer",
+            "published_ports": [],
+            "leases": [
+                {
+                    "lease_id": "shared_exchange",
+                    "scope": "shared-directory",
+                    "consumer": "primary-tool",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": [{
+                        "source_path": shared.clone(),
+                        "target_path": "/run/branchbox/leases/shared/exchange"
+                    }]
+                },
+                {
+                    "lease_id": "request_directory",
+                    "scope": "tool-endpoint",
+                    "consumer": "primary-tool",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": [{
+                        "source_path": endpoint_directory.clone(),
+                        "target_path": "/run/branchbox/leases/tool-endpoints/requests"
+                    }]
+                },
+                {
+                    "lease_id": "request_socket",
+                    "scope": "tool-endpoint",
+                    "consumer": "primary-tool",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": [{
+                        "source_path": endpoint_socket.clone(),
+                        "target_path": "/run/branchbox/leases/tool-endpoints/request-stream"
+                    }]
+                }
+            ]
+        });
+        let manifest_path = run_root.join("assignment.json");
+        private_write(
+            &manifest_path,
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        (
+            root,
+            manifest_path,
+            shared,
+            endpoint_directory,
+            endpoint_socket,
+        )
+    }
+
+    #[cfg(unix)]
     #[test]
     fn validates_manifest_and_sibling_materialization_digest() {
         let (root, manifest, revision) = assignment_fixture(true);
@@ -2589,6 +3003,177 @@ mod tests {
             Some((expected_environment.as_path(), "rails-app"))
         );
         assert_eq!(plan.tunnel_placement(), InGuestTunnelPlacement::Outer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_mount_leases_bind_only_signed_run_owned_directories_and_sockets() {
+        let (_root, manifest, shared, endpoint_directory, endpoint_socket) =
+            managed_mount_assignment_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let signed = assignment.signed_bind_mounts();
+        let plan = InGuestFacadePlan {
+            manifest_path: manifest,
+            tunnel_placement: InGuestTunnelPlacement::Outer,
+            published_ports: Vec::new(),
+            mounts: assignment.mounts.clone(),
+        };
+
+        assert_eq!(signed.len(), 3);
+        assert_eq!(plan.mounts().count(), 3);
+        assert_eq!(
+            signed.get(&(
+                shared.canonicalize().unwrap(),
+                PathBuf::from("/run/branchbox/leases/shared/exchange")
+            )),
+            Some(&ManagedSourceKind::Directory)
+        );
+        assert_eq!(
+            signed.get(&(
+                endpoint_directory.canonicalize().unwrap(),
+                PathBuf::from("/run/branchbox/leases/tool-endpoints/requests")
+            )),
+            Some(&ManagedSourceKind::Directory)
+        );
+        assert_eq!(
+            signed.get(&(
+                endpoint_socket.canonicalize().unwrap(),
+                PathBuf::from("/run/branchbox/leases/tool-endpoints/request-stream")
+            )),
+            Some(&ManagedSourceKind::Socket)
+        );
+        assert!(assignment
+            .leases
+            .iter()
+            .all(|lease| lease.state.starts_with("primary-read-only-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_mount_leases_require_exact_run_target_type_and_owner_only_paths() {
+        let (_root, manifest, shared, _endpoint_directory, endpoint_socket) =
+            managed_mount_assignment_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+
+        value["run_id"] = serde_json::json!("different_run");
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        value["run_id"] = serde_json::json!("run_123");
+        value["leases"][0]["materializations"][0]["target_path"] =
+            serde_json::json!("/tmp/exchange");
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        value["leases"][0]["materializations"][0]["target_path"] =
+            serde_json::json!("/run/branchbox/leases/shared/exchange");
+        let mut permissions = fs::metadata(&shared).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&shared, permissions).unwrap();
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        private_directory(&shared);
+        fs::remove_file(&endpoint_socket).unwrap();
+        private_write(&endpoint_socket, b"not-a-socket");
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        let (_root, legacy_manifest, _shared, _endpoint_directory, _endpoint_socket) =
+            managed_mount_assignment_fixture();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&legacy_manifest).unwrap()).unwrap();
+        legacy["version"] = serde_json::json!("1");
+        private_write(&legacy_manifest, &serde_json::to_vec(&legacy).unwrap());
+        assert!(load_assignment(&legacy_manifest).is_err());
+
+        let (outside_root, outside_manifest, _shared, _endpoint_directory, _endpoint_socket) =
+            managed_mount_assignment_fixture();
+        let outside = outside_root.path().join("outside-exchange");
+        private_directory(&outside);
+        let mut outside_value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&outside_manifest).unwrap()).unwrap();
+        outside_value["leases"][0]["materializations"][0]["source_path"] =
+            serde_json::json!(outside);
+        private_write(
+            &outside_manifest,
+            &serde_json::to_vec(&outside_value).unwrap(),
+        );
+        assert!(load_assignment(&outside_manifest).is_err());
+
+        let (_ambient_root, ambient_manifest, shared, _endpoint_directory, _endpoint_socket) =
+            managed_mount_assignment_fixture();
+        let ambient = shared.parent().unwrap().join(".ssh");
+        fs::rename(&shared, &ambient).unwrap();
+        let mut ambient_value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&ambient_manifest).unwrap()).unwrap();
+        ambient_value["leases"][0]["materializations"][0]["source_path"] =
+            serde_json::json!(ambient);
+        private_write(
+            &ambient_manifest,
+            &serde_json::to_vec(&ambient_value).unwrap(),
+        );
+        assert!(load_assignment(&ambient_manifest).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_inspection_requires_every_exact_signed_bind_to_be_read_only() {
+        let (_root, manifest, _shared, _endpoint_directory, _endpoint_socket) =
+            managed_mount_assignment_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let signed = assignment.signed_bind_mounts();
+        let mount_values = signed
+            .keys()
+            .map(|(source, target)| {
+                serde_json::json!({
+                    "Type": "bind",
+                    "Source": source,
+                    "Destination": target,
+                    "RW": false
+                })
+            })
+            .collect::<Vec<_>>();
+        let inspection = serde_json::json!([{
+            "HostConfig": {"Privileged": false, "PidMode": "", "IpcMode": "private"},
+            "Mounts": mount_values,
+            "Config": {"Env": []}
+        }]);
+        validate_container_inspection(
+            &serde_json::to_vec(&inspection).unwrap(),
+            &signed,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        let mut writable = inspection.clone();
+        writable[0]["Mounts"][0]["RW"] = serde_json::json!(true);
+        assert!(validate_container_inspection(
+            &serde_json::to_vec(&writable).unwrap(),
+            &signed,
+            &BTreeSet::new(),
+        )
+        .is_err());
+
+        let mut wrong_target = inspection.clone();
+        wrong_target[0]["Mounts"][0]["Destination"] =
+            serde_json::json!("/run/branchbox/leases/tool-endpoints/unsigned");
+        assert!(validate_container_inspection(
+            &serde_json::to_vec(&wrong_target).unwrap(),
+            &signed,
+            &BTreeSet::new(),
+        )
+        .is_err());
+
+        let mut missing = inspection;
+        missing[0]["Mounts"].as_array_mut().unwrap().pop();
+        assert!(validate_container_inspection(
+            &serde_json::to_vec(&missing).unwrap(),
+            &signed,
+            &BTreeSet::new(),
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -2634,7 +3219,7 @@ mod tests {
             }]);
             assert!(validate_container_inspection(
                 &serde_json::to_vec(&inspection).unwrap(),
-                &BTreeSet::new(),
+                &BTreeMap::new(),
                 &BTreeSet::new()
             )
             .is_err());
@@ -2723,7 +3308,7 @@ mod tests {
         ] {
             assert!(validate_container_inspection(
                 &serde_json::to_vec(&inspection).unwrap(),
-                &BTreeSet::new(),
+                &BTreeMap::new(),
                 &BTreeSet::new()
             )
             .is_err());
@@ -2739,7 +3324,7 @@ mod tests {
         }]);
         validate_container_inspection(
             &serde_json::to_vec(&inspection).unwrap(),
-            &BTreeSet::new(),
+            &BTreeMap::new(),
             &BTreeSet::new(),
         )
         .unwrap();
@@ -2790,7 +3375,7 @@ mod tests {
         }]);
         assert!(validate_container_inspection(
             &serde_json::to_vec(&inspection).unwrap(),
-            &BTreeSet::new(),
+            &BTreeMap::new(),
             &assignment.provider_environment_names(),
         )
         .is_err());
@@ -2825,7 +3410,11 @@ mod tests {
         };
         let bindings = vec![ProviderEnvironmentValue {
             name: name.clone(),
-            value: read_provider_environment_value(&binding.source, &binding.sha256).unwrap(),
+            value: read_provider_environment_value(
+                &binding.source,
+                binding.sha256.as_deref().unwrap(),
+            )
+            .unwrap(),
         }];
         let mut child = Command::new("/bin/sh");
         child
@@ -2884,7 +3473,11 @@ mod tests {
             .next()
             .unwrap();
         private_write(&provider_secret, b"rotated-provider-value");
-        assert!(read_provider_environment_value(&provider_secret, &binding.sha256).is_err());
+        assert!(read_provider_environment_value(
+            &provider_secret,
+            binding.sha256.as_deref().unwrap()
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -2922,7 +3515,8 @@ mod tests {
             outer_runtime_id: Some("vm_123".to_string()),
             materializations: vec![StateMaterialization {
                 source_path: provider_secret.clone(),
-                sha256: file_sha256(&provider_secret).unwrap(),
+                sha256: Some(file_sha256(&provider_secret).unwrap()),
+                source_kind: ManagedSourceKind::File,
             }],
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
@@ -2935,6 +3529,48 @@ mod tests {
         let mut residue = Vec::new();
         provider.erase_materializations(&state, &mut residue);
         assert!(!provider_secret.exists());
+        assert!(residue.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_directory_and_socket_cleanup_is_residue_checked() {
+        let (root, manifest, shared, endpoint_directory, endpoint_socket) =
+            managed_mount_assignment_fixture();
+        private_write(&shared.join("outer-result"), b"result");
+        private_write(&endpoint_directory.join("request"), b"request");
+        let assignment = load_assignment(&manifest).unwrap();
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: manifest,
+            worktree_path: root.path().join("workspace/worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("runtime_123".to_string()),
+            materializations: assignment
+                .mounts
+                .iter()
+                .map(|mount| StateMaterialization {
+                    source_path: mount.source.clone(),
+                    sha256: mount.sha256.clone(),
+                    source_kind: mount.source_kind,
+                })
+                .collect(),
+            proxy_names: Vec::new(),
+            compose_projects: Vec::new(),
+            container_id: None,
+        };
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker: PathBuf::from("docker"),
+        };
+        let mut residue = Vec::new();
+        provider.erase_materializations(&state, &mut residue);
+
+        assert!(fs::symlink_metadata(shared).is_err());
+        assert!(fs::symlink_metadata(endpoint_directory).is_err());
+        assert!(fs::symlink_metadata(endpoint_socket).is_err());
         assert!(residue.is_empty());
     }
 
