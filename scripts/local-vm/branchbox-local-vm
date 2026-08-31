@@ -404,8 +404,12 @@ cmd_vsock_probe() {
   [[ ! -e "$host_socket" ]] || die \
     "refusing to replace pre-existing virtio-vsock probe socket for $id"
   rm -f "$proof_file"
-  nohup socat -u "UNIX-LISTEN:${host_socket},mode=0600" \
-    "OPEN:${proof_file},creat,trunc" >"$dir/vsock-probe.log" 2>&1 &
+  # Bind relative to the jail root so sockaddr_un never receives the longer host-visible jail path.
+  (
+    cd "$jail"
+    exec nohup socat -u "UNIX-LISTEN:${VSOCK_UDS_PATH}_${VSOCK_PROBE_PORT},mode=0600" \
+      "OPEN:${proof_file},creat,trunc"
+  ) >"$dir/vsock-probe.log" 2>&1 &
   listener_pid=$!
   for _ in $(seq 1 50); do
     [[ -S "$host_socket" ]] && break
