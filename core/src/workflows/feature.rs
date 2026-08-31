@@ -3379,11 +3379,13 @@ fn prepare_in_guest_devcontainer_config(
             )));
         }
     }
+    let workspace_folder = effective_in_guest_workspace_folder(&config, worktree_path)?;
     let omitted_services = prepare_outer_tunnel_compose_override(
         repo_root,
         worktree_path,
         devcontainer_dir,
         config.service.as_deref(),
+        &workspace_folder,
         &compose_files,
         project_environment.map(|(source, _)| source),
     )?;
@@ -3406,23 +3408,21 @@ fn prepare_in_guest_devcontainer_config(
     if !mounts.is_empty() {
         object.insert("mounts".to_string(), serde_json::Value::Array(mounts));
     }
+    object.insert(
+        "workspaceFolder".to_string(),
+        serde_json::Value::String(workspace_folder),
+    );
 
-    if let Some(run_services) = object
-        .get_mut("runServices")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        run_services.retain(|service| {
-            service
-                .as_str()
-                .is_none_or(|service| !omitted_services.contains(service))
-        });
-    }
+    object.remove("runServices");
     if let Some(primary) = config.service.as_deref() {
         if omitted_services.contains(primary) {
             return Err(Error::validation(
                 "The primary devcontainer service cannot be the outer cloudflared connector",
             ));
         }
+        // Compose starts the validated dependency closure of the primary service. Do not let a
+        // repository opt independent or connector services into the in-guest startup set.
+        object.insert("runServices".to_string(), serde_json::json!([primary]));
     }
 
     if devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).is_file() {
@@ -3466,6 +3466,10 @@ fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<
     object.remove("remoteEnv");
     object.remove("workspaceMount");
     object.remove("mounts");
+    object.remove("appPort");
+    object.remove("forwardPorts");
+    object.remove("portsAttributes");
+    object.remove("otherPortsAttributes");
     object.remove("capAdd");
     object.remove("securityOpt");
     object.insert("privileged".to_string(), serde_json::Value::Bool(false));
@@ -3802,11 +3806,40 @@ fn contains_supervisor_reference(value: &str) -> bool {
         || normalized.contains("/run/agentify-runtime")
 }
 
+fn effective_in_guest_workspace_folder(
+    config: &DevcontainerConfig,
+    worktree_path: &Path,
+) -> Result<String> {
+    let basename = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    let folder = config.effective_workspace_folder(basename);
+    let path = Path::new(&folder);
+    if !path.is_absolute()
+        || path == Path::new("/workspaces")
+        || !path.starts_with("/workspaces")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+        || contains_supervisor_reference(&folder)
+    {
+        return Err(Error::validation(
+            "In-guest workspaceFolder must be a normalized path below the platform-owned /workspaces root",
+        ));
+    }
+    Ok(folder)
+}
+
 fn prepare_outer_tunnel_compose_override(
     repo_root: &Path,
     worktree_path: &Path,
     devcontainer_dir: &Path,
     primary_service: Option<&str>,
+    workspace_folder: &str,
     compose_files: &[PathBuf],
     project_environment: Option<&Path>,
 ) -> Result<std::collections::BTreeSet<String>> {
@@ -3893,13 +3926,15 @@ fn prepare_outer_tunnel_compose_override(
             .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
             .as_mapping_mut()
             .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
-        service.insert(
-            serde_yaml::Value::String("env_file".to_string()),
-            serde_yaml::Value::Tagged(Box::new(TaggedValue {
-                tag: Tag::new("!override"),
-                value: serde_yaml::Value::Sequence(Vec::new()),
-            })),
-        );
+        for key in ["env_file", "volumes", "ports", "expose"] {
+            service.insert(
+                serde_yaml::Value::String(key.to_string()),
+                serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                    tag: Tag::new("!override"),
+                    value: serde_yaml::Value::Sequence(Vec::new()),
+                })),
+            );
+        }
     }
 
     if let Some(primary_service) = primary_service {
@@ -3944,12 +3979,7 @@ fn prepare_outer_tunnel_compose_override(
                 value: serde_yaml::Value::Sequence(env_files),
             })),
         );
-        let safe_volumes = safe_in_guest_primary_volumes(
-            repo_root,
-            worktree_path,
-            devcontainer_dir,
-            definitions.get(primary_service),
-        )?;
+        let safe_volumes = in_guest_primary_volumes(repo_root, worktree_path, workspace_folder)?;
         primary.insert(
             serde_yaml::Value::String("volumes".to_string()),
             serde_yaml::Value::Tagged(Box::new(TaggedValue {
@@ -4023,56 +4053,31 @@ fn is_platform_connector(name: &str, service: &serde_yaml::Value) -> bool {
         || requires_tun
 }
 
-fn safe_in_guest_primary_volumes(
+fn in_guest_primary_volumes(
     repo_root: &Path,
     worktree_path: &Path,
-    devcontainer_dir: &Path,
-    definition: Option<&serde_yaml::Value>,
+    workspace_folder: &str,
 ) -> Result<Vec<serde_yaml::Value>> {
-    let workspace_root = fs::canonicalize(worktree_path.parent().unwrap_or(worktree_path))?;
-    let mut safe = Vec::new();
-    if let Some(volumes) = definition
-        .and_then(|service| service.get("volumes"))
-        .and_then(serde_yaml::Value::as_sequence)
-    {
-        for volume in volumes {
-            let Some(short) = volume.as_str() else {
-                continue;
-            };
-            let fields: Vec<_> = short.split(':').collect();
-            if fields.len() < 2 {
-                continue;
-            }
-            let source = fields[0];
-            let target = fields[1];
-            if target == CONTAINER_MAIN_GIT_TARGET {
-                continue;
-            }
-            if source.starts_with('/') || source.contains("${") || source.starts_with('~') {
-                continue;
-            }
-            let Ok(resolved) = fs::canonicalize(devcontainer_dir.join(source)) else {
-                continue;
-            };
-            if !resolved.starts_with(&workspace_root) {
-                continue;
-            }
-            let mut bind = serde_yaml::Mapping::new();
-            bind.insert(
-                serde_yaml::Value::String("type".to_string()),
-                serde_yaml::Value::String("bind".to_string()),
-            );
-            bind.insert(
-                serde_yaml::Value::String("source".to_string()),
-                serde_yaml::Value::String(resolved.to_string_lossy().into_owned()),
-            );
-            bind.insert(
-                serde_yaml::Value::String("target".to_string()),
-                serde_yaml::Value::String(target.to_string()),
-            );
-            safe.push(serde_yaml::Value::Mapping(bind));
-        }
-    }
+    let authoritative_worktree = fs::canonicalize(worktree_path).map_err(|err| {
+        Error::validation(format!(
+            "Cannot prepare in-guest task worktree facade from '{}': {err}",
+            worktree_path.display()
+        ))
+    })?;
+    let mut workspace = serde_yaml::Mapping::new();
+    workspace.insert(
+        serde_yaml::Value::String("type".to_string()),
+        serde_yaml::Value::String("bind".to_string()),
+    );
+    workspace.insert(
+        serde_yaml::Value::String("source".to_string()),
+        serde_yaml::Value::String(authoritative_worktree.to_string_lossy().into_owned()),
+    );
+    workspace.insert(
+        serde_yaml::Value::String("target".to_string()),
+        serde_yaml::Value::String(workspace_folder.to_string()),
+    );
+
     let authoritative_git = fs::canonicalize(repo_root.join(".git")).map_err(|err| {
         Error::validation(format!(
             "Cannot prepare in-guest Git metadata facade from '{}': {err}",
@@ -4092,8 +4097,10 @@ fn safe_in_guest_primary_volumes(
         serde_yaml::Value::String("target".to_string()),
         serde_yaml::Value::String(CONTAINER_MAIN_GIT_TARGET.to_string()),
     );
-    safe.push(serde_yaml::Value::Mapping(git));
-    Ok(safe)
+    Ok(vec![
+        serde_yaml::Value::Mapping(workspace),
+        serde_yaml::Value::Mapping(git),
+    ])
 }
 
 fn prepare_sbx_devcontainer_config(
@@ -7514,6 +7521,10 @@ mod tests {
                 "source=${localEnv:HOME}/.ssh/id.pub,target=/tmp/id.pub,type=bind",
                 "source=project-data,target=/project-data,type=volume"
             ],
+            "appPort": ["127.0.0.1:2222:22"],
+            "forwardPorts": [3000, 5432],
+            "portsAttributes": {"3000": {"label": "Repository app"}},
+            "otherPortsAttributes": {"onAutoForward": "openBrowser"},
             "runArgs": [
                 "--env-file", "../.env", "--shm-size", "8g", "--shm-size=16g",
                 "--ipc=host", "--network", "host", "--device=/dev/kvm",
@@ -7540,6 +7551,10 @@ mod tests {
             .get("ghcr.io/devcontainers/features/node:1")
             .is_some());
         assert!(config.get("mounts").is_none());
+        assert!(config.get("appPort").is_none());
+        assert!(config.get("forwardPorts").is_none());
+        assert!(config.get("portsAttributes").is_none());
+        assert!(config.get("otherPortsAttributes").is_none());
         assert_eq!(config["runArgs"], serde_json::json!(["--init"]));
         assert_eq!(config["postCreateCommand"], "bin/setup");
     }
@@ -7574,12 +7589,33 @@ mod tests {
     fn test_in_guest_compose_facade_omits_platform_connectors_and_ambient_authority() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
-        let devcontainer_dir = repo_path.join(".devcontainer");
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
         fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            worktree_path.join(".gitignore"),
+            ".devcontainer/.1password-service-account-token\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join(".1password-service-account-token"),
+            "ignored-credential-must-not-be-mounted\n",
+        )
+        .unwrap();
         let compose = devcontainer_dir.join("compose.yaml");
         fs::write(
             &compose,
             r#"services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+    volumes: [tailscale-state:/var/lib/tailscale]
+    devices: [/dev/net/tun:/dev/net/tun]
+    cap_add: [net_admin, net_raw]
+    network_mode: service:rails-app
+    depends_on: [rails-app]
   rails-app:
     build:
       context: ..
@@ -7589,19 +7625,26 @@ mod tests {
       - ../../main/.git:/workspaces/main/.git:cached
       - agentify_codex_auth:/home/vscode/.codex
       - ${HOME}/.ssh/id.pub:/tmp/id.pub:ro
+      - ./.1password-service-account-token:/run/secrets/agentify-op-service-account-token:ro
+    ports: ["127.0.0.1:2222:22"]
+    expose: ["3000"]
     env_file: [.rails-app.env]
     depends_on: [postgres, cloudflared, tailscale]
   postgres:
     image: postgres:16
+    volumes:
+      - ./ignored-db-credential:/run/secrets/ignored-db-credential:ro
+      - postgres-data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    expose: ["5432"]
     env_file: [.postgres.env]
   cloudflared:
     image: cloudflare/cloudflared:latest
     env_file: [.cloudflared.env]
-  tailscale:
-    image: tailscale/tailscale:stable
-    devices: [/dev/net/tun:/dev/net/tun]
 volumes:
   agentify_codex_auth:
+  postgres-data:
+  tailscale-state:
 "#,
         )
         .unwrap();
@@ -7621,9 +7664,10 @@ volumes:
         .unwrap();
         let omitted = prepare_outer_tunnel_compose_override(
             repo_path,
-            repo_path,
+            &worktree_path,
             &devcontainer_dir,
             Some("rails-app"),
+            "/workspaces/coding-demo",
             std::slice::from_ref(&compose),
             Some(&project_environment),
         )
@@ -7638,16 +7682,70 @@ volumes:
         assert!(rendered.contains("!override"));
         assert!(!rendered.contains("agentify_codex_auth"));
         assert!(!rendered.contains("${HOME}"));
+        assert!(!rendered.contains(".1password-service-account-token"));
+        assert!(!rendered.contains("ignored-db-credential"));
+        assert!(!rendered.contains("postgres-data"));
+        assert!(!rendered.contains("127.0.0.1:2222:22"));
         assert!(!rendered.contains("never-render-this-value"));
         assert!(rendered.contains("format: raw"));
         assert!(rendered.contains(&project_environment.to_string_lossy().into_owned()));
         let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
         let rails = &facade["services"]["rails-app"];
-        assert!(matches!(rails["volumes"], serde_yaml::Value::Tagged(_)));
+        let rails_volumes = match &rails["volumes"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden rails volumes, got {other:?}"),
+        };
+        assert_eq!(rails_volumes.len(), 2);
+        assert_eq!(
+            rails_volumes[0]["source"].as_str(),
+            Some(fs::canonicalize(&worktree_path).unwrap().to_str().unwrap())
+        );
+        assert_eq!(
+            rails_volumes[0]["target"].as_str(),
+            Some("/workspaces/coding-demo")
+        );
+        assert_eq!(rails_volumes[0]["type"].as_str(), Some("bind"));
+        assert_eq!(
+            rails_volumes[1]["source"].as_str(),
+            Some(
+                fs::canonicalize(repo_path.join(".git"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            rails_volumes[1]["target"].as_str(),
+            Some(CONTAINER_MAIN_GIT_TARGET)
+        );
         assert!(matches!(rails["env_file"], serde_yaml::Value::Tagged(_)));
         assert!(matches!(rails["depends_on"], serde_yaml::Value::Tagged(_)));
+        let depends_on = match &rails["depends_on"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden rails dependencies, got {other:?}"),
+        };
+        assert_eq!(depends_on, &[serde_yaml::Value::String("postgres".into())]);
         assert_eq!(rails["shm_size"].as_str(), Some(IN_GUEST_SHM_SIZE));
         assert!(rails.get("ipc").is_none());
+        for name in ["rails-app", "postgres", "cloudflared", "tailscale"] {
+            for key in ["ports", "expose"] {
+                let value = &facade["services"][name][key];
+                assert!(matches!(value, serde_yaml::Value::Tagged(_)));
+                let sequence = match value {
+                    serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+                    _ => unreachable!(),
+                };
+                assert!(sequence.is_empty(), "{name}.{key} retained publication");
+            }
+        }
+        for name in ["postgres", "cloudflared", "tailscale"] {
+            let value = &facade["services"][name]["volumes"];
+            let sequence = match value {
+                serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+                other => panic!("expected overridden {name} volumes, got {other:?}"),
+            };
+            assert!(sequence.is_empty(), "{name} retained a repository volume");
+        }
         assert!(matches!(
             facade["services"]["cloudflared"]["profiles"],
             serde_yaml::Value::Tagged(_)
@@ -7656,6 +7754,44 @@ volumes:
             facade["services"]["tailscale"]["devices"],
             serde_yaml::Value::Tagged(_)
         ));
+        assert!(matches!(
+            facade["services"]["tailscale"]["cap_add"],
+            serde_yaml::Value::Tagged(_)
+        ));
+        assert!(facade["services"]["postgres"].get("profiles").is_none());
+    }
+
+    #[test]
+    fn test_in_guest_workspace_folder_is_expanded_and_normalized() {
+        let config = DevcontainerConfig {
+            workspace_folder: Some("/workspaces/${localWorkspaceFolderBasename}".to_string()),
+            ..DevcontainerConfig::default()
+        };
+        assert_eq!(
+            effective_in_guest_workspace_folder(&config, Path::new("/workspace/coding-demo"))
+                .unwrap(),
+            "/workspaces/coding-demo"
+        );
+
+        for folder in [
+            "relative",
+            "/",
+            "/workspaces",
+            "/home/vscode/.ssh",
+            "/etc/task",
+            "/run/agentify-runtime/task",
+            "/run/branchbox/leases/code",
+        ] {
+            let config = DevcontainerConfig {
+                workspace_folder: Some(folder.to_string()),
+                ..DevcontainerConfig::default()
+            };
+            assert!(
+                effective_in_guest_workspace_folder(&config, Path::new("/workspace/coding-demo"))
+                    .is_err(),
+                "unexpectedly accepted {folder}"
+            );
+        }
     }
 
     #[test]

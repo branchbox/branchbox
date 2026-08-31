@@ -29,10 +29,7 @@ The manifest may live at any absolute path. It and every materialization must be
   },
   "task_branch": "feature/coding-demo",
   "tunnel_placement": "outer",
-  "published_ports": [
-    { "host": 3000, "runtime": 3000 },
-    { "host": 5432, "runtime": 5432 }
-  ],
+  "published_ports": [{ "host": 3000, "runtime": 3000 }],
   "leases": [
     {
       "lease_id": "lease_project_environment",
@@ -57,7 +54,7 @@ The manifest may live at any absolute path. It and every materialization must be
 }
 ```
 
-Supported lease scopes are `model-identity`, `source-control-identity`, `project-environment`, and `platform-tunnel`. An outer platform-tunnel lease cannot have a devcontainer materialization. Host and runtime ports are non-zero and unique; the signed manifest is authoritative, so repositories such as Agentify that advertise ports 3000 and 5432 must include both mappings.
+Supported lease scopes are `model-identity`, `source-control-identity`, `project-environment`, and `platform-tunnel`. An outer platform-tunnel lease cannot have a devcontainer materialization. Host and runtime ports are non-zero and unique. Every signed published port targets the inspected primary devcontainer only; a repository dependency cannot claim it by advertising the same port. Agentify should publish its primary application port (3000) and keep PostgreSQL on the private Compose network. A future multi-service route must extend the signed assignment with an exact service/container identity.
 
 Exactly one `project-environment` materialization may be supplied. Its consumer must equal the primary Compose service and its target must be `/run/branchbox/leases/project-env`. Unlike other materializations, it is not mounted into the coding container. BranchBox validates its digest and canonical dotenv structure, then attaches the original source path only to the primary service as a required Compose `env_file` with `format: raw`. Docker Compose 2.30.0 or later is therefore required.
 
@@ -94,10 +91,11 @@ Before checkout, BranchBox validates the exact revision and rejects repository `
 
 The generated facade:
 
-- removes host-side `initializeCommand`, ambient `remoteEnv`, custom workspace/host mounts, env-file/runArg mounts, host IPC/PID, privileged mode, extra capabilities, and unsafe build authority;
+- removes host-side `initializeCommand`, ambient `remoteEnv`, custom workspace/host mounts, devcontainer port publication/forwarding, env-file/runArg mounts, host IPC/PID, privileged mode, extra capabilities, and unsafe build authority;
 - removes outside/in/from-Docker feature aliases and daemon-bearing run arguments, then inspects the Dev Containers merged configuration before startup to prove no alias, local Docker/containerd/Podman/BuildKit socket, or remote daemon endpoint was reintroduced by feature resolution;
 - preserves only non-secret literal connectivity settings such as `DB_HOST=postgres`, `PORT=3000`, and `RAILS_ENV=development`; secrets and interpolated values require a typed project-environment materialization;
-- replaces primary Compose env files and volumes, permits only workspace-contained binds plus the authoritative Git metadata facade, rejects `extends`, external volumes, privileged namespaces, dangerous build options, secondary-service host paths, and service secrets/configs;
+- replaces repository Compose env files and volumes, synthesizes only the canonical task worktree at a normalized effective folder below platform-owned `/workspaces` plus the authoritative Git metadata facade, rejects `extends`, external volumes, privileged namespaces, dangerous build options, secondary-service host paths, and service secrets/configs;
+- clears repository `ports` and `expose` on every service, pins Dev Containers startup to the primary service and its validated Compose dependency closure, and leaves signed BranchBox loopback proxies targeting that inspected primary container as the only published-port path;
 - disables cloudflared, Tailscale, ngrok, `/dev/net/tun`, and tunnel-named services with Compose `!override`, and removes dependency edges to them. The Agentify outer boundary owns the only platform connector;
 - gives the primary coding service a private, bounded 1 GiB `/dev/shm`; repository `--shm-size` overrides are removed and host IPC remains forbidden;
 - mounts non-environment manifest-approved individual files read-only; the typed project environment is available only as the primary service's raw env file. It never mounts a Docker/containerd/Podman/BuildKit socket, daemon state directory, or Agentify supervisor directory.

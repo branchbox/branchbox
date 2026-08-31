@@ -345,9 +345,18 @@ case "${1:-}" in
     ;;
   up)
     override="$FAKE_IN_GUEST_WORKSPACE/.devcontainer/.branchbox-sbx-compose.yaml"
+    config="$FAKE_IN_GUEST_WORKSPACE/.devcontainer/.devcontainer.json"
     if ! grep -q 'format: raw' "$override" || ! grep -Fq "$FAKE_IN_GUEST_PROJECT_ENVIRONMENT" "$override" || grep -q 'password with spaces' "$override"; then
       printf '%s\n' 'project-environment env-file facade was not isolated correctly' >&2
       exit 41
+    fi
+    if ! grep -q '"runServices"' "$config" || ! grep -q '"app"' "$config" || grep -q '"postgres"' "$config"; then
+      printf '%s\n' 'in-guest startup was not restricted to the primary service' >&2
+      exit 43
+    fi
+    if ! grep -q 'ports: !override \[\]' "$override" || ! grep -q 'expose: !override \[\]' "$override"; then
+      printf '%s\n' 'repository port publication was not removed' >&2
+      exit 44
     fi
     touch "$FAKE_IN_GUEST_RESOURCES/partial-main"
     touch "$FAKE_IN_GUEST_RESOURCES/partial-db"

@@ -24,6 +24,17 @@ use std::process::{Command, Output};
 const MANIFEST_VERSION: &str = "1";
 const LEASE_TARGET_ROOT: &str = "/run/branchbox/leases";
 const PROJECT_ENVIRONMENT_TARGET: &str = "/run/branchbox/leases/project-env";
+const IN_GUEST_PORT_PROXY_SCRIPT: &str = r#"set -eu
+docker_bin="$1"
+container_id="$2"
+proxy_name="$3"
+host_port="$4"
+runtime_port="$5"
+network_id=$("$docker_bin" inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id" | head -n 1)
+target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
+target_host=${target_host#/}
+"$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
+exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 const PROVIDER_STATE_VERSION: &str = "1";
 const SCRUBBED_ENVIRONMENT: [&str; 1] = ["OPENAI_API_KEY"];
 
@@ -491,30 +502,9 @@ impl InGuestRuntimeProvider {
         port: RuntimePort,
     ) -> Result<String> {
         let proxy_name = Self::proxy_name(run_id, port.runtime);
-        let script = r#"set -eu
-docker_bin="$1"
-container_id="$2"
-proxy_name="$3"
-host_port="$4"
-runtime_port="$5"
-network_id=$("$docker_bin" inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id" | head -n 1)
-target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
-target_host=${target_host#/}
-"$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
-for candidate_id in $("$docker_bin" ps --filter "network=${network_id}" -q); do
-  exposed_ports=$("$docker_bin" inspect -f '{{json .Config.ExposedPorts}}' "$candidate_id")
-  case "$exposed_ports" in
-    *\"${runtime_port}/tcp\"*)
-      target_host=$("$docker_bin" inspect -f '{{.Name}}' "$candidate_id")
-      target_host=${target_host#/}
-      break
-      ;;
-  esac
-done
-exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
         let mut command = self.command(Path::new("sh"));
         let output = command
-            .args(["-c", script, "branchbox-in-guest-proxy"])
+            .args(["-c", IN_GUEST_PORT_PROXY_SCRIPT, "branchbox-in-guest-proxy"])
             .arg(&self.docker)
             .args([
                 container_id,
@@ -2310,6 +2300,14 @@ mod tests {
         ensure_compose_override_version("2.30.0").unwrap();
         ensure_compose_override_version("v2.40.3").unwrap();
         assert!(ensure_compose_override_version("2.29.9").is_err());
+    }
+
+    #[test]
+    fn published_port_proxy_targets_only_the_inspected_primary_container() {
+        assert!(IN_GUEST_PORT_PROXY_SCRIPT.contains("inspect -f '{{.Name}}' \"$container_id\""));
+        assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("ps --filter"));
+        assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("ExposedPorts"));
+        assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("candidate_id"));
     }
 
     #[test]
