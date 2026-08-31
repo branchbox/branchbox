@@ -429,7 +429,7 @@ cmd_vsock_probe() {
   elif ! guest "$id" test -c /dev/vsock; then
     status=1
   elif ! guest "$id" bash -c \
-    'printf %s "$1" | socat -u - "VSOCK-CONNECT:$2:$3"' \
+    'printf %s "$1" | sudo socat -u - "VSOCK-CONNECT:$2:$3"' \
     -- "$challenge" "$VSOCK_HOST_CID" "$VSOCK_PROBE_PORT"; then
     status=1
   fi
