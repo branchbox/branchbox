@@ -760,7 +760,8 @@ impl FeatureWorkflow {
                     descriptor: None,
                     instructions: None,
                     notes: Some(
-                        "Agentify owns the exclusive outer-boundary tunnel connector".to_string(),
+                        "The managed orchestrator owns the exclusive outer-boundary tunnel connector"
+                            .to_string(),
                     ),
                     last_updated: Utc::now(),
                     removed_at: None,
@@ -1276,8 +1277,7 @@ impl FeatureWorkflow {
         provider.exec_interactive(&metadata.runtime, &metadata.worktree_path, command)
     }
 
-    /// Execute a fixed coding-provider binary through the runtime's trusted name-only
-    /// environment inheritance lane.
+    /// Execute the exact provider entrypoint and environment declared by the managed assignment.
     pub fn exec_provider_runtime_interactive(
         &self,
         work_feature: &str,
@@ -3804,6 +3804,7 @@ fn contains_supervisor_reference(value: &str) -> bool {
     contains_supervisor_socket_reference(&normalized)
         || normalized.contains("/run/agentify-assignment")
         || normalized.contains("/run/agentify-runtime")
+        || normalized.contains("/run/branchbox/managed")
 }
 
 fn effective_in_guest_workspace_folder(

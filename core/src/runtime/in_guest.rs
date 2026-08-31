@@ -1,9 +1,9 @@
-//! Devcontainer runtime inside an Agentify-owned Firecracker guest.
+//! Devcontainer runtime inside an orchestrator-owned isolation boundary.
 //!
-//! This provider deliberately owns no VM and no SSH control plane. Agentify materializes a signed
-//! assignment and opaque lease files in the guest; BranchBox validates only paths and digests,
-//! creates the Git worktree through the normal feature workflow, and operates Docker/devcontainers
-//! directly in the current guest.
+//! This provider deliberately owns no VM and no SSH control plane. The outer orchestrator
+//! materializes a signed assignment and opaque lease files in the guest; BranchBox validates only
+//! the versioned assignment, paths, consumers, and digests, creates the Git worktree through the
+//! normal feature workflow, and operates Docker/devcontainers directly in the current guest.
 
 use super::{
     exec_result, RuntimeContext, RuntimeExecResult, RuntimeMetadata, RuntimePort, RuntimeProvider,
@@ -21,9 +21,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 
-const MANIFEST_VERSION: &str = "1";
+const LEGACY_MANIFEST_VERSION: &str = "1";
+const MANAGED_MANIFEST_VERSION: &str = "2";
+const MANAGED_RUNTIME_ROOT: &str = "/run/branchbox/managed";
 const LEASE_TARGET_ROOT: &str = "/run/branchbox/leases";
 const PROJECT_ENVIRONMENT_TARGET: &str = "/run/branchbox/leases/project-env";
+const MAX_PROVIDER_ENVIRONMENT_BINDINGS: usize = 16;
+const MAX_PROVIDER_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
+const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
+const LEGACY_PROVIDER_ENVIRONMENT: &str = "OPENAI_API_KEY";
 const IN_GUEST_PORT_PROXY_SCRIPT: &str = r#"set -eu
 docker_bin="$1"
 container_id="$2"
@@ -36,7 +42,7 @@ target_host=${target_host#/}
 "$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
 exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 const PROVIDER_STATE_VERSION: &str = "1";
-const SCRUBBED_ENVIRONMENT: [&str; 1] = ["OPENAI_API_KEY"];
+const LEGACY_REDACTED_ENVIRONMENT: [&str; 1] = [LEGACY_PROVIDER_ENVIRONMENT];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -94,8 +100,13 @@ impl InGuestFacadePlan {
     pub fn mounts(&self) -> impl Iterator<Item = (&Path, &Path)> {
         self.mounts
             .iter()
-            .filter(|mount| mount.scope != LeaseScope::ProjectEnvironment)
-            .map(|mount| (mount.source.as_path(), mount.target.as_path()))
+            .filter_map(|mount| match (&mount.scope, &mount.target) {
+                (LeaseScope::ProjectEnvironment | LeaseScope::ProviderEnvironment, _) => None,
+                (_, MaterializationTarget::File(target)) => {
+                    Some((mount.source.as_path(), target.as_path()))
+                }
+                (_, MaterializationTarget::Environment(_)) => None,
+            })
     }
 
     pub fn project_environment(&self) -> Option<(&Path, &str)> {
@@ -109,10 +120,16 @@ impl InGuestFacadePlan {
 #[derive(Debug, Clone)]
 struct InGuestMount {
     source: PathBuf,
-    target: PathBuf,
+    target: MaterializationTarget,
     sha256: String,
     scope: LeaseScope,
     consumer: String,
+}
+
+#[derive(Debug, Clone)]
+enum MaterializationTarget {
+    File(PathBuf),
+    Environment(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +163,10 @@ struct AssignedLease {
     scope: LeaseScope,
     consumer: String,
     #[serde(default)]
+    executable: Option<String>,
+    #[serde(default)]
+    inherited_environment: Vec<String>,
+    #[serde(default)]
     expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
     materializations: Vec<AssignedMaterialization>,
@@ -157,6 +178,7 @@ enum LeaseScope {
     ModelIdentity,
     SourceControlIdentity,
     ProjectEnvironment,
+    ProviderEnvironment,
     PlatformTunnel,
 }
 
@@ -166,6 +188,7 @@ impl LeaseScope {
             Self::ModelIdentity => "model-identity",
             Self::SourceControlIdentity => "source-control-identity",
             Self::ProjectEnvironment => "project-environment",
+            Self::ProviderEnvironment => "provider-environment",
             Self::PlatformTunnel => "platform-tunnel",
         }
     }
@@ -175,7 +198,10 @@ impl LeaseScope {
 #[serde(deny_unknown_fields)]
 struct AssignedMaterialization {
     source_path: PathBuf,
-    target_path: PathBuf,
+    #[serde(default)]
+    target_path: Option<PathBuf>,
+    #[serde(default)]
+    environment_name: Option<String>,
     sha256: String,
 }
 
@@ -229,7 +255,7 @@ impl InGuestRuntimeProvider {
 
     fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
-        for name in SCRUBBED_ENVIRONMENT {
+        for name in LEGACY_REDACTED_ENVIRONMENT {
             command.env_remove(name);
         }
         command
@@ -470,20 +496,22 @@ impl InGuestRuntimeProvider {
             "devcontainer boundary inspection",
             &["inspect", container_id],
         )?;
-        let allowed_sources = metadata
-            .in_guest
-            .as_ref()
-            .map(|identity| Self::read_state(&identity.state_path))
-            .transpose()?
-            .map(|state| {
-                state
+        let (allowed_sources, forbidden_environment) =
+            if let Some(identity) = metadata.in_guest.as_ref() {
+                let state = Self::read_state(&identity.state_path)?;
+                let assignment = load_assignment(&state.manifest_path)?;
+                let environment_sources = assignment.provider_environment_sources();
+                let allowed_sources = state
                     .materializations
                     .into_iter()
                     .map(|materialization| materialization.source_path)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        validate_container_inspection(&output.stdout, &allowed_sources)
+                    .filter(|source| !environment_sources.contains(source))
+                    .collect::<BTreeSet<_>>();
+                (allowed_sources, assignment.provider_environment_names())
+            } else {
+                (BTreeSet::new(), BTreeSet::new())
+            };
+        validate_container_inspection(&output.stdout, &allowed_sources, &forbidden_environment)
     }
 
     fn proxy_name(run_id: &str, runtime_port: u16) -> String {
@@ -731,7 +759,8 @@ impl InGuestRuntimeProvider {
         inherited_environment: &[String],
         args: &[String],
     ) -> Result<i32> {
-        validate_provider_execution_request(provider, inherited_environment)?;
+        let provider_environment =
+            self.provider_execution_environment(metadata, provider, inherited_environment)?;
         for name in inherited_environment {
             if std::env::var_os(name).is_none() {
                 return Err(Error::validation(format!(
@@ -748,6 +777,11 @@ impl InGuestRuntimeProvider {
         })?;
         let user = metadata.container_user.as_deref().unwrap_or("root");
         let mut command = Command::new(&self.docker);
+        apply_provider_process_environment(
+            &mut command,
+            inherited_environment,
+            &provider_environment,
+        )?;
         command.args([
             "exec",
             "--interactive",
@@ -759,31 +793,82 @@ impl InGuestRuntimeProvider {
         for name in inherited_environment {
             command.args(["--env", name]);
         }
-        command.arg(container_id).arg("codex").args(args);
+        for binding in &provider_environment {
+            command.args(["--env", &binding.name]);
+        }
+        command.arg(container_id).arg(provider).args(args);
         let status = command.status().map_err(|err| {
             Error::validation(format!(
-                "Failed to execute Codex in the devcontainer: {err}"
+                "Failed to execute the managed provider in the devcontainer: {err}"
             ))
         })?;
         Ok(status.code().unwrap_or(-1))
     }
+
+    fn provider_execution_environment(
+        &self,
+        metadata: &RuntimeMetadata,
+        provider: &str,
+        inherited_environment: &[String],
+    ) -> Result<Vec<ProviderEnvironmentValue>> {
+        let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing assignment identity")
+        })?;
+        let state = Self::read_state(&in_guest.state_path)?;
+        let assignment = load_assignment(&state.manifest_path)?;
+        let consumer = assignment.authorize_provider_execution(provider, inherited_environment)?;
+        assignment
+            .provider_environment(consumer)
+            .map(|mount| {
+                let MaterializationTarget::Environment(name) = &mount.target else {
+                    return Err(Error::validation(
+                        "Provider environment binding target is invalid",
+                    ));
+                };
+                Ok(ProviderEnvironmentValue {
+                    name: name.clone(),
+                    value: read_provider_environment_value(&mount.source, &mount.sha256)?,
+                })
+            })
+            .collect()
+    }
 }
 
-fn validate_provider_execution_request(
-    provider: &str,
+struct ProviderEnvironmentValue {
+    name: String,
+    value: String,
+}
+
+fn apply_provider_process_environment(
+    command: &mut Command,
     inherited_environment: &[String],
+    provider_environment: &[ProviderEnvironmentValue],
 ) -> Result<()> {
-    if provider != "codex" {
-        return Err(Error::validation(
-            "In-guest provider execution only permits the fixed 'codex' executable",
-        ));
+    command.env_clear().env(
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+    for name in inherited_environment {
+        let value = std::env::var_os(name).ok_or_else(|| {
+            Error::validation(format!(
+                "Allowlisted environment '{name}' is not present in the supervisor process"
+            ))
+        })?;
+        command.env(name, value);
     }
-    if inherited_environment != ["OPENAI_API_KEY"] {
-        return Err(Error::validation(
-            "Codex provider execution requires exactly --inherit-env OPENAI_API_KEY",
-        ));
+    for binding in provider_environment {
+        command.env(&binding.name, &binding.value);
     }
     Ok(())
+}
+
+impl Drop for ProviderEnvironmentValue {
+    fn drop(&mut self) {
+        // Replacing every UTF-8 byte with NUL preserves String's UTF-8 invariant while erasing
+        // the allocation before it is released.
+        unsafe { self.value.as_bytes_mut() }.fill(0);
+        self.value.clear();
+    }
 }
 
 impl RuntimeProvider for InGuestRuntimeProvider {
@@ -820,7 +905,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
     fn prepare(&self, context: &RuntimeContext<'_>) -> Result<RuntimeMetadata> {
         let manifest_path = context.runtime_manifest_path.ok_or_else(|| {
             Error::validation(
-                "Runtime 'in-guest' requires --runtime-manifest with an Agentify assignment path",
+                "Runtime 'in-guest' requires --runtime-manifest with an orchestrator-owned assignment path",
             )
         })?;
         let assignment = load_assignment(manifest_path)?;
@@ -1168,6 +1253,101 @@ struct LoadedAssignment {
     leases: Vec<InGuestLeaseRecord>,
 }
 
+impl LoadedAssignment {
+    fn authorize_provider_execution(
+        &self,
+        provider: &str,
+        inherited_environment: &[String],
+    ) -> Result<&str> {
+        validate_label(provider, "provider")?;
+        if self.manifest.version == LEGACY_MANIFEST_VERSION {
+            if provider != LEGACY_PROVIDER_EXECUTABLE
+                || inherited_environment != [LEGACY_PROVIDER_ENVIRONMENT]
+            {
+                return Err(Error::validation(
+                    "Legacy provider execution does not match the version 1 contract",
+                ));
+            }
+            let identity = self
+                .manifest
+                .leases
+                .iter()
+                .find(|lease| {
+                    lease.scope == LeaseScope::ModelIdentity && lease.consumer == provider
+                })
+                .ok_or_else(|| {
+                    Error::validation(
+                        "Provider execution requires one exact model-identity consumer binding",
+                    )
+                })?;
+            return Ok(identity.consumer.as_str());
+        }
+        let identities = self
+            .manifest
+            .leases
+            .iter()
+            .filter(|lease| {
+                lease.scope == LeaseScope::ModelIdentity
+                    && lease.executable.as_deref() == Some(provider)
+            })
+            .collect::<Vec<_>>();
+        if identities.len() != 1 {
+            return Err(Error::validation(
+                "Provider execution requires one exact model-identity consumer binding",
+            ));
+        }
+        if identities[0].inherited_environment != inherited_environment {
+            return Err(Error::validation(
+                "Inherited provider environment differs from the managed assignment",
+            ));
+        }
+        Ok(identities[0].consumer.as_str())
+    }
+
+    fn provider_environment<'a>(
+        &'a self,
+        provider: &'a str,
+    ) -> impl Iterator<Item = &'a InGuestMount> + 'a {
+        self.mounts.iter().filter(move |mount| {
+            mount.scope == LeaseScope::ProviderEnvironment && mount.consumer == provider
+        })
+    }
+
+    fn provider_environment_sources(&self) -> BTreeSet<PathBuf> {
+        self.mounts
+            .iter()
+            .filter(|mount| mount.scope == LeaseScope::ProviderEnvironment)
+            .map(|mount| mount.source.clone())
+            .collect()
+    }
+
+    fn provider_environment_names(&self) -> BTreeSet<String> {
+        let mut names = self
+            .manifest
+            .leases
+            .iter()
+            .flat_map(|lease| lease.inherited_environment.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        names.extend(self.mounts.iter().filter_map(|mount| {
+            if let MaterializationTarget::Environment(name) = &mount.target {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }));
+        if self.manifest.version == LEGACY_MANIFEST_VERSION
+            && self
+                .manifest
+                .leases
+                .iter()
+                .any(|lease| lease.scope == LeaseScope::ModelIdentity)
+        {
+            names.insert(LEGACY_PROVIDER_ENVIRONMENT.to_string());
+        }
+        names
+    }
+}
+
 pub fn load_in_guest_facade_plan(
     manifest_path: &Path,
     repo_root: &Path,
@@ -1197,7 +1377,10 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     let manifest_path = validate_private_regular_file(manifest_path, "assignment manifest")?;
     let manifest: AssignmentManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
         .map_err(|err| Error::validation(format!("Invalid in-guest assignment manifest: {err}")))?;
-    if manifest.version != MANIFEST_VERSION {
+    if !matches!(
+        manifest.version.as_str(),
+        LEGACY_MANIFEST_VERSION | MANAGED_MANIFEST_VERSION
+    ) {
         return Err(Error::validation(format!(
             "Unsupported in-guest assignment version '{}'",
             manifest.version
@@ -1230,11 +1413,84 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     let mut mounts = Vec::new();
     let mut leases = Vec::new();
     let mut sources = BTreeSet::new();
-    let mut targets = BTreeSet::new();
+    let mut file_targets = BTreeSet::new();
+    let mut provider_environment_targets = BTreeSet::new();
     let mut project_environment_seen = false;
+    let mut provider_environment_bindings = 0_usize;
+    let mut model_consumers = BTreeSet::new();
+    let mut model_executables = BTreeSet::new();
+    let mut provider_environment_consumers = BTreeSet::new();
+    let mut lease_ids = BTreeSet::new();
     for lease in &manifest.leases {
         validate_opaque_identifier(&lease.lease_id, "lease.lease_id")?;
         validate_label(&lease.consumer, "lease.consumer")?;
+        if !lease_ids.insert(lease.lease_id.clone()) {
+            return Err(Error::validation(
+                "Managed assignment lease identifiers must be unique",
+            ));
+        }
+        if manifest.version == LEGACY_MANIFEST_VERSION
+            && (!lease.inherited_environment.is_empty()
+                || lease.executable.is_some()
+                || lease.scope == LeaseScope::ProviderEnvironment)
+        {
+            return Err(Error::validation(
+                "Version 1 assignments cannot declare provider-environment bindings",
+            ));
+        }
+        if lease.scope == LeaseScope::ModelIdentity {
+            if !model_consumers.insert(lease.consumer.clone()) || !lease.materializations.is_empty()
+            {
+                return Err(Error::validation(
+                    "Model identities must be unique outer leases per consumer",
+                ));
+            }
+            if manifest.version == MANAGED_MANIFEST_VERSION
+                && (lease.executable.as_deref().is_none_or(|executable| {
+                    validate_label(executable, "lease.executable").is_err()
+                }) || lease.inherited_environment.len() > MAX_PROVIDER_ENVIRONMENT_BINDINGS
+                    || lease
+                        .expires_at
+                        .is_none_or(|expires_at| expires_at <= Utc::now()))
+            {
+                return Err(Error::validation(
+                    "Managed model identities require a live exact executable and at most 16 inherited bindings",
+                ));
+            }
+            if let Some(executable) = lease.executable.as_ref() {
+                if !model_executables.insert(executable.clone()) {
+                    return Err(Error::validation(
+                        "Managed provider executables must be unique",
+                    ));
+                }
+            }
+            if lease
+                .inherited_environment
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            {
+                return Err(Error::validation(
+                    "Inherited provider environment must be unique and sorted",
+                ));
+            }
+            for name in &lease.inherited_environment {
+                validate_provider_environment_name(name)?;
+                if !provider_environment_targets.insert((lease.consumer.clone(), name.clone())) {
+                    return Err(Error::validation(
+                        "Provider environment bindings must be unique per consumer",
+                    ));
+                }
+            }
+        } else if !lease.inherited_environment.is_empty() || lease.executable.is_some() {
+            return Err(Error::validation(
+                "Only model-identity leases may declare an executable or inherit supervisor environment",
+            ));
+        }
+        if lease.scope == LeaseScope::SourceControlIdentity && !lease.materializations.is_empty() {
+            return Err(Error::validation(
+                "Source-control identity must remain an outer lease",
+            ));
+        }
         if lease.scope == LeaseScope::PlatformTunnel && !lease.materializations.is_empty() {
             return Err(Error::validation(
                 "Outer platform-tunnel leases cannot be materialized into the devcontainer",
@@ -1248,6 +1504,20 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
             }
             project_environment_seen = true;
         }
+        if lease.scope == LeaseScope::ProviderEnvironment {
+            provider_environment_consumers.insert(lease.consumer.clone());
+            provider_environment_bindings += lease.materializations.len();
+            if lease.materializations.is_empty()
+                || provider_environment_bindings > MAX_PROVIDER_ENVIRONMENT_BINDINGS
+                || lease
+                    .expires_at
+                    .is_none_or(|expires_at| expires_at <= Utc::now())
+            {
+                return Err(Error::validation(
+                    "Provider-environment leases require 1-16 live materializations",
+                ));
+            }
+        }
         for materialization in &lease.materializations {
             let source = validate_private_regular_file(
                 &materialization.source_path,
@@ -1258,14 +1528,42 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     "Lease materialization source escapes the assignment materializations directory",
                 ));
             }
-            validate_lease_target(&materialization.target_path)?;
-            if lease.scope == LeaseScope::ProjectEnvironment
-                && materialization.target_path != Path::new(PROJECT_ENVIRONMENT_TARGET)
-            {
-                return Err(Error::validation(format!(
-                    "Project-environment materialization target must be {PROJECT_ENVIRONMENT_TARGET}"
-                )));
-            }
+            let target = match (
+                materialization.target_path.as_ref(),
+                materialization.environment_name.as_ref(),
+            ) {
+                (Some(target), None) if lease.scope != LeaseScope::ProviderEnvironment => {
+                    validate_lease_target(target)?;
+                    if lease.scope == LeaseScope::ProjectEnvironment
+                        && target != Path::new(PROJECT_ENVIRONMENT_TARGET)
+                    {
+                        return Err(Error::validation(format!(
+                            "Project-environment materialization target must be {PROJECT_ENVIRONMENT_TARGET}"
+                        )));
+                    }
+                    if !file_targets.insert(target.clone()) {
+                        return Err(Error::validation(
+                            "Lease materialization source and target paths must be unique",
+                        ));
+                    }
+                    MaterializationTarget::File(target.clone())
+                }
+                (None, Some(name)) if lease.scope == LeaseScope::ProviderEnvironment => {
+                    validate_provider_environment_name(name)?;
+                    if !provider_environment_targets.insert((lease.consumer.clone(), name.clone()))
+                    {
+                        return Err(Error::validation(
+                            "Provider environment bindings must be unique per consumer",
+                        ));
+                    }
+                    MaterializationTarget::Environment(name.clone())
+                }
+                _ => {
+                    return Err(Error::validation(
+                        "Lease materialization must declare one scope-compatible target",
+                    ));
+                }
+            };
             validate_sha256(&materialization.sha256)?;
             let actual = file_sha256(&source)?;
             if actual != materialization.sha256 {
@@ -1274,9 +1572,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     lease.lease_id
                 )));
             }
-            if !sources.insert(source.clone())
-                || !targets.insert(materialization.target_path.clone())
-            {
+            if !sources.insert(source.clone()) {
                 return Err(Error::validation(
                     "Lease materialization source and target paths must be unique",
                 ));
@@ -1284,9 +1580,12 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
             if lease.scope == LeaseScope::ProjectEnvironment {
                 validate_project_environment_file(&source)?;
             }
+            if lease.scope == LeaseScope::ProviderEnvironment {
+                validate_provider_environment_value_file(&source, &materialization.sha256)?;
+            }
             mounts.push(InGuestMount {
                 source,
-                target: materialization.target_path.clone(),
+                target,
                 sha256: materialization.sha256.clone(),
                 scope: lease.scope,
                 consumer: lease.consumer.clone(),
@@ -1299,12 +1598,19 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
             expires_at: lease.expires_at,
             state: if lease.scope == LeaseScope::ProjectEnvironment {
                 "primary-env-file".to_string()
+            } else if lease.scope == LeaseScope::ProviderEnvironment {
+                "provider-env".to_string()
             } else if lease.materializations.is_empty() {
                 "outer".to_string()
             } else {
                 "materialized".to_string()
             },
         });
+    }
+    if !provider_environment_consumers.is_subset(&model_consumers) {
+        return Err(Error::validation(
+            "Provider-environment consumers require an exact model-identity binding",
+        ));
     }
     Ok(LoadedAssignment {
         manifest_path,
@@ -1505,6 +1811,83 @@ fn validate_project_environment_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_provider_environment_name(name: &str) -> Result<()> {
+    if !is_canonical_environment_name(name)
+        || is_reserved_provider_environment_name(name)
+        || name.len() > 128
+    {
+        return Err(Error::validation(
+            "Provider environment name is not an admissible managed binding",
+        ));
+    }
+    Ok(())
+}
+
+fn is_reserved_provider_environment_name(name: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "BASH_ENV",
+        "CDPATH",
+        "CONTAINER_HOST",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_DIR",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "HOME",
+        "HOSTNAME",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "LOGNAME",
+        "PATH",
+        "PROMPT_COMMAND",
+        "PWD",
+        "RUBYOPT",
+        "SHELL",
+        "SHELLOPTS",
+        "SSH_AUTH_SOCK",
+        "USER",
+    ];
+    EXACT.contains(&name)
+        || [
+            "BRANCHBOX_",
+            "COMPOSE_",
+            "CONTAINERD_",
+            "DEVCONTAINER_",
+            "DOCKER_",
+            "DYLD_",
+            "GIT_CONFIG_",
+            "NODE_OPTIONS",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+fn validate_provider_environment_value_file(path: &Path, expected_sha256: &str) -> Result<()> {
+    read_provider_environment_value(path, expected_sha256).map(|_| ())
+}
+
+fn read_provider_environment_value(path: &Path, expected_sha256: &str) -> Result<String> {
+    let bytes = fs::read(path)?;
+    let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    if bytes.len() < 8
+        || bytes.len() > MAX_PROVIDER_ENVIRONMENT_VALUE_BYTES
+        || bytes.iter().any(|byte| byte.is_ascii_control())
+        || actual_sha256 != expected_sha256
+    {
+        return Err(Error::validation(
+            "Provider environment materialization is invalid",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| Error::validation("Provider environment materialization is invalid"))
+}
+
 fn is_canonical_environment_name(name: &str) -> bool {
     let mut characters = name.chars();
     characters
@@ -1659,6 +2042,7 @@ fn validate_resolved_configuration(source: &[u8]) -> Result<()> {
     let normalized = configuration.to_string().to_ascii_lowercase();
     if contains_project_docker_reference(&normalized)
         || normalized.contains("/run/agentify-assignment")
+        || normalized.contains(MANAGED_RUNTIME_ROOT)
         || normalized.contains("initializecommand")
         || normalized.contains("${localenv:")
     {
@@ -1696,7 +2080,11 @@ fn contains_project_docker_reference(value: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
-fn validate_container_inspection(source: &[u8], allowed_sources: &BTreeSet<PathBuf>) -> Result<()> {
+fn validate_container_inspection(
+    source: &[u8],
+    allowed_sources: &BTreeSet<PathBuf>,
+    forbidden_environment: &BTreeSet<String>,
+) -> Result<()> {
     let documents: serde_json::Value = serde_json::from_slice(source).map_err(|err| {
         Error::validation(format!(
             "Docker returned invalid container inspection JSON: {err}"
@@ -1814,7 +2202,7 @@ fn validate_container_inspection(source: &[u8], allowed_sources: &BTreeSet<PathB
             environment.iter().any(|entry| {
                 entry.as_str().is_some_and(|entry| {
                     let name = entry.split('=').next().unwrap_or_default();
-                    name == "OPENAI_API_KEY"
+                    forbidden_environment.contains(name)
                         || matches!(
                             name,
                             "DOCKER_HOST"
@@ -1841,6 +2229,8 @@ fn contains_supervisor_mount(value: &str, allowed_sources: &BTreeSet<PathBuf>) -
     contains_project_docker_reference(&normalized)
         || normalized == "/run/agentify-assignment"
         || normalized.starts_with("/run/agentify-assignment/")
+        || normalized == MANAGED_RUNTIME_ROOT
+        || normalized.starts_with(&format!("{MANAGED_RUNTIME_ROOT}/"))
         || ((normalized == "/run/agentify-runtime"
             || normalized.starts_with("/run/agentify-runtime/"))
             && !allowed_sources.contains(Path::new(value)))
@@ -2021,7 +2411,7 @@ fn bounded_failure(bytes: &[u8]) -> String {
     let mut lines: Vec<_> = rendered.lines().rev().take(MAX_LINES).collect();
     lines.reverse();
     let mut detail = lines.join("\n");
-    for name in SCRUBBED_ENVIRONMENT {
+    for name in LEGACY_REDACTED_ENVIRONMENT {
         if let Some(value) = std::env::var_os(name).and_then(|value| value.into_string().ok()) {
             if !value.is_empty() {
                 detail = detail.replace(&value, "[REDACTED]");
@@ -2111,6 +2501,60 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn managed_assignment_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("repository");
+        let materializations = root.path().join("materializations");
+        fs::create_dir_all(&repository).unwrap();
+        fs::create_dir_all(&materializations).unwrap();
+        let provider_secret = materializations.join("provider-secret");
+        private_write(&provider_secret, b"opaque-provider-value");
+        let manifest = serde_json::json!({
+            "version": "2",
+            "run_id": "run_123",
+            "lease_id": "assignment_123",
+            "outer_runtime_id": "vm_123",
+            "workspace": workspace,
+            "repository": {
+                "path": repository,
+                "revision": "a".repeat(40)
+            },
+            "task_branch": "feature/coding-demo",
+            "tunnel_placement": "outer",
+            "published_ports": [{"host": 3000, "runtime": 3000}],
+            "leases": [
+                {
+                    "lease_id": "lease_model",
+                    "scope": "model-identity",
+                    "consumer": "coding-agent",
+                    "executable": "provider-cli",
+                    "inherited_environment": ["MODEL_ACCESS_TOKEN"],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": []
+                },
+                {
+                    "lease_id": "lease_delivery",
+                    "scope": "provider-environment",
+                    "consumer": "coding-agent",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": [{
+                        "source_path": provider_secret.clone(),
+                        "environment_name": "SOURCE_DELIVERY_TOKEN",
+                        "sha256": file_sha256(&provider_secret).unwrap()
+                    }]
+                }
+            ]
+        });
+        let manifest_path = root.path().join("branchbox-in-guest.json");
+        private_write(
+            &manifest_path,
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        (root, manifest_path, provider_secret)
+    }
+
+    #[cfg(unix)]
     #[test]
     fn validates_manifest_and_sibling_materialization_digest() {
         let (root, manifest, revision) = assignment_fixture(true);
@@ -2190,6 +2634,7 @@ mod tests {
             }]);
             assert!(validate_container_inspection(
                 &serde_json::to_vec(&inspection).unwrap(),
+                &BTreeSet::new(),
                 &BTreeSet::new()
             )
             .is_err());
@@ -2278,6 +2723,7 @@ mod tests {
         ] {
             assert!(validate_container_inspection(
                 &serde_json::to_vec(&inspection).unwrap(),
+                &BTreeSet::new(),
                 &BTreeSet::new()
             )
             .is_err());
@@ -2291,8 +2737,12 @@ mod tests {
             "Mounts": [{"Source": "/workspace/agentify", "Destination": "/workspaces/agentify"}],
             "Config": {"Env": ["RAILS_ENV=development"]}
         }]);
-        validate_container_inspection(&serde_json::to_vec(&inspection).unwrap(), &BTreeSet::new())
-            .unwrap();
+        validate_container_inspection(
+            &serde_json::to_vec(&inspection).unwrap(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2310,19 +2760,182 @@ mod tests {
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("candidate_id"));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn provider_execution_is_fixed_to_codex_and_name_only_openai_inheritance() {
-        validate_provider_execution_request("codex", &["OPENAI_API_KEY".to_string()]).unwrap();
-        assert!(
-            validate_provider_execution_request("sh", &["OPENAI_API_KEY".to_string()]).is_err()
-        );
-        assert!(validate_provider_execution_request("codex", &[]).is_err());
-        assert!(validate_provider_execution_request("codex", &["TOKEN".to_string()]).is_err());
-        assert!(validate_provider_execution_request(
-            "codex",
-            &["OPENAI_API_KEY".to_string(), "OPENAI_API_KEY".to_string()]
+    fn managed_provider_environment_is_exact_consumer_bound_and_never_mounted() {
+        let (_root, manifest, provider_secret) = managed_assignment_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        assignment
+            .authorize_provider_execution("provider-cli", &["MODEL_ACCESS_TOKEN".to_string()])
+            .unwrap();
+        assert!(assignment
+            .authorize_provider_execution("other-cli", &["MODEL_ACCESS_TOKEN".to_string()],)
+            .is_err());
+        assert!(assignment
+            .authorize_provider_execution("provider-cli", &["UNDECLARED_TOKEN".to_string()],)
+            .is_err());
+        let bindings = assignment
+            .provider_environment("coding-agent")
+            .collect::<Vec<_>>();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].source, provider_secret.canonicalize().unwrap());
+        assert!(matches!(
+            &bindings[0].target,
+            MaterializationTarget::Environment(name) if name == "SOURCE_DELIVERY_TOKEN"
+        ));
+        let inspection = serde_json::json!([{
+            "HostConfig": {"Privileged": false, "PidMode": "", "IpcMode": "private"},
+            "Mounts": [],
+            "Config": {"Env": ["SOURCE_DELIVERY_TOKEN=must-not-persist"]}
+        }]);
+        assert!(validate_container_inspection(
+            &serde_json::to_vec(&inspection).unwrap(),
+            &BTreeSet::new(),
+            &assignment.provider_environment_names(),
         )
         .is_err());
+
+        let plan = InGuestFacadePlan {
+            manifest_path: manifest,
+            tunnel_placement: InGuestTunnelPlacement::Outer,
+            published_ports: Vec::new(),
+            mounts: assignment.mounts,
+        };
+        assert_eq!(plan.mounts().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signed_provider_binding_reaches_only_the_provider_process_environment() {
+        const SENTINEL: &str = "non-secret-sentinel";
+        let (_root, manifest, provider_secret) = managed_assignment_fixture();
+        private_write(&provider_secret, SENTINEL.as_bytes());
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"][1]["materializations"][0]["sha256"] =
+            serde_json::json!(file_sha256(&provider_secret).unwrap());
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        let assignment = load_assignment(&manifest).unwrap();
+        let binding = assignment
+            .provider_environment("coding-agent")
+            .next()
+            .unwrap();
+        let MaterializationTarget::Environment(name) = &binding.target else {
+            panic!("expected provider environment target");
+        };
+        let bindings = vec![ProviderEnvironmentValue {
+            name: name.clone(),
+            value: read_provider_environment_value(&binding.source, &binding.sha256).unwrap(),
+        }];
+        let mut child = Command::new("/bin/sh");
+        child
+            .env("UNRELATED_TOKEN", "must-be-cleared")
+            .args([
+                "-c",
+                "test \"$SOURCE_DELIVERY_TOKEN\" = \"non-secret-sentinel\" && test -z \"${UNRELATED_TOKEN:-}\" && printf received",
+            ]);
+        apply_provider_process_environment(&mut child, &[], &bindings).unwrap();
+        let output = child.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"received");
+        assert!(output.stderr.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(SENTINEL));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_provider_execution_preserves_the_version_one_allowlist() {
+        let (_root, manifest, _revision) = assignment_fixture(false);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"] = serde_json::json!([{
+            "lease_id": "lease_model",
+            "scope": "model-identity",
+            "consumer": LEGACY_PROVIDER_EXECUTABLE,
+            "expires_at": "2099-01-01T00:00:00Z",
+            "materializations": []
+        }]);
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        let assignment = load_assignment(&manifest).unwrap();
+        assignment
+            .authorize_provider_execution(
+                LEGACY_PROVIDER_EXECUTABLE,
+                &[LEGACY_PROVIDER_ENVIRONMENT.to_string()],
+            )
+            .unwrap();
+        assert!(assignment
+            .authorize_provider_execution("other-cli", &[LEGACY_PROVIDER_ENVIRONMENT.to_string()],)
+            .is_err());
+        assert!(assignment
+            .authorize_provider_execution(
+                LEGACY_PROVIDER_EXECUTABLE,
+                &["OTHER_MODEL_TOKEN".to_string()],
+            )
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_environment_digest_is_recomputed_from_the_bytes_used_at_exec() {
+        let (_root, manifest, provider_secret) = managed_assignment_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let binding = assignment
+            .provider_environment("coding-agent")
+            .next()
+            .unwrap();
+        private_write(&provider_secret, b"rotated-provider-value");
+        assert!(read_provider_environment_value(&provider_secret, &binding.sha256).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_provider_environment_rejects_control_names_and_values_without_secret_echo() {
+        const SENTINEL: &str = "never-echo-provider-secret";
+        let (_root, manifest, provider_secret) = managed_assignment_fixture();
+        private_write(&provider_secret, format!("{SENTINEL}\n").as_bytes());
+        let error = load_assignment(&manifest).unwrap_err().to_string();
+        assert!(!error.contains(SENTINEL));
+
+        private_write(&provider_secret, SENTINEL.as_bytes());
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"][1]["materializations"][0]["environment_name"] =
+            serde_json::json!("DOCKER_HOST");
+        value["leases"][1]["materializations"][0]["sha256"] =
+            serde_json::json!(file_sha256(&provider_secret).unwrap());
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        let error = load_assignment(&manifest).unwrap_err().to_string();
+        assert!(!error.contains(SENTINEL));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_environment_materialization_cleanup_is_residue_checked() {
+        let (root, _manifest, provider_secret) = managed_assignment_fixture();
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: root.path().join("branchbox-in-guest.json"),
+            worktree_path: root.path().join("workspace/worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("vm_123".to_string()),
+            materializations: vec![StateMaterialization {
+                source_path: provider_secret.clone(),
+                sha256: file_sha256(&provider_secret).unwrap(),
+            }],
+            proxy_names: Vec::new(),
+            compose_projects: Vec::new(),
+            container_id: None,
+        };
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker: PathBuf::from("docker"),
+        };
+        let mut residue = Vec::new();
+        provider.erase_materializations(&state, &mut residue);
+        assert!(!provider_secret.exists());
+        assert!(residue.is_empty());
     }
 
     #[cfg(unix)]

@@ -260,8 +260,8 @@ pub struct FeatureExecProviderArgs {
     #[arg(long)]
     pub repo: Option<PathBuf>,
 
-    /// Fixed coding provider (currently codex)
-    #[arg(long, value_name = "PROVIDER")]
+    /// Exact provider executable declared by the managed runtime assignment
+    #[arg(long, value_name = "EXECUTABLE")]
     pub provider: String,
 
     /// Allowlisted environment name to inherit without transporting its value
@@ -294,7 +294,7 @@ fn run_exec_provider(args: FeatureExecProviderArgs) -> Result<()> {
         &args.command,
     )?;
     if exit_code != 0 {
-        bail!("Coding provider exited with status {exit_code}");
+        bail!("Managed provider exited with status {exit_code}");
     }
     Ok(())
 }

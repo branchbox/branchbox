@@ -93,7 +93,7 @@ pub struct RuntimeMetadata {
     /// Explicit runtime devcontainer configuration used for all lifecycle operations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_path: Option<PathBuf>,
-    /// Agentify-owned outer-boundary and lease correlation for the in-guest provider.
+    /// Orchestrator-owned outer-boundary and lease correlation for the in-guest provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_guest: Option<InGuestRuntimeMetadata>,
     /// Immutable runtime artifact/version evidence supplied by VM-backed providers.
@@ -263,8 +263,9 @@ pub trait RuntimeProvider {
         command: &[String],
     ) -> Result<i32>;
 
-    /// Execute a fixed coding-provider binary with name-only environment inheritance. Providers
-    /// that do not implement this trusted lane reject it instead of falling back to arbitrary exec.
+    /// Execute the exact provider entrypoint and environment admitted by a managed assignment.
+    /// Providers that do not implement this trusted lane reject it instead of falling back to
+    /// arbitrary exec.
     fn exec_provider_interactive(
         &self,
         _metadata: &RuntimeMetadata,
