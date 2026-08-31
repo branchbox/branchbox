@@ -426,6 +426,8 @@ cmd_vsock_probe() {
   done
   if [[ ! -S "$host_socket" ]]; then
     status=1
+  elif ! sudo -n chown "$JAIL_UID:$JAIL_GID" "$host_socket"; then
+    status=1
   elif ! guest "$id" test -c /dev/vsock; then
     status=1
   elif ! guest "$id" bash -c \
