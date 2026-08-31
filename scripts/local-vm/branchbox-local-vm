@@ -233,7 +233,7 @@ inject_runtime_key() {
 
 setup_network() {
   local tap=$1 host_ip=$2
-  sudo -n ip tuntap add dev "$tap" mode tap user "$(id -u)"
+  sudo -n ip tuntap add dev "$tap" mode tap user "$JAIL_UID"
   sudo -n ip addr add "${host_ip}/30" dev "$tap"
   sudo -n ip link set "$tap" up
   sudo -n iptables -w -A FORWARD -i "$tap" -d 10.0.0.0/8 -j REJECT
@@ -262,10 +262,19 @@ teardown_network() {
 }
 
 firecracker_put() {
-  local socket=$1 path=$2 payload=$3
-  curl --fail --silent --show-error --unix-socket "$socket" \
+  local socket=$1 path=$2 payload=$3 response http_code body detail
+  response=$(curl --silent --show-error --unix-socket "$socket" \
     --request PUT --header 'Content-Type: application/json' --data "$payload" \
-    "http://localhost${path}" >/dev/null
+    --write-out $'\n%{http_code}' "http://localhost${path}") || die \
+    "Firecracker API transport failed for $path"
+  http_code=${response##*$'\n'}
+  body=${response%$'\n'*}
+  [[ "$http_code" =~ ^2[0-9][0-9]$ ]] && return 0
+  detail=$(jq -r '.fault_message // .error // empty' <<<"$body" 2>/dev/null || true)
+  [[ -n "$detail" ]] || detail="HTTP $http_code"
+  detail=${detail//$'\n'/ }
+  detail=${detail:0:400}
+  die "Firecracker API rejected $path: $detail"
 }
 
 start_microvm() {
