@@ -32,6 +32,7 @@ const MAX_PROVIDER_ENVIRONMENT_BINDINGS: usize = 16;
 const MAX_PROVIDER_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
 const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
 const LEGACY_PROVIDER_ENVIRONMENT: &str = "OPENAI_API_KEY";
+const REQUIRED_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
 const IN_GUEST_PORT_PROXY_SCRIPT: &str = r#"set -eu
 docker_bin="$1"
 container_id="$2"
@@ -1372,7 +1373,7 @@ impl LoadedAssignment {
         names
     }
 
-    fn signed_bind_mounts(&self) -> BTreeMap<(PathBuf, PathBuf), ManagedSourceKind> {
+    fn signed_bind_mounts(&self) -> BTreeMap<(PathBuf, PathBuf), (ManagedSourceKind, LeaseScope)> {
         self.mounts
             .iter()
             .filter_map(|mount| {
@@ -1383,7 +1384,10 @@ impl LoadedAssignment {
                     mount.scope,
                     LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
                 )
-                .then_some(((mount.source.clone(), target.clone()), mount.source_kind))
+                .then_some((
+                    (mount.source.clone(), target.clone()),
+                    (mount.source_kind, mount.scope),
+                ))
             })
             .collect()
     }
@@ -1881,7 +1885,7 @@ fn validate_run_owned_managed_source(
             "Shared-directory leases require an owner-only source directory",
         ));
     }
-    validate_managed_source_kind(&source, source_kind)?;
+    validate_managed_source_kind(&source, source_kind, scope)?;
     Ok((source, source_kind))
 }
 
@@ -1925,7 +1929,11 @@ fn managed_source_kind(metadata: &fs::Metadata) -> Option<ManagedSourceKind> {
     None
 }
 
-fn validate_managed_source_kind(path: &Path, expected: ManagedSourceKind) -> Result<()> {
+fn validate_managed_source_kind(
+    path: &Path,
+    expected: ManagedSourceKind,
+    scope: LeaseScope,
+) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|err| Error::validation(format!("Cannot inspect managed mount source: {err}")))?;
     if managed_source_kind(&metadata) != Some(expected) {
@@ -1937,13 +1945,14 @@ fn validate_managed_source_kind(path: &Path, expected: ManagedSourceKind) -> Res
     {
         let mode = metadata.permissions().mode() & 0o777;
         let safe = match expected {
+            ManagedSourceKind::Directory if scope == LeaseScope::SharedDirectory => mode == 0o755,
             ManagedSourceKind::Directory => mode == 0o700,
             ManagedSourceKind::Socket => mode & 0o077 == 0 && mode & 0o600 == 0o600,
             ManagedSourceKind::File => false,
         };
         if !safe {
             return Err(Error::validation(
-                "Managed mount source no longer has owner-only permissions",
+                "Managed mount source no longer has its scope-compatible permissions",
             ));
         }
     }
@@ -2369,7 +2378,7 @@ fn contains_ambient_authority_reference(value: &str) -> bool {
 
 fn validate_container_inspection(
     source: &[u8],
-    signed_bind_mounts: &BTreeMap<(PathBuf, PathBuf), ManagedSourceKind>,
+    signed_bind_mounts: &BTreeMap<(PathBuf, PathBuf), (ManagedSourceKind, LeaseScope)>,
     forbidden_environment: &BTreeSet<String>,
 ) -> Result<()> {
     let documents: serde_json::Value = serde_json::from_slice(source).map_err(|err| {
@@ -2444,6 +2453,14 @@ fn validate_container_inspection(
                 })
             })
         });
+    let required_seccomp = host
+        .get("SecurityOpt")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|options| {
+            options
+                .iter()
+                .any(|option| option.as_str() == Some(REQUIRED_SECCOMP_SECURITY_OPTION))
+        });
     if privileged
         || host_pid
         || host_ipc
@@ -2454,6 +2471,7 @@ fn validate_container_inspection(
         || elevated_capability
         || host_device
         || disabled_confinement
+        || !required_seccomp
     {
         return Err(Error::validation(
             "In-guest devcontainer resolved to privileged host authority",
@@ -2481,14 +2499,15 @@ fn validate_container_inspection(
             let signed_kind = signed_bind_mounts.get(&key);
             let enters_managed_namespace = Path::new(source).starts_with(MANAGED_RUNTIME_ROOT)
                 || Path::new(destination).starts_with(LEASE_TARGET_ROOT);
-            if let Some(expected_kind) = signed_kind {
+            if let Some((expected_kind, scope)) = signed_kind {
                 let bind_type =
                     mount.get("Type").and_then(serde_json::Value::as_str) == Some("bind");
                 let read_only = mount.get("RW").and_then(serde_json::Value::as_bool) == Some(false);
                 if !bind_type
                     || !read_only
                     || !observed_signed_mounts.insert(key)
-                    || validate_managed_source_kind(Path::new(source), *expected_kind).is_err()
+                    || validate_managed_source_kind(Path::new(source), *expected_kind, *scope)
+                        .is_err()
                 {
                     return Err(Error::validation(
                         "Managed lease mount lacks exact read-only bind evidence",
@@ -2901,6 +2920,9 @@ mod tests {
         let endpoint_directory = endpoint_parent.join("requests");
         let endpoint_socket = endpoint_parent.join("request-stream");
         private_directory(&shared);
+        let mut shared_permissions = fs::metadata(&shared).unwrap().permissions();
+        shared_permissions.set_mode(0o755);
+        fs::set_permissions(&shared, shared_permissions).unwrap();
         private_directory(&endpoint_directory);
         let listener = UnixListener::bind(&endpoint_socket).unwrap();
         let mut permissions = fs::metadata(&endpoint_socket).unwrap().permissions();
@@ -3026,21 +3048,21 @@ mod tests {
                 shared.canonicalize().unwrap(),
                 PathBuf::from("/run/branchbox/leases/shared/exchange")
             )),
-            Some(&ManagedSourceKind::Directory)
+            Some(&(ManagedSourceKind::Directory, LeaseScope::SharedDirectory))
         );
         assert_eq!(
             signed.get(&(
                 endpoint_directory.canonicalize().unwrap(),
                 PathBuf::from("/run/branchbox/leases/tool-endpoints/requests")
             )),
-            Some(&ManagedSourceKind::Directory)
+            Some(&(ManagedSourceKind::Directory, LeaseScope::ToolEndpoint))
         );
         assert_eq!(
             signed.get(&(
                 endpoint_socket.canonicalize().unwrap(),
                 PathBuf::from("/run/branchbox/leases/tool-endpoints/request-stream")
             )),
-            Some(&ManagedSourceKind::Socket)
+            Some(&(ManagedSourceKind::Socket, LeaseScope::ToolEndpoint))
         );
         assert!(assignment
             .leases
@@ -3050,7 +3072,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn managed_mount_leases_require_exact_run_target_type_and_owner_only_paths() {
+    fn managed_mount_leases_require_exact_run_target_type_and_scope_compatible_paths() {
         let (_root, manifest, shared, _endpoint_directory, endpoint_socket) =
             managed_mount_assignment_fixture();
         let mut value: serde_json::Value =
@@ -3069,12 +3091,14 @@ mod tests {
         value["leases"][0]["materializations"][0]["target_path"] =
             serde_json::json!("/run/branchbox/leases/shared/exchange");
         let mut permissions = fs::metadata(&shared).unwrap().permissions();
-        permissions.set_mode(0o755);
+        permissions.set_mode(0o777);
         fs::set_permissions(&shared, permissions).unwrap();
         private_write(&manifest, &serde_json::to_vec(&value).unwrap());
         assert!(load_assignment(&manifest).is_err());
 
-        private_directory(&shared);
+        let mut permissions = fs::metadata(&shared).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&shared, permissions).unwrap();
         fs::remove_file(&endpoint_socket).unwrap();
         private_write(&endpoint_socket, b"not-a-socket");
         private_write(&manifest, &serde_json::to_vec(&value).unwrap());
@@ -3136,7 +3160,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let inspection = serde_json::json!([{
-            "HostConfig": {"Privileged": false, "PidMode": "", "IpcMode": "private"},
+            "HostConfig": {
+                "Privileged": false,
+                "PidMode": "",
+                "IpcMode": "private",
+                "SecurityOpt": ["seccomp=builtin"]
+            },
             "Mounts": mount_values,
             "Config": {"Env": []}
         }]);
@@ -3318,7 +3347,12 @@ mod tests {
     #[test]
     fn accepts_unprivileged_container_with_no_supervisor_mounts_or_persisted_model_key() {
         let inspection = serde_json::json!([{
-            "HostConfig": {"Privileged": false, "PidMode": "", "IpcMode": "private"},
+            "HostConfig": {
+                "Privileged": false,
+                "PidMode": "",
+                "IpcMode": "private",
+                "SecurityOpt": ["seccomp=builtin"]
+            },
             "Mounts": [{"Source": "/workspace/agentify", "Destination": "/workspaces/agentify"}],
             "Config": {"Env": ["RAILS_ENV=development"]}
         }]);
@@ -3328,6 +3362,98 @@ mod tests {
             &BTreeSet::new(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_a_primary_container_without_the_managed_seccomp_profile() {
+        let inspection = serde_json::json!([{
+            "HostConfig": {"Privileged": false, "PidMode": "", "IpcMode": "private"},
+            "Mounts": [],
+            "Config": {"Env": []}
+        }]);
+        assert!(validate_container_inspection(
+            &serde_json::to_vec(&inspection).unwrap(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Docker and the cross-architecture Python conformance image"]
+    fn builtin_seccomp_allows_unix_and_inet_but_denies_vsock() {
+        let script = r#"import errno, socket
+for family in (socket.AF_UNIX, socket.AF_INET):
+    value = socket.socket(family, socket.SOCK_STREAM, 0)
+    value.close()
+try:
+    socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM, 0)
+except OSError as error:
+    if error.errno == errno.EPERM:
+        raise SystemExit(0)
+    raise
+raise SystemExit("AF_VSOCK unexpectedly opened")
+"#;
+        let status = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--security-opt",
+                REQUIRED_SECCOMP_SECURITY_OPTION,
+                "python:3.13-alpine",
+                "python3",
+                "-c",
+                script,
+            ])
+            .status()
+            .expect("start seccomp conformance container");
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires Docker and the Alpine conformance image"]
+    fn shared_directory_is_readable_but_not_writable_for_a_non_root_container_user() {
+        let temporary = tempfile::tempdir().unwrap();
+        let shared = temporary.path().join("evidence");
+        fs::create_dir(&shared).unwrap();
+        let mut permissions = fs::metadata(&shared).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&shared, permissions).unwrap();
+        let proof = shared.join("proof.txt");
+        fs::write(&proof, b"finalized-evidence\n").unwrap();
+        let mut permissions = fs::metadata(&proof).unwrap().permissions();
+        permissions.set_mode(0o444);
+        fs::set_permissions(&proof, permissions).unwrap();
+
+        let mount = format!(
+            "type=bind,src={},dst=/run/branchbox/leases/shared/evidence,readonly",
+            shared.canonicalize().unwrap().display()
+        );
+        let status = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                REQUIRED_SECCOMP_SECURITY_OPTION,
+                "--user",
+                "1000:1000",
+                "--mount",
+            ])
+            .arg(mount)
+            .args([
+                "alpine:3.22",
+                "sh",
+                "-c",
+                "test \"$(cat /run/branchbox/leases/shared/evidence/proof.txt)\" = finalized-evidence && ! touch /run/branchbox/leases/shared/evidence/mutated && test ! -e /var/run/docker.sock && test ! -e /dev/vsock",
+            ])
+            .status()
+            .expect("start shared-directory conformance container");
+        assert!(status.success());
     }
 
     #[test]

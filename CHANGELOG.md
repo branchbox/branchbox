@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Force the managed in-guest primary devcontainer onto Docker's built-in seccomp profile so direct
+  `AF_VSOCK` access is denied while signed shared-directory leases remain portable to non-root
+  container users.
 - The in-guest facade runs before host-side repository lifecycle behavior, disables checkout hooks
   and filter drivers, strips ambient host env/mount authority plus outside/in/from-Docker feature
   aliases, replaces repository volume and port publication declarations with the exact canonical

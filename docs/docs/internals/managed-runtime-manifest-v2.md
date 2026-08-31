@@ -91,9 +91,10 @@ their contents or socket state may change during the run:
 ```
 
 The assignment must be stored directly in `/run/branchbox/managed/run-id/`. The run directory and
-every source-directory ancestor use mode `0700` and the assignment owner's UID. A shared source is
-a directory; a tool endpoint is a directory or Unix socket. Socket permissions must also remain
-owner-only.
+every source-directory ancestor use mode `0700` and the assignment owner's UID. A shared-directory
+leaf uses mode `0755` so arbitrary non-root container users can inspect its files through the exact
+read-only bind; its private ancestors still prevent ambient host traversal. Tool-endpoint
+directories remain `0700`, and socket permissions remain owner-only.
 
 ## Security contract
 
@@ -107,6 +108,9 @@ owner-only.
 - The generated configuration mounts only manifest-declared source/target pairs. Final Docker
   inspection must show every pair exactly once as a read-only bind on the primary container; a
   missing, writable, mistargeted, duplicate, or unsigned managed mount fails startup.
+- The primary devcontainer is forced onto Docker's built-in seccomp profile, and final inspection
+  rejects a missing or unconfined profile. This preserves normal Unix and Internet socket families
+  while denying direct `AF_VSOCK` creation even when no `/dev/vsock` path is mounted.
 - A provider starts only when the requested executable and inherited environment exactly match one
   live `model-identity` lease. Provider-environment values are selected only for that lease's exact
   consumer.

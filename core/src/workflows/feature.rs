@@ -3317,6 +3317,7 @@ const SBX_DEVCONTAINER_CONFIG: &str = ".devcontainer.json";
 const SBX_COMPOSE_OVERRIDE: &str = ".branchbox-sbx-compose.yaml";
 const IN_GUEST_SHM_SIZE: &str = "1gb";
 const CONTAINER_MAIN_GIT_TARGET: &str = "/workspaces/main/.git";
+const IN_GUEST_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
 
 fn prepare_in_guest_devcontainer_config(
     repo_root: &Path,
@@ -3471,7 +3472,10 @@ fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<
     object.remove("portsAttributes");
     object.remove("otherPortsAttributes");
     object.remove("capAdd");
-    object.remove("securityOpt");
+    object.insert(
+        "securityOpt".to_string(),
+        serde_json::json!([IN_GUEST_SECCOMP_SECURITY_OPTION]),
+    );
     object.insert("privileged".to_string(), serde_json::Value::Bool(false));
 
     if let Some(features) = object
@@ -3954,6 +3958,15 @@ fn prepare_outer_tunnel_compose_override(
         primary.insert(
             serde_yaml::Value::String("shm_size".to_string()),
             serde_yaml::Value::String(IN_GUEST_SHM_SIZE.to_string()),
+        );
+        primary.insert(
+            serde_yaml::Value::String("security_opt".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+                    IN_GUEST_SECCOMP_SECURITY_OPTION.to_string(),
+                )]),
+            })),
         );
         let env_files = project_environment
             .map(|source| {
@@ -7526,6 +7539,7 @@ mod tests {
             "forwardPorts": [3000, 5432],
             "portsAttributes": {"3000": {"label": "Repository app"}},
             "otherPortsAttributes": {"onAutoForward": "openBrowser"},
+            "securityOpt": ["seccomp=unconfined"],
             "runArgs": [
                 "--env-file", "../.env", "--shm-size", "8g", "--shm-size=16g",
                 "--ipc=host", "--network", "host", "--device=/dev/kvm",
@@ -7556,6 +7570,10 @@ mod tests {
         assert!(config.get("forwardPorts").is_none());
         assert!(config.get("portsAttributes").is_none());
         assert!(config.get("otherPortsAttributes").is_none());
+        assert_eq!(
+            config["securityOpt"],
+            serde_json::json!([IN_GUEST_SECCOMP_SECURITY_OPTION])
+        );
         assert_eq!(config["runArgs"], serde_json::json!(["--init"]));
         assert_eq!(config["postCreateCommand"], "bin/setup");
     }
@@ -7727,6 +7745,16 @@ volumes:
         };
         assert_eq!(depends_on, &[serde_yaml::Value::String("postgres".into())]);
         assert_eq!(rails["shm_size"].as_str(), Some(IN_GUEST_SHM_SIZE));
+        let security_options = match &rails["security_opt"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden primary security options, got {other:?}"),
+        };
+        assert_eq!(
+            security_options,
+            &[serde_yaml::Value::String(
+                IN_GUEST_SECCOMP_SECURITY_OPTION.into()
+            )]
+        );
         assert!(rails.get("ipc").is_none());
         for name in ["rails-app", "postgres", "cloudflared", "tailscale"] {
             for key in ["ports", "expose"] {
