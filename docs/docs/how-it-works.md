@@ -153,14 +153,17 @@ image manifest pin v1.16.1), then build the versioned guest artifacts:
 ```bash
 scripts/local-vm/build-image.sh
 sudo install -d -m 0755 /var/lib/branchbox/local-vm/images/current
-sudo install -m 0644 target/local-vm-image/{vmlinux,rootfs.ext4,manifest.json} \
+sudo install -m 0644 target/local-vm-image/{vmlinux,kernel.config,rootfs.ext4,manifest.json} \
   /var/lib/branchbox/local-vm/images/current/
 branchbox feature start add-oauth --runtime local-vm
 ```
 
 The build recipe pins the kernel, Firecracker guest configuration, Ubuntu base, and devcontainer
-CLI. `manifest.json` records kernel/rootfs SHA-256 digests; startup verifies both before mutation,
-and the registry/JSON API reports those digests with the Firecracker version.
+CLI. `manifest.json` records kernel/rootfs SHA-256 digests plus the kernel-config digest; startup
+fails closed unless the config has built-in virtio-vsock support. The runtime attaches one
+Firecracker vsock device for trusted guest-supervisor-to-host transfers. Its UDS is never passed
+into the coding devcontainer, which also cannot access `/dev/vsock` or either Docker control plane.
+The registry/JSON API reports the kernel/rootfs digests with the Firecracker version.
 
 Each feature gets a disposable writable rootfs, one-time SSH key, TAP subnet, NAT policy, and host
 port proxies. The project directory is synchronized to the same absolute guest path before runtime
@@ -174,7 +177,11 @@ Callers can explicitly inject scoped, disposable files by setting
 permissions and are removed with the VM. This is an injection seam, not an ambient credential
 binding. `BRANCHBOX_LOCAL_VM_STATE_DIR`, `BRANCHBOX_LOCAL_VM_IMAGE_DIR`,
 `BRANCHBOX_LOCAL_VM_JAIL_DIR`, `BRANCHBOX_LOCAL_VM_VCPUS`, and
-`BRANCHBOX_LOCAL_VM_MEMORY_MIB` provide host-policy overrides.
+`BRANCHBOX_LOCAL_VM_MEMORY_MIB` provide host-policy overrides. Image builders can set
+`BRANCHBOX_LOCAL_VM_ROOTFS_IMAGE` to keep the temporary Docker build tag in a caller-owned
+namespace. A root-owned supervisor must set `BRANCHBOX_LOCAL_VM_JAIL_UID` and
+`BRANCHBOX_LOCAL_VM_JAIL_GID` to a dedicated non-root execution identity; root is never accepted as
+the Firecracker process identity.
 
 Run `scripts/manual-local-vm-e2e.sh` on a KVM host to prove single-container and concurrent
 app/Postgres/Redis workspaces, captured and interactive execution, port publication, network/socket

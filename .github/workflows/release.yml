@@ -314,7 +314,7 @@ jobs:
       - name: Package guest image
         run: |
           archive="branchbox-local-vm-image-${{ needs.create-release.outputs.version }}-x86_64.tar.gz"
-          tar -C target/local-vm-image -czf "$archive" vmlinux rootfs.ext4 manifest.json
+          tar -C target/local-vm-image -czf "$archive" vmlinux kernel.config rootfs.ext4 manifest.json
           sha256sum "$archive" >"$archive.sha256"
       - name: Upload guest image artifact
         uses: actions/upload-artifact@v4

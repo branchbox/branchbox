@@ -54,10 +54,28 @@ jobs:
         env:
           BRANCHBOX_LOCAL_VM_GHA_CACHE: '1'
         run: scripts/local-vm/build-image.sh
+      - name: Verify fail-closed virtio-vsock kernel contract
+        run: |
+          manifest=target/local-vm-image/manifest.json
+          config=target/local-vm-image/kernel.config
+          test "$(jq -er '.capabilities.guest_to_host_vsock' "$manifest")" = true
+          test "$(jq -er '.kernel_config.name' "$manifest")" = kernel.config
+          test "$(jq -er '.kernel_config.sha256' "$manifest")" = "$(sha256sum "$config" | awk '{print $1}')"
+          grep -qx 'CONFIG_VSOCKETS=y' "$config"
+          grep -qx 'CONFIG_VIRTIO_VSOCKETS=y' "$config"
       - name: Install guest image
         run: |
           sudo install -d -m 0755 /var/lib/branchbox/local-vm/images/current
-          sudo install -m 0644 target/local-vm-image/vmlinux target/local-vm-image/rootfs.ext4 target/local-vm-image/manifest.json /var/lib/branchbox/local-vm/images/current/
+          sudo install -m 0644 target/local-vm-image/vmlinux target/local-vm-image/kernel.config target/local-vm-image/rootfs.ext4 target/local-vm-image/manifest.json /var/lib/branchbox/local-vm/images/current/
+      - name: Prove incomplete vsock artifacts fail preflight
+        run: |
+          invalid_image=$(mktemp -d)
+          cp target/local-vm-image/vmlinux target/local-vm-image/rootfs.ext4 target/local-vm-image/manifest.json "$invalid_image/"
+          if BRANCHBOX_LOCAL_VM_IMAGE_DIR="$invalid_image" scripts/local-vm/branchbox-local-vm validate 2>"$invalid_image/error.log"; then
+            echo 'image without kernel.config unexpectedly passed validation' >&2
+            exit 1
+          fi
+          grep -q 'approved kernel/rootfs artifacts are missing' "$invalid_image/error.log"
       - name: Prove failed prepare leaves no host artifacts
         run: |
           state_dir=$(mktemp -d)

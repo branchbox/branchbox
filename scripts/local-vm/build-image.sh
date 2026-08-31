@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 OUTPUT_DIR="${BRANCHBOX_LOCAL_VM_IMAGE_OUTPUT:-$REPO_ROOT/target/local-vm-image}"
 ROOTFS_SIZE_GIB="${BRANCHBOX_LOCAL_VM_ROOTFS_GIB:-12}"
+ROOTFS_IMAGE="${BRANCHBOX_LOCAL_VM_ROOTFS_IMAGE:-branchbox-local-vm-rootfs:build}"
 BUILD_DIR=$(mktemp -d)
 MOUNT_DIR=$(mktemp -d)
 ROOTFS_CONTAINER=''
@@ -35,8 +36,8 @@ fi
 docker buildx build "${kernel_cache[@]}" --file "$SCRIPT_DIR/image/kernel.Dockerfile" \
   --output "type=local,dest=$BUILD_DIR/kernel" "$SCRIPT_DIR/image"
 docker buildx build "${rootfs_cache[@]}" --file "$SCRIPT_DIR/image/rootfs.Dockerfile" \
-  --tag branchbox-local-vm-rootfs:build --load "$SCRIPT_DIR/image"
-ROOTFS_CONTAINER=$(docker create branchbox-local-vm-rootfs:build)
+  --tag "$ROOTFS_IMAGE" --load "$SCRIPT_DIR/image"
+ROOTFS_CONTAINER=$(docker create "$ROOTFS_IMAGE")
 docker export "$ROOTFS_CONTAINER" --output "$BUILD_DIR/rootfs.tar"
 gzip -n -9 -c "$BUILD_DIR/rootfs.tar" >"$OUTPUT_DIR/rootfs.tar.gz"
 
@@ -48,8 +49,19 @@ sudo rm -f "$MOUNT_DIR/etc/resolv.conf"
 sudo ln -s /run/systemd/resolve/stub-resolv.conf "$MOUNT_DIR/etc/resolv.conf"
 sudo umount "$MOUNT_DIR"
 cp "$BUILD_DIR/kernel/vmlinux" "$OUTPUT_DIR/vmlinux"
+cp "$BUILD_DIR/kernel/kernel.config" "$OUTPUT_DIR/kernel.config"
+
+grep -qx 'CONFIG_VSOCKETS=y' "$OUTPUT_DIR/kernel.config" || {
+  echo 'built kernel is missing CONFIG_VSOCKETS=y' >&2
+  exit 1
+}
+grep -qx 'CONFIG_VIRTIO_VSOCKETS=y' "$OUTPUT_DIR/kernel.config" || {
+  echo 'built kernel is missing CONFIG_VIRTIO_VSOCKETS=y' >&2
+  exit 1
+}
 
 kernel_sha=$(sha256sum "$OUTPUT_DIR/vmlinux" | awk '{print $1}')
+kernel_config_sha=$(sha256sum "$OUTPUT_DIR/kernel.config" | awk '{print $1}')
 rootfs_sha=$(sha256sum "$OUTPUT_DIR/rootfs.ext4" | awk '{print $1}')
 rootfs_archive_sha=$(sha256sum "$OUTPUT_DIR/rootfs.tar.gz" | awk '{print $1}')
 rootfs_archive_size=$(stat -c '%s' "$OUTPUT_DIR/rootfs.tar.gz")
@@ -69,6 +81,7 @@ jq -n \
   --arg kernel_version '6.1.155' \
   --arg devcontainer_cli_version '0.80.3' \
   --arg kernel_sha256 "$kernel_sha" \
+  --arg kernel_config_sha256 "$kernel_config_sha" \
   --arg rootfs_sha256 "$rootfs_sha" \
   --arg rootfs_archive_sha256 "$rootfs_archive_sha" \
   --argjson rootfs_archive_size_bytes "$rootfs_archive_size" \
@@ -83,6 +96,14 @@ jq -n \
     kernel_version: $kernel_version,
     devcontainer_cli_version: $devcontainer_cli_version,
     kernel_sha256: $kernel_sha256,
+    kernel_config: {
+      name: "kernel.config",
+      sha256: $kernel_config_sha256,
+      required: ["CONFIG_VSOCKETS=y", "CONFIG_VIRTIO_VSOCKETS=y"]
+    },
+    capabilities: {
+      guest_to_host_vsock: true
+    },
     rootfs_sha256: $rootfs_sha256,
     rootfs_archive: {
       name: "rootfs.tar.gz",

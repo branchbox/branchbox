@@ -12,7 +12,13 @@ SOCKET_ROOT="${BRANCHBOX_LOCAL_VM_SOCKET_DIR:-/run/branchbox-local-vm-$(id -u)}"
 FIRECRACKER_BIN="${BRANCHBOX_FIRECRACKER_PATH:-$(command -v firecracker 2>/dev/null || true)}"
 JAILER_BIN="${BRANCHBOX_JAILER_PATH:-$(command -v jailer 2>/dev/null || true)}"
 SSH_USER="${BRANCHBOX_LOCAL_VM_SSH_USER:-branchbox}"
+JAIL_UID="${BRANCHBOX_LOCAL_VM_JAIL_UID:-$(id -u)}"
+JAIL_GID="${BRANCHBOX_LOCAL_VM_JAIL_GID:-$(id -g)}"
 PREPARE_CLEANUP_ID=''
+VSOCK_GUEST_CID=3
+VSOCK_HOST_CID=2
+VSOCK_UDS_PATH='run/vsock'
+VSOCK_PROBE_PORT=19001
 
 die() {
   printf 'branchbox-local-vm: %s\n' "$*" >&2
@@ -131,16 +137,26 @@ sha256_file() {
 }
 
 validate_manifest() {
-  local manifest="$IMAGE_ROOT/manifest.json" kernel="$IMAGE_ROOT/vmlinux" rootfs="$IMAGE_ROOT/rootfs.ext4"
-  [[ -f "$manifest" && -f "$kernel" && -f "$rootfs" ]] || die \
+  local manifest="$IMAGE_ROOT/manifest.json" kernel="$IMAGE_ROOT/vmlinux" \
+    kernel_config="$IMAGE_ROOT/kernel.config" rootfs="$IMAGE_ROOT/rootfs.ext4"
+  [[ -f "$manifest" && -f "$kernel" && -f "$kernel_config" && -f "$rootfs" ]] || die \
     "approved kernel/rootfs artifacts are missing under $IMAGE_ROOT; run scripts/local-vm/build-image.sh"
-  local expected_kernel expected_rootfs actual_kernel actual_rootfs
+  local expected_kernel expected_kernel_config expected_rootfs actual_kernel actual_kernel_config actual_rootfs
   expected_kernel=$(jq -er '.kernel_sha256' "$manifest")
+  expected_kernel_config=$(jq -er '.kernel_config.sha256' "$manifest")
   expected_rootfs=$(jq -er '.rootfs_sha256' "$manifest")
+  [[ "$(jq -er '.capabilities.guest_to_host_vsock' "$manifest")" == true ]] || die \
+    "guest image manifest does not authorize guest-to-host virtio-vsock"
   actual_kernel=$(sha256_file "$kernel")
+  actual_kernel_config=$(sha256_file "$kernel_config")
   actual_rootfs=$(sha256_file "$rootfs")
   [[ "$actual_kernel" == "$expected_kernel" ]] || die "kernel digest does not match manifest"
+  [[ "$actual_kernel_config" == "$expected_kernel_config" ]] || die \
+    "kernel config digest does not match manifest"
   [[ "$actual_rootfs" == "$expected_rootfs" ]] || die "rootfs digest does not match manifest"
+  grep -qx 'CONFIG_VSOCKETS=y' "$kernel_config" || die "approved kernel is missing CONFIG_VSOCKETS=y"
+  grep -qx 'CONFIG_VIRTIO_VSOCKETS=y' "$kernel_config" || die \
+    "approved kernel is missing CONFIG_VIRTIO_VSOCKETS=y"
 }
 
 cmd_validate() {
@@ -149,6 +165,10 @@ cmd_validate() {
   [[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is unavailable or inaccessible"
   [[ -n "$FIRECRACKER_BIN" && -x "$FIRECRACKER_BIN" ]] || die "firecracker is not installed"
   [[ -n "$JAILER_BIN" && -x "$JAILER_BIN" ]] || die "jailer is not installed"
+  [[ "$JAIL_UID" =~ ^[1-9][0-9]*$ ]] || die \
+    "BRANCHBOX_LOCAL_VM_JAIL_UID must be a non-root numeric UID"
+  [[ "$JAIL_GID" =~ ^[1-9][0-9]*$ ]] || die \
+    "BRANCHBOX_LOCAL_VM_JAIL_GID must be a non-root numeric GID"
   require_cmd ip
   require_cmd iptables
   require_cmd jq
@@ -269,6 +289,7 @@ start_microvm() {
   while IFS= read -r payload; do
     firecracker_put "$short_socket" "/network-interfaces/$(jq -r '.iface_id' <<<"$payload")" "$payload"
   done < <(jq -c '.["network-interfaces"][]' "$config")
+  firecracker_put "$short_socket" /vsock "$(jq -c '.vsock' "$config")"
   firecracker_put "$short_socket" /serial '{"serial_out_path":"run/serial.log"}'
   firecracker_put "$short_socket" /actions '{"action_type":"InstanceStart"}'
   rm -f "$short_socket"
@@ -323,7 +344,9 @@ cmd_prepare() {
   repo_root=$(dirname "$common_git")
   jq -n --arg id "$id" --arg workspace_root "$workspace_root" --arg repo_root "$repo_root" --arg worktree "$worktree" \
     --arg host_ip "$host_ip" --arg guest_ip "$guest_ip" --arg tap "$tap" --argjson ports "$ports" \
-    '{runtime_id:$id,workspace_root:$workspace_root,repo_root:$repo_root,worktree:$worktree,host_ip:$host_ip,guest_ip:$guest_ip,tap:$tap,published_ports:$ports}' \
+    --argjson vsock_guest_cid "$VSOCK_GUEST_CID" --argjson vsock_host_cid "$VSOCK_HOST_CID" \
+    --arg vsock_uds_path "$VSOCK_UDS_PATH" \
+    '{runtime_id:$id,workspace_root:$workspace_root,repo_root:$repo_root,worktree:$worktree,host_ip:$host_ip,guest_ip:$guest_ip,tap:$tap,published_ports:$ports,vsock:{guest_cid:$vsock_guest_cid,host_cid:$vsock_host_cid,uds_path:$vsock_uds_path}}' \
     >"$dir/metadata.json"
   PREPARE_CLEANUP_ID=$id
   trap 'status=$?; trap - EXIT; cmd_destroy "$PREPARE_CLEANUP_ID" >/dev/null 2>&1 || true; exit "$status"' EXIT
@@ -342,15 +365,15 @@ cmd_prepare() {
   sudo -n install -m 400 "$IMAGE_ROOT/vmlinux" "$jail/vmlinux"
   sudo -n install -m 600 "$rootfs" "$jail/rootfs.ext4"
   sudo -n tee "$jail/config.json" >/dev/null <<JSON
-{"boot-source":{"kernel_image_path":"/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off nomodules rw root=/dev/vda ip=${guest_ip}::${host_ip}:255.255.255.252::eth0:off"},"drives":[{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":false}],"machine-config":{"vcpu_count":${BRANCHBOX_LOCAL_VM_VCPUS:-2},"mem_size_mib":${BRANCHBOX_LOCAL_VM_MEMORY_MIB:-4096},"smt":false},"network-interfaces":[{"iface_id":"eth0","guest_mac":"06:00:ac:1e:$(printf '%02x' "${network##*.}"):02","host_dev_name":"${tap}"}]}
+{"boot-source":{"kernel_image_path":"/vmlinux","boot_args":"console=ttyS0 reboot=k panic=1 pci=off nomodules rw root=/dev/vda ip=${guest_ip}::${host_ip}:255.255.255.252::eth0:off"},"drives":[{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":false}],"machine-config":{"vcpu_count":${BRANCHBOX_LOCAL_VM_VCPUS:-2},"mem_size_mib":${BRANCHBOX_LOCAL_VM_MEMORY_MIB:-4096},"smt":false},"network-interfaces":[{"iface_id":"eth0","guest_mac":"06:00:ac:1e:$(printf '%02x' "${network##*.}"):02","host_dev_name":"${tap}"}],"vsock":{"guest_cid":${VSOCK_GUEST_CID},"uds_path":"${VSOCK_UDS_PATH}"}}
 JSON
-  sudo -n install -d -m 700 "$jail/run"
+  sudo -n install -d -m 700 -o "$JAIL_UID" -g "$JAIL_GID" "$jail/run"
   sudo -n touch "$jail/run/firecracker.log" "$jail/run/serial.log"
   sudo -n chmod 600 "$jail/config.json" "$jail/run/firecracker.log" "$jail/run/serial.log"
-  sudo -n chown "$(id -u):$(id -g)" "$jail/vmlinux" "$jail/rootfs.ext4" "$jail/config.json" \
+  sudo -n chown "$JAIL_UID:$JAIL_GID" "$jail/vmlinux" "$jail/rootfs.ext4" "$jail/config.json" \
     "$jail/run/firecracker.log" "$jail/run/serial.log"
-  sudo -n "$JAILER_BIN" --id "$id" --exec-file "$FIRECRACKER_BIN" --uid "$(id -u)" \
-    --gid "$(id -g)" --cgroup-version 2 --chroot-base-dir "$JAIL_ROOT" --daemonize -- \
+  sudo -n "$JAILER_BIN" --id "$id" --exec-file "$FIRECRACKER_BIN" --uid "$JAIL_UID" \
+    --gid "$JAIL_GID" --cgroup-version 2 --chroot-base-dir "$JAIL_ROOT" --daemonize -- \
     --api-sock run/firecracker.socket --log-path run/firecracker.log --level Info
   start_microvm "$id" "$jail"
   wait_for_guest "$id"
@@ -368,6 +391,48 @@ cmd_exists() {
   pid_file="$JAIL_ROOT/firecracker/$id/root/firecracker.pid"
   [[ -r "$pid_file" ]] || return 1
   kill -0 "$(cat "$pid_file")" 2>/dev/null
+}
+
+cmd_vsock_probe() {
+  local id=$1 dir jail host_socket proof_file challenge listener_pid status=0
+  cmd_exists "$id" || die "runtime '$id' does not exist"
+  dir=$(runtime_dir "$id")
+  jail="$JAIL_ROOT/firecracker/$id/root"
+  host_socket="$jail/${VSOCK_UDS_PATH}_${VSOCK_PROBE_PORT}"
+  proof_file="$dir/vsock-probe.received"
+  challenge=$(printf '%s' "$id:$VSOCK_PROBE_PORT" | sha256sum | awk '{print $1}')
+  [[ ! -e "$host_socket" ]] || die \
+    "refusing to replace pre-existing virtio-vsock probe socket for $id"
+  rm -f "$proof_file"
+  nohup socat -u "UNIX-LISTEN:${host_socket},mode=0600" \
+    "OPEN:${proof_file},creat,trunc" >"$dir/vsock-probe.log" 2>&1 &
+  listener_pid=$!
+  for _ in $(seq 1 50); do
+    [[ -S "$host_socket" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -S "$host_socket" ]]; then
+    status=1
+  elif ! guest "$id" test -c /dev/vsock; then
+    status=1
+  elif ! guest "$id" bash -c \
+    'printf %s "$1" | socat -u - "VSOCK-CONNECT:$2:$3"' \
+    -- "$challenge" "$VSOCK_HOST_CID" "$VSOCK_PROBE_PORT"; then
+    status=1
+  fi
+  for _ in $(seq 1 50); do
+    [[ -f "$proof_file" ]] && [[ "$(cat "$proof_file")" == "$challenge" ]] && break
+    sleep 0.1
+  done
+  [[ -f "$proof_file" ]] && [[ "$(cat "$proof_file")" == "$challenge" ]] || status=1
+  kill "$listener_pid" 2>/dev/null || true
+  wait "$listener_pid" 2>/dev/null || true
+  rm -f "$host_socket" "$proof_file" "$dir/vsock-probe.log"
+  [[ "$status" == 0 ]] || die "guest-to-host virtio-vsock probe failed for $id"
+  jq -n --argjson guest_cid "$VSOCK_GUEST_CID" --argjson host_cid "$VSOCK_HOST_CID" \
+    --argjson port "$VSOCK_PROBE_PORT" --arg direction guest-to-host \
+    --arg runtime_id "$id" --arg uds_path "$VSOCK_UDS_PATH" \
+    '{runtime_id:$runtime_id,direction:$direction,guest_cid:$guest_cid,host_cid:$host_cid,port:$port,uds_path:$uds_path}'
 }
 
 devcontainer_command() {
@@ -510,8 +575,9 @@ case "${1:-}" in
   exists) shift; [[ $# -eq 1 ]] || die "exists requires runtime ID"; cmd_exists "$@" ;;
   start) shift; [[ $# -eq 2 ]] || die "start requires runtime ID and worktree"; cmd_start "$@" ;;
   probe) shift; [[ $# -eq 2 ]] || die "probe requires runtime ID and worktree"; cmd_probe "$@" ;;
+  vsock-probe) shift; [[ $# -eq 1 ]] || die "vsock-probe requires runtime ID"; cmd_vsock_probe "$@" ;;
   exec) shift; cmd_exec "$@" ;;
   exec-interactive) shift; cmd_exec_interactive "$@" ;;
   destroy) shift; [[ $# -eq 1 ]] || die "destroy requires runtime ID"; cmd_destroy "$@" ;;
-  *) die "expected validate, prepare, exists, start, probe, exec, exec-interactive, or destroy" ;;
+  *) die "expected validate, prepare, exists, start, probe, vsock-probe, exec, exec-interactive, or destroy" ;;
 esac

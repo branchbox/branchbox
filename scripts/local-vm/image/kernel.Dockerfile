@@ -40,8 +40,13 @@ RUN cp "/src/firecracker-${FIRECRACKER_VERSION#v}/resources/guest_configs/microv
     && scripts/config --enable CONFIG_VETH \
     && scripts/config --enable CONFIG_OVERLAY_FS \
     && scripts/config --enable CONFIG_EXT4_FS \
+    && scripts/config --enable CONFIG_VSOCKETS \
+    && scripts/config --enable CONFIG_VIRTIO_VSOCKETS \
     && make olddefconfig \
+    && grep -qx 'CONFIG_VSOCKETS=y' .config \
+    && grep -qx 'CONFIG_VIRTIO_VSOCKETS=y' .config \
     && make -j"$(nproc)" vmlinux
 
 FROM scratch AS export
 COPY --from=build /src/linux-6.1.155/vmlinux /vmlinux
+COPY --from=build /src/linux-6.1.155/.config /kernel.config

@@ -14,7 +14,7 @@ Run this harness on an x86_64 Linux host with KVM. It is the release proof for t
 ```bash
 scripts/local-vm/build-image.sh
 sudo install -d -m 0755 /var/lib/branchbox/local-vm/images/current
-sudo install -m 0644 target/local-vm-image/{vmlinux,rootfs.ext4,manifest.json} \
+sudo install -m 0644 target/local-vm-image/{vmlinux,kernel.config,rootfs.ext4,manifest.json} \
   /var/lib/branchbox/local-vm/images/current/
 scripts/manual-local-vm-e2e.sh
 ```
@@ -32,9 +32,16 @@ scripts/manual-local-vm-e2e.sh
 6. Published application ports reach the correct nested devcontainer through guest and host proxy
    layers.
 7. The devcontainer cannot see a Docker socket and cannot initiate a connection to the host gateway.
-8. Runtime JSON reports Firecracker, kernel SHA-256, and rootfs SHA-256 identity.
-9. Teardown removes Firecracker processes, TAP interfaces, proxy processes, keys, writable disks,
-   and driver state.
+8. The approved kernel config is digest-bound and includes built-in `CONFIG_VSOCKETS` and
+   `CONFIG_VIRTIO_VSOCKETS`; a trusted guest process transfers a challenge to a host UDS through
+   Firecracker's virtio-vsock mediator.
+9. Concurrent VMs safely reuse guest CID `3` and the same probe port because every jailed VM owns a
+   distinct UDS namespace; an existing endpoint is never unlinked or replaced.
+10. The coding devcontainer cannot access `/dev/vsock`; the transfer endpoint remains an outer guest
+   supervisor capability, not a container or Docker control channel.
+11. Runtime JSON reports Firecracker, kernel SHA-256, and rootfs SHA-256 identity.
+12. Teardown removes Firecracker processes, TAP interfaces, proxy and vsock listener processes,
+   Unix sockets, keys, writable disks, and driver state.
 
 The GitHub workflow `.github/workflows/local-vm-e2e.yml` runs this same harness on an x64 Ubuntu KVM
 runner whenever local-vm implementation/image paths change and can also be dispatched manually.
