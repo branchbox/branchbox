@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Compose service through a raw env file, without mounting or serializing its values.
 - Add run-owned shared-directory and Unix tool-endpoint leases with exact read-only primary-container
   bind evidence and residue-checked directory/socket cleanup.
+- Add provider-neutral `tool-request` leases and `feature dispatch-tool`: coding-container users can
+  submit bounded capability-bound requests through a per-run volume while the owner-only trusted
+  Unix endpoint and its underlying credentials remain outside the container.
 - Bind the Firecracker kernel config into the image manifest, require built-in virtio-vsock
   support, and prove a trusted guest-to-host transfer without exposing `/dev/vsock` to coding
   devcontainers.
@@ -28,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Force the managed in-guest primary devcontainer onto Docker's built-in seccomp profile so direct
   `AF_VSOCK` access is denied while signed shared-directory leases remain portable to non-root
   container users.
+- Keep linked trusted-tool sockets at strict owner-only permissions across guest/container UID
+  mismatches; exact run/lease/consumer binding, immutable spool descriptors, single-use replay
+  claims, bounded relay framing, and residue-checked teardown replace direct socket mounts.
 - The in-guest facade runs before host-side repository lifecycle behavior, disables checkout hooks
   and filter drivers, strips ambient host env/mount authority plus outside/in/from-Docker feature
   aliases, replaces repository volume and port publication declarations with the exact canonical

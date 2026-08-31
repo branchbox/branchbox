@@ -146,6 +146,16 @@ pub struct RuntimeExecResult {
     pub stderr: String,
 }
 
+/// Correlated response returned by a trusted, provider-neutral tool dispatcher.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeToolDispatchResult {
+    pub run_id: String,
+    pub lease_id: String,
+    pub consumer: String,
+    pub request_id: String,
+    pub response: serde_json::Value,
+}
+
 /// Deterministic resource residue observed after provider teardown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeResidue {
@@ -275,6 +285,18 @@ pub trait RuntimeProvider {
     ) -> Result<i32> {
         Err(Error::validation(
             "This runtime does not support trusted coding-provider execution",
+        ))
+    }
+
+    /// Dispatch one capability-bound request from a consumer spool to its trusted endpoint.
+    fn dispatch_tool_request(
+        &self,
+        _metadata: &RuntimeMetadata,
+        _lease_id: &str,
+        _request_id: &str,
+    ) -> Result<RuntimeToolDispatchResult> {
+        Err(Error::validation(
+            "This runtime does not support trusted tool-request dispatch",
         ))
     }
 

@@ -7,19 +7,22 @@
 
 use super::{
     exec_result, RuntimeContext, RuntimeExecResult, RuntimeMetadata, RuntimePort, RuntimeProvider,
-    RuntimeProviderKind, RuntimeResidue, RuntimeTeardownReport,
+    RuntimeProviderKind, RuntimeResidue, RuntimeTeardownReport, RuntimeToolDispatchResult,
 };
 use crate::{devcontainer_runtime::DevcontainerConfig, Error, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 const LEGACY_MANIFEST_VERSION: &str = "1";
 const MANAGED_MANIFEST_VERSION: &str = "2";
@@ -28,8 +31,14 @@ const LEASE_TARGET_ROOT: &str = "/run/branchbox/leases";
 const PROJECT_ENVIRONMENT_TARGET: &str = "/run/branchbox/leases/project-env";
 const SHARED_DIRECTORY_TARGET_ROOT: &str = "/run/branchbox/leases/shared";
 const TOOL_ENDPOINT_TARGET_ROOT: &str = "/run/branchbox/leases/tool-endpoints";
+const TOOL_REQUEST_TARGET_ROOT: &str = "/run/branchbox/leases/tool-requests";
 const MAX_PROVIDER_ENVIRONMENT_BINDINGS: usize = 16;
 const MAX_PROVIDER_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
+const MAX_TOOL_REQUESTS: usize = 16;
+const MAX_TOOL_REQUEST_BYTES: usize = 256 * 1024;
+const MAX_TOOL_REQUEST_QUOTA_BYTES: usize = 1024 * 1024;
+const MAX_TOOL_RESPONSE_BYTES: usize = 256 * 1024;
+const TOOL_RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
 const LEGACY_PROVIDER_ENVIRONMENT: &str = "OPENAI_API_KEY";
 const REQUIRED_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
@@ -44,6 +53,141 @@ target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
 target_host=${target_host#/}
 "$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
 exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
+const INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT: &str = r#"set -eu
+root="$1"
+uid="$2"
+test -d "$root"
+test ! -L "$root"
+for candidate in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+  test -e "$candidate" || test -L "$candidate" || continue
+  exit 73
+done
+chown 0:0 "$root"
+chmod 0755 "$root"
+umask 077
+capability_tmp="$root/.capability.tmp"
+binding_tmp="$root/.binding.json.tmp"
+trap 'rm -f "$capability_tmp" "$binding_tmp"' EXIT HUP INT TERM
+IFS= read -r capability
+printf '%s' "$capability" >"$capability_tmp"
+cat >"$binding_tmp"
+chown 0:0 "$capability_tmp" "$binding_tmp"
+chmod 0444 "$capability_tmp" "$binding_tmp"
+mv -f "$capability_tmp" "$root/.capability"
+mv -f "$binding_tmp" "$root/.binding.json"
+trap - EXIT HUP INT TERM
+mkdir -p "$root/requests"
+chown "$uid:$uid" "$root/requests"
+chmod 0700 "$root/requests"
+mkdir -p "$root/responses"
+chown 0:0 "$root/responses"
+chmod 0755 "$root/responses"
+mkdir -p "$root/.processing"
+chown 0:0 "$root/.processing"
+chmod 0700 "$root/.processing"
+for directory in "$root/requests" "$root/responses" "$root/.processing"; do
+  for candidate in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+    test -e "$candidate" || test -L "$candidate" || continue
+    exit 74
+  done
+done
+test "$(stat -c '%u:%a' "$root")" = "0:755"
+test "$(stat -c '%u:%a' "$root/.capability")" = "0:444"
+test "$(stat -c '%u:%a' "$root/.binding.json")" = "0:444"
+test "$(stat -c '%u:%a' "$root/requests")" = "$uid:700"
+test "$(stat -c '%u:%a' "$root/responses")" = "0:755"
+test "$(stat -c '%u:%a' "$root/.processing")" = "0:700""#;
+const READ_TOOL_REQUEST_SCRIPT: &str = r#"set -eu
+root="$1"
+uid="$2"
+request_id="$3"
+max_count="$4"
+max_file_bytes="$5"
+max_total_bytes="$6"
+test -d "$root"
+test ! -L "$root"
+test "$(stat -c '%u:%a' "$root")" = "0:755"
+test -f "$root/.capability"
+test ! -L "$root/.capability"
+test "$(stat -c '%u:%a' "$root/.capability")" = "0:444"
+test -f "$root/.binding.json"
+test ! -L "$root/.binding.json"
+test "$(stat -c '%u:%a' "$root/.binding.json")" = "0:444"
+requests="$root/requests"
+test -d "$requests"
+test ! -L "$requests"
+test "$(stat -c '%u:%a' "$requests")" = "$uid:700"
+request="$requests/$request_id.json"
+count=0
+total=0
+found=0
+for candidate in "$requests"/* "$requests"/.[!.]* "$requests"/..?*; do
+  test ! -L "$candidate"
+  test -e "$candidate" || continue
+  base=${candidate##*/}
+  test -f "$candidate"
+  case "$base" in
+    *.json) stem=${base%.json} ;;
+    *) exit 71 ;;
+  esac
+  case "$stem" in
+    ""|.*|*[!A-Za-z0-9._:-]*) exit 72 ;;
+  esac
+  set -- $(stat -c '%u %a %s %h' "$candidate")
+  test "$1" = "$uid"
+  test "$2" = "600"
+  test "$3" -gt 0
+  test "$3" -le "$max_file_bytes"
+  test "$4" = "1"
+  count=$((count + 1))
+  total=$((total + $3))
+  test "$count" -le "$max_count"
+  test "$total" -le "$max_total_bytes"
+  test "$candidate" != "$request" || found=1
+done
+test "$found" = "1" || exit 75
+processing="$root/.processing"
+test -d "$processing"
+test ! -L "$processing"
+test "$(stat -c '%u:%a' "$processing")" = "0:700"
+staged="$processing/$request_id.json"
+test ! -e "$staged"
+test ! -L "$staged"
+trap 'rm -f "$staged"' EXIT HUP INT TERM
+mv "$request" "$staged"
+test -f "$staged"
+test ! -L "$staged"
+set -- $(stat -c '%u %a %s %h' "$staged")
+test "$1" = "$uid"
+test "$2" = "600"
+test "$3" -gt 0
+test "$3" -le "$max_file_bytes"
+test "$4" = "1"
+dd if="$staged" bs=4096 count=65 2>/dev/null
+rm -f "$staged"
+trap - EXIT HUP INT TERM"#;
+const WRITE_TOOL_RESPONSE_SCRIPT: &str = r#"set -eu
+root="$1"
+uid="$2"
+request_id="$3"
+responses="$root/responses"
+test -d "$responses"
+test ! -L "$responses"
+test "$(stat -c '%u:%a' "$responses")" = "0:755"
+umask 077
+temporary="$responses/$request_id.json.tmp"
+final="$responses/$request_id.json"
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+test ! -e "$temporary"
+test ! -L "$temporary"
+test ! -e "$final"
+test ! -L "$final"
+cat >"$temporary"
+chown "$uid:$uid" "$temporary"
+chmod 0400 "$temporary"
+mv -f "$temporary" "$final"
+trap - EXIT HUP INT TERM
+test "$(stat -c '%u:%a' "$final")" = "$uid:400""#;
 const PROVIDER_STATE_VERSION: &str = "1";
 const LEGACY_REDACTED_ENVIRONMENT: [&str; 1] = [LEGACY_PROVIDER_ENVIRONMENT];
 
@@ -85,6 +229,8 @@ pub struct InGuestFacadePlan {
     tunnel_placement: InGuestTunnelPlacement,
     published_ports: Vec<RuntimePort>,
     mounts: Vec<InGuestMount>,
+    tool_request_spools: Vec<ToolRequestSpool>,
+    linked_tool_endpoints: BTreeSet<String>,
 }
 
 impl InGuestFacadePlan {
@@ -104,7 +250,17 @@ impl InGuestFacadePlan {
         self.mounts
             .iter()
             .filter_map(|mount| match (&mount.scope, &mount.target) {
-                (LeaseScope::ProjectEnvironment | LeaseScope::ProviderEnvironment, _) => None,
+                (
+                    LeaseScope::ProjectEnvironment
+                    | LeaseScope::ProviderEnvironment
+                    | LeaseScope::ToolRequest,
+                    _,
+                ) => None,
+                (LeaseScope::ToolEndpoint, _)
+                    if self.linked_tool_endpoints.contains(&mount.lease_id) =>
+                {
+                    None
+                }
                 (_, MaterializationTarget::File(target)) => {
                     Some((mount.source.as_path(), target.as_path()))
                 }
@@ -118,16 +274,79 @@ impl InGuestFacadePlan {
             .find(|mount| mount.scope == LeaseScope::ProjectEnvironment)
             .map(|mount| (mount.source.as_path(), mount.consumer.as_str()))
     }
+
+    pub fn tool_request_spools(&self) -> impl Iterator<Item = (&str, &Path, u32)> {
+        self.tool_request_spools.iter().map(|spool| {
+            (
+                spool.volume_name.as_str(),
+                spool.target_path.as_path(),
+                spool.consumer_uid,
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
 struct InGuestMount {
+    lease_id: String,
     source: PathBuf,
     target: MaterializationTarget,
     sha256: Option<String>,
     source_kind: ManagedSourceKind,
     scope: LeaseScope,
     consumer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ToolRequestSpool {
+    lease_id: String,
+    endpoint_lease_id: String,
+    consumer: String,
+    consumer_uid: u32,
+    target_path: PathBuf,
+    volume_name: String,
+    capability_source: PathBuf,
+    capability_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolRequestBinding<'a> {
+    version: &'static str,
+    run_id: &'a str,
+    lease_id: &'a str,
+    endpoint_lease_id: &'a str,
+    consumer: &'a str,
+    request_directory: PathBuf,
+    response_directory: PathBuf,
+    capability_path: PathBuf,
+    request_filename: &'static str,
+    response_filename: &'static str,
+    max_pending_requests: usize,
+    max_request_bytes: usize,
+    max_spool_bytes: usize,
+    max_response_bytes: usize,
+}
+
+fn tool_request_binding<'a>(
+    run_id: &'a str,
+    spool: &'a ToolRequestSpool,
+) -> ToolRequestBinding<'a> {
+    ToolRequestBinding {
+        version: "1",
+        run_id,
+        lease_id: &spool.lease_id,
+        endpoint_lease_id: &spool.endpoint_lease_id,
+        consumer: &spool.consumer,
+        request_directory: spool.target_path.join("requests"),
+        response_directory: spool.target_path.join("responses"),
+        capability_path: spool.target_path.join(".capability"),
+        request_filename: "<request_id>.json",
+        response_filename: "<request_id>.json",
+        max_pending_requests: MAX_TOOL_REQUESTS,
+        max_request_bytes: MAX_TOOL_REQUEST_BYTES,
+        max_spool_bytes: MAX_TOOL_REQUEST_QUOTA_BYTES,
+        max_response_bytes: MAX_TOOL_RESPONSE_BYTES,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -137,6 +356,15 @@ enum ManagedSourceKind {
     File,
     Directory,
     Socket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedMountExpectation {
+    ReadOnlyBind {
+        source_kind: ManagedSourceKind,
+        scope: LeaseScope,
+    },
+    WritableRequestSpool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +410,12 @@ struct AssignedLease {
     #[serde(default)]
     expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
+    consumer_uid: Option<u32>,
+    #[serde(default)]
+    endpoint_lease_id: Option<String>,
+    #[serde(default)]
+    request_spool_target: Option<PathBuf>,
+    #[serde(default)]
     materializations: Vec<AssignedMaterialization>,
 }
 
@@ -194,6 +428,7 @@ enum LeaseScope {
     ProviderEnvironment,
     SharedDirectory,
     ToolEndpoint,
+    ToolRequest,
     PlatformTunnel,
 }
 
@@ -206,6 +441,7 @@ impl LeaseScope {
             Self::ProviderEnvironment => "provider-environment",
             Self::SharedDirectory => "shared-directory",
             Self::ToolEndpoint => "tool-endpoint",
+            Self::ToolRequest => "tool-request",
             Self::PlatformTunnel => "platform-tunnel",
         }
     }
@@ -237,6 +473,10 @@ struct ProviderState {
     outer_runtime_id: Option<String>,
     materializations: Vec<StateMaterialization>,
     #[serde(default)]
+    tool_request_spools: Vec<ToolRequestSpool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_request_ledger_path: Option<PathBuf>,
+    #[serde(default)]
     proxy_names: Vec<String>,
     #[serde(default)]
     compose_projects: Vec<String>,
@@ -262,15 +502,28 @@ struct OwnedDockerIdentity {
 pub(super) struct InGuestRuntimeProvider {
     devcontainer: PathBuf,
     docker: PathBuf,
+    timeout: PathBuf,
 }
 
 impl InGuestRuntimeProvider {
     pub(super) fn new() -> Result<Self> {
         let devcontainer = resolve_binary("BRANCHBOX_DEVCONTAINER_PATH", "devcontainer")?;
         let docker = resolve_binary("BRANCHBOX_DOCKER_PATH", "docker")?;
+        let timeout = if let Some(path) = std::env::var_os("BRANCHBOX_TIMEOUT_PATH") {
+            let path = PathBuf::from(path);
+            if !path.is_file() {
+                return Err(Error::validation(
+                    "BRANCHBOX_TIMEOUT_PATH does not point to a regular executable file",
+                ));
+            }
+            path
+        } else {
+            PathBuf::from("timeout")
+        };
         Ok(Self {
             devcontainer,
             docker,
+            timeout,
         })
     }
 
@@ -306,6 +559,92 @@ impl InGuestRuntimeProvider {
                     self.docker.display()
                 ))
             })
+    }
+
+    fn bounded_docker_command(&self) -> Command {
+        let mut command = self.command(&self.timeout);
+        command.args(["-s", "KILL", "35s"]).arg(&self.docker);
+        command
+    }
+
+    fn bounded_docker_output(&self, args: &[&str]) -> Result<Output> {
+        self.bounded_docker_command()
+            .args(args)
+            .output()
+            .map_err(|err| {
+                Error::validation(format!(
+                    "Failed to execute bounded in-guest Docker CLI '{}': {err}",
+                    self.docker.display()
+                ))
+            })
+    }
+
+    fn bounded_docker_resource_exists(&self, args: &[&str]) -> Result<bool> {
+        let output = self.bounded_docker_output(args)?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        if matches!(output.status.code(), Some(124 | 137)) {
+            return Err(Error::validation(
+                "Timed out while inspecting a managed tool-request Docker resource",
+            ));
+        }
+        Ok(false)
+    }
+
+    fn resolve_container_user_identity(
+        &self,
+        container_id: &str,
+        configured_user: Option<&str>,
+    ) -> Result<(String, u32)> {
+        let user = if let Some(user) = configured_user.filter(|user| !user.is_empty()) {
+            user.to_string()
+        } else {
+            let output = self.bounded_docker_output(&[
+                "inspect",
+                "--format",
+                "{{.Config.User}}",
+                container_id,
+            ])?;
+            if !output.status.success() {
+                return Err(Error::validation(format!(
+                    "Could not inspect the primary devcontainer user: {}",
+                    bounded_failure(&output.stderr)
+                )));
+            }
+            inspected_container_user(&output.stdout)?
+        };
+        validate_container_user_selector(&user)?;
+        let output =
+            self.bounded_docker_output(&["exec", "--user", &user, container_id, "id", "-u"])?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Could not resolve the primary devcontainer user UID: {}",
+                bounded_failure(&output.stderr)
+            )));
+        }
+        let uid = parse_container_uid(&output.stdout)?;
+        Ok((user, uid))
+    }
+
+    fn bind_tool_request_consumer_identity(
+        &self,
+        container_id: &str,
+        metadata: &mut RuntimeMetadata,
+    ) -> Result<()> {
+        let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing assignment identity")
+        })?;
+        let state = Self::read_state(&in_guest.state_path)?;
+        let assignment = load_assignment(&state.manifest_path)?;
+        if assignment.tool_request_spools.is_empty() {
+            return Ok(());
+        }
+        let (user, uid) =
+            self.resolve_container_user_identity(container_id, metadata.container_user.as_deref())?;
+        validate_tool_request_consumer_uid(&assignment.tool_request_spools, uid)?;
+        metadata.container_user = Some(user);
+        Ok(())
     }
 
     fn checked_devcontainer(
@@ -517,18 +856,18 @@ impl InGuestRuntimeProvider {
             "devcontainer boundary inspection",
             &["inspect", container_id],
         )?;
-        let (signed_bind_mounts, forbidden_environment) =
+        let (signed_mounts, forbidden_environment) =
             if let Some(identity) = metadata.in_guest.as_ref() {
                 let state = Self::read_state(&identity.state_path)?;
                 let assignment = load_assignment(&state.manifest_path)?;
                 (
-                    assignment.signed_bind_mounts(),
+                    assignment.signed_mounts(),
                     assignment.provider_environment_names(),
                 )
             } else {
                 (BTreeMap::new(), BTreeSet::new())
             };
-        validate_container_inspection(&output.stdout, &signed_bind_mounts, &forbidden_environment)
+        validate_container_inspection(&output.stdout, &signed_mounts, &forbidden_environment)
     }
 
     fn proxy_name(run_id: &str, runtime_port: u16) -> String {
@@ -620,6 +959,74 @@ impl InGuestRuntimeProvider {
         Self::write_state(&in_guest.state_path, &state)
     }
 
+    fn initialize_tool_request_spools(
+        &self,
+        container_id: &str,
+        metadata: &RuntimeMetadata,
+    ) -> Result<()> {
+        let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing assignment identity")
+        })?;
+        let state = Self::read_state(&in_guest.state_path)?;
+        let assignment = load_assignment(&state.manifest_path)?;
+        if state.tool_request_spools != assignment.tool_request_spools {
+            return Err(Error::validation(
+                "Tool-request spool state differs from the managed assignment",
+            ));
+        }
+        for spool in &assignment.tool_request_spools {
+            let mut capability =
+                read_tool_request_capability(&spool.capability_source, &spool.capability_sha256)?;
+            let binding = tool_request_binding(&in_guest.run_id, spool);
+            let binding = serde_json::to_vec(&binding)?;
+            let mut command = self.bounded_docker_command();
+            command
+                .args([
+                    "exec",
+                    "--interactive",
+                    "--user",
+                    "0",
+                    container_id,
+                    "sh",
+                    "-c",
+                ])
+                .arg(INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT)
+                .arg("branchbox-tool-request-spool")
+                .arg(&spool.target_path)
+                .arg(spool.consumer_uid.to_string())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = command.spawn().map_err(|err| {
+                Error::validation(format!(
+                    "Failed to initialize a managed tool-request spool: {err}"
+                ))
+            })?;
+            let write_result = (|| -> Result<()> {
+                let mut stdin = child.stdin.take().ok_or_else(|| {
+                    Error::validation("Managed tool-request initializer has no stdin pipe")
+                })?;
+                stdin.write_all(capability.as_bytes())?;
+                stdin.write_all(b"\n")?;
+                stdin.write_all(&binding)?;
+                stdin.write_all(b"\n")?;
+                Ok(())
+            })();
+            unsafe { capability.as_bytes_mut() }.fill(0);
+            capability.clear();
+            let output = child.wait_with_output();
+            write_result?;
+            let output = output?;
+            if !output.status.success() {
+                return Err(Error::validation(format!(
+                    "Managed tool-request spool initialization failed: {}",
+                    bounded_failure(&output.stderr)
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn record_partial_start_identity(
         &self,
         metadata: &RuntimeMetadata,
@@ -680,7 +1087,14 @@ impl InGuestRuntimeProvider {
                 }
             }
         }
+        self.remove_tool_request_volumes(&state.tool_request_spools);
         self.inspect_residue(state, &identity.compose_projects)
+    }
+
+    fn remove_tool_request_volumes(&self, spools: &[ToolRequestSpool]) {
+        for spool in spools {
+            let _ = self.bounded_docker_output(&["volume", "rm", &spool.volume_name]);
+        }
     }
 
     fn inspect_residue(
@@ -749,6 +1163,18 @@ impl InGuestRuntimeProvider {
                 identifiers: proxies,
             });
         }
+        let mut request_volumes = Vec::new();
+        for spool in &state.tool_request_spools {
+            if self.bounded_docker_resource_exists(&["volume", "inspect", &spool.volume_name])? {
+                request_volumes.push(spool.volume_name.clone());
+            }
+        }
+        if !request_volumes.is_empty() {
+            residue.push(RuntimeResidue {
+                kind: "tool-request-volume".to_string(),
+                identifiers: request_volumes,
+            });
+        }
         Ok(residue)
     }
 
@@ -777,6 +1203,26 @@ impl InGuestRuntimeProvider {
                 kind: "lease-materialization".to_string(),
                 identifiers: remaining,
             });
+        }
+        if let Some(ledger) = state.tool_request_ledger_path.as_ref() {
+            match fs::remove_dir_all(ledger) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => residue.push(RuntimeResidue {
+                    kind: "tool-request-ledger".to_string(),
+                    identifiers: vec![ledger.display().to_string()],
+                }),
+            }
+            if ledger.exists()
+                && !residue
+                    .iter()
+                    .any(|entry| entry.kind == "tool-request-ledger")
+            {
+                residue.push(RuntimeResidue {
+                    kind: "tool-request-ledger".to_string(),
+                    identifiers: vec![ledger.display().to_string()],
+                });
+            }
         }
     }
 
@@ -865,11 +1311,293 @@ impl InGuestRuntimeProvider {
             })
             .collect()
     }
+
+    fn read_spooled_tool_request(
+        &self,
+        container_id: &str,
+        spool: &ToolRequestSpool,
+        request_id: &str,
+    ) -> Result<Vec<u8>> {
+        validate_tool_request_id(request_id)?;
+        let mut command = self.bounded_docker_command();
+        let output = command
+            .args(["exec", "--user", "0", container_id, "sh", "-c"])
+            .arg(READ_TOOL_REQUEST_SCRIPT)
+            .arg("branchbox-read-tool-request")
+            .arg(&spool.target_path)
+            .arg(spool.consumer_uid.to_string())
+            .arg(request_id)
+            .arg(MAX_TOOL_REQUESTS.to_string())
+            .arg(MAX_TOOL_REQUEST_BYTES.to_string())
+            .arg(MAX_TOOL_REQUEST_QUOTA_BYTES.to_string())
+            .output()
+            .map_err(|err| {
+                Error::validation(format!("Failed to read a managed tool request: {err}"))
+            })?;
+        if !output.status.success() {
+            if output.status.code() == Some(75) {
+                return Err(Error::ToolRequestNotPending {
+                    lease_id: spool.lease_id.clone(),
+                    request_id: request_id.to_string(),
+                });
+            }
+            return Err(Error::validation(format!(
+                "Managed tool-request spool failed validation: {}",
+                bounded_failure(&output.stderr)
+            )));
+        }
+        if output.stdout.is_empty() || output.stdout.len() > MAX_TOOL_REQUEST_BYTES {
+            return Err(Error::validation(
+                "Managed tool request exceeds its bounded file size",
+            ));
+        }
+        Ok(output.stdout)
+    }
+
+    fn remove_spooled_tool_request(
+        &self,
+        container_id: &str,
+        spool: &ToolRequestSpool,
+        request_id: &str,
+    ) -> Result<()> {
+        validate_tool_request_id(request_id)?;
+        let output = self
+            .bounded_docker_command()
+            .args([
+                "exec",
+                "--user",
+                "0",
+                container_id,
+                "sh",
+                "-c",
+                "set -eu; root=$1; request_id=$2; test -d \"$root/requests\"; rm -f \"$root/requests/$request_id.json\"; test ! -e \"$root/requests/$request_id.json\"",
+                "branchbox-remove-tool-request",
+                &spool.target_path.to_string_lossy(),
+                request_id,
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Managed tool-request cleanup failed: {}",
+                bounded_failure(&output.stderr)
+            )));
+        }
+        Ok(())
+    }
+
+    fn write_spooled_tool_response(
+        &self,
+        container_id: &str,
+        spool: &ToolRequestSpool,
+        request_id: &str,
+        response: &ToolRelayResponse,
+    ) -> Result<()> {
+        validate_tool_request_id(request_id)?;
+        let mut bytes = serde_json::to_vec(response)?;
+        if bytes.is_empty() || bytes.len() > MAX_TOOL_RESPONSE_BYTES {
+            return Err(Error::validation(
+                "Trusted tool response exceeds its bounded spool size",
+            ));
+        }
+        bytes.push(b'\n');
+        let mut command = self.bounded_docker_command();
+        command
+            .args([
+                "exec",
+                "--interactive",
+                "--user",
+                "0",
+                container_id,
+                "sh",
+                "-c",
+            ])
+            .arg(WRITE_TOOL_RESPONSE_SCRIPT)
+            .arg("branchbox-write-tool-response")
+            .arg(&spool.target_path)
+            .arg(spool.consumer_uid.to_string())
+            .arg(request_id)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| {
+            Error::validation(format!("Failed to write a managed tool response: {err}"))
+        })?;
+        let write_result = (|| -> Result<()> {
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                Error::validation("Managed tool response writer has no stdin pipe")
+            })?;
+            stdin.write_all(&bytes)?;
+            Ok(())
+        })();
+        bytes.fill(0);
+        let output = child.wait_with_output();
+        write_result?;
+        let output = output?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Managed tool response spool write failed: {}",
+                bounded_failure(&output.stderr)
+            )));
+        }
+        Ok(())
+    }
+
+    fn claim_tool_request(
+        &self,
+        state: &ProviderState,
+        lease_id: &str,
+        request_id: &str,
+    ) -> Result<(PathBuf, PathBuf)> {
+        validate_opaque_identifier(lease_id, "tool request lease_id")?;
+        validate_tool_request_id(request_id)?;
+        let ledger_root = state.tool_request_ledger_path.as_ref().ok_or_else(|| {
+            Error::validation("Managed runtime state has no tool-request replay ledger")
+        })?;
+        create_owner_only_directory(ledger_root)?;
+        let lease_root = ledger_root.join(safe_identity(lease_id)?);
+        create_owner_only_directory(&lease_root)?;
+        let stem = safe_identity(request_id)?;
+        let claim = lease_root.join(format!("{stem}.claim"));
+        let done = lease_root.join(format!("{stem}.done"));
+        if done.exists() {
+            return Err(Error::validation(
+                "Managed tool request was already dispatched",
+            ));
+        }
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&claim)
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::AlreadyExists {
+                    Error::validation(
+                        "Managed tool request is already claimed; automatic replay is denied",
+                    )
+                } else {
+                    Error::validation(format!(
+                        "Could not create the managed tool-request replay claim: {err}"
+                    ))
+                }
+            })?;
+        drop(file);
+        set_owner_only(&claim)?;
+        Ok((claim, done))
+    }
+
+    fn dispatch_tool_request(
+        &self,
+        metadata: &RuntimeMetadata,
+        lease_id: &str,
+        request_id: &str,
+    ) -> Result<RuntimeToolDispatchResult> {
+        let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing assignment identity")
+        })?;
+        let container_id = metadata.container_id.as_deref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing the devcontainer ID")
+        })?;
+        self.verify_untrusted_boundary(container_id, metadata)?;
+        let state = Self::read_state(&in_guest.state_path)?;
+        let assignment = load_assignment(&state.manifest_path)?;
+        let spool = assignment.tool_request_spool(lease_id).ok_or_else(|| {
+            Error::validation("Managed assignment has no matching tool-request lease")
+        })?;
+        if !state.tool_request_spools.contains(spool) {
+            return Err(Error::validation(
+                "Tool-request spool is not recorded in managed runtime state",
+            ));
+        }
+        let endpoint = assignment
+            .tool_endpoint(&spool.endpoint_lease_id)
+            .ok_or_else(|| Error::validation("Managed tool endpoint is unavailable"))?;
+        let (_, consumer_uid) =
+            self.resolve_container_user_identity(container_id, metadata.container_user.as_deref())?;
+        validate_tool_request_consumer_uid(std::slice::from_ref(spool), consumer_uid)?;
+        let mut bytes = self.read_spooled_tool_request(container_id, spool, request_id)?;
+        let request = validate_tool_request_envelope(&bytes, &in_guest.run_id, spool, request_id);
+        bytes.fill(0);
+        let request = request?;
+        let (claim, done) = self.claim_tool_request(&state, lease_id, request_id)?;
+        let relay = ToolRelayRequest {
+            version: "1",
+            run_id: &request.run_id,
+            lease_id: &request.lease_id,
+            consumer: &request.consumer,
+            request_id: &request.request_id,
+            payload: &request.payload,
+        };
+        let response = relay_tool_request(&endpoint.source, &relay)?;
+        validate_tool_response_binding(&response, &request)?;
+        self.write_spooled_tool_response(container_id, spool, request_id, &response)
+            .map_err(|err| {
+                Error::validation(format!(
+                    "Trusted tool responded but its consumer response could not be committed; replay remains blocked: {err}"
+                ))
+            })?;
+        fs::rename(&claim, &done).map_err(|err| {
+            Error::validation(format!(
+                "Trusted tool responded but its replay ledger could not be finalized: {err}"
+            ))
+        })?;
+        self.remove_spooled_tool_request(container_id, spool, request_id)
+            .map_err(|err| {
+                Error::validation(format!(
+                    "Trusted tool request was delivered and replay-blocked, but spool cleanup failed: {err}"
+                ))
+            })?;
+        Ok(RuntimeToolDispatchResult {
+            run_id: request.run_id.clone(),
+            lease_id: request.lease_id.clone(),
+            consumer: request.consumer.clone(),
+            request_id: request.request_id.clone(),
+            response: response.payload,
+        })
+    }
 }
 
 struct ProviderEnvironmentValue {
     name: String,
     value: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolRequestEnvelope {
+    version: String,
+    run_id: String,
+    lease_id: String,
+    consumer: String,
+    request_id: String,
+    capability: String,
+    payload: serde_json::Value,
+}
+
+impl Drop for ToolRequestEnvelope {
+    fn drop(&mut self) {
+        unsafe { self.capability.as_bytes_mut() }.fill(0);
+        self.capability.clear();
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ToolRelayRequest<'a> {
+    version: &'static str,
+    run_id: &'a str,
+    lease_id: &'a str,
+    consumer: &'a str,
+    request_id: &'a str,
+    payload: &'a serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolRelayResponse {
+    version: String,
+    run_id: String,
+    lease_id: String,
+    consumer: String,
+    request_id: String,
+    payload: serde_json::Value,
 }
 
 fn apply_provider_process_environment(
@@ -902,6 +1630,141 @@ impl Drop for ProviderEnvironmentValue {
         unsafe { self.value.as_bytes_mut() }.fill(0);
         self.value.clear();
     }
+}
+
+fn validate_tool_request_id(value: &str) -> Result<()> {
+    validate_opaque_identifier(value, "tool request request_id")?;
+    if value.starts_with('.') {
+        return Err(Error::validation(
+            "Tool request request_id may not be a hidden filename",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tool_request_envelope(
+    bytes: &[u8],
+    run_id: &str,
+    spool: &ToolRequestSpool,
+    request_id: &str,
+) -> Result<ToolRequestEnvelope> {
+    if bytes.is_empty() || bytes.len() > MAX_TOOL_REQUEST_BYTES {
+        return Err(Error::validation(
+            "Managed tool request exceeds its bounded file size",
+        ));
+    }
+    let request: ToolRequestEnvelope = serde_json::from_slice(bytes)
+        .map_err(|_| Error::validation("Managed tool request is not canonical JSON"))?;
+    if request.version != "1"
+        || request.run_id != run_id
+        || request.lease_id != spool.lease_id
+        || request.consumer != spool.consumer
+        || request.request_id != request_id
+    {
+        return Err(Error::validation(
+            "Managed tool request does not match its exact run, lease, consumer, and request binding",
+        ));
+    }
+    let mut expected_capability =
+        read_tool_request_capability(&spool.capability_source, &spool.capability_sha256)?;
+    let capability_matches = constant_time_bytes_equal(
+        request.capability.as_bytes(),
+        expected_capability.as_bytes(),
+    );
+    unsafe { expected_capability.as_bytes_mut() }.fill(0);
+    expected_capability.clear();
+    if !capability_matches {
+        return Err(Error::validation(
+            "Managed tool request capability is invalid",
+        ));
+    }
+    Ok(request)
+}
+
+fn validate_tool_response_binding(
+    response: &ToolRelayResponse,
+    request: &ToolRequestEnvelope,
+) -> Result<()> {
+    if response.version != "1"
+        || response.run_id != request.run_id
+        || response.lease_id != request.lease_id
+        || response.consumer != request.consumer
+        || response.request_id != request.request_id
+    {
+        return Err(Error::validation(
+            "Trusted tool response does not match the claimed request binding",
+        ));
+    }
+    Ok(())
+}
+
+fn create_owner_only_directory(path: &Path) -> Result<()> {
+    if path.exists() {
+        validate_private_directory(path, "tool-request replay ledger")?;
+        return Ok(());
+    }
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path, permissions)?;
+    }
+    validate_private_directory(path, "tool-request replay ledger")?;
+    Ok(())
+}
+
+fn constant_time_bytes_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        let left_byte = left.get(index).copied().unwrap_or_default();
+        let right_byte = right.get(index).copied().unwrap_or_default();
+        difference |= usize::from(left_byte ^ right_byte);
+    }
+    difference == 0
+}
+
+#[cfg(unix)]
+fn relay_tool_request(
+    endpoint: &Path,
+    request: &ToolRelayRequest<'_>,
+) -> Result<ToolRelayResponse> {
+    let mut stream = UnixStream::connect(endpoint).map_err(|err| {
+        Error::validation(format!("Trusted tool endpoint rejected dispatch: {err}"))
+    })?;
+    stream.set_read_timeout(Some(TOOL_RELAY_TIMEOUT))?;
+    stream.set_write_timeout(Some(TOOL_RELAY_TIMEOUT))?;
+    let mut bytes = serde_json::to_vec(request)?;
+    if bytes.len() > MAX_TOOL_REQUEST_BYTES {
+        return Err(Error::validation(
+            "Canonical tool request exceeds its bounded relay size",
+        ));
+    }
+    bytes.push(b'\n');
+    stream.write_all(&bytes)?;
+    bytes.fill(0);
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut response = Vec::new();
+    stream
+        .take((MAX_TOOL_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut response)?;
+    if response.is_empty() || response.len() > MAX_TOOL_RESPONSE_BYTES {
+        return Err(Error::validation(
+            "Trusted tool response exceeds its bounded relay size",
+        ));
+    }
+    serde_json::from_slice(&response)
+        .map_err(|_| Error::validation("Trusted tool returned an invalid response envelope"))
+}
+
+#[cfg(not(unix))]
+fn relay_tool_request(
+    _endpoint: &Path,
+    _request: &ToolRelayRequest<'_>,
+) -> Result<ToolRelayResponse> {
+    Err(Error::validation(
+        "Trusted Unix tool dispatch is supported only inside a Unix guest",
+    ))
 }
 
 impl RuntimeProvider for InGuestRuntimeProvider {
@@ -952,7 +1815,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             Error::validation(format!("Could not read in-guest runtime config: {err}"))
         })?;
         let workspace_folder = effective_workspace_folder(&config, context.worktree_path);
-        let container_user = effective_container_user(&config);
+        let container_user = configured_container_user(&config);
         let compose_projects = deterministic_compose_projects(
             context.runtime_name,
             context.worktree_path,
@@ -971,6 +1834,8 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 "{}.json",
                 safe_identity(&assignment.manifest.run_id)?
             ));
+        let tool_request_ledger_path = (!assignment.tool_request_spools.is_empty())
+            .then(|| state_path.with_extension("tool-request-ledger"));
         let state = ProviderState {
             version: PROVIDER_STATE_VERSION.to_string(),
             manifest_path: assignment.manifest_path.clone(),
@@ -988,6 +1853,8 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                     source_kind: mount.source_kind,
                 })
                 .collect(),
+            tool_request_spools: assignment.tool_request_spools.clone(),
+            tool_request_ledger_path,
             proxy_names: context
                 .published_ports
                 .iter()
@@ -1004,7 +1871,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             published_ports: context.published_ports.to_vec(),
             container_id: None,
             workspace_folder: Some(workspace_folder),
-            container_user: Some(container_user),
+            container_user,
             config_path: Some(config_path),
             in_guest: Some(InGuestRuntimeMetadata {
                 run_id: assignment.manifest.run_id,
@@ -1035,6 +1902,8 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
             self.record_partial_start_identity(metadata, context.worktree_path)?;
+            self.bind_tool_request_consumer_identity(&container_id, metadata)?;
+            self.initialize_tool_request_spools(&container_id, metadata)?;
             self.verify_untrusted_boundary(&container_id, metadata)?;
             if !self.probe(context.worktree_path, &config)? {
                 return Err(Error::validation(
@@ -1161,6 +2030,15 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         )
     }
 
+    fn dispatch_tool_request(
+        &self,
+        metadata: &RuntimeMetadata,
+        lease_id: &str,
+        request_id: &str,
+    ) -> Result<RuntimeToolDispatchResult> {
+        InGuestRuntimeProvider::dispatch_tool_request(self, metadata, lease_id, request_id)
+    }
+
     fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
         let identity = metadata.in_guest.as_ref().ok_or_else(|| {
             Error::validation("In-guest runtime metadata is missing assignment identity")
@@ -1285,6 +2163,8 @@ struct LoadedAssignment {
     manifest: AssignmentManifest,
     mounts: Vec<InGuestMount>,
     leases: Vec<InGuestLeaseRecord>,
+    tool_request_spools: Vec<ToolRequestSpool>,
+    linked_tool_endpoints: BTreeSet<String>,
 }
 
 impl LoadedAssignment {
@@ -1373,23 +2253,52 @@ impl LoadedAssignment {
         names
     }
 
-    fn signed_bind_mounts(&self) -> BTreeMap<(PathBuf, PathBuf), (ManagedSourceKind, LeaseScope)> {
-        self.mounts
+    fn signed_mounts(&self) -> BTreeMap<(PathBuf, PathBuf), ManagedMountExpectation> {
+        let mut signed = self
+            .mounts
             .iter()
             .filter_map(|mount| {
                 let MaterializationTarget::File(target) = &mount.target else {
                     return None;
                 };
-                matches!(
+                if !matches!(
                     mount.scope,
                     LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
-                )
-                .then_some((
+                ) || (mount.scope == LeaseScope::ToolEndpoint
+                    && self.linked_tool_endpoints.contains(&mount.lease_id))
+                {
+                    return None;
+                }
+                Some((
                     (mount.source.clone(), target.clone()),
-                    (mount.source_kind, mount.scope),
+                    ManagedMountExpectation::ReadOnlyBind {
+                        source_kind: mount.source_kind,
+                        scope: mount.scope,
+                    },
                 ))
             })
-            .collect()
+            .collect::<BTreeMap<_, _>>();
+        signed.extend(self.tool_request_spools.iter().map(|spool| {
+            (
+                (PathBuf::from(&spool.volume_name), spool.target_path.clone()),
+                ManagedMountExpectation::WritableRequestSpool,
+            )
+        }));
+        signed
+    }
+
+    fn tool_request_spool(&self, lease_id: &str) -> Option<&ToolRequestSpool> {
+        self.tool_request_spools
+            .iter()
+            .find(|spool| spool.lease_id == lease_id)
+    }
+
+    fn tool_endpoint(&self, lease_id: &str) -> Option<&InGuestMount> {
+        self.mounts.iter().find(|mount| {
+            mount.lease_id == lease_id
+                && mount.scope == LeaseScope::ToolEndpoint
+                && mount.source_kind == ManagedSourceKind::Socket
+        })
     }
 }
 
@@ -1415,6 +2324,8 @@ pub fn load_in_guest_facade_plan(
         tunnel_placement: assignment.manifest.tunnel_placement,
         published_ports: assignment.manifest.published_ports,
         mounts: assignment.mounts,
+        tool_request_spools: assignment.tool_request_spools,
+        linked_tool_endpoints: assignment.linked_tool_endpoints,
     })
 }
 
@@ -1468,6 +2379,8 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     let mut model_consumers = BTreeSet::new();
     let mut model_executables = BTreeSet::new();
     let mut provider_environment_consumers = BTreeSet::new();
+    let mut tool_request_consumers = BTreeSet::new();
+    let mut tool_request_spools = Vec::new();
     let mut lease_ids = BTreeSet::new();
     for lease in &manifest.leases {
         validate_opaque_identifier(&lease.lease_id, "lease.lease_id")?;
@@ -1485,6 +2398,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     LeaseScope::ProviderEnvironment
                         | LeaseScope::SharedDirectory
                         | LeaseScope::ToolEndpoint
+                        | LeaseScope::ToolRequest
                 ))
         {
             return Err(Error::validation(
@@ -1539,6 +2453,15 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 "Only model-identity leases may declare an executable or inherit supervisor environment",
             ));
         }
+        if lease.scope != LeaseScope::ToolRequest
+            && (lease.consumer_uid.is_some()
+                || lease.endpoint_lease_id.is_some()
+                || lease.request_spool_target.is_some())
+        {
+            return Err(Error::validation(
+                "Only tool-request leases may declare a consumer UID, endpoint link, or request spool target",
+            ));
+        }
         if lease.scope == LeaseScope::SourceControlIdentity && !lease.materializations.is_empty() {
             return Err(Error::validation(
                 "Source-control identity must remain an outer lease",
@@ -1582,6 +2505,34 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
             return Err(Error::validation(
                 "Managed directory and tool-endpoint leases require one live materialization",
             ));
+        }
+        if lease.scope == LeaseScope::ToolRequest {
+            tool_request_consumers.insert(lease.consumer.clone());
+            let consumer_uid = lease.consumer_uid.ok_or_else(|| {
+                Error::validation("Tool-request leases require one non-root consumer UID")
+            })?;
+            if consumer_uid == 0 || consumer_uid > i32::MAX as u32 {
+                return Err(Error::validation(
+                    "Tool-request consumer UID must be a non-root Linux UID",
+                ));
+            }
+            let endpoint_lease_id = lease.endpoint_lease_id.as_deref().ok_or_else(|| {
+                Error::validation("Tool-request leases require an exact endpoint lease binding")
+            })?;
+            validate_opaque_identifier(endpoint_lease_id, "lease.endpoint_lease_id")?;
+            let request_spool_target = lease.request_spool_target.as_deref().ok_or_else(|| {
+                Error::validation("Tool-request leases require an exact request spool target")
+            })?;
+            validate_managed_mount_target(request_spool_target, TOOL_REQUEST_TARGET_ROOT)?;
+            if lease.materializations.len() != 1
+                || lease
+                    .expires_at
+                    .is_none_or(|expires_at| expires_at <= Utc::now())
+            {
+                return Err(Error::validation(
+                    "Tool-request leases require one live capability materialization",
+                ));
+            }
         }
         for materialization in &lease.materializations {
             let (source, source_kind) = if matches!(
@@ -1629,6 +2580,17 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     }
                     if lease.scope == LeaseScope::ToolEndpoint {
                         validate_managed_mount_target(target, TOOL_ENDPOINT_TARGET_ROOT)?;
+                    }
+                    if lease.scope == LeaseScope::ToolRequest {
+                        let spool = lease
+                            .request_spool_target
+                            .as_ref()
+                            .expect("validated above");
+                        if target != &spool.join(".capability") {
+                            return Err(Error::validation(
+                                "Tool-request capability target must be .capability below its exact request spool target",
+                            ));
+                        }
                     }
                     if !file_targets.insert(target.clone()) {
                         return Err(Error::validation(
@@ -1687,7 +2649,24 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     materialization.sha256.as_deref().expect("validated above"),
                 )?;
             }
+            if lease.scope == LeaseScope::ToolRequest {
+                validate_tool_request_capability_file(
+                    &source,
+                    materialization.sha256.as_deref().expect("validated above"),
+                )?;
+                tool_request_spools.push(ToolRequestSpool {
+                    lease_id: lease.lease_id.clone(),
+                    endpoint_lease_id: lease.endpoint_lease_id.clone().expect("validated above"),
+                    consumer: lease.consumer.clone(),
+                    consumer_uid: lease.consumer_uid.expect("validated above"),
+                    target_path: lease.request_spool_target.clone().expect("validated above"),
+                    volume_name: tool_request_volume_name(&manifest.run_id, &lease.lease_id),
+                    capability_source: source.clone(),
+                    capability_sha256: materialization.sha256.clone().expect("validated above"),
+                });
+            }
             mounts.push(InGuestMount {
+                lease_id: lease.lease_id.clone(),
                 source,
                 target,
                 sha256: materialization.sha256.clone(),
@@ -1709,6 +2688,8 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 "primary-read-only-directory".to_string()
             } else if lease.scope == LeaseScope::ToolEndpoint {
                 "primary-read-only-endpoint".to_string()
+            } else if lease.scope == LeaseScope::ToolRequest {
+                "consumer-request-spool".to_string()
             } else if lease.materializations.is_empty() {
                 "outer".to_string()
             } else {
@@ -1721,11 +2702,64 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
             "Provider-environment consumers require an exact model-identity binding",
         ));
     }
+    if !tool_request_consumers.is_subset(&model_consumers) {
+        return Err(Error::validation(
+            "Tool-request consumers require an exact model-identity binding",
+        ));
+    }
+    let mut linked_tool_endpoints = BTreeSet::new();
+    for spool in &tool_request_spools {
+        let endpoint_lease = manifest
+            .leases
+            .iter()
+            .find(|lease| lease.lease_id == spool.endpoint_lease_id)
+            .ok_or_else(|| {
+                Error::validation("Tool-request lease references an unknown endpoint lease")
+            })?;
+        if endpoint_lease.scope != LeaseScope::ToolEndpoint
+            || endpoint_lease.consumer != spool.consumer
+            || endpoint_lease.expires_at.is_none_or(|expires_at| {
+                expires_at
+                    < manifest
+                        .leases
+                        .iter()
+                        .find(|lease| lease.lease_id == spool.lease_id)
+                        .and_then(|lease| lease.expires_at)
+                        .expect("tool-request expiry validated")
+            })
+        {
+            return Err(Error::validation(
+                "Tool-request lease must bind one live socket endpoint for the same consumer and lifetime",
+            ));
+        }
+        let endpoint_mounts = mounts
+            .iter()
+            .filter(|mount| mount.lease_id == endpoint_lease.lease_id)
+            .collect::<Vec<_>>();
+        if endpoint_mounts.len() != 1 || endpoint_mounts[0].source_kind != ManagedSourceKind::Socket
+        {
+            return Err(Error::validation(
+                "Tool-request lease must bind one owner-only Unix socket endpoint",
+            ));
+        }
+        if !linked_tool_endpoints.insert(spool.endpoint_lease_id.clone()) {
+            return Err(Error::validation(
+                "A trusted tool endpoint may back only one request spool",
+            ));
+        }
+    }
+    for lease in &mut leases {
+        if linked_tool_endpoints.contains(&lease.lease_id) {
+            lease.state = "trusted-relay-endpoint".to_string();
+        }
+    }
     Ok(LoadedAssignment {
         manifest_path,
         manifest,
         mounts,
         leases,
+        tool_request_spools,
+        linked_tool_endpoints,
     })
 }
 
@@ -2154,6 +3188,35 @@ fn validate_provider_environment_value_file(path: &Path, expected_sha256: &str) 
     read_provider_environment_value(path, expected_sha256).map(|_| ())
 }
 
+fn validate_tool_request_capability_file(path: &Path, expected_sha256: &str) -> Result<()> {
+    read_tool_request_capability(path, expected_sha256).map(|mut value| {
+        unsafe { value.as_bytes_mut() }.fill(0);
+        value.clear();
+    })
+}
+
+fn read_tool_request_capability(path: &Path, expected_sha256: &str) -> Result<String> {
+    let bytes = fs::read(path)?;
+    let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    if !(32..=128).contains(&bytes.len())
+        || actual_sha256 != expected_sha256
+        || bytes
+            .iter()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(*byte, b'.' | b'_' | b'-'))
+    {
+        return Err(Error::validation(
+            "Tool-request capability materialization is invalid",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| Error::validation("Tool-request capability materialization is invalid"))
+}
+
+fn tool_request_volume_name(run_id: &str, lease_id: &str) -> String {
+    let digest = Sha256::digest(format!("{run_id}\0{lease_id}").as_bytes());
+    format!("branchbox-tool-requests-{:x}", digest)[..56].to_string()
+}
+
 fn read_provider_environment_value(path: &Path, expected_sha256: &str) -> Result<String> {
     let bytes = fs::read(path)?;
     let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
@@ -2378,7 +3441,7 @@ fn contains_ambient_authority_reference(value: &str) -> bool {
 
 fn validate_container_inspection(
     source: &[u8],
-    signed_bind_mounts: &BTreeMap<(PathBuf, PathBuf), (ManagedSourceKind, LeaseScope)>,
+    signed_mounts: &BTreeMap<(PathBuf, PathBuf), ManagedMountExpectation>,
     forbidden_environment: &BTreeSet<String>,
 ) -> Result<()> {
     let documents: serde_json::Value = serde_json::from_slice(source).map_err(|err| {
@@ -2477,9 +3540,12 @@ fn validate_container_inspection(
             "In-guest devcontainer resolved to privileged host authority",
         ));
     }
-    let allowed_sources = signed_bind_mounts
-        .keys()
-        .map(|(source, _)| source.clone())
+    let allowed_sources = signed_mounts
+        .iter()
+        .filter_map(|((source, _), expectation)| {
+            matches!(expectation, ManagedMountExpectation::ReadOnlyBind { .. })
+                .then_some(source.clone())
+        })
         .collect::<BTreeSet<_>>();
     let mut observed_signed_mounts = BTreeSet::new();
     if let Some(mounts) = container
@@ -2487,30 +3553,49 @@ fn validate_container_inspection(
         .and_then(serde_json::Value::as_array)
     {
         for mount in mounts {
+            let mount_type = mount
+                .get("Type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
             let source = mount
                 .get("Source")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
+            let signed_source = if mount_type == "volume" {
+                mount
+                    .get("Name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            } else {
+                source
+            };
             let destination = mount
                 .get("Destination")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            let key = (PathBuf::from(source), PathBuf::from(destination));
-            let signed_kind = signed_bind_mounts.get(&key);
+            let key = (PathBuf::from(signed_source), PathBuf::from(destination));
+            let signed_expectation = signed_mounts.get(&key);
             let enters_managed_namespace = Path::new(source).starts_with(MANAGED_RUNTIME_ROOT)
                 || Path::new(destination).starts_with(LEASE_TARGET_ROOT);
-            if let Some((expected_kind, scope)) = signed_kind {
-                let bind_type =
-                    mount.get("Type").and_then(serde_json::Value::as_str) == Some("bind");
-                let read_only = mount.get("RW").and_then(serde_json::Value::as_bool) == Some(false);
-                if !bind_type
-                    || !read_only
-                    || !observed_signed_mounts.insert(key)
-                    || validate_managed_source_kind(Path::new(source), *expected_kind, *scope)
-                        .is_err()
-                {
+            let mut exact_request_volume = false;
+            if let Some(expectation) = signed_expectation {
+                let valid = match expectation {
+                    ManagedMountExpectation::ReadOnlyBind { source_kind, scope } => {
+                        mount_type == "bind"
+                            && mount.get("RW").and_then(serde_json::Value::as_bool) == Some(false)
+                            && validate_managed_source_kind(Path::new(source), *source_kind, *scope)
+                                .is_ok()
+                    }
+                    ManagedMountExpectation::WritableRequestSpool => {
+                        exact_request_volume = mount_type == "volume"
+                            && !signed_source.is_empty()
+                            && mount.get("RW").and_then(serde_json::Value::as_bool) == Some(true);
+                        exact_request_volume
+                    }
+                };
+                if !valid || !observed_signed_mounts.insert(key) {
                     return Err(Error::validation(
-                        "Managed lease mount lacks exact read-only bind evidence",
+                        "Managed lease mount lacks its exact signed access evidence",
                     ));
                 }
             } else if enters_managed_namespace {
@@ -2518,7 +3603,7 @@ fn validate_container_inspection(
                     "In-guest devcontainer resolved an unsigned managed lease mount",
                 ));
             }
-            if contains_supervisor_mount(source, &allowed_sources)
+            if (!exact_request_volume && contains_supervisor_mount(source, &allowed_sources))
                 || contains_supervisor_mount(destination, &BTreeSet::new())
             {
                 return Err(Error::validation(
@@ -2527,7 +3612,7 @@ fn validate_container_inspection(
             }
         }
     }
-    if observed_signed_mounts.len() != signed_bind_mounts.len() {
+    if observed_signed_mounts.len() != signed_mounts.len() {
         return Err(Error::validation(
             "Managed lease mount is missing from the primary devcontainer inspection",
         ));
@@ -2587,13 +3672,75 @@ fn effective_workspace_folder(config: &DevcontainerConfig, worktree_path: &Path)
         .replace("${localWorkspaceFolderBasename}", basename)
 }
 
-fn effective_container_user(config: &DevcontainerConfig) -> String {
+fn configured_container_user(config: &DevcontainerConfig) -> Option<String> {
     config
         .remote_user
         .as_deref()
         .or(config.container_user.as_deref())
-        .unwrap_or("root")
-        .to_string()
+        .map(ToOwned::to_owned)
+}
+
+fn inspected_container_user(source: &[u8]) -> Result<String> {
+    let inspected = std::str::from_utf8(source)
+        .map_err(|_| Error::validation("Docker returned a non-UTF-8 container user"))?
+        .trim();
+    if inspected.is_empty() {
+        Ok("0".to_string())
+    } else {
+        Ok(inspected.to_string())
+    }
+}
+
+fn validate_container_user_selector(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.starts_with('-')
+        || value.chars().any(|character| {
+            !character.is_ascii_alphanumeric() && !matches!(character, '.' | '_' | ':' | '-')
+        })
+    {
+        return Err(Error::validation(
+            "Primary devcontainer user is not a bounded Docker user selector",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_container_uid(source: &[u8]) -> Result<u32> {
+    let source = std::str::from_utf8(source)
+        .map_err(|_| Error::validation("Container UID resolution returned non-UTF-8 output"))?;
+    let source = source.trim();
+    if source.is_empty() || !source.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::validation(
+            "Container UID resolution did not return one numeric UID",
+        ));
+    }
+    let uid = source
+        .parse::<u32>()
+        .map_err(|_| Error::validation("Container UID is outside the supported Linux UID range"))?;
+    if uid > i32::MAX as u32 {
+        return Err(Error::validation(
+            "Container UID is outside the supported Linux UID range",
+        ));
+    }
+    Ok(uid)
+}
+
+fn validate_tool_request_consumer_uid(spools: &[ToolRequestSpool], actual_uid: u32) -> Result<()> {
+    if spools.is_empty() {
+        return Ok(());
+    }
+    if actual_uid == 0 {
+        return Err(Error::validation(
+            "Tool-request consumers must execute as a non-root devcontainer user",
+        ));
+    }
+    if spools.iter().any(|spool| spool.consumer_uid != actual_uid) {
+        return Err(Error::validation(
+            "Tool-request consumer UID does not match the resolved devcontainer provider UID",
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_binary(environment: &str, name: &str) -> Result<PathBuf> {
@@ -2991,6 +4138,92 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn managed_tool_request_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, String) {
+        use std::os::unix::net::UnixListener;
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("repository");
+        private_directory(&repository);
+        let run_root = root.path().join("run_123");
+        private_directory(&run_root);
+        let materializations = run_root.join("materializations");
+        let endpoint_parent = run_root.join("tool-endpoints");
+        private_directory(&materializations);
+        private_directory(&endpoint_parent);
+        let capability = "request-capability-abcdefghijklmnopqrstuvwxyz012345".to_string();
+        let capability_path = materializations.join("request-capability");
+        private_write(&capability_path, capability.as_bytes());
+        let endpoint_socket = endpoint_parent.join("delivery.sock");
+        let listener = UnixListener::bind(&endpoint_socket).unwrap();
+        let mut permissions = fs::metadata(&endpoint_socket).unwrap().permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(&endpoint_socket, permissions).unwrap();
+        drop(listener);
+        let manifest = serde_json::json!({
+            "version": "2",
+            "run_id": "run_123",
+            "lease_id": "assignment_123",
+            "outer_runtime_id": "runtime_123",
+            "workspace": workspace,
+            "repository": {
+                "path": repository,
+                "revision": "a".repeat(40)
+            },
+            "task_branch": "feature/coding-demo",
+            "tunnel_placement": "outer",
+            "published_ports": [],
+            "leases": [
+                {
+                    "lease_id": "model_identity",
+                    "scope": "model-identity",
+                    "consumer": "coding-agent",
+                    "executable": "provider-cli",
+                    "inherited_environment": [],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": []
+                },
+                {
+                    "lease_id": "delivery_endpoint",
+                    "scope": "tool-endpoint",
+                    "consumer": "coding-agent",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": [{
+                        "source_path": endpoint_socket.clone(),
+                        "target_path": "/run/branchbox/leases/tool-endpoints/delivery.sock"
+                    }]
+                },
+                {
+                    "lease_id": "delivery_requests",
+                    "scope": "tool-request",
+                    "consumer": "coding-agent",
+                    "consumer_uid": 1000,
+                    "endpoint_lease_id": "delivery_endpoint",
+                    "request_spool_target": "/run/branchbox/leases/tool-requests/delivery",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "materializations": [{
+                        "source_path": capability_path.clone(),
+                        "target_path": "/run/branchbox/leases/tool-requests/delivery/.capability",
+                        "sha256": file_sha256(&capability_path).unwrap()
+                    }]
+                }
+            ]
+        });
+        let manifest_path = run_root.join("assignment.json");
+        private_write(
+            &manifest_path,
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        (
+            root,
+            manifest_path,
+            endpoint_socket,
+            capability_path,
+            capability,
+        )
+    }
+
+    #[cfg(unix)]
     #[test]
     fn validates_manifest_and_sibling_materialization_digest() {
         let (root, manifest, revision) = assignment_fixture(true);
@@ -3033,12 +4266,14 @@ mod tests {
         let (_root, manifest, shared, endpoint_directory, endpoint_socket) =
             managed_mount_assignment_fixture();
         let assignment = load_assignment(&manifest).unwrap();
-        let signed = assignment.signed_bind_mounts();
+        let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             mounts: assignment.mounts.clone(),
+            tool_request_spools: Vec::new(),
+            linked_tool_endpoints: BTreeSet::new(),
         };
 
         assert_eq!(signed.len(), 3);
@@ -3048,26 +4283,532 @@ mod tests {
                 shared.canonicalize().unwrap(),
                 PathBuf::from("/run/branchbox/leases/shared/exchange")
             )),
-            Some(&(ManagedSourceKind::Directory, LeaseScope::SharedDirectory))
+            Some(&ManagedMountExpectation::ReadOnlyBind {
+                source_kind: ManagedSourceKind::Directory,
+                scope: LeaseScope::SharedDirectory
+            })
         );
         assert_eq!(
             signed.get(&(
                 endpoint_directory.canonicalize().unwrap(),
                 PathBuf::from("/run/branchbox/leases/tool-endpoints/requests")
             )),
-            Some(&(ManagedSourceKind::Directory, LeaseScope::ToolEndpoint))
+            Some(&ManagedMountExpectation::ReadOnlyBind {
+                source_kind: ManagedSourceKind::Directory,
+                scope: LeaseScope::ToolEndpoint
+            })
         );
         assert_eq!(
             signed.get(&(
                 endpoint_socket.canonicalize().unwrap(),
                 PathBuf::from("/run/branchbox/leases/tool-endpoints/request-stream")
             )),
-            Some(&(ManagedSourceKind::Socket, LeaseScope::ToolEndpoint))
+            Some(&ManagedMountExpectation::ReadOnlyBind {
+                source_kind: ManagedSourceKind::Socket,
+                scope: LeaseScope::ToolEndpoint
+            })
         );
         assert!(assignment
             .leases
             .iter()
             .all(|lease| lease.state.starts_with("primary-read-only-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_request_spool_is_the_only_rw_mount_and_private_endpoint_is_never_mounted() {
+        let (_root, manifest, endpoint, _capability_path, _capability) =
+            managed_tool_request_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let spool = assignment.tool_request_spool("delivery_requests").unwrap();
+        let signed = assignment.signed_mounts();
+        let plan = InGuestFacadePlan {
+            manifest_path: manifest,
+            tunnel_placement: InGuestTunnelPlacement::Outer,
+            published_ports: Vec::new(),
+            mounts: assignment.mounts.clone(),
+            tool_request_spools: assignment.tool_request_spools.clone(),
+            linked_tool_endpoints: assignment.linked_tool_endpoints.clone(),
+        };
+
+        assert_eq!(signed.len(), 1);
+        assert_eq!(plan.mounts().count(), 0);
+        assert_eq!(plan.tool_request_spools().count(), 1);
+        assert!(!signed.keys().any(|(source, _)| source == &endpoint));
+        assert_eq!(
+            signed.get(&(
+                PathBuf::from(&spool.volume_name),
+                PathBuf::from("/run/branchbox/leases/tool-requests/delivery")
+            )),
+            Some(&ManagedMountExpectation::WritableRequestSpool)
+        );
+        assert_eq!(
+            assignment
+                .leases
+                .iter()
+                .find(|lease| lease.lease_id == "delivery_endpoint")
+                .unwrap()
+                .state,
+            "trusted-relay-endpoint"
+        );
+
+        let binding = serde_json::to_value(tool_request_binding("run_123", spool)).unwrap();
+        assert_eq!(binding["run_id"], "run_123");
+        assert_eq!(binding["lease_id"], "delivery_requests");
+        assert_eq!(binding["consumer"], "coding-agent");
+        assert_eq!(
+            binding["request_directory"],
+            "/run/branchbox/leases/tool-requests/delivery/requests"
+        );
+        assert_eq!(
+            binding["response_directory"],
+            "/run/branchbox/leases/tool-requests/delivery/responses"
+        );
+        assert!(INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT
+            .contains("chown 0:0 \"$capability_tmp\" \"$binding_tmp\""));
+        assert!(INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT.contains("chmod 0444"));
+        assert!(!INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT.contains("chmod 0777"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_request_manifest_fails_closed_for_uid_link_target_and_capability_drift() {
+        let (_root, manifest, _endpoint, _capability_path, _capability) =
+            managed_tool_request_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"][2]["consumer_uid"] = serde_json::json!(0);
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        let (_root, manifest, _endpoint, _capability_path, _capability) =
+            managed_tool_request_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"][2]["endpoint_lease_id"] = serde_json::json!("unknown_endpoint");
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        let (_root, manifest, _endpoint, _capability_path, _capability) =
+            managed_tool_request_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"][2]["request_spool_target"] = serde_json::json!("/tmp/requests");
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+
+        let (_root, manifest, _endpoint, capability_path, _capability) =
+            managed_tool_request_fixture();
+        private_write(
+            &capability_path,
+            b"changed-capability-abcdefghijklmnopqrstuvwxyz",
+        );
+        assert!(load_assignment(&manifest).is_err());
+
+        let (root, manifest, _endpoint, _capability_path, capability) =
+            managed_tool_request_fixture();
+        let misplaced_capability = root
+            .path()
+            .join("run_123/tool-endpoints/request-capability");
+        private_write(&misplaced_capability, capability.as_bytes());
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["leases"][2]["materializations"][0]["source_path"] =
+            serde_json::json!(misplaced_capability);
+        value["leases"][2]["materializations"][0]["sha256"] =
+            serde_json::json!(file_sha256(&misplaced_capability).unwrap());
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        assert!(load_assignment(&manifest).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_request_consumer_uid_must_match_the_resolved_non_root_provider_user() {
+        let (_root, manifest, _endpoint, _capability_path, _capability) =
+            managed_tool_request_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let config = DevcontainerConfig::default();
+        assert_eq!(configured_container_user(&config), None);
+        assert_eq!(inspected_container_user(b"vscode\n").unwrap(), "vscode");
+        assert_eq!(inspected_container_user(b"\n").unwrap(), "0");
+        assert_eq!(parse_container_uid(b"1000\n").unwrap(), 1000);
+        assert!(parse_container_uid(b"vscode\n").is_err());
+        validate_tool_request_consumer_uid(&assignment.tool_request_spools, 1000).unwrap();
+        assert!(validate_tool_request_consumer_uid(&assignment.tool_request_spools, 0).is_err());
+        assert!(validate_tool_request_consumer_uid(&assignment.tool_request_spools, 1001).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_inspection_accepts_only_the_exact_writable_request_volume() {
+        let (_root, manifest, endpoint, _capability_path, _capability) =
+            managed_tool_request_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let signed = assignment.signed_mounts();
+        let ((volume, target), _) = signed.first_key_value().unwrap();
+        let inspection = serde_json::json!([{
+            "HostConfig": {
+                "Privileged": false,
+                "PidMode": "",
+                "IpcMode": "private",
+                "SecurityOpt": ["seccomp=builtin"]
+            },
+            "Mounts": [{
+                "Type": "volume",
+                "Name": volume,
+                "Source": format!("/var/lib/docker/volumes/{}/_data", volume.display()),
+                "Destination": target,
+                "RW": true
+            }],
+            "Config": {"Env": []}
+        }]);
+        let rendered = serde_json::to_vec(&inspection).unwrap();
+        assert!(!String::from_utf8_lossy(&rendered).contains(endpoint.to_string_lossy().as_ref()));
+        validate_container_inspection(&rendered, &signed, &BTreeSet::new()).unwrap();
+
+        for (field, value) in [
+            ("RW", serde_json::json!(false)),
+            ("Type", serde_json::json!("bind")),
+            ("Name", serde_json::json!("branchbox-tool-requests-wrong")),
+        ] {
+            let mut invalid = inspection.clone();
+            invalid[0]["Mounts"][0][field] = value;
+            assert!(validate_container_inspection(
+                &serde_json::to_vec(&invalid).unwrap(),
+                &signed,
+                &BTreeSet::new()
+            )
+            .is_err());
+        }
+        let mut missing_name = inspection;
+        missing_name[0]["Mounts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("Name");
+        assert!(validate_container_inspection(
+            &serde_json::to_vec(&missing_name).unwrap(),
+            &signed,
+            &BTreeSet::new()
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_request_envelope_and_response_require_exact_capability_and_correlation() {
+        let (_root, manifest, _endpoint, _capability_path, capability) =
+            managed_tool_request_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let spool = assignment.tool_request_spool("delivery_requests").unwrap();
+        let envelope = serde_json::json!({
+            "version": "1",
+            "run_id": "run_123",
+            "lease_id": "delivery_requests",
+            "consumer": "coding-agent",
+            "request_id": "artifact-publish",
+            "capability": capability,
+            "payload": {"operation": "opaque"}
+        });
+        let request = validate_tool_request_envelope(
+            &serde_json::to_vec(&envelope).unwrap(),
+            "run_123",
+            spool,
+            "artifact-publish",
+        )
+        .unwrap();
+        let response = ToolRelayResponse {
+            version: "1".to_string(),
+            run_id: "run_123".to_string(),
+            lease_id: "delivery_requests".to_string(),
+            consumer: "coding-agent".to_string(),
+            request_id: "artifact-publish".to_string(),
+            payload: serde_json::json!({"accepted": true}),
+        };
+        validate_tool_response_binding(&response, &request).unwrap();
+
+        for field in ["run_id", "lease_id", "consumer", "request_id", "capability"] {
+            let mut invalid = envelope.clone();
+            invalid[field] = serde_json::json!("wrong-binding");
+            assert!(validate_tool_request_envelope(
+                &serde_json::to_vec(&invalid).unwrap(),
+                "run_123",
+                spool,
+                "artifact-publish",
+            )
+            .is_err());
+        }
+        let mut wrong_response = response;
+        wrong_response.request_id = "wrong-request".to_string();
+        assert!(validate_tool_response_binding(&wrong_response, &request).is_err());
+
+        let declined_response = ToolRelayResponse {
+            version: "1".to_string(),
+            run_id: "run_123".to_string(),
+            lease_id: "delivery_requests".to_string(),
+            consumer: "coding-agent".to_string(),
+            request_id: "artifact-publish".to_string(),
+            payload: serde_json::json!({
+                "ok": false,
+                "fallback": "durable-artifact-link",
+                "reason": "tool policy declined the optional upload"
+            }),
+        };
+        validate_tool_response_binding(&declined_response, &request).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trusted_relay_uses_one_eof_terminated_frame_and_never_forwards_the_capability() {
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+
+        let (_root, manifest, endpoint, _capability_path, capability) =
+            managed_tool_request_fixture();
+        fs::remove_file(&endpoint).unwrap();
+        let listener = UnixListener::bind(&endpoint).unwrap();
+        let mut permissions = fs::metadata(&endpoint).unwrap().permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(&endpoint, permissions).unwrap();
+        let capability_for_server = capability.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut frame = Vec::new();
+            stream.read_to_end(&mut frame).unwrap();
+            assert_eq!(frame.iter().filter(|byte| **byte == b'\n').count(), 1);
+            assert_eq!(frame.last(), Some(&b'\n'));
+            assert!(!frame
+                .windows(capability_for_server.len())
+                .any(|window| window == capability_for_server.as_bytes()));
+            let request: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+            assert!(request.get("capability").is_none());
+            assert_eq!(request["request_id"], "artifact-delivery");
+            let response = serde_json::json!({
+                "version": "1",
+                "run_id": request["run_id"],
+                "lease_id": request["lease_id"],
+                "consumer": request["consumer"],
+                "request_id": request["request_id"],
+                "payload": {"accepted": true}
+            });
+            stream
+                .write_all(&serde_json::to_vec(&response).unwrap())
+                .unwrap();
+        });
+
+        let assignment = load_assignment(&manifest).unwrap();
+        let spool = assignment.tool_request_spool("delivery_requests").unwrap();
+        let envelope = serde_json::json!({
+            "version": "1",
+            "run_id": "run_123",
+            "lease_id": "delivery_requests",
+            "consumer": "coding-agent",
+            "request_id": "artifact-delivery",
+            "capability": capability,
+            "payload": {"operation": "opaque"}
+        });
+        let request = validate_tool_request_envelope(
+            &serde_json::to_vec(&envelope).unwrap(),
+            "run_123",
+            spool,
+            "artifact-delivery",
+        )
+        .unwrap();
+        let relay = ToolRelayRequest {
+            version: "1",
+            run_id: &request.run_id,
+            lease_id: &request.lease_id,
+            consumer: &request.consumer,
+            request_id: &request.request_id,
+            payload: &request.payload,
+        };
+        let response = relay_tool_request(&endpoint, &relay).unwrap();
+        validate_tool_response_binding(&response, &request).unwrap();
+        assert_eq!(response.payload, serde_json::json!({"accepted": true}));
+        server.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_state_and_client_descriptor_never_serialize_capability_bytes() {
+        let (root, manifest, _endpoint, _capability_path, capability) =
+            managed_tool_request_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let spool = assignment.tool_request_spool("delivery_requests").unwrap();
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: manifest,
+            worktree_path: root.path().join("worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("runtime_123".to_string()),
+            materializations: Vec::new(),
+            tool_request_spools: assignment.tool_request_spools.clone(),
+            tool_request_ledger_path: Some(root.path().join("ledger")),
+            proxy_names: Vec::new(),
+            compose_projects: Vec::new(),
+            container_id: Some("container_123".to_string()),
+        };
+        let state_bytes = serde_json::to_vec(&state).unwrap();
+        let binding_bytes = serde_json::to_vec(&tool_request_binding("run_123", spool)).unwrap();
+        for bytes in [&state_bytes, &binding_bytes] {
+            assert!(!bytes
+                .windows(capability.len())
+                .any(|window| window == capability.as_bytes()));
+        }
+        assert!(!INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT.contains(&capability));
+        assert!(!READ_TOOL_REQUEST_SCRIPT.contains(&capability));
+        assert!(!WRITE_TOOL_RESPONSE_SCRIPT.contains(&capability));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_exit_75_from_a_validated_spool_is_classified_as_retryable_absence() {
+        fn executable_script(path: &Path, source: &str) {
+            fs::write(path, source).unwrap();
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let absent = root.path().join("absent-timeout");
+        let malformed = root.path().join("malformed-timeout");
+        executable_script(&absent, "#!/bin/sh\nexit 75\n");
+        executable_script(&malformed, "#!/bin/sh\nexit 71\n");
+        let spool = ToolRequestSpool {
+            lease_id: "delivery_requests".to_string(),
+            endpoint_lease_id: "delivery_endpoint".to_string(),
+            consumer: "coding-agent".to_string(),
+            consumer_uid: 1000,
+            target_path: PathBuf::from("/run/branchbox/leases/tool-requests/delivery"),
+            volume_name: "branchbox-tool-requests-test".to_string(),
+            capability_source: root.path().join("capability"),
+            capability_sha256: "0".repeat(64),
+        };
+        let mut provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker: PathBuf::from("docker"),
+            timeout: absent,
+        };
+        assert!(matches!(
+            provider.read_spooled_tool_request("container", &spool, "artifact-delivery"),
+            Err(Error::ToolRequestNotPending { .. })
+        ));
+        provider.timeout = malformed;
+        assert!(matches!(
+            provider.read_spooled_tool_request("container", &spool, "artifact-delivery"),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_ledger_denies_pending_and_completed_request_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = root.path().join("ledger");
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: root.path().join("assignment.json"),
+            worktree_path: root.path().join("worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("runtime_123".to_string()),
+            materializations: Vec::new(),
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: Some(ledger),
+            proxy_names: Vec::new(),
+            compose_projects: Vec::new(),
+            container_id: None,
+        };
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker: PathBuf::from("docker"),
+            timeout: PathBuf::from("timeout"),
+        };
+        let (claim, done) = provider
+            .claim_tool_request(&state, "delivery_requests", "request_123")
+            .unwrap();
+        assert!(provider
+            .claim_tool_request(&state, "delivery_requests", "request_123")
+            .is_err());
+        fs::rename(claim, done).unwrap();
+        assert!(provider
+            .claim_tool_request(&state, "delivery_requests", "request_123")
+            .is_err());
+        let mut residue = Vec::new();
+        provider.erase_materializations(&state, &mut residue);
+        assert!(!state.tool_request_ledger_path.as_ref().unwrap().exists());
+        assert!(residue.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_request_teardown_erases_capability_endpoint_and_replay_ledger() {
+        let (root, manifest, endpoint, capability_path, _capability) =
+            managed_tool_request_fixture();
+        let assignment = load_assignment(&manifest).unwrap();
+        let ledger = root.path().join("tool-request-ledger");
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: manifest,
+            worktree_path: root.path().join("worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("runtime_123".to_string()),
+            materializations: assignment
+                .mounts
+                .iter()
+                .map(|mount| StateMaterialization {
+                    source_path: mount.source.clone(),
+                    sha256: mount.sha256.clone(),
+                    source_kind: mount.source_kind,
+                })
+                .collect(),
+            tool_request_spools: assignment.tool_request_spools,
+            tool_request_ledger_path: Some(ledger.clone()),
+            proxy_names: Vec::new(),
+            compose_projects: Vec::new(),
+            container_id: None,
+        };
+        let volume_name = state.tool_request_spools[0].volume_name.clone();
+        let removal_log = root.path().join("volume-removal.log");
+        let fake_timeout = root.path().join("fake-timeout");
+        fs::write(
+            &fake_timeout,
+            format!(
+                "#!/bin/sh\nshift 3\nprintf '%s\\n' \"$*\" > '{}'\n",
+                removal_log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_timeout).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fake_timeout, permissions).unwrap();
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker: PathBuf::from("docker"),
+            timeout: fake_timeout,
+        };
+        provider
+            .claim_tool_request(&state, "delivery_requests", "artifact-delivery")
+            .unwrap();
+        provider.remove_tool_request_volumes(&state.tool_request_spools);
+        assert_eq!(
+            fs::read_to_string(&removal_log).unwrap(),
+            format!("docker volume rm {volume_name}\n")
+        );
+        let mut residue = Vec::new();
+        provider.erase_materializations(&state, &mut residue);
+        assert!(fs::symlink_metadata(endpoint).is_err());
+        assert!(fs::symlink_metadata(capability_path).is_err());
+        assert!(fs::symlink_metadata(ledger).is_err());
+        assert!(residue.is_empty());
     }
 
     #[cfg(unix)]
@@ -3147,7 +4888,7 @@ mod tests {
         let (_root, manifest, _shared, _endpoint_directory, _endpoint_socket) =
             managed_mount_assignment_fixture();
         let assignment = load_assignment(&manifest).unwrap();
-        let signed = assignment.signed_bind_mounts();
+        let signed = assignment.signed_mounts();
         let mount_values = signed
             .keys()
             .map(|(source, target)| {
@@ -3456,6 +5197,338 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
         assert!(status.success());
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires Docker and the Alpine conformance image"]
+    fn tool_request_spool_enforces_consumer_and_dispatcher_filesystem_boundaries() {
+        struct DockerCleanup {
+            container: String,
+            volume: String,
+        }
+
+        impl Drop for DockerCleanup {
+            fn drop(&mut self) {
+                let _ = Command::new("docker")
+                    .args(["rm", "-f", &self.container])
+                    .output();
+                let _ = Command::new("docker")
+                    .args(["volume", "rm", &self.volume])
+                    .output();
+            }
+        }
+
+        fn docker_exec(container: &str, user: &str, script: &str, args: &[&str]) -> Output {
+            let mut command = Command::new("docker");
+            command
+                .args(["exec", "--user", user, container, "sh", "-c", script])
+                .arg("branchbox-tool-request-conformance")
+                .args(args)
+                .output()
+                .expect("run tool-request conformance command")
+        }
+
+        let unique = tempfile::Builder::new()
+            .prefix("branchbox-tool-request-")
+            .tempdir()
+            .unwrap();
+        let suffix = unique
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .replace('_', "-");
+        let container = format!("branchbox-tool-request-{suffix}");
+        let volume = format!("branchbox-tool-request-{suffix}");
+        let _cleanup = DockerCleanup {
+            container: container.clone(),
+            volume: volume.clone(),
+        };
+        assert!(Command::new("docker")
+            .args(["volume", "create", &volume])
+            .status()
+            .unwrap()
+            .success());
+        let mount = format!("type=volume,src={volume},dst=/spool");
+        assert!(Command::new("docker")
+            .args([
+                "run",
+                "--detach",
+                "--name",
+                &container,
+                "--network",
+                "none",
+                "--user",
+                "1000:1000",
+                "--mount",
+                &mount,
+                "alpine:3.22",
+                "sleep",
+                "300",
+            ])
+            .status()
+            .unwrap()
+            .success());
+
+        let passthrough_timeout = unique.path().join("passthrough-timeout");
+        fs::write(&passthrough_timeout, b"#!/bin/sh\nshift 3\nexec \"$@\"\n").unwrap();
+        let mut permissions = fs::metadata(&passthrough_timeout).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&passthrough_timeout, permissions).unwrap();
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker: PathBuf::from("docker"),
+            timeout: passthrough_timeout,
+        };
+        let (resolved_user, resolved_uid) = provider
+            .resolve_container_user_identity(&container, None)
+            .unwrap();
+        assert_eq!(resolved_user, "1000:1000");
+        assert_eq!(resolved_uid, 1000);
+
+        let capability = "request-capability-abcdefghijklmnopqrstuvwxyz012345";
+        let binding = serde_json::to_string(&serde_json::json!({
+            "version": "1",
+            "run_id": "run_123",
+            "lease_id": "delivery_requests",
+            "consumer": "coding-agent"
+        }))
+        .unwrap();
+        let mut initialize = Command::new("docker")
+            .args([
+                "exec",
+                "--interactive",
+                "--user",
+                "0",
+                &container,
+                "sh",
+                "-c",
+                INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT,
+                "branchbox-tool-request-init",
+                "/spool",
+                "1000",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = initialize.stdin.as_mut().unwrap();
+            writeln!(stdin, "{capability}").unwrap();
+            writeln!(stdin, "{binding}").unwrap();
+        }
+        assert!(initialize.wait_with_output().unwrap().status.success());
+
+        let consumer_check = docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; root=$1; test \"$(cat \"$root/.capability\")\" = \"$2\"; test -s \"$root/.binding.json\"; ! printf changed >\"$root/.binding.json\"; ! rm \"$root/.binding.json\"; test ! -r \"$root/.processing\"",
+            &["/spool", capability],
+        );
+        assert!(consumer_check.status.success());
+
+        let envelope = serde_json::to_string(&serde_json::json!({
+            "version": "1",
+            "run_id": "run_123",
+            "lease_id": "delivery_requests",
+            "consumer": "coding-agent",
+            "request_id": "artifact-delivery",
+            "capability": capability,
+            "payload": {"operation": "opaque"}
+        }))
+        .unwrap();
+        let create_request = docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; root=$1; request_id=$2; payload=$3; temporary=\"$root/requests/$request_id.tmp\"; final=\"$root/requests/$request_id.json\"; umask 077; printf '%s' \"$payload\" >\"$temporary\"; chmod 0600 \"$temporary\"; mv \"$temporary\" \"$final\"",
+            &["/spool", "artifact-delivery", &envelope],
+        );
+        assert!(create_request.status.success());
+        let request = docker_exec(
+            &container,
+            "0",
+            READ_TOOL_REQUEST_SCRIPT,
+            &[
+                "/spool",
+                "1000",
+                "artifact-delivery",
+                "16",
+                "262144",
+                "1048576",
+            ],
+        );
+        assert!(request.status.success());
+        assert_eq!(request.stdout, envelope.as_bytes());
+
+        let response = serde_json::to_string(&serde_json::json!({
+            "version": "1",
+            "run_id": "run_123",
+            "lease_id": "delivery_requests",
+            "consumer": "coding-agent",
+            "request_id": "artifact-delivery",
+            "payload": {"accepted": true}
+        }))
+        .unwrap();
+        let mut write_response = Command::new("docker")
+            .args([
+                "exec",
+                "--interactive",
+                "--user",
+                "0",
+                &container,
+                "sh",
+                "-c",
+                WRITE_TOOL_RESPONSE_SCRIPT,
+                "branchbox-tool-response-write",
+                "/spool",
+                "1000",
+                "artifact-delivery",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        write_response
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(response.as_bytes())
+            .unwrap();
+        assert!(write_response.wait_with_output().unwrap().status.success());
+        let response_check = docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; root=$1; expected=$2; test \"$(cat \"$root/responses/artifact-delivery.json\")\" = \"$expected\"; ! printf changed >\"$root/responses/artifact-delivery.json\"; ! rm \"$root/responses/artifact-delivery.json\"",
+            &["/spool", &response],
+        );
+        assert!(response_check.status.success());
+
+        let symlink = docker_exec(
+            &container,
+            "1000:1000",
+            "ln -s /spool/.capability /spool/requests/symlink.json",
+            &[],
+        );
+        assert!(symlink.status.success());
+        let symlink_read = docker_exec(
+            &container,
+            "0",
+            READ_TOOL_REQUEST_SCRIPT,
+            &["/spool", "1000", "symlink", "16", "262144", "1048576"],
+        );
+        assert!(!symlink_read.status.success());
+        assert_ne!(symlink_read.status.code(), Some(75));
+
+        assert!(docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; rm /spool/requests/symlink.json; printf x >/spool/requests/wrong-mode.json; chmod 0644 /spool/requests/wrong-mode.json",
+            &[],
+        )
+        .status
+        .success());
+        let wrong_mode = docker_exec(
+            &container,
+            "0",
+            READ_TOOL_REQUEST_SCRIPT,
+            &["/spool", "1000", "wrong-mode", "16", "262144", "1048576"],
+        );
+        assert!(!wrong_mode.status.success());
+        assert_ne!(wrong_mode.status.code(), Some(75));
+
+        assert!(docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; rm /spool/requests/wrong-mode.json; umask 077; dd if=/dev/zero of=/spool/requests/too-large.json bs=1024 count=257 2>/dev/null; chmod 0600 /spool/requests/too-large.json",
+            &[],
+        )
+        .status
+        .success());
+        let too_large = docker_exec(
+            &container,
+            "0",
+            READ_TOOL_REQUEST_SCRIPT,
+            &["/spool", "1000", "too-large", "16", "262144", "1048576"],
+        );
+        assert!(!too_large.status.success());
+        assert_ne!(too_large.status.code(), Some(75));
+
+        assert!(docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; rm /spool/requests/too-large.json; umask 077; for index in 1 2 3 4 5; do dd if=/dev/zero of=\"/spool/requests/quota-$index.json\" bs=1024 count=240 2>/dev/null; chmod 0600 \"/spool/requests/quota-$index.json\"; done",
+            &[],
+        )
+        .status
+        .success());
+        let over_quota = docker_exec(
+            &container,
+            "0",
+            READ_TOOL_REQUEST_SCRIPT,
+            &["/spool", "1000", "quota-1", "16", "262144", "1048576"],
+        );
+        assert!(!over_quota.status.success());
+        assert_ne!(over_quota.status.code(), Some(75));
+
+        assert!(docker_exec(
+            &container,
+            "1000:1000",
+            "set -eu; rm -f /spool/requests/*; umask 077; index=1; while test \"$index\" -le 17; do printf x >\"/spool/requests/count-$index.json\"; chmod 0600 \"/spool/requests/count-$index.json\"; index=$((index + 1)); done",
+            &[],
+        )
+        .status
+        .success());
+        let over_count = docker_exec(
+            &container,
+            "0",
+            READ_TOOL_REQUEST_SCRIPT,
+            &["/spool", "1000", "count-1", "16", "262144", "1048576"],
+        );
+        assert!(!over_count.status.success());
+        assert_ne!(over_count.status.code(), Some(75));
+
+        assert!(docker_exec(
+            &container,
+            "0",
+            "set -eu; rm -f /spool/requests/*; ln -s /spool/.capability /spool/responses/symlink-response.json",
+            &[],
+        )
+        .status
+        .success());
+        let mut symlink_response = Command::new("docker")
+            .args([
+                "exec",
+                "--interactive",
+                "--user",
+                "0",
+                &container,
+                "sh",
+                "-c",
+                WRITE_TOOL_RESPONSE_SCRIPT,
+                "branchbox-tool-response-symlink",
+                "/spool",
+                "1000",
+                "symlink-response",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        symlink_response
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"{}")
+            .unwrap();
+        assert!(!symlink_response
+            .wait_with_output()
+            .unwrap()
+            .status
+            .success());
+    }
+
     #[test]
     fn compose_override_requires_override_tag_capable_version() {
         ensure_compose_override_version("2.30.0").unwrap();
@@ -3511,6 +5584,8 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             mounts: assignment.mounts,
+            tool_request_spools: Vec::new(),
+            linked_tool_endpoints: BTreeSet::new(),
         };
         assert_eq!(plan.mounts().count(), 0);
     }
@@ -3644,6 +5719,8 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
                 sha256: Some(file_sha256(&provider_secret).unwrap()),
                 source_kind: ManagedSourceKind::File,
             }],
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: None,
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
             container_id: None,
@@ -3651,6 +5728,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
         let provider = InGuestRuntimeProvider {
             devcontainer: PathBuf::from("devcontainer"),
             docker: PathBuf::from("docker"),
+            timeout: PathBuf::from("timeout"),
         };
         let mut residue = Vec::new();
         provider.erase_materializations(&state, &mut residue);
@@ -3683,6 +5761,8 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
                     source_kind: mount.source_kind,
                 })
                 .collect(),
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: None,
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
             container_id: None,
@@ -3690,6 +5770,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
         let provider = InGuestRuntimeProvider {
             devcontainer: PathBuf::from("devcontainer"),
             docker: PathBuf::from("docker"),
+            timeout: PathBuf::from("timeout"),
         };
         let mut residue = Vec::new();
         provider.erase_materializations(&state, &mut residue);

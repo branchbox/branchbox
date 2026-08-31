@@ -38,6 +38,7 @@
 | Failed in-guest `postCreate` leaves dependency services and worktree behind | Provider ownership is recorded only after successful `devcontainer up` | Pre-record workspace/Compose/proxy identity, recover exact label ownership on error, and remove the failed worktree/task branch |
 | No-registry in-guest teardown invokes Cloudflare/database/Compose modules | Teardown defaults missing registry runtime metadata to the host container provider | Recover owner-only in-guest provider state by exact worktree path and bypass every repository module/adapter |
 | Project environment changes `$` or leaks into the facade | Ordinary/double-quoted dotenv interpolates values or configuration serializes assignments | Require Compose 2.30+ raw primary-service env files, canonical sorted single-line materialization, and path/digest-only evidence |
+| Coding user cannot connect to a strict trusted Unix socket | Guest owner UID and devcontainer consumer UID are intentionally different; chmod/chown or a direct bind weakens the boundary | Keep the socket outside the container and link it to a signed `tool-request` lease with an exact writable request volume, endpoint-only capability, trusted dispatcher, replay ledger, and residue-checked teardown |
 
 ## Documentation drift traps
 

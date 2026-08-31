@@ -9,6 +9,8 @@ use std::{
     env, fmt,
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::{Duration, Instant},
 };
 use worktree_core::{
     config::BranchBoxConfig,
@@ -43,6 +45,9 @@ pub enum FeatureCommands {
 
     /// Execute an allowlisted coding provider with name-only environment inheritance
     ExecProvider(FeatureExecProviderArgs),
+
+    /// Dispatch one capability-bound request to a trusted managed tool endpoint
+    DispatchTool(FeatureDispatchToolArgs),
 }
 
 #[derive(Args)]
@@ -273,6 +278,37 @@ pub struct FeatureExecProviderArgs {
     pub command: Vec<String>,
 }
 
+#[derive(Args)]
+pub struct FeatureDispatchToolArgs {
+    /// Dasherized feature name
+    pub name: String,
+
+    /// Repository path (defaults to current directory)
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Exact tool-request lease declared by the managed runtime assignment
+    #[arg(long, value_name = "LEASE_ID")]
+    pub lease: String,
+
+    /// Exact request identifier and spool filename stem
+    #[arg(long, value_name = "REQUEST_ID")]
+    pub request_id: String,
+
+    /// Emit the correlated response as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Wait up to this many seconds for the atomic request file (maximum 300)
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 0,
+        value_parser = clap::value_parser!(u64).range(0..=300)
+    )]
+    pub wait_seconds: u64,
+}
+
 pub fn execute(command: FeatureCommands) -> Result<()> {
     match command {
         FeatureCommands::Start(args) => run_start(args),
@@ -281,7 +317,50 @@ pub fn execute(command: FeatureCommands) -> Result<()> {
         FeatureCommands::Prune(args) => run_prune(args),
         FeatureCommands::Exec(args) => run_exec(args),
         FeatureCommands::ExecProvider(args) => run_exec_provider(args),
+        FeatureCommands::DispatchTool(args) => run_dispatch_tool(args),
     }
+}
+
+fn run_dispatch_tool(args: FeatureDispatchToolArgs) -> Result<()> {
+    let repo_path = args.repo.unwrap_or_else(|| PathBuf::from("."));
+    let workflow = FeatureWorkflow::new(&repo_path)?;
+    let deadline = Instant::now() + Duration::from_secs(args.wait_seconds);
+    let result = loop {
+        match workflow.dispatch_tool_request(&args.name, &args.lease, &args.request_id) {
+            Ok(result) => break result,
+            Err(CoreError::ToolRequestNotPending { .. }) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(CoreError::ToolRequestNotPending { .. }) => {
+                if args.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "not-pending",
+                            "retryable": true,
+                            "lease_id": args.lease,
+                            "request_id": args.request_id
+                        }))?
+                    );
+                }
+                std::process::exit(75);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "dispatched",
+                "retryable": false,
+                "result": result
+            }))?
+        );
+    } else {
+        println!("{}", serde_json::to_string(&result.response)?);
+    }
+    Ok(())
 }
 
 fn run_exec_provider(args: FeatureExecProviderArgs) -> Result<()> {

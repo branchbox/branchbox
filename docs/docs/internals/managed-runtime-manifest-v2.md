@@ -49,13 +49,14 @@ For example:
 The complete manifest also carries the run, outer-runtime, repository, branch, workspace, and
 published-port fields required by version 1.
 
-## Shared directory and tool endpoint leases
+## Shared directory, tool endpoint, and request-spool leases
 
-Version 2 can also expose two provider-neutral, per-run channels to the primary devcontainer. A
-`shared-directory` lets an outer helper update a directory while the container sees a read-only
-bind. A `tool-endpoint` exposes either an owner-only directory or an owner-only Unix socket for
-requests. These live under the assignment's exact run directory and do not carry `sha256`, because
-their contents or socket state may change during the run:
+Version 2 can also expose provider-neutral, per-run channels to the primary devcontainer. A
+`shared-directory` lets an outer helper update finalized evidence while the container sees a
+read-only bind. A standalone `tool-endpoint` can expose an owner-only directory or socket as a
+read-only compatibility bind. A linked socket endpoint is different: it remains wholly outside the
+coding container and is paired with a `tool-request` spool. The spool is a run-and-lease-derived
+Docker volume, not a bind to the private endpoint.
 
 ```json
 {
@@ -75,14 +76,30 @@ their contents or socket state may change during the run:
       ]
     },
     {
-      "lease_id": "request_endpoint",
+      "lease_id": "delivery_endpoint",
       "scope": "tool-endpoint",
-      "consumer": "primary-tool",
+      "consumer": "coding-agent",
       "expires_at": "2099-01-01T00:00:00Z",
       "materializations": [
         {
-          "source_path": "/run/branchbox/managed/run-id/tool-endpoints/requests",
-          "target_path": "/run/branchbox/leases/tool-endpoints/requests"
+          "source_path": "/run/branchbox/managed/run-id/tool-endpoints/delivery.sock",
+          "target_path": "/run/branchbox/leases/tool-endpoints/delivery.sock"
+        }
+      ]
+    },
+    {
+      "lease_id": "delivery_requests",
+      "scope": "tool-request",
+      "consumer": "coding-agent",
+      "consumer_uid": 1000,
+      "endpoint_lease_id": "delivery_endpoint",
+      "request_spool_target": "/run/branchbox/leases/tool-requests/delivery",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "materializations": [
+        {
+          "source_path": "/run/branchbox/managed/run-id/materializations/delivery-capability",
+          "target_path": "/run/branchbox/leases/tool-requests/delivery/.capability",
+          "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
       ]
     }
@@ -96,6 +113,66 @@ leaf uses mode `0755` so arbitrary non-root container users can inspect its file
 read-only bind; its private ancestors still prevent ambient host traversal. Tool-endpoint
 directories remain `0700`, and socket permissions remain owner-only.
 
+Directly binding that socket does not translate UID 10001 in the guest to UID 1000 in a typical
+container. Docker Compose has no portable per-bind idmapped-mount contract, and changing the socket
+owner, group, ACL, or mode would weaken the trusted boundary. A linked `tool-request` therefore
+suppresses the endpoint bind. Only its exact named request volume may be writable.
+
+BranchBox initializes the volume with these paths:
+
+- `.binding.json`: root-owned mode `0444`, containing the non-secret run, lease, consumer, request
+  and response paths, filename convention, and quotas from the signed assignment.
+- `.capability`: root-owned mode `0444`, containing a random endpoint-only capability. This token
+  authorizes requests to the linked broker endpoint; it is not the broker's source-host, cloud,
+  model, or other underlying credential.
+- `requests/`: mode `0700` and owned by `consumer_uid`. The consumer writes a temporary file, uses
+  mode `0600`, then atomically renames it to `<request_id>.json`.
+- `responses/`: root-owned mode `0755`. The trusted dispatcher atomically creates a correlated
+  `<request_id>.json` owned by `consumer_uid` at mode `0400`, so the consumer can read but cannot
+  replace it.
+- `.processing/`: root-owned mode `0700` and invisible to the consumer. BranchBox atomically moves
+  one finalized request here before reading it, then re-checks its type, owner, mode, size, and link
+  count. A request is therefore consumed once and cannot be path-swapped after validation.
+
+The request envelope has only these top-level fields:
+
+```json
+{
+  "version": "1",
+  "run_id": "run-id",
+  "lease_id": "delivery_requests",
+  "consumer": "coding-agent",
+  "request_id": "artifact-delivery",
+  "capability": "endpoint-only-random-value",
+  "payload": {}
+}
+```
+
+The payload is opaque to BranchBox. The trusted endpoint must return the same version, run, lease,
+consumer, and request IDs plus an opaque `payload`. BranchBox first consumes the request into the
+root-only staging directory, strips the capability, claims the request in an owner-only replay
+ledger, and relays one newline-delimited JSON frame followed by write-side EOF. It validates the
+correlated response and writes the response file. A relay failure leaves the claim in place:
+automatic replay is deliberately denied because the external side effect may already have occurred.
+An authenticated correlated response is a successful transport even when its opaque payload reports
+a tool-level decline (for example, an optional upload declined in favor of a durable artifact link).
+Only transport, authentication, framing, or correlation failures fail dispatch.
+
+Run the dispatcher concurrently with the coding provider:
+
+```bash
+branchbox feature dispatch-tool coding-demo \
+  --lease delivery_requests \
+  --request-id artifact-delivery \
+  --wait-seconds 300 \
+  --json
+```
+
+Only absence of the atomic final request is retryable. An exhausted wait returns exit status `75`
+and JSON with `status: "not-pending"` and `retryable: true`. Success returns status `dispatched`.
+Malformed paths, modes, symlinks, quotas, bindings, capabilities, replay claims, relay failures,
+timeouts, and response mismatches are terminal and never share the retryable exit status.
+
 ## Security contract
 
 - The assignment and file materializations must be owner-only regular files. File materializations
@@ -106,8 +183,19 @@ directories remain `0700`, and socket permissions remain owner-only.
   targets outside the scope-specific BranchBox lease namespace, and ambient supervisor-authority or
   secret paths.
 - The generated configuration mounts only manifest-declared source/target pairs. Final Docker
-  inspection must show every pair exactly once as a read-only bind on the primary container; a
-  missing, writable, mistargeted, duplicate, or unsigned managed mount fails startup.
+  inspection must show each bind-capable lease exactly once as a read-only bind on the primary
+  container; a missing, writable, mistargeted, duplicate, or unsigned managed mount fails startup.
+- A linked tool endpoint is never mounted. Final inspection permits one exact writable named volume
+  per signed `tool-request` lease and rejects writable binds, read-only request volumes, wrong volume
+  names, or any other writable entry under the managed namespace. Docker's `Mounts[].Name` is the
+  signed volume identity; its engine-private physical `Source` path is never treated as a consumer
+  mount or exposed to the container.
+- Request spools enforce a non-root consumer UID, one same-consumer live socket endpoint, immutable
+  binding/capability files, regular non-symlink request files, mode `0600`, at most 16 pending files,
+  256 KiB per request, and 1 MiB total. BranchBox resolves the actual provider user from
+  `remoteUser`/`containerUser` or Docker's inspected `Config.User`, runs `id -u` in the container,
+  and rejects root or any mismatch with the signed `consumer_uid` before spool initialization and
+  again before dispatch. Docker exec and Unix relay operations are time-bounded.
 - The primary devcontainer is forced onto Docker's built-in seccomp profile, and final inspection
   rejects a missing or unconfined profile. This preserves normal Unix and Internet socket families
   while denying direct `AF_VSOCK` creation even when no `/dev/vsock` path is mounted.
@@ -123,8 +211,8 @@ directories remain `0700`, and socket permissions remain owner-only.
 - Provider execution starts from an empty process environment, adding only a fixed safe `PATH`, the
   exact signed inherited names, and the exact digest-bound provider-environment bindings.
 - Teardown removes every recorded materialization, including non-empty shared directories and Unix
-  sockets. Any source that cannot be removed is reported as `lease-materialization` residue and
-  prevents a residue-free teardown receipt.
+  sockets, every exact request volume, and the replay ledger. Any source that cannot be removed is
+  reported as residue and prevents a residue-free teardown receipt.
 
 Version 1 remains accepted for existing integrations and retains its original fixed provider
 allowlist. New orchestrators should emit version 2 and place managed files below a run-specific

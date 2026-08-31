@@ -37,6 +37,13 @@ pub enum Error {
     #[error("Worktree not found: {0}")]
     WorktreeNotFound(String),
 
+    /// A managed request spool is healthy but its atomic final request file is not present yet.
+    #[error("Tool request is not pending: {lease_id}/{request_id}")]
+    ToolRequestNotPending {
+        lease_id: String,
+        request_id: String,
+    },
+
     /// Worktree contains uncommitted module-managed changes
     #[error("Worktree has module-managed changes: {worktree:?} (dirty entries: {files:?})")]
     WorktreeDirty {

@@ -1303,6 +1303,26 @@ impl FeatureWorkflow {
         )
     }
 
+    /// Dispatch one capability-bound consumer request to its managed trusted endpoint.
+    pub fn dispatch_tool_request(
+        &self,
+        work_feature: &str,
+        lease_id: &str,
+        request_id: &str,
+    ) -> Result<runtime::RuntimeToolDispatchResult> {
+        let metadata = self
+            .state
+            .get_feature(work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
+        if metadata.status != FeatureStatus::Active {
+            return Err(Error::validation(format!(
+                "Feature '{work_feature}' is not active"
+            )));
+        }
+        let provider = runtime::provider(metadata.runtime.provider)?;
+        provider.dispatch_tool_request(&metadata.runtime, lease_id, request_id)
+    }
+
     /// Open (provision) a tunnel for an existing feature.
     pub fn tunnel_open(&self, request: TunnelOpenRequest) -> Result<TunnelOpenSummary> {
         let mut warnings = Vec::new();
@@ -3404,6 +3424,13 @@ fn prepare_in_guest_devcontainer_config(
             "source": source,
             "target": target,
             "readonly": true
+        }));
+    }
+    for (volume, target, _consumer_uid) in plan.tool_request_spools() {
+        mounts.push(serde_json::json!({
+            "type": "volume",
+            "source": volume,
+            "target": target
         }));
     }
     if !mounts.is_empty() {
