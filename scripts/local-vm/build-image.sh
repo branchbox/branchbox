@@ -6,6 +6,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 OUTPUT_DIR="${BRANCHBOX_LOCAL_VM_IMAGE_OUTPUT:-$REPO_ROOT/target/local-vm-image}"
 ROOTFS_SIZE_GIB="${BRANCHBOX_LOCAL_VM_ROOTFS_GIB:-12}"
 ROOTFS_IMAGE="${BRANCHBOX_LOCAL_VM_ROOTFS_IMAGE:-branchbox-local-vm-rootfs:build}"
+KERNEL_REQUIREMENTS="$SCRIPT_DIR/image/kernel-required.config"
 BUILD_DIR=$(mktemp -d)
 MOUNT_DIR=$(mktemp -d)
 ROOTFS_CONTAINER=''
@@ -51,14 +52,17 @@ sudo umount "$MOUNT_DIR"
 cp "$BUILD_DIR/kernel/vmlinux" "$OUTPUT_DIR/vmlinux"
 cp "$BUILD_DIR/kernel/kernel.config" "$OUTPUT_DIR/kernel.config"
 
-grep -qx 'CONFIG_VSOCKETS=y' "$OUTPUT_DIR/kernel.config" || {
-  echo 'built kernel is missing CONFIG_VSOCKETS=y' >&2
+[[ -f "$KERNEL_REQUIREMENTS" && ! -L "$KERNEL_REQUIREMENTS" ]] || {
+  echo 'local-vm kernel requirement contract is unavailable' >&2
   exit 1
 }
-grep -qx 'CONFIG_VIRTIO_VSOCKETS=y' "$OUTPUT_DIR/kernel.config" || {
-  echo 'built kernel is missing CONFIG_VIRTIO_VSOCKETS=y' >&2
-  exit 1
-}
+while IFS= read -r requirement; do
+  grep -Fqx "$requirement" "$OUTPUT_DIR/kernel.config" || {
+    echo "built kernel is missing $requirement" >&2
+    exit 1
+  }
+done < "$KERNEL_REQUIREMENTS"
+kernel_requirements_json=$(jq -Rsc 'split("\n") | map(select(length > 0))' "$KERNEL_REQUIREMENTS")
 
 kernel_sha=$(sha256sum "$OUTPUT_DIR/vmlinux" | awk '{print $1}')
 kernel_config_sha=$(sha256sum "$OUTPUT_DIR/kernel.config" | awk '{print $1}')
@@ -71,8 +75,8 @@ source_commit=$(git -C "$REPO_ROOT" rev-parse HEAD)
   exit 1
 }
 jq -n \
-  --arg format_version '1' \
-  --arg schema_version 'branchbox.agentify-guest-base/1' \
+  --arg format_version '2' \
+  --arg schema_version 'branchbox.local-vm-guest-base/2' \
   --arg source_repository 'branchbox/branchbox' \
   --arg source_commit "$source_commit" \
   --arg target 'x86_64-unknown-linux-gnu' \
@@ -82,6 +86,7 @@ jq -n \
   --arg devcontainer_cli_version '0.80.3' \
   --arg kernel_sha256 "$kernel_sha" \
   --arg kernel_config_sha256 "$kernel_config_sha" \
+  --argjson kernel_requirements "$kernel_requirements_json" \
   --arg rootfs_sha256 "$rootfs_sha" \
   --arg rootfs_archive_sha256 "$rootfs_archive_sha" \
   --argjson rootfs_archive_size_bytes "$rootfs_archive_size" \
@@ -99,10 +104,11 @@ jq -n \
     kernel_config: {
       name: "kernel.config",
       sha256: $kernel_config_sha256,
-      required: ["CONFIG_VSOCKETS=y", "CONFIG_VIRTIO_VSOCKETS=y"]
+      required: $kernel_requirements
     },
     capabilities: {
-      guest_to_host_vsock: true
+      guest_to_host_vsock: true,
+      legacy_ipv4_xtables: "1"
     },
     rootfs_sha256: $rootfs_sha256,
     rootfs_archive: {

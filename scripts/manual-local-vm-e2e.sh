@@ -55,6 +55,10 @@ echo '==> Proving trusted guest-to-host virtio-vsock transfer'
 "$DRIVER" vsock-probe "$simple_runtime" >"$TMP_ROOT/simple-vsock.json"
 test "$(jq -r '.direction' "$TMP_ROOT/simple-vsock.json")" = guest-to-host
 test "$(jq -r '.host_cid' "$TMP_ROOT/simple-vsock.json")" = 2
+echo '==> Proving the versioned legacy IPv4 xtables kernel capability'
+"$DRIVER" netfilter-probe "$simple_runtime" >"$TMP_ROOT/simple-netfilter.json"
+test "$(jq -r '.capability' "$TMP_ROOT/simple-netfilter.json")" = legacy-ipv4-xtables
+test "$(jq -r '.version' "$TMP_ROOT/simple-netfilter.json")" = 1
 "$BRANCHBOX_BIN" feature exec simple-feature --repo "$SIMPLE_REPO" --json -- git status --short \
   >"$TMP_ROOT/simple-exec.json"
 test "$(jq -r '.exit_code' "$TMP_ROOT/simple-exec.json")" = 0

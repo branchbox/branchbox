@@ -160,10 +160,12 @@ branchbox feature start add-oauth --runtime local-vm
 
 The build recipe pins the kernel, Firecracker guest configuration, Ubuntu base, and devcontainer
 CLI. `manifest.json` records kernel/rootfs SHA-256 digests plus the kernel-config digest; startup
-fails closed unless the config has built-in virtio-vsock support. The runtime attaches one
-Firecracker vsock device for trusted guest-supervisor-to-host transfers. Its UDS is never passed
-into the coding devcontainer, which also cannot access `/dev/vsock` or either Docker control plane.
-The registry/JSON API reports the kernel/rootfs digests with the Firecracker version.
+fails closed unless the config matches BranchBox's complete fixed requirement list. The portable
+manifest advertises versioned virtio-vsock and legacy IPv4 xtables capabilities without embedding a
+consumer's provider, domain, or firewall-chain policy. The runtime attaches one Firecracker vsock
+device for trusted guest-supervisor-to-host transfers. Its UDS is never passed into the coding
+devcontainer, which also cannot access `/dev/vsock` or either Docker control plane. The registry/JSON
+API reports the kernel/rootfs digests with the Firecracker version.
 
 Each feature gets a disposable writable rootfs, one-time SSH key, TAP subnet, NAT policy, and host
 port proxies. The project directory is synchronized to the same absolute guest path before runtime
@@ -185,7 +187,10 @@ the Firecracker process identity.
 
 Run `scripts/manual-local-vm-e2e.sh` on a KVM host to prove single-container and concurrent
 app/Postgres/Redis workspaces, captured and interactive execution, port publication, network/socket
-isolation, immutable artifact reporting, and orphan-free teardown.
+isolation, the versioned legacy IPv4 xtables rules in a disposable trusted network namespace,
+immutable artifact reporting, and orphan-free teardown. This does not grant `NET_ADMIN` to a coding
+devcontainer; it proves only that a trusted outer guest process can apply policy supplied by its
+runtime owner.
 
 ## Stack Detection
 

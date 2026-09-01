@@ -32,9 +32,11 @@ scripts/manual-local-vm-e2e.sh
 6. Published application ports reach the correct nested devcontainer through guest and host proxy
    layers.
 7. The devcontainer cannot see a Docker socket and cannot initiate a connection to the host gateway.
-8. The approved kernel config is digest-bound and includes built-in `CONFIG_VSOCKETS` and
-   `CONFIG_VIRTIO_VSOCKETS`; a trusted guest process transfers a challenge to a host UDS through
-   Firecracker's virtio-vsock mediator.
+8. The approved kernel config is digest-bound and matches the complete versioned requirement list. It
+   includes built-in virtio-vsock plus generic legacy-netfilter chain, conntrack, UID-owner, reject, bridge,
+   and NAT support; the manifest advertises those kernel capabilities without encoding any consumer's
+   provider, domain, or firewall-chain policy. A trusted guest process transfers a challenge to a host UDS
+   through Firecracker's virtio-vsock mediator.
 9. Concurrent VMs safely reuse guest CID `3` and the same probe port because every jailed VM owns a
    distinct UDS namespace; an existing endpoint is never unlinked or replaced.
 10. The coding devcontainer cannot access `/dev/vsock`; the transfer endpoint remains an outer guest
@@ -46,6 +48,7 @@ scripts/manual-local-vm-e2e.sh
 The GitHub workflow `.github/workflows/local-vm-e2e.yml` runs this same harness on an x64 Ubuntu KVM
 runner whenever local-vm implementation/image paths change and can also be dispatched manually.
 After the lifecycle and residue checks pass, it publishes `rootfs.tar.gz` plus `manifest.json` as
-`branchbox-agentify-guest-base-<source-commit>`. The manifest binds the archive digest and byte size to
-the exact BranchBox commit. This is the only guest-base handoff Agentify may consume; it must remove
-the local-VM SSH and sudo identity while installing its own managed runtime boundary.
+`branchbox-local-vm-guest-base-<source-commit>`. The manifest binds the archive digest and byte size
+to the exact BranchBox commit. Consumers such as Agentify must independently authorize this portable
+guest-base handoff and remove the local-VM SSH and sudo identity while installing their own managed
+runtime boundary.

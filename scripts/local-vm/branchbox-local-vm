@@ -19,6 +19,32 @@ VSOCK_GUEST_CID=3
 VSOCK_HOST_CID=2
 VSOCK_UDS_PATH='./run/vsock'
 VSOCK_PROBE_PORT=19001
+KERNEL_REQUIRED_CONFIG=(
+  CONFIG_NETFILTER=y
+  CONFIG_NETFILTER_ADVANCED=y
+  CONFIG_NETFILTER_XTABLES=y
+  CONFIG_NF_CONNTRACK=y
+  CONFIG_NF_REJECT_IPV4=y
+  CONFIG_NF_NAT=y
+  CONFIG_NF_NAT_MASQUERADE=y
+  CONFIG_IP_NF_IPTABLES=y
+  CONFIG_IP_NF_FILTER=y
+  CONFIG_IP_NF_NAT=y
+  CONFIG_IP_NF_TARGET_REJECT=y
+  CONFIG_NETFILTER_XT_NAT=y
+  CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+  CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+  CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y
+  CONFIG_NETFILTER_XT_MATCH_OWNER=y
+  CONFIG_NETFILTER_XT_MATCH_STATE=y
+  CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+  CONFIG_NET_NS=y
+  CONFIG_BRIDGE=y
+  CONFIG_BRIDGE_NETFILTER=y
+  CONFIG_VETH=y
+  CONFIG_VSOCKETS=y
+  CONFIG_VIRTIO_VSOCKETS=y
+)
 
 die() {
   printf 'branchbox-local-vm: %s\n' "$*" >&2
@@ -142,11 +168,14 @@ validate_manifest() {
   [[ -f "$manifest" && -f "$kernel" && -f "$kernel_config" && -f "$rootfs" ]] || die \
     "approved kernel/rootfs artifacts are missing under $IMAGE_ROOT; run scripts/local-vm/build-image.sh"
   local expected_kernel expected_kernel_config expected_rootfs actual_kernel actual_kernel_config actual_rootfs
+  local expected_requirements actual_requirements requirement
   expected_kernel=$(jq -er '.kernel_sha256' "$manifest")
   expected_kernel_config=$(jq -er '.kernel_config.sha256' "$manifest")
   expected_rootfs=$(jq -er '.rootfs_sha256' "$manifest")
   [[ "$(jq -er '.capabilities.guest_to_host_vsock' "$manifest")" == true ]] || die \
     "guest image manifest does not authorize guest-to-host virtio-vsock"
+  [[ "$(jq -er '.capabilities.legacy_ipv4_xtables' "$manifest")" == 1 ]] || die \
+    "guest image manifest does not authorize legacy IPv4 xtables capability version 1"
   actual_kernel=$(sha256_file "$kernel")
   actual_kernel_config=$(sha256_file "$kernel_config")
   actual_rootfs=$(sha256_file "$rootfs")
@@ -154,9 +183,14 @@ validate_manifest() {
   [[ "$actual_kernel_config" == "$expected_kernel_config" ]] || die \
     "kernel config digest does not match manifest"
   [[ "$actual_rootfs" == "$expected_rootfs" ]] || die "rootfs digest does not match manifest"
-  grep -qx 'CONFIG_VSOCKETS=y' "$kernel_config" || die "approved kernel is missing CONFIG_VSOCKETS=y"
-  grep -qx 'CONFIG_VIRTIO_VSOCKETS=y' "$kernel_config" || die \
-    "approved kernel is missing CONFIG_VIRTIO_VSOCKETS=y"
+  expected_requirements=$(printf '%s\n' "${KERNEL_REQUIRED_CONFIG[@]}" | jq -Rsc \
+    'split("\n") | map(select(length > 0))')
+  actual_requirements=$(jq -c '.kernel_config.required' "$manifest")
+  [[ "$actual_requirements" == "$expected_requirements" ]] || die \
+    "kernel requirement manifest differs from the local-vm security contract"
+  for requirement in "${KERNEL_REQUIRED_CONFIG[@]}"; do
+    grep -Fqx "$requirement" "$kernel_config" || die "approved kernel is missing $requirement"
+  done
 }
 
 cmd_validate() {
@@ -450,6 +484,22 @@ cmd_vsock_probe() {
     '{runtime_id:$runtime_id,direction:$direction,guest_cid:$guest_cid,host_cid:$host_cid,port:$port,uds_path:$uds_path}'
 }
 
+cmd_netfilter_probe() {
+  local id=$1
+  cmd_exists "$id" || die "runtime '$id' does not exist"
+  guest "$id" bash -ceu 'test "$(sysctl -n net.ipv4.ip_forward)" = 1'
+  guest "$id" sudo -n unshare --net -- bash -ceu '
+    iptables-legacy -N BRANCHBOX_CAPABILITY_PROBE
+    iptables-legacy -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables-legacy -A OUTPUT -m owner --uid-owner 1000 -j ACCEPT
+    iptables-legacy -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset
+    iptables-legacy -A FORWARD -j ACCEPT
+    iptables-legacy -t nat -A POSTROUTING -j MASQUERADE
+  '
+  jq -n --arg runtime_id "$id" --arg capability legacy-ipv4-xtables --arg version 1 \
+    '{runtime_id:$runtime_id,capability:$capability,version:$version}'
+}
+
 devcontainer_command() {
   cat <<'SH'
 if command -v devcontainer >/dev/null 2>&1; then
@@ -591,6 +641,7 @@ case "${1:-}" in
   start) shift; [[ $# -eq 2 ]] || die "start requires runtime ID and worktree"; cmd_start "$@" ;;
   probe) shift; [[ $# -eq 2 ]] || die "probe requires runtime ID and worktree"; cmd_probe "$@" ;;
   vsock-probe) shift; [[ $# -eq 1 ]] || die "vsock-probe requires runtime ID"; cmd_vsock_probe "$@" ;;
+  netfilter-probe) shift; [[ $# -eq 1 ]] || die "netfilter-probe requires runtime ID"; cmd_netfilter_probe "$@" ;;
   exec) shift; cmd_exec "$@" ;;
   exec-interactive) shift; cmd_exec_interactive "$@" ;;
   destroy) shift; [[ $# -eq 1 ]] || die "destroy requires runtime ID"; cmd_destroy "$@" ;;

@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bind the Firecracker kernel config into the image manifest, require built-in virtio-vsock
   support, and prove a trusted guest-to-host transfer without exposing `/dev/vsock` to coding
   devcontainers.
+- Publish a portable, versioned local-VM guest-base contract with built-in legacy IPv4 xtables
+  support for chain, conntrack, UID-owner, TCP-reset rejection, bridge, and NAT policy. The local
+  validator independently enforces the fixed kernel minimum and a disposable trusted network
+  namespace proves the rules without granting `NET_ADMIN` to coding devcontainers.
 
 ### Security
 
