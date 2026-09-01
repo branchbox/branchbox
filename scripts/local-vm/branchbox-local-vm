@@ -492,8 +492,10 @@ cmd_netfilter_probe() {
     iptables-legacy -N BRANCHBOX_CAPABILITY_PROBE
     iptables-legacy -I OUTPUT 1 -j BRANCHBOX_CAPABILITY_PROBE
     iptables-legacy -A BRANCHBOX_CAPABILITY_PROBE \
-      -m conntrack --ctstate ESTABLISHED,RELATED \
+      -p tcp -d 192.0.2.1 --dport 443 \
       -m owner --uid-owner 1000 -j ACCEPT
+    iptables-legacy -A OUTPUT \
+      -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables-legacy -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset
     iptables-legacy -A FORWARD -j ACCEPT
     iptables-legacy -t nat -A POSTROUTING -j MASQUERADE

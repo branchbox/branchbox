@@ -52,9 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The portable Firecracker netfilter proof now exercises a combined conntrack/UID-owner rule in a
-  user-defined chain attached to `OUTPUT`, catching guest-kernel compatibility gaps that direct
-  built-in-chain probes missed.
+- The portable Firecracker netfilter proof now exercises conntrack and UID-owner matching as
+  independent rules, with the owner-scoped rule in a user-defined chain attached to `OUTPUT`.
+  Consumers can compose exact destination policy without relying on a non-portable combined
+  conntrack/owner match.
 - Compose-backed in-guest devcontainers now receive the mandatory seccomp option from one generated
   facade only, avoiding duplicate `security_opt` entries from Dev Containers CLI overlays.
 - In-guest devcontainer failures now carry stable content-free diagnostic codes for orchestration

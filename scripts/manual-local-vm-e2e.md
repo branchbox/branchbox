@@ -33,10 +33,10 @@ scripts/manual-local-vm-e2e.sh
    layers.
 7. The devcontainer cannot see a Docker socket and cannot initiate a connection to the host gateway.
 8. The approved kernel config is digest-bound and matches the complete versioned requirement list. It
-   includes built-in virtio-vsock plus generic legacy-netfilter chain, conntrack, UID-owner, reject, bridge,
-   and NAT support; the manifest advertises those kernel capabilities without encoding any consumer's
-   provider, domain, or firewall-chain policy. A trusted guest process transfers a challenge to a host UDS
-   through Firecracker's virtio-vsock mediator.
+   includes built-in virtio-vsock plus generic legacy-netfilter chain, independently probed conntrack
+   and UID-owner matching, reject, bridge, and NAT support; the manifest advertises those kernel
+   capabilities without encoding any consumer's provider, domain, or firewall-chain policy. A trusted
+   guest process transfers a challenge to a host UDS through Firecracker's virtio-vsock mediator.
 9. Concurrent VMs safely reuse guest CID `3` and the same probe port because every jailed VM owns a
    distinct UDS namespace; an existing endpoint is never unlinked or replaced.
 10. The coding devcontainer cannot access `/dev/vsock`; the transfer endpoint remains an outer guest
