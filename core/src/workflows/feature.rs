@@ -515,6 +515,10 @@ impl FeatureWorkflow {
                 self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
                 return Err(err);
             }
+            if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
+                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                return Err(err);
+            }
         }
 
         let stash_state = if runtime_kind != RuntimeProviderKind::InGuest && !reuse_existing {
@@ -817,13 +821,15 @@ impl FeatureWorkflow {
         let environment_result =
             runtime_provider.start_environment(&runtime_context, &mut runtime_metadata);
 
-        // Repository lifecycle hooks may rewrite the shared worktree .git file
-        // to an absolute in-container path. Convert it back to BranchBox's
-        // host/container-portable relative form before either returning or
-        // attempting cleanup after a failed startup.
-        if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
-            tracing::warn!("Failed to restore git worktree path: {}", err);
-            warnings.push(format!("Git worktree path restore failed: {}", err));
+        // Keep successful in-guest worktrees pointed at the exact container Git projection while
+        // the coding environment is active. Failed starts and other runtime providers need the
+        // host-portable pointer immediately; normal in-guest teardown repairs it before status and
+        // removal checks.
+        if runtime_kind != RuntimeProviderKind::InGuest || environment_result.is_err() {
+            if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
+                tracing::warn!("Failed to restore git worktree path: {}", err);
+                warnings.push(format!("Git worktree path restore failed: {}", err));
+            }
         }
 
         if let Err(err) = environment_result {
@@ -1026,6 +1032,18 @@ impl FeatureWorkflow {
         let worktree_exists = worktree_path.exists();
         if !worktree_exists && !force_remove {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
+        }
+
+        // Repository lifecycle hooks can leave an in-guest worktree pointing at the container's
+        // view of the shared Git metadata. Repair that pointer before status/dirty checks use it.
+        // Forced teardown retains the existing best-effort filesystem fallback for irreparable
+        // or already-partially-removed worktrees.
+        if worktree_exists && in_guest_teardown && !force_remove {
+            self.fix_git_worktree_path(&worktree_path).map_err(|err| {
+                Error::validation(format!(
+                    "Cannot restore in-guest Git worktree metadata before teardown: {err}"
+                ))
+            })?;
         }
 
         let skip_dirty_validation = force_remove || force_remove_modules;
@@ -1814,6 +1832,12 @@ impl FeatureWorkflow {
 
     fn cleanup_failed_in_guest_worktree(&self, worktree_path: &Path, branch_name: &str) {
         if worktree_path.exists() {
+            if let Err(err) = self.fix_git_worktree_path(worktree_path) {
+                tracing::warn!(
+                    "Failed to restore in-guest Git metadata before startup cleanup: {}",
+                    err
+                );
+            }
             if let Err(err) = self.git.remove(worktree_path, true) {
                 tracing::warn!(
                     "Failed to remove in-guest worktree after startup failure: {}",
@@ -3196,14 +3220,7 @@ impl FeatureWorkflow {
             return Ok(());
         }
 
-        let repository_worktrees = fs::canonicalize(self.repo_root.join(".git"))
-            .map_err(|err| {
-                Error::validation(format!(
-                    "Cannot validate repository Git metadata at '{}': {err}",
-                    self.repo_root.join(".git").display()
-                ))
-            })?
-            .join("worktrees");
+        let repository_worktrees = self.repository_worktrees_dir()?;
         let current_target = Path::new(current_path);
         let container_worktrees = Path::new("/workspaces/main/.git/worktrees");
         let target_to_validate = match current_target.strip_prefix(container_worktrees) {
@@ -3284,6 +3301,115 @@ impl FeatureWorkflow {
 
         Ok(())
     }
+
+    /// Point the active worktree at the exact Git metadata projection exposed inside a managed
+    /// in-guest devcontainer. The target entry is derived from validated host metadata; repository
+    /// content cannot select another worktree or escape the shared Git directory.
+    fn set_in_guest_git_worktree_path(&self, worktree_path: &Path) -> Result<()> {
+        let git_file = worktree_path.join(".git");
+        if !git_file.is_file() {
+            return Err(Error::validation(format!(
+                "No .git file found in worktree at {}",
+                worktree_path.display()
+            )));
+        }
+
+        let content = fs::read_to_string(&git_file)?;
+        let gitdir_line = content
+            .lines()
+            .find(|line| line.starts_with("gitdir:"))
+            .ok_or_else(|| Error::validation("No gitdir: line found in .git file".to_string()))?;
+        let current_path = gitdir_line.strip_prefix("gitdir:").unwrap_or("").trim();
+        let repository_worktrees = self.repository_worktrees_dir()?;
+        let container_worktrees = Path::new("/workspaces/main/.git/worktrees");
+
+        let target_to_validate =
+            if let Ok(relative) = Path::new(current_path).strip_prefix(container_worktrees) {
+                repository_worktrees.join(relative)
+            } else if Path::new(current_path).is_absolute() {
+                PathBuf::from(current_path)
+            } else {
+                worktree_path.join(current_path)
+            };
+        let authoritative_target = fs::canonicalize(&target_to_validate).map_err(|err| {
+            Error::validation(format!(
+                "Cannot validate in-guest gitdir target '{}' as '{}': {err}",
+                current_path,
+                target_to_validate.display()
+            ))
+        })?;
+        let entry = authoritative_target
+            .strip_prefix(&repository_worktrees)
+            .ok()
+            .and_then(|relative| {
+                let components: Vec<_> = relative.components().collect();
+                (components.len() == 1 && matches!(components[0], std::path::Component::Normal(_)))
+                    .then_some(components[0].as_os_str())
+            })
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "Git metadata target '{}' is not one exact repository worktree entry",
+                    authoritative_target.display()
+                ))
+            })?;
+        let entry = entry
+            .to_str()
+            .ok_or_else(|| Error::validation("Invalid UTF-8 in Git worktree entry".to_string()))?;
+        let container_target = container_worktrees.join(entry);
+        let new_gitdir_line = format!("gitdir: {}", container_target.display());
+        let new_content = content.replacen(gitdir_line, &new_gitdir_line, 1);
+        write_text_file(&git_file, &new_content)?;
+
+        tracing::info!(
+            "Projected Git worktree metadata into managed devcontainer: {}",
+            container_target.display()
+        );
+        Ok(())
+    }
+
+    /// Resolve the repository's authoritative shared Git metadata. `repo_root` may itself be a
+    /// linked worktree, so canonicalizing `<repo_root>/.git` is insufficient: it resolves to that
+    /// worktree's entry instead of the common directory that owns all sibling worktrees.
+    fn repository_worktrees_dir(&self) -> Result<PathBuf> {
+        Ok(repository_common_git_dir(&self.repo_root)?.join("worktrees"))
+    }
+}
+
+fn repository_common_git_dir(repo_root: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| {
+            Error::git(format!(
+                "Failed to resolve repository shared Git metadata: {err}"
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(Error::git(format!(
+            "Failed to resolve repository shared Git metadata: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Err(Error::validation(
+            "Repository shared Git metadata path is empty".to_string(),
+        ));
+    }
+    let common_dir = PathBuf::from(raw);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        repo_root.join(common_dir)
+    };
+    fs::canonicalize(&common_dir).map_err(|err| {
+        Error::validation(format!(
+            "Cannot validate repository shared Git metadata at '{}': {err}",
+            common_dir.display()
+        ))
+    })
 }
 
 fn relative_path_between(from: &Path, to: &Path) -> Option<PathBuf> {
@@ -3351,7 +3477,6 @@ fn prepare_in_guest_devcontainer_config(
     let mut value = jsonc_parser::parse_to_serde_value(&source, &Default::default())
         .map_err(|err| Error::validation(format!("Failed to parse devcontainer JSONC: {err:?}")))?
         .ok_or_else(|| Error::validation("Devcontainer configuration is empty"))?;
-    sanitize_in_guest_devcontainer_json(&mut value)?;
 
     let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
     let compose_references: Vec<String> = match config.docker_compose_file.as_ref() {
@@ -3371,6 +3496,8 @@ fn prepare_in_guest_devcontainer_config(
         .iter()
         .map(|path| devcontainer_dir.join(path))
         .collect();
+    let security_option_in_devcontainer = config.service.is_none() || compose_files.is_empty();
+    sanitize_in_guest_devcontainer_json(&mut value, security_option_in_devcontainer)?;
     for compose_file in &compose_files {
         if let Ok(document) = fs::read_to_string(compose_file).and_then(|source| {
             serde_yaml::from_str::<serde_yaml::Value>(&source)
@@ -3476,7 +3603,10 @@ fn prepare_in_guest_devcontainer_config(
     Ok(())
 }
 
-fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<()> {
+fn sanitize_in_guest_devcontainer_json(
+    value: &mut serde_json::Value,
+    security_option_in_devcontainer: bool,
+) -> Result<()> {
     let object = value
         .as_object_mut()
         .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
@@ -3499,10 +3629,17 @@ fn sanitize_in_guest_devcontainer_json(value: &mut serde_json::Value) -> Result<
     object.remove("portsAttributes");
     object.remove("otherPortsAttributes");
     object.remove("capAdd");
-    object.insert(
-        "securityOpt".to_string(),
-        serde_json::json!([IN_GUEST_SECCOMP_SECURITY_OPTION]),
-    );
+    if security_option_in_devcontainer {
+        object.insert(
+            "securityOpt".to_string(),
+            serde_json::json!([IN_GUEST_SECCOMP_SECURITY_OPTION]),
+        );
+    } else {
+        // Compose devcontainers receive the same mandatory option from the generated service
+        // facade. Repeating it in devcontainer.json makes the CLI generate a later Compose
+        // fragment with the same list entry, which Compose rejects as a duplicate.
+        object.remove("securityOpt");
+    }
     object.insert("privileged".to_string(), serde_json::Value::Bool(false));
 
     if let Some(features) = object
@@ -4119,12 +4256,7 @@ fn in_guest_primary_volumes(
         serde_yaml::Value::String(workspace_folder.to_string()),
     );
 
-    let authoritative_git = fs::canonicalize(repo_root.join(".git")).map_err(|err| {
-        Error::validation(format!(
-            "Cannot prepare in-guest Git metadata facade from '{}': {err}",
-            repo_root.join(".git").display()
-        ))
-    })?;
+    let authoritative_git = repository_common_git_dir(repo_root)?;
     let mut git = serde_yaml::Mapping::new();
     git.insert(
         serde_yaml::Value::String("type".to_string()),
@@ -4333,12 +4465,7 @@ fn prepare_sbx_compose_override(
         serde_yaml::Value::String("unless-stopped".to_string()),
     );
     if replace_main_git_mount {
-        let authoritative_git = fs::canonicalize(repo_root.join(".git")).map_err(|err| {
-            Error::validation(format!(
-                "Cannot prepare the SBX Git metadata facade from '{}': {err}",
-                repo_root.join(".git").display()
-            ))
-        })?;
+        let authoritative_git = repository_common_git_dir(repo_root)?;
         let mut volume = serde_yaml::Mapping::new();
         volume.insert(
             serde_yaml::Value::String("type".to_string()),
@@ -7382,6 +7509,98 @@ mod tests {
     }
 
     #[test]
+    fn test_in_guest_git_worktree_projection_round_trips_when_repo_is_a_worktree() {
+        let temp_dir = TempDir::new().unwrap();
+        let main_repo = temp_dir.path().join("agentify");
+        fs::create_dir_all(&main_repo).unwrap();
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        fs::write(main_repo.join("README.md"), "# Agentify\n").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+
+        let source_worktree = temp_dir.path().join("coding-demo-e2e-integrated");
+        let source_created = Command::new("git")
+            .args(["worktree", "add", "-b", "feature/source"])
+            .arg(&source_worktree)
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        assert!(source_created.status.success());
+
+        let task_worktree = temp_dir.path().join("aex-nested-source");
+        let task_created = Command::new("git")
+            .args(["worktree", "add", "-b", "feature/aex-nested-source"])
+            .arg(&task_worktree)
+            .current_dir(&source_worktree)
+            .output()
+            .unwrap();
+        assert!(task_created.status.success());
+
+        let workflow = FeatureWorkflow::new(&source_worktree).unwrap();
+        let volumes = in_guest_primary_volumes(
+            &source_worktree,
+            &task_worktree,
+            "/workspaces/aex-nested-source",
+        )
+        .unwrap();
+        assert_eq!(
+            volumes[1].get("source").and_then(serde_yaml::Value::as_str),
+            Some(
+                fs::canonicalize(main_repo.join(".git"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        workflow
+            .set_in_guest_git_worktree_path(&task_worktree)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(task_worktree.join(".git")).unwrap(),
+            "gitdir: /workspaces/main/.git/worktrees/aex-nested-source\n"
+        );
+
+        workflow.fix_git_worktree_path(&task_worktree).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(task_worktree.join(".git")).unwrap(),
+            "gitdir: ../agentify/.git/worktrees/aex-nested-source\n"
+        );
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&task_worktree)
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "repaired nested worktree is unusable: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    #[test]
     fn test_fix_git_worktree_path_rejects_nested_container_metadata() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
@@ -7575,7 +7794,7 @@ mod tests {
             "postCreateCommand": "bin/setup"
         });
 
-        sanitize_in_guest_devcontainer_json(&mut config).unwrap();
+        sanitize_in_guest_devcontainer_json(&mut config, true).unwrap();
 
         assert!(config.get("initializeCommand").is_none());
         assert!(config["containerEnv"].as_object().unwrap().is_empty());
@@ -7620,7 +7839,7 @@ mod tests {
                 "REDIS_HOST": "${localEnv:REDIS_HOST}"
             }
         });
-        sanitize_in_guest_devcontainer_json(&mut config).unwrap();
+        sanitize_in_guest_devcontainer_json(&mut config, true).unwrap();
         assert_eq!(
             config["containerEnv"],
             serde_json::json!({
@@ -7629,6 +7848,19 @@ mod tests {
                 "RAILS_ENV": "development"
             })
         );
+    }
+
+    #[test]
+    fn test_in_guest_compose_security_option_is_owned_only_by_the_compose_facade() {
+        let mut config = serde_json::json!({
+            "dockerComposeFile": "compose.yaml",
+            "service": "app",
+            "securityOpt": ["seccomp=unconfined"]
+        });
+
+        sanitize_in_guest_devcontainer_json(&mut config, false).unwrap();
+
+        assert!(config.get("securityOpt").is_none());
     }
 
     #[test]

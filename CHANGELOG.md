@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep linked trusted-tool sockets at strict owner-only permissions across guest/container UID
   mismatches; exact run/lease/consumer binding, immutable spool descriptors, single-use replay
   claims, bounded relay framing, and residue-checked teardown replace direct socket mounts.
+- Restore a non-writable `0022` file-creation mask for every in-guest runtime and managed-provider
+  command, even when the nested container exec implementation supplies an unsafe ambient mask.
 - The in-guest facade runs before host-side repository lifecycle behavior, disables checkout hooks
   and filter drivers, strips ambient host env/mount authority plus outside/in/from-Docker feature
   aliases, replaces repository volume and port publication declarations with the exact canonical
@@ -46,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compose-backed in-guest devcontainers now receive the mandatory seccomp option from one generated
+  facade only, avoiding duplicate `security_opt` entries from Dev Containers CLI overlays.
+- In-guest devcontainer failures now carry stable content-free diagnostic codes for orchestration
+  feedback without exposing repository output or credential-bearing startup logs.
+- Active in-guest worktrees now use BranchBox's validated `/workspaces/main` Git projection without
+  repository-specific hooks; restoration and normal teardown resolve Git's shared common directory
+  when BranchBox itself is invoked from a linked worktree.
 - In-guest failed starts now pre-record and recover Dev Containers/Compose ownership, remove
   dependency-only containers, networks, volumes, materializations, worktrees, and task branches,
   and bypass repository modules/adapters during no-registry cleanup.

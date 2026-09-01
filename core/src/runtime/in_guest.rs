@@ -42,6 +42,7 @@ const TOOL_RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
 const LEGACY_PROVIDER_ENVIRONMENT: &str = "OPENAI_API_KEY";
 const REQUIRED_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
+const SECURE_EXEC_WRAPPER: &str = "umask 0022; exec \"$@\"";
 const IN_GUEST_PORT_PROXY_SCRIPT: &str = r#"set -eu
 docker_bin="$1"
 container_id="$2"
@@ -691,8 +692,7 @@ impl InGuestRuntimeProvider {
         self.verify_resolved_configuration(worktree_path, config_path)?;
         let worktree = worktree_path.to_string_lossy();
         let config = config_path.to_string_lossy();
-        let output = self.checked_devcontainer(
-            "devcontainer startup",
+        let output = self.devcontainer_output(
             &[
                 "up",
                 "--workspace-folder",
@@ -703,11 +703,14 @@ impl InGuestRuntimeProvider {
                 "json",
             ],
             Some(worktree_path),
-        ).map_err(|err| {
-            Error::validation(format!(
-                "{err}. In-guest startup strips host identity, platform secret hooks, ambient env files, and supervisor Docker access; repository primary commands and container lifecycle hooks must tolerate that boundary"
-            ))
-        })?;
+        )?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "in-guest devcontainer startup failed (diagnostic={}): {}. In-guest startup strips host identity, platform secret hooks, ambient env files, and supervisor Docker access; repository primary commands and container lifecycle hooks must tolerate that boundary",
+                devcontainer_start_failure_code(&output.stderr),
+                bounded_failure(&output.stderr)
+            )));
+        }
         parse_container_id(&output)
     }
 
@@ -1270,7 +1273,8 @@ impl InGuestRuntimeProvider {
         for binding in &provider_environment {
             command.args(["--env", &binding.name]);
         }
-        command.arg(container_id).arg(provider).args(args);
+        command.arg(container_id);
+        append_secure_container_exec(&mut command, "branchbox-in-guest-provider", provider, args);
         let status = command.status().map_err(|err| {
             Error::validation(format!(
                 "Failed to execute the managed provider in the devcontainer: {err}"
@@ -1956,20 +1960,20 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             }
         }
         let mut process = self.command(&self.devcontainer);
-        process
-            .args([
-                "exec",
-                "--workspace-folder",
-                &worktree_path.to_string_lossy(),
-                "--config",
-                &config.to_string_lossy(),
-                "/bin/sh",
-                "-lc",
-                "exec \"$@\"",
-                "branchbox-in-guest-exec",
-            ])
-            .args(command)
-            .current_dir(worktree_path);
+        process.args([
+            "exec",
+            "--workspace-folder",
+            &worktree_path.to_string_lossy(),
+            "--config",
+            &config.to_string_lossy(),
+        ]);
+        append_secure_container_exec(
+            &mut process,
+            "branchbox-in-guest-exec",
+            &command[0],
+            &command[1..],
+        );
+        process.current_dir(worktree_path);
         process.output().map(exec_result).map_err(|err| {
             Error::validation(format!("Failed to execute command in devcontainer: {err}"))
         })
@@ -1991,26 +1995,24 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         let container_id = self.start_devcontainer(worktree_path, &config)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
         let mut process = self.command(&self.devcontainer);
-        let status = process
-            .args([
-                "exec",
-                "--workspace-folder",
-                &worktree_path.to_string_lossy(),
-                "--config",
-                &config.to_string_lossy(),
-                "/bin/sh",
-                "-lc",
-                "exec \"$@\"",
-                "branchbox-in-guest-exec",
-            ])
-            .args(command)
-            .current_dir(worktree_path)
-            .status()
-            .map_err(|err| {
-                Error::validation(format!(
-                    "Failed to execute interactive devcontainer command: {err}"
-                ))
-            })?;
+        process.args([
+            "exec",
+            "--workspace-folder",
+            &worktree_path.to_string_lossy(),
+            "--config",
+            &config.to_string_lossy(),
+        ]);
+        append_secure_container_exec(
+            &mut process,
+            "branchbox-in-guest-exec",
+            &command[0],
+            &command[1..],
+        );
+        let status = process.current_dir(worktree_path).status().map_err(|err| {
+            Error::validation(format!(
+                "Failed to execute interactive devcontainer command: {err}"
+            ))
+        })?;
         Ok(status.code().unwrap_or(-1))
     }
 
@@ -3914,6 +3916,34 @@ fn bounded_failure(bytes: &[u8]) -> String {
     format!("…{}", &detail[start..])
 }
 
+fn append_secure_container_exec(
+    command: &mut Command,
+    marker: &str,
+    executable: &str,
+    arguments: &[String],
+) {
+    command
+        .args(["/bin/sh", "-lc", SECURE_EXEC_WRAPPER, marker, executable])
+        .args(arguments);
+}
+
+fn devcontainer_start_failure_code(stderr: &[u8]) -> &'static str {
+    let normalized = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if normalized.contains("security_opt items at") && normalized.contains("are equal") {
+        "devcontainer_compose_duplicate_security_option"
+    } else if normalized.contains("postcreatecommand") {
+        "devcontainer_post_create_failed"
+    } else if normalized.contains("docker compose") {
+        "devcontainer_compose_start_failed"
+    } else if normalized.contains("failed to build") || normalized.contains("buildx") {
+        "devcontainer_image_build_failed"
+    } else if normalized.contains("permission denied") {
+        "devcontainer_permission_denied"
+    } else {
+        "devcontainer_start_failed"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3932,6 +3962,44 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[test]
+    fn devcontainer_start_failures_have_content_free_diagnostic_codes() {
+        assert_eq!(
+            devcontainer_start_failure_code(
+                b"service rails-app.security_opt items at 0 and 1 are equal /private/path"
+            ),
+            "devcontainer_compose_duplicate_security_option"
+        );
+        assert_eq!(
+            devcontainer_start_failure_code(b"postCreateCommand failed: token=private"),
+            "devcontainer_post_create_failed"
+        );
+        assert_eq!(
+            devcontainer_start_failure_code(b"unexpected secret-only failure"),
+            "devcontainer_start_failed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_exec_restores_a_non_writable_default_mask_without_shell_interpolation() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("created-by-provider");
+        let arguments = vec![output.to_string_lossy().to_string()];
+        let mut process = Command::new("/bin/sh");
+        process.args(["-c", "umask 0000; exec \"$@\"", "branchbox-outer-test"]);
+        append_secure_container_exec(
+            &mut process,
+            "branchbox-inner-test",
+            "/usr/bin/touch",
+            &arguments,
+        );
+
+        assert!(process.status().unwrap().success());
+        assert_eq!(fs::metadata(output).unwrap().mode() & 0o777, 0o644);
+        assert_eq!(SECURE_EXEC_WRAPPER, "umask 0022; exec \"$@\"");
     }
 
     #[cfg(unix)]
