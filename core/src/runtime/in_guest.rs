@@ -5223,22 +5223,58 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
     #[test]
     #[ignore = "requires Docker and the Alpine conformance image"]
     fn shared_directory_is_readable_but_not_writable_for_a_non_root_container_user() {
-        let temporary = tempfile::tempdir().unwrap();
-        let shared = temporary.path().join("evidence");
-        fs::create_dir(&shared).unwrap();
-        let mut permissions = fs::metadata(&shared).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&shared, permissions).unwrap();
-        let proof = shared.join("proof.txt");
-        fs::write(&proof, b"finalized-evidence\n").unwrap();
-        let mut permissions = fs::metadata(&proof).unwrap().permissions();
-        permissions.set_mode(0o444);
-        fs::set_permissions(&proof, permissions).unwrap();
+        struct DockerVolumeCleanup(String);
 
-        let mount = format!(
-            "type=bind,src={},dst=/run/branchbox/leases/shared/evidence,readonly",
-            shared.canonicalize().unwrap().display()
-        );
+        impl Drop for DockerVolumeCleanup {
+            fn drop(&mut self) {
+                let _ = Command::new("docker")
+                    .args(["volume", "rm", "--force", &self.0])
+                    .output();
+            }
+        }
+
+        let unique = tempfile::Builder::new()
+            .prefix("branchbox-shared-evidence-")
+            .tempdir()
+            .unwrap();
+        let suffix = unique
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .replace('_', "-");
+        let volume = format!("branchbox-shared-evidence-{suffix}");
+        let _cleanup = DockerVolumeCleanup(volume.clone());
+        assert!(Command::new("docker")
+            .args(["volume", "create", &volume])
+            .status()
+            .unwrap()
+            .success());
+
+        let writable_mount = format!("type=volume,src={volume},dst=/evidence");
+        assert!(Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                REQUIRED_SECCOMP_SECURITY_OPTION,
+                "--mount",
+                &writable_mount,
+                "alpine:3.22",
+                "sh",
+                "-c",
+                "printf 'finalized-evidence\\n' >/evidence/proof.txt && chmod 0444 /evidence/proof.txt && chmod 0755 /evidence",
+            ])
+            .status()
+            .unwrap()
+            .success());
+
+        let readonly_mount =
+            format!("type=volume,src={volume},dst=/run/branchbox/leases/shared/evidence,readonly");
         let status = Command::new("docker")
             .args([
                 "run",
@@ -5253,7 +5289,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
                 "1000:1000",
                 "--mount",
             ])
-            .arg(mount)
+            .arg(readonly_mount)
             .args([
                 "alpine:3.22",
                 "sh",
