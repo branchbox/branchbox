@@ -49,6 +49,46 @@ For example:
 The complete manifest also carries the run, outer-runtime, repository, branch, workspace, and
 published-port fields required by version 1.
 
+## Preloaded service images
+
+A version 2 assignment can opt into build-free startup by binding Compose service names to exact
+preloaded image references:
+
+```json
+{
+  "version": "2",
+  "published_ports": [{"host": 3000, "runtime": 3000}],
+  "service_images": {
+    "app": "registry.example/team/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "database": "registry.example/team/database@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "port_proxy_image": "registry.example/runtime/tcp-proxy@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}
+```
+
+When `service_images` is present and non-empty, it must bind every runnable service declared by the
+repository Compose files. Services that BranchBox disables as outer tunnel connectors are excluded.
+Unknown, disabled, missing, duplicate map entries, indirect Compose includes, interpolated,
+URL-shaped, tag-only, and non-SHA-256 image values are rejected before startup. A valid value is a
+literal lowercase `registry/repository@sha256:<64 lowercase hexadecimal characters>` reference; an
+optional tag and registry port may precede the digest. A local image content digest in the exact
+form `sha256:<64 lowercase hexadecimal characters>` is also accepted.
+
+When preloaded service mode publishes one or more ports, `port_proxy_image` is required and follows
+the same immutable-reference rules. BranchBox inspects that exact image locally before startup and
+passes it as an argument to the out-of-Compose loopback proxy launch with Docker `--pull=never`.
+This closes the only image path outside the generated Compose facade. A version 2 assignment may
+also set `port_proxy_image` independently of `service_images`; version 1 and version 2 assignments
+without preloaded service images retain the legacy proxy image when this field is absent.
+
+BranchBox writes the assigned `image`, resets the repository `build`, and sets `pull_policy: never`
+for each bound service. It also removes devcontainer `build` and `features`, disables remote-user UID
+image rewriting, and verifies every assigned reference with a local Docker image inspection before
+running the Dev Containers CLI. A missing image therefore fails the assignment instead of building
+or pulling during the task. Omitting `service_images` preserves existing Compose startup behavior;
+omitting both preloaded-image fields preserves the complete version 1 and existing version 2
+startup behavior.
+
 ## Shared directory, tool endpoint, and request-spool leases
 
 Version 2 can also expose provider-neutral, per-run channels to the primary devcontainer. A

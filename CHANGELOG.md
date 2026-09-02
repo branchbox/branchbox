@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Allow managed in-guest assignments to bind every runnable Compose service to a preloaded,
+  digest-pinned image; the generated facade removes repository builds, disables pulls and
+  devcontainer image derivation, verifies each exact image locally, and fails closed when a binding
+  or preloaded image is missing. Published ports in this mode also require an immutable preloaded
+  proxy image launched outside Compose with Docker pulls disabled.
 - Force the managed in-guest primary devcontainer onto Docker's built-in seccomp profile so direct
   `AF_VSOCK` access is denied while signed shared-directory leases remain portable to non-root
   container users.

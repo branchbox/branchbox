@@ -3496,8 +3496,13 @@ fn prepare_in_guest_devcontainer_config(
         .iter()
         .map(|path| devcontainer_dir.join(path))
         .collect();
+    let preloaded_image_mode = !plan.service_images().is_empty();
     let security_option_in_devcontainer = config.service.is_none() || compose_files.is_empty();
-    sanitize_in_guest_devcontainer_json(&mut value, security_option_in_devcontainer)?;
+    sanitize_in_guest_devcontainer_json(
+        &mut value,
+        security_option_in_devcontainer,
+        preloaded_image_mode,
+    )?;
     for compose_file in &compose_files {
         if let Ok(document) = fs::read_to_string(compose_file).and_then(|source| {
             serde_yaml::from_str::<serde_yaml::Value>(&source)
@@ -3528,6 +3533,10 @@ fn prepare_in_guest_devcontainer_config(
         }
     }
     let workspace_folder = effective_in_guest_workspace_folder(&config, worktree_path)?;
+    let assignment = InGuestComposeAssignment {
+        project_environment: project_environment.map(|(source, _)| source),
+        service_images: plan.service_images(),
+    };
     let omitted_services = prepare_outer_tunnel_compose_override(
         repo_root,
         worktree_path,
@@ -3535,7 +3544,7 @@ fn prepare_in_guest_devcontainer_config(
         config.service.as_deref(),
         &workspace_folder,
         &compose_files,
-        project_environment.map(|(source, _)| source),
+        &assignment,
     )?;
 
     let object = value
@@ -3606,6 +3615,7 @@ fn prepare_in_guest_devcontainer_config(
 fn sanitize_in_guest_devcontainer_json(
     value: &mut serde_json::Value,
     security_option_in_devcontainer: bool,
+    preloaded_image_mode: bool,
 ) -> Result<()> {
     let object = value
         .as_object_mut()
@@ -3641,6 +3651,18 @@ fn sanitize_in_guest_devcontainer_json(
         object.remove("securityOpt");
     }
     object.insert("privileged".to_string(), serde_json::Value::Bool(false));
+
+    if preloaded_image_mode {
+        // The assigned image already contains the complete devcontainer toolchain. Features,
+        // Dockerfile configuration, and UID rewriting make the Dev Containers CLI derive a new
+        // image, which would violate the no-build assignment contract.
+        object.remove("features");
+        object.remove("build");
+        object.insert(
+            "updateRemoteUserUID".to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
 
     if let Some(features) = object
         .get_mut("features")
@@ -4003,6 +4025,11 @@ fn effective_in_guest_workspace_folder(
     Ok(folder)
 }
 
+struct InGuestComposeAssignment<'a> {
+    project_environment: Option<&'a Path>,
+    service_images: &'a BTreeMap<String, String>,
+}
+
 fn prepare_outer_tunnel_compose_override(
     repo_root: &Path,
     worktree_path: &Path,
@@ -4010,7 +4037,7 @@ fn prepare_outer_tunnel_compose_override(
     primary_service: Option<&str>,
     workspace_folder: &str,
     compose_files: &[PathBuf],
-    project_environment: Option<&Path>,
+    assignment: &InGuestComposeAssignment<'_>,
 ) -> Result<std::collections::BTreeSet<String>> {
     use serde_yaml::value::{Tag, TaggedValue};
 
@@ -4023,6 +4050,11 @@ fn prepare_outer_tunnel_compose_override(
         let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&source) else {
             continue;
         };
+        if !assignment.service_images.is_empty() && document.get("include").is_some() {
+            return Err(Error::validation(
+                "Preloaded service image assignments reject Compose include because indirect services cannot be bound exactly",
+            ));
+        }
         let Some(services) = document
             .get("services")
             .and_then(serde_yaml::Value::as_mapping)
@@ -4039,6 +4071,12 @@ fn prepare_outer_tunnel_compose_override(
             }
         }
     }
+    validate_preloaded_service_image_coverage(
+        &definitions,
+        &omitted,
+        primary_service,
+        assignment.service_images,
+    )?;
     let override_path = devcontainer_dir.join(SBX_COMPOSE_OVERRIDE);
     let mut document = if override_path.is_file() {
         serde_yaml::from_str::<serde_yaml::Value>(&fs::read_to_string(&override_path)?)
@@ -4106,6 +4144,29 @@ fn prepare_outer_tunnel_compose_override(
         }
     }
 
+    for (name, image) in assignment.service_images {
+        let service = services
+            .entry(serde_yaml::Value::String(name.clone()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
+        service.insert(
+            serde_yaml::Value::String("image".to_string()),
+            serde_yaml::Value::String(image.clone()),
+        );
+        service.insert(
+            serde_yaml::Value::String("build".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!reset"),
+                value: serde_yaml::Value::Null,
+            })),
+        );
+        service.insert(
+            serde_yaml::Value::String("pull_policy".to_string()),
+            serde_yaml::Value::String("never".to_string()),
+        );
+    }
+
     if let Some(primary_service) = primary_service {
         let primary = services
             .entry(serde_yaml::Value::String(primary_service.to_string()))
@@ -4132,7 +4193,8 @@ fn prepare_outer_tunnel_compose_override(
                 )]),
             })),
         );
-        let env_files = project_environment
+        let env_files = assignment
+            .project_environment
             .map(|source| {
                 let mut entry = serde_yaml::Mapping::new();
                 entry.insert(
@@ -4208,6 +4270,52 @@ fn prepare_outer_tunnel_compose_override(
         .map_err(|err| Error::config(format!("Failed to serialize Compose facade: {err}")))?;
     write_text_file(&override_path, &rendered)?;
     Ok(omitted)
+}
+
+fn validate_preloaded_service_image_coverage(
+    definitions: &BTreeMap<String, serde_yaml::Value>,
+    omitted: &std::collections::BTreeSet<String>,
+    primary_service: Option<&str>,
+    service_images: &BTreeMap<String, String>,
+) -> Result<()> {
+    if service_images.is_empty() {
+        return Ok(());
+    }
+    let primary = primary_service.ok_or_else(|| {
+        Error::validation(
+            "Preloaded service images require a Compose-backed primary devcontainer service",
+        )
+    })?;
+    let runnable = definitions
+        .keys()
+        .filter(|name| !omitted.contains(*name))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if !runnable.contains(primary) {
+        return Err(Error::validation(format!(
+            "Preloaded service image assignment cannot resolve primary Compose service '{primary}'"
+        )));
+    }
+    let assigned = service_images
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = runnable.difference(&assigned).cloned().collect::<Vec<_>>();
+    let unknown = assigned.difference(&runnable).cloned().collect::<Vec<_>>();
+    if !missing.is_empty() || !unknown.is_empty() {
+        let mut details = Vec::new();
+        if !missing.is_empty() {
+            details.push(format!("missing: {}", missing.join(", ")));
+        }
+        if !unknown.is_empty() {
+            details.push(format!("unknown or disabled: {}", unknown.join(", ")));
+        }
+        return Err(Error::validation(format!(
+            "Preloaded service images must bind every runnable Compose service exactly ({})",
+            details.join("; ")
+        )));
+    }
+    Ok(())
 }
 
 fn is_platform_connector(name: &str, service: &serde_yaml::Value) -> bool {
@@ -7794,7 +7902,7 @@ mod tests {
             "postCreateCommand": "bin/setup"
         });
 
-        sanitize_in_guest_devcontainer_json(&mut config, true).unwrap();
+        sanitize_in_guest_devcontainer_json(&mut config, true, false).unwrap();
 
         assert!(config.get("initializeCommand").is_none());
         assert!(config["containerEnv"].as_object().unwrap().is_empty());
@@ -7839,7 +7947,7 @@ mod tests {
                 "REDIS_HOST": "${localEnv:REDIS_HOST}"
             }
         });
-        sanitize_in_guest_devcontainer_json(&mut config, true).unwrap();
+        sanitize_in_guest_devcontainer_json(&mut config, true, false).unwrap();
         assert_eq!(
             config["containerEnv"],
             serde_json::json!({
@@ -7858,9 +7966,137 @@ mod tests {
             "securityOpt": ["seccomp=unconfined"]
         });
 
-        sanitize_in_guest_devcontainer_json(&mut config, false).unwrap();
+        sanitize_in_guest_devcontainer_json(&mut config, false, false).unwrap();
 
         assert!(config.get("securityOpt").is_none());
+    }
+
+    #[test]
+    fn test_preloaded_image_mode_disables_devcontainer_image_derivation() {
+        let mut config = serde_json::json!({
+            "build": {"dockerfile": "Dockerfile"},
+            "features": {"ghcr.io/devcontainers/features/rust:1": {}},
+            "updateRemoteUserUID": true,
+            "postCreateCommand": "bin/setup"
+        });
+
+        sanitize_in_guest_devcontainer_json(&mut config, false, true).unwrap();
+
+        assert!(config.get("build").is_none());
+        assert!(config.get("features").is_none());
+        assert_eq!(config["updateRemoteUserUID"], false);
+        assert_eq!(config["postCreateCommand"], "bin/setup");
+    }
+
+    #[test]
+    fn test_preloaded_images_replace_builds_and_disable_pulls_for_all_runnable_services() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  app:
+    build: {context: ..}
+    depends_on: [database, tunnel]
+  database:
+    image: database:mutable
+  tunnel:
+    image: tunnel:mutable
+"#,
+        )
+        .unwrap();
+        let digest = "c".repeat(64);
+        let images = BTreeMap::from([
+            (
+                "app".to_string(),
+                format!("registry.example/team/app@sha256:{digest}"),
+            ),
+            (
+                "database".to_string(),
+                format!("registry.example/team/database@sha256:{digest}"),
+            ),
+        ]);
+
+        let omitted = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &images,
+            },
+        )
+        .unwrap();
+        assert_eq!(omitted, ["tunnel".to_string()].into_iter().collect());
+
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        assert!(rendered.contains("build: !reset null"));
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        for (service, image) in &images {
+            assert_eq!(
+                facade["services"][service]["image"].as_str(),
+                Some(image.as_str())
+            );
+            assert_eq!(
+                facade["services"][service]["pull_policy"].as_str(),
+                Some("never")
+            );
+            let build = &facade["services"][service]["build"];
+            assert!(matches!(
+                build,
+                serde_yaml::Value::Tagged(tagged)
+                    if tagged.tag == serde_yaml::value::Tag::new("!reset")
+                        && tagged.value.is_null()
+            ));
+        }
+
+        let incomplete = BTreeMap::from([(
+            "app".to_string(),
+            format!("registry.example/team/app@sha256:{digest}"),
+        )]);
+        let error = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &incomplete,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("missing: database"));
+
+        fs::write(
+            &compose,
+            "include: [sidecars.yaml]\nservices:\n  app:\n    image: app:mutable\n",
+        )
+        .unwrap();
+        let error = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &BTreeMap::from([("app".to_string(), images["app"].clone())]),
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("reject Compose include"));
     }
 
     #[test]
@@ -7947,7 +8183,10 @@ volumes:
             Some("rails-app"),
             "/workspaces/coding-demo",
             std::slice::from_ref(&compose),
-            Some(&project_environment),
+            &InGuestComposeAssignment {
+                project_environment: Some(&project_environment),
+                service_images: &BTreeMap::new(),
+            },
         )
         .unwrap();
         assert_eq!(

@@ -34,6 +34,7 @@ const TOOL_ENDPOINT_TARGET_ROOT: &str = "/run/branchbox/leases/tool-endpoints";
 const TOOL_REQUEST_TARGET_ROOT: &str = "/run/branchbox/leases/tool-requests";
 const MAX_PROVIDER_ENVIRONMENT_BINDINGS: usize = 16;
 const MAX_PROVIDER_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
+const MAX_SERVICE_IMAGE_BINDINGS: usize = 64;
 const MAX_TOOL_REQUESTS: usize = 16;
 const MAX_TOOL_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_TOOL_REQUEST_QUOTA_BYTES: usize = 1024 * 1024;
@@ -43,17 +44,23 @@ const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
 const LEGACY_PROVIDER_ENVIRONMENT: &str = "OPENAI_API_KEY";
 const REQUIRED_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
 const SECURE_EXEC_WRAPPER: &str = "umask 0022; exec \"$@\"";
+const LEGACY_PORT_PROXY_IMAGE: &str = "alpine/socat";
 const IN_GUEST_PORT_PROXY_SCRIPT: &str = r#"set -eu
 docker_bin="$1"
 container_id="$2"
 proxy_name="$3"
 host_port="$4"
 runtime_port="$5"
+proxy_image="$6"
+pull_policy="$7"
 network_id=$("$docker_bin" inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id" | head -n 1)
 target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
 target_host=${target_host#/}
 "$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
-exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
+if test "$pull_policy" = never; then
+  exec "$docker_bin" run -d --pull=never --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}"
+fi
+exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 const INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT: &str = r#"set -eu
 root="$1"
 uid="$2"
@@ -229,6 +236,7 @@ pub struct InGuestFacadePlan {
     manifest_path: PathBuf,
     tunnel_placement: InGuestTunnelPlacement,
     published_ports: Vec<RuntimePort>,
+    service_images: BTreeMap<String, String>,
     mounts: Vec<InGuestMount>,
     tool_request_spools: Vec<ToolRequestSpool>,
     linked_tool_endpoints: BTreeSet<String>,
@@ -245,6 +253,10 @@ impl InGuestFacadePlan {
 
     pub fn tunnel_placement(&self) -> InGuestTunnelPlacement {
         self.tunnel_placement
+    }
+
+    pub fn service_images(&self) -> &BTreeMap<String, String> {
+        &self.service_images
     }
 
     pub fn mounts(&self) -> impl Iterator<Item = (&Path, &Path)> {
@@ -387,6 +399,10 @@ struct AssignmentManifest {
     tunnel_placement: InGuestTunnelPlacement,
     #[serde(default)]
     published_ports: Vec<RuntimePort>,
+    #[serde(default, deserialize_with = "deserialize_service_images")]
+    service_images: BTreeMap<String, String>,
+    #[serde(default)]
+    port_proxy_image: Option<String>,
     #[serde(default)]
     leases: Vec<AssignedLease>,
 }
@@ -714,6 +730,30 @@ impl InGuestRuntimeProvider {
         parse_container_id(&output)
     }
 
+    fn verify_preloaded_images(
+        &self,
+        service_images: &BTreeMap<String, String>,
+        port_proxy_image: Option<&str>,
+    ) -> Result<()> {
+        for (service, image) in service_images {
+            let output = self.docker_output(&["image", "inspect", "--", image])?;
+            if !output.status.success() {
+                return Err(Error::validation(format!(
+                    "Preloaded image for Compose service '{service}' is unavailable at its assigned digest; in-guest startup will not build or pull it"
+                )));
+            }
+        }
+        if let Some(image) = port_proxy_image {
+            let output = self.docker_output(&["image", "inspect", "--", image])?;
+            if !output.status.success() {
+                return Err(Error::validation(
+                    "Preloaded published-port proxy image is unavailable at its assigned digest; in-guest startup will not pull it",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn verify_resolved_configuration(
         &self,
         worktree_path: &Path,
@@ -887,8 +927,15 @@ impl InGuestRuntimeProvider {
         run_id: &str,
         container_id: &str,
         port: RuntimePort,
+        port_proxy_image: Option<&str>,
     ) -> Result<String> {
         let proxy_name = Self::proxy_name(run_id, port.runtime);
+        let proxy_image = port_proxy_image.unwrap_or(LEGACY_PORT_PROXY_IMAGE);
+        let pull_policy = if port_proxy_image.is_some() {
+            "never"
+        } else {
+            "legacy"
+        };
         let mut command = self.command(Path::new("sh"));
         let output = command
             .args(["-c", IN_GUEST_PORT_PROXY_SCRIPT, "branchbox-in-guest-proxy"])
@@ -898,6 +945,8 @@ impl InGuestRuntimeProvider {
                 &proxy_name,
                 &port.host.to_string(),
                 &port.runtime.to_string(),
+                proxy_image,
+                pull_policy,
             ])
             .output()
             .map_err(|err| {
@@ -1902,6 +1951,15 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             .clone()
             .unwrap_or(Self::config_path(context.worktree_path)?);
         let result = (|| {
+            let identity = metadata.in_guest.as_ref().ok_or_else(|| {
+                Error::validation("In-guest runtime metadata is missing assignment identity")
+            })?;
+            let state = Self::read_state(&identity.state_path)?;
+            let assignment = load_assignment(&state.manifest_path)?;
+            self.verify_preloaded_images(
+                &assignment.manifest.service_images,
+                assignment.manifest.port_proxy_image.as_deref(),
+            )?;
             let container_id = self.start_devcontainer(context.worktree_path, &config)?;
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
@@ -1921,7 +1979,12 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 .ok_or_else(|| Error::validation("In-guest assignment identity is missing"))?;
             let mut proxies = Vec::new();
             for port in &metadata.published_ports {
-                proxies.push(self.reconcile_port_proxy(&run_id, &container_id, *port)?);
+                proxies.push(self.reconcile_port_proxy(
+                    &run_id,
+                    &container_id,
+                    *port,
+                    assignment.manifest.port_proxy_image.as_deref(),
+                )?);
             }
             let projects = self.discover_compose_projects(context.worktree_path)?;
             self.update_state_after_start(metadata, &container_id, proxies, projects)
@@ -1955,8 +2018,15 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         let container_id = self.start_devcontainer(worktree_path, &config)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
         if let Some(identity) = metadata.in_guest.as_ref() {
+            let state = Self::read_state(&identity.state_path)?;
+            let assignment = load_assignment(&state.manifest_path)?;
             for port in &metadata.published_ports {
-                self.reconcile_port_proxy(&identity.run_id, &container_id, *port)?;
+                self.reconcile_port_proxy(
+                    &identity.run_id,
+                    &container_id,
+                    *port,
+                    assignment.manifest.port_proxy_image.as_deref(),
+                )?;
             }
         }
         let mut process = self.command(&self.devcontainer);
@@ -2325,6 +2395,7 @@ pub fn load_in_guest_facade_plan(
         manifest_path: assignment.manifest_path,
         tunnel_placement: assignment.manifest.tunnel_placement,
         published_ports: assignment.manifest.published_ports,
+        service_images: assignment.manifest.service_images,
         mounts: assignment.mounts,
         tool_request_spools: assignment.tool_request_spools,
         linked_tool_endpoints: assignment.linked_tool_endpoints,
@@ -2349,6 +2420,13 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     validate_opaque_identifier(&manifest.outer_runtime_id, "outer_runtime_id")?;
     validate_git_revision(&manifest.repository.revision)?;
     validate_ports(&manifest.published_ports)?;
+    validate_service_images(&manifest.version, &manifest.service_images)?;
+    validate_port_proxy_image(
+        &manifest.version,
+        &manifest.service_images,
+        &manifest.published_ports,
+        manifest.port_proxy_image.as_deref(),
+    )?;
 
     let assignment_root = manifest_path.parent().ok_or_else(|| {
         Error::validation("In-guest assignment manifest must have a parent directory")
@@ -3042,6 +3120,154 @@ fn validate_ports(ports: &[RuntimePort]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_service_images(version: &str, images: &BTreeMap<String, String>) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    if version != MANAGED_MANIFEST_VERSION {
+        return Err(Error::validation(
+            "Preloaded service images require a managed version 2 assignment",
+        ));
+    }
+    if images.len() > MAX_SERVICE_IMAGE_BINDINGS {
+        return Err(Error::validation(format!(
+            "Managed assignments permit at most {MAX_SERVICE_IMAGE_BINDINGS} preloaded service images"
+        )));
+    }
+    for (service, image) in images {
+        validate_compose_service_name(service)?;
+        validate_immutable_image_reference(image)?;
+    }
+    Ok(())
+}
+
+fn validate_port_proxy_image(
+    version: &str,
+    service_images: &BTreeMap<String, String>,
+    published_ports: &[RuntimePort],
+    port_proxy_image: Option<&str>,
+) -> Result<()> {
+    if !service_images.is_empty() && !published_ports.is_empty() && port_proxy_image.is_none() {
+        return Err(Error::validation(
+            "Preloaded service images with published ports require an immutable port_proxy_image binding",
+        ));
+    }
+    let Some(image) = port_proxy_image else {
+        return Ok(());
+    };
+    if version != MANAGED_MANIFEST_VERSION {
+        return Err(Error::validation(
+            "Preloaded port proxy images require a managed version 2 assignment",
+        ));
+    }
+    validate_immutable_image_reference(image)
+}
+
+fn deserialize_service_images<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ServiceImageVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ServiceImageVisitor {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a unique Compose service-to-image map")
+        }
+
+        fn visit_map<M>(
+            self,
+            mut entries: M,
+        ) -> std::result::Result<BTreeMap<String, String>, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            let mut images = BTreeMap::new();
+            while let Some((service, image)) = entries.next_entry::<String, String>()? {
+                if images.insert(service.clone(), image).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate preloaded image binding for service '{service}'"
+                    )));
+                }
+            }
+            Ok(images)
+        }
+    }
+
+    deserializer.deserialize_map(ServiceImageVisitor)
+}
+
+fn validate_compose_service_name(service: &str) -> Result<()> {
+    if service.is_empty()
+        || service.len() > 128
+        || !service
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        || !service.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+    {
+        return Err(Error::validation(
+            "Preloaded image service names must use Compose-safe literal syntax",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_immutable_image_reference(image: &str) -> Result<()> {
+    if image.is_empty()
+        || image.len() > 512
+        || image.contains("${")
+        || image.contains('$')
+        || image.contains("//")
+        || image.contains("://")
+        || image.chars().any(char::is_whitespace)
+    {
+        return Err(Error::validation(
+            "Preloaded images must be literal digest-pinned references",
+        ));
+    }
+    if let Some(sha256) = image.strip_prefix("sha256:") {
+        return validate_sha256(sha256).map_err(|_| {
+            Error::validation(
+                "Preloaded image sha256 digests must be 64 lowercase hexadecimal characters",
+            )
+        });
+    }
+    let mut parts = image.split('@');
+    let repository = parts.next().unwrap_or_default();
+    let digest = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || repository.is_empty()
+        || repository.starts_with(['/', '.', '-'])
+        || repository.ends_with(['/', '.', '-', ':'])
+        || !repository.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '/' | '-' | ':')
+        })
+        || repository
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(Error::validation(
+            "Preloaded images must use a literal registry/repository reference",
+        ));
+    }
+    let sha256 = digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| Error::validation("Preloaded images must use a sha256 content digest"))?;
+    validate_sha256(sha256).map_err(|_| {
+        Error::validation(
+            "Preloaded image sha256 digests must be 64 lowercase hexadecimal characters",
+        )
+    })
 }
 
 fn validate_git_revision(revision: &str) -> Result<()> {
@@ -4328,6 +4554,137 @@ mod tests {
         assert_eq!(plan.tunnel_placement(), InGuestTunnelPlacement::Outer);
     }
 
+    #[test]
+    fn preloaded_service_images_require_literal_sha256_references_and_managed_assignments() {
+        let digest = "a".repeat(64);
+        let images = BTreeMap::from([
+            (
+                "app".to_string(),
+                format!("registry.example/team/app@sha256:{digest}"),
+            ),
+            (
+                "database".to_string(),
+                format!("registry.example:5443/team/database:v2@sha256:{digest}"),
+            ),
+        ]);
+        validate_service_images(MANAGED_MANIFEST_VERSION, &images).unwrap();
+        assert!(validate_service_images(LEGACY_MANIFEST_VERSION, &images).is_err());
+        validate_immutable_image_reference(&format!("sha256:{digest}")).unwrap();
+        let published_port = [RuntimePort {
+            host: 3000,
+            runtime: 3000,
+        }];
+        validate_port_proxy_image(MANAGED_MANIFEST_VERSION, &images, &[], None).unwrap();
+        assert!(validate_port_proxy_image(
+            MANAGED_MANIFEST_VERSION,
+            &images,
+            &published_port,
+            None
+        )
+        .is_err());
+        let proxy_image = format!("registry.example/runtime/proxy@sha256:{digest}");
+        validate_port_proxy_image(
+            MANAGED_MANIFEST_VERSION,
+            &images,
+            &published_port,
+            Some(&proxy_image),
+        )
+        .unwrap();
+        assert!(validate_port_proxy_image(
+            LEGACY_MANIFEST_VERSION,
+            &BTreeMap::new(),
+            &[],
+            Some(&proxy_image)
+        )
+        .is_err());
+        let duplicate_map = format!(
+            r#"{{"app":"registry.example/team/app@sha256:{digest}","app":"registry.example/team/other@sha256:{digest}"}}"#
+        );
+        let mut deserializer = serde_json::Deserializer::from_str(&duplicate_map);
+        assert!(deserialize_service_images(&mut deserializer).is_err());
+
+        for image in [
+            "registry.example/team/app:latest",
+            "${TASK_REGISTRY}/team/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "https://registry.example/team/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "registry.example/team/app@sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sha256:not-a-content-digest",
+        ] {
+            assert!(
+                validate_immutable_image_reference(image).is_err(),
+                "unexpectedly accepted {image}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_manifest_exposes_preloaded_service_image_bindings() {
+        let (_root, manifest, _provider_secret) = managed_assignment_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        let image = format!("registry.example/team/app@sha256:{}", "b".repeat(64));
+        let proxy_image = format!("registry.example/runtime/proxy@sha256:{}", "c".repeat(64));
+        value["service_images"] = serde_json::json!({"app": image.clone()});
+        value["port_proxy_image"] = serde_json::json!(proxy_image.clone());
+        private_write(&manifest, &serde_json::to_vec_pretty(&value).unwrap());
+
+        let assignment = load_assignment(&manifest).unwrap();
+        assert_eq!(assignment.manifest.service_images.get("app"), Some(&image));
+        assert_eq!(
+            assignment.manifest.port_proxy_image.as_deref(),
+            Some(proxy_image.as_str())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preloaded_image_preflight_only_inspects_local_digest_and_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let docker = root.path().join("docker");
+        let invocation = root.path().join("docker-invocation");
+        fs::write(
+            &docker,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nexit 1\n",
+                invocation.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&docker, permissions).unwrap();
+        let image = format!("registry.example/team/app@sha256:{}", "d".repeat(64));
+        let images = BTreeMap::from([("app".to_string(), image.clone())]);
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker,
+            timeout: PathBuf::from("timeout"),
+        };
+
+        let error = provider
+            .verify_preloaded_images(&images, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("will not build or pull"));
+        let command = fs::read_to_string(invocation).unwrap();
+        assert_eq!(command, format!("image inspect -- {image}\n"));
+        assert!(!command.contains(" pull "));
+        assert!(!command.contains(" build "));
+
+        let proxy_image = format!("registry.example/runtime/proxy@sha256:{}", "e".repeat(64));
+        let error = provider
+            .verify_preloaded_images(&BTreeMap::new(), Some(&proxy_image))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("published-port proxy image"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("docker-invocation")).unwrap(),
+            format!("image inspect -- {proxy_image}\n")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn managed_mount_leases_bind_only_signed_run_owned_directories_and_sockets() {
@@ -4339,6 +4696,7 @@ mod tests {
             manifest_path: manifest,
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
+            service_images: assignment.manifest.service_images.clone(),
             mounts: assignment.mounts.clone(),
             tool_request_spools: Vec::new(),
             linked_tool_endpoints: BTreeSet::new(),
@@ -4394,6 +4752,7 @@ mod tests {
             manifest_path: manifest,
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
+            service_images: assignment.manifest.service_images.clone(),
             mounts: assignment.mounts.clone(),
             tool_request_spools: assignment.tool_request_spools.clone(),
             linked_tool_endpoints: assignment.linked_tool_endpoints.clone(),
@@ -5643,9 +6002,68 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
     #[test]
     fn published_port_proxy_targets_only_the_inspected_primary_container() {
         assert!(IN_GUEST_PORT_PROXY_SCRIPT.contains("inspect -f '{{.Name}}' \"$container_id\""));
+        assert!(IN_GUEST_PORT_PROXY_SCRIPT.contains("run -d --pull=never"));
+        assert!(IN_GUEST_PORT_PROXY_SCRIPT.contains("\"$proxy_image\""));
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("ps --filter"));
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("ExposedPorts"));
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("candidate_id"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_port_proxy_uses_the_assigned_image_without_pulling() {
+        let root = tempfile::tempdir().unwrap();
+        let docker = root.path().join("docker");
+        let invocation = root.path().join("proxy-invocation");
+        fs::write(
+            &docker,
+            format!(
+                r#"#!/bin/sh
+if test "$1" = inspect; then
+  case "$3" in
+    *NetworkID*) printf '%s\n' network_123 ;;
+    *Name*) printf '%s\n' /primary ;;
+  esac
+  exit 0
+fi
+if test "$1" = rm; then
+  exit 0
+fi
+printf '%s\n' "$*" > '{}'
+"#,
+                invocation.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&docker, permissions).unwrap();
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker,
+            timeout: PathBuf::from("timeout"),
+        };
+        let port = RuntimePort {
+            host: 43000,
+            runtime: 3000,
+        };
+        let image = format!("registry.example/runtime/proxy@sha256:{}", "f".repeat(64));
+
+        provider
+            .reconcile_port_proxy("run_123", "container_123", port, Some(&image))
+            .unwrap();
+        let managed = fs::read_to_string(&invocation).unwrap();
+        assert!(managed.starts_with("run -d --pull=never --name "));
+        assert!(managed.contains("--network network_123"));
+        assert!(managed.contains(&format!(" {image} -dd ")));
+
+        provider
+            .reconcile_port_proxy("run_123", "container_123", port, None)
+            .unwrap();
+        let legacy = fs::read_to_string(invocation).unwrap();
+        assert!(legacy.starts_with("run -d --name "));
+        assert!(!legacy.contains("--pull=never"));
+        assert!(legacy.contains(&format!(" {LEGACY_PORT_PROXY_IMAGE} -dd ")));
     }
 
     #[cfg(unix)]
@@ -5687,6 +6105,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
             manifest_path: manifest,
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
+            service_images: assignment.manifest.service_images.clone(),
             mounts: assignment.mounts,
             tool_request_spools: Vec::new(),
             linked_tool_endpoints: BTreeSet::new(),
