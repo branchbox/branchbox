@@ -458,6 +458,7 @@ esac
 struct ToolDispatchCliFixture {
     _assignment: TempDir,
     _fake_runtime: TempDir,
+    devcontainer: PathBuf,
     docker: PathBuf,
     timeout: PathBuf,
     inspection: PathBuf,
@@ -622,6 +623,9 @@ fn create_tool_dispatch_cli_fixture(
     .expect("write inspection");
     let docker_log = fake_runtime.path().join("docker.log");
     let response_fault = fake_runtime.path().join("fail-response-write-once");
+    let devcontainer = fake_runtime.path().join("devcontainer");
+    fs::write(&devcontainer, "#!/bin/sh\nexit 0\n").expect("write fake devcontainer CLI");
+    set_mode(&devcontainer, 0o700);
     let docker = fake_runtime.path().join("docker");
     fs::write(
         &docker,
@@ -780,6 +784,7 @@ esac
     ToolDispatchCliFixture {
         _assignment: assignment,
         _fake_runtime: fake_runtime,
+        devcontainer,
         docker,
         timeout,
         inspection,
@@ -833,6 +838,7 @@ fn tool_dispatch_command(
         .current_dir(test_repo.path())
         .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
         .env("RUST_LOG", "off")
+        .env("BRANCHBOX_DEVCONTAINER_PATH", &fixture.devcontainer)
         .env("BRANCHBOX_DOCKER_PATH", &fixture.docker)
         .env("BRANCHBOX_TIMEOUT_PATH", &fixture.timeout)
         .env("FAKE_TOOL_INSPECTION", &fixture.inspection)
