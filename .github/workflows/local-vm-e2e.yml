@@ -124,12 +124,26 @@ jobs:
             echo 'orphaned BranchBox TAP device remains' >&2
             exit 1
           fi
-      - name: Verify portable guest-base provenance
+      - name: Verify portable guest-base publication
         run: |
           manifest=target/local-vm-image/manifest.json
+          kernel=target/local-vm-image/vmlinux
+          config=target/local-vm-image/kernel.config
           archive=target/local-vm-image/rootfs.tar.gz
+          requirements=scripts/local-vm/image/kernel-required.config
+          test -f "$manifest"
+          test -f "$kernel"
+          test -f "$config"
+          test -f "$archive"
           test "$(jq -er '.schema_version' "$manifest")" = branchbox.local-vm-guest-base/2
+          test "$(jq -er '.source_repository' "$manifest")" = branchbox/branchbox
           test "$(jq -er '.source_commit' "$manifest")" = "$SOURCE_COMMIT"
+          test "$(jq -er '.kernel_sha256' "$manifest")" = "$(sha256sum "$kernel" | awk '{print $1}')"
+          test "$(jq -er '.kernel_config.name' "$manifest")" = kernel.config
+          test "$(jq -er '.kernel_config.sha256' "$manifest")" = "$(sha256sum "$config" | awk '{print $1}')"
+          test "$(jq -c '.kernel_config.required' "$manifest")" = \
+            "$(jq -Rsc 'split("\n") | map(select(length > 0))' "$requirements")"
+          while IFS= read -r requirement; do grep -Fqx "$requirement" "$config"; done < "$requirements"
           test "$(jq -er '.rootfs_archive.name' "$manifest")" = rootfs.tar.gz
           test "$(jq -er '.rootfs_archive.size_bytes' "$manifest")" = "$(stat -c '%s' "$archive")"
           test "$(jq -er '.rootfs_archive.sha256' "$manifest")" = "$(sha256sum "$archive" | awk '{print $1}')"
@@ -138,6 +152,8 @@ jobs:
         with:
           name: branchbox-local-vm-guest-base-${{ env.SOURCE_COMMIT }}
           path: |
+            target/local-vm-image/vmlinux
+            target/local-vm-image/kernel.config
             target/local-vm-image/rootfs.tar.gz
             target/local-vm-image/manifest.json
           if-no-files-found: error

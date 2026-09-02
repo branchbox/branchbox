@@ -162,8 +162,11 @@ The build recipe pins the kernel, Firecracker guest configuration, Ubuntu base, 
 CLI. `manifest.json` records kernel/rootfs SHA-256 digests plus the kernel-config digest; startup
 fails closed unless the config matches BranchBox's complete fixed requirement list. The portable
 manifest advertises versioned virtio-vsock and legacy IPv4 xtables capabilities without embedding a
-consumer's provider, domain, or firewall-chain policy. The runtime attaches one Firecracker vsock
-device for trusted guest-supervisor-to-host transfers. Its UDS is never passed into the coding
+consumer's provider, domain, or firewall-chain policy. After the lifecycle proof passes, CI publishes
+`vmlinux`, `kernel.config`, `rootfs.tar.gz`, and `manifest.json` together. Immediately before upload,
+it re-verifies the kernel, kernel-config, and rootfs-archive digests plus the complete fixed kernel
+requirement list. The runtime attaches one Firecracker vsock device for trusted
+guest-supervisor-to-host transfers. Its UDS is never passed into the coding
 devcontainer, which also cannot access `/dev/vsock` or either Docker control plane. The registry/JSON
 API reports the kernel/rootfs digests with the Firecracker version.
 
