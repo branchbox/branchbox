@@ -4,13 +4,27 @@ extern crate assert_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(unix)]
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
+#[cfg(unix)]
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 
 macro_rules! branchbox_cmd {
     ($repo:expr $(, $key:expr => $value:expr )* $(,)?) => {{
@@ -438,6 +452,772 @@ esac
         resources,
         log,
     }
+}
+
+#[cfg(unix)]
+struct ToolDispatchCliFixture {
+    _assignment: TempDir,
+    _fake_runtime: TempDir,
+    docker: PathBuf,
+    timeout: PathBuf,
+    inspection: PathBuf,
+    spool: PathBuf,
+    endpoint: PathBuf,
+    ledger: PathBuf,
+    docker_log: PathBuf,
+    response_fault: PathBuf,
+    capability: String,
+    work_feature: String,
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    let mut permissions = fs::metadata(path)
+        .expect("inspect fixture path")
+        .permissions();
+    permissions.set_mode(mode);
+    fs::set_permissions(path, permissions).expect("set fixture permissions");
+}
+
+#[cfg(unix)]
+fn sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(unix)]
+fn tool_request_volume_name(run_id: &str, lease_id: &str) -> String {
+    let digest = Sha256::digest(format!("{run_id}\0{lease_id}").as_bytes());
+    format!("branchbox-tool-requests-{digest:x}")[..56].to_string()
+}
+
+#[cfg(unix)]
+fn create_tool_dispatch_cli_fixture(
+    test_repo: &TestRepo,
+    work_feature: &str,
+) -> ToolDispatchCliFixture {
+    branchbox_cmd!(test_repo.path())
+        .args(["feature", "start", work_feature, "--minimal", "--json"])
+        .assert()
+        .success();
+    let worktree = test_repo.worktree_parent().join(work_feature);
+    let revision = String::from_utf8(
+        StdCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(test_repo.path())
+            .output()
+            .expect("resolve fixture revision")
+            .stdout,
+    )
+    .expect("revision is UTF-8")
+    .trim()
+    .to_string();
+
+    let assignment = tempfile::Builder::new()
+        .prefix("bb-tool-")
+        .tempdir_in("/tmp")
+        .expect("create short tool dispatch assignment root");
+    let run_id = "run_123";
+    let run_root = assignment.path().join(run_id);
+    let materializations = run_root.join("materializations");
+    let endpoints = run_root.join("tool-endpoints");
+    for directory in [&run_root, &materializations, &endpoints] {
+        fs::create_dir_all(directory).expect("create private assignment directory");
+        set_mode(directory, 0o700);
+    }
+    let capability = "request-capability-abcdefghijklmnopqrstuvwxyz012345".to_string();
+    let capability_path = materializations.join("request-capability");
+    fs::write(&capability_path, capability.as_bytes()).expect("write request capability");
+    set_mode(&capability_path, 0o600);
+    let endpoint = endpoints.join("browser-proof.sock");
+    let placeholder = UnixListener::bind(&endpoint).expect("bind placeholder trusted endpoint");
+    set_mode(&endpoint, 0o600);
+    drop(placeholder);
+    let manifest_path = run_root.join("assignment.json");
+    let manifest = serde_json::json!({
+        "version": "2",
+        "run_id": run_id,
+        "lease_id": "assignment_123",
+        "outer_runtime_id": "runtime_123",
+        "workspace": test_repo.worktree_parent(),
+        "repository": {"path": test_repo.path(), "revision": revision},
+        "task_branch": format!("feature/{work_feature}"),
+        "tunnel_placement": "outer",
+        "published_ports": [],
+        "leases": [
+            {
+                "lease_id": "model_identity",
+                "scope": "model-identity",
+                "consumer": "coding-agent",
+                "executable": "codex",
+                "inherited_environment": [],
+                "expires_at": "2099-01-01T00:00:00Z",
+                "materializations": []
+            },
+            {
+                "lease_id": "browser_endpoint",
+                "scope": "tool-endpoint",
+                "consumer": "coding-agent",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "materializations": [{
+                    "source_path": endpoint,
+                    "target_path": "/run/branchbox/leases/tool-endpoints/browser-proof.sock"
+                }]
+            },
+            {
+                "lease_id": "browser_requests",
+                "scope": "tool-request",
+                "consumer": "coding-agent",
+                "consumer_uid": 1000,
+                "endpoint_lease_id": "browser_endpoint",
+                "request_spool_target": "/run/branchbox/leases/tool-requests/browser-proof",
+                "replay_policy": "exact-digest-replay-v1",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "materializations": [{
+                    "source_path": capability_path,
+                    "target_path": "/run/branchbox/leases/tool-requests/browser-proof/.capability",
+                    "sha256": sha256(capability.as_bytes())
+                }]
+            }
+        ]
+    });
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize assignment"),
+    )
+    .expect("write assignment");
+    set_mode(&manifest_path, 0o600);
+
+    let fake_runtime = TempDir::new().expect("create fake tool dispatch runtime");
+    let spool = fake_runtime.path().join("spool");
+    for directory in [
+        spool.clone(),
+        spool.join("requests"),
+        spool.join("responses"),
+        spool.join(".processing"),
+    ] {
+        fs::create_dir_all(&directory).expect("create fake spool directory");
+    }
+    let volume_name = tool_request_volume_name(run_id, "browser_requests");
+    let inspection = fake_runtime.path().join("inspection.json");
+    fs::write(
+        &inspection,
+        serde_json::to_vec(&serde_json::json!([{
+            "HostConfig": {
+                "Privileged": false,
+                "PidMode": "",
+                "IpcMode": "private",
+                "SecurityOpt": ["seccomp=builtin"]
+            },
+            "Mounts": [{
+                "Type": "volume",
+                "Name": volume_name,
+                "Source": format!("/var/lib/docker/volumes/{volume_name}/_data"),
+                "Destination": "/run/branchbox/leases/tool-requests/browser-proof",
+                "RW": true
+            }],
+            "Config": {"User": "1000", "Env": []}
+        }]))
+        .expect("serialize inspection"),
+    )
+    .expect("write inspection");
+    let docker_log = fake_runtime.path().join("docker.log");
+    let response_fault = fake_runtime.path().join("fail-response-write-once");
+    let docker = fake_runtime.path().join("docker");
+    fs::write(
+        &docker,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$FAKE_TOOL_DOCKER_LOG"
+case "${1:-}" in
+  inspect)
+    cat "$FAKE_TOOL_INSPECTION"
+    ;;
+  exec)
+    if test "${5:-}" = "id" && test "${6:-}" = "-u"; then
+      printf '%s\n' '1000'
+      exit 0
+    fi
+    while test "$#" -gt 0; do
+      case "$1" in
+        branchbox-read-tool-request|branchbox-write-tool-response|branchbox-remove-staged-tool-request|branchbox-remove-tool-request)
+          operation="$1"
+          shift
+          break
+          ;;
+      esac
+      shift
+    done
+    root="$FAKE_TOOL_SPOOL"
+    case "${operation:-}" in
+      branchbox-read-tool-request)
+        request_id="${3:-}"
+        request="$root/requests/$request_id.json"
+        staged="$root/.processing/$request_id.json"
+        if test -e "$staged" && test -e "$request"; then exit 72; fi
+        if ! test -e "$staged"; then
+          test -e "$request" || exit 75
+          mv "$request" "$staged"
+        fi
+        cat "$staged"
+        ;;
+      branchbox-write-tool-response)
+        request_id="${3:-}"
+        temporary="$root/responses/$request_id.tmp"
+        final="$root/responses/$request_id.json"
+        trap 'rm -f "$temporary"' EXIT HUP INT TERM
+        cat >"$temporary"
+        if test -e "$FAKE_TOOL_RESPONSE_FAULT"; then
+          rm -f "$FAKE_TOOL_RESPONSE_FAULT"
+          exit 76
+        fi
+        if test -e "$final"; then
+          cmp -s "$temporary" "$final"
+          rm -f "$temporary"
+        else
+          mv "$temporary" "$final"
+        fi
+        trap - EXIT HUP INT TERM
+        ;;
+      branchbox-remove-staged-tool-request)
+        request_id="${2:-}"
+        rm -f "$root/.processing/$request_id.json"
+        ;;
+      branchbox-remove-tool-request)
+        request_id="${2:-}"
+        rm -f "$root/requests/$request_id.json" "$root/.processing/$request_id.json"
+        ;;
+      *)
+        printf '%s\n' 'unexpected fake Docker exec' >&2
+        exit 97
+        ;;
+    esac
+    ;;
+  *)
+    printf '%s\n' "unexpected fake Docker command: $*" >&2
+    exit 98
+    ;;
+esac
+"#,
+    )
+    .expect("write fake Docker CLI");
+    set_mode(&docker, 0o700);
+    let timeout = fake_runtime.path().join("timeout");
+    fs::write(&timeout, "#!/bin/sh\nset -eu\nshift 3\nexec \"$@\"\n")
+        .expect("write fake timeout CLI");
+    set_mode(&timeout, 0o700);
+
+    let state_dir = test_repo.path().join(".branchbox/runtime/in-guest");
+    fs::create_dir_all(&state_dir).expect("create provider state directory");
+    let state_path = state_dir.join("run_123.json");
+    let ledger = state_path.with_extension("tool-request-ledger");
+    let state = serde_json::json!({
+        "version": "1",
+        "manifest_path": manifest_path,
+        "worktree_path": worktree,
+        "workspace_paths": [worktree],
+        "config_path": worktree.join(".devcontainer/.devcontainer.json"),
+        "run_id": run_id,
+        "outer_runtime_id": "runtime_123",
+        "materializations": [],
+        "tool_request_spools": [{
+            "lease_id": "browser_requests",
+            "endpoint_lease_id": "browser_endpoint",
+            "consumer": "coding-agent",
+            "consumer_uid": 1000,
+            "target_path": "/run/branchbox/leases/tool-requests/browser-proof",
+            "volume_name": volume_name,
+            "capability_source": fs::canonicalize(&capability_path).expect("canonical capability path"),
+            "capability_sha256": sha256(capability.as_bytes()),
+            "replay_policy": "exact-digest-replay-v1"
+        }],
+        "tool_request_ledger_path": ledger,
+        "proxy_names": [],
+        "compose_projects": [],
+        "container_id": "fake-container"
+    });
+    fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&state).expect("serialize provider state"),
+    )
+    .expect("write provider state");
+    set_mode(&state_path, 0o600);
+
+    let registry_path = test_repo.path().join(".branchbox/registry.json");
+    let mut registry: Value = serde_json::from_slice(
+        &fs::read(&registry_path).expect("read feature registry for runtime rewrite"),
+    )
+    .expect("parse feature registry");
+    let feature = registry["features"]
+        .as_array_mut()
+        .expect("features array")
+        .iter_mut()
+        .find(|feature| feature["work_feature"] == work_feature)
+        .expect("active feature registry entry");
+    feature["runtime"] = serde_json::json!({
+        "provider": "in-guest",
+        "runtime_id": "runtime_123",
+        "container_id": "fake-container",
+        "container_user": "1000",
+        "config_path": worktree.join(".devcontainer/.devcontainer.json"),
+        "in_guest": {
+            "run_id": run_id,
+            "assignment_lease_id": "assignment_123",
+            "outer_runtime_id": "runtime_123",
+            "repository_revision": revision,
+            "task_branch": format!("feature/{work_feature}"),
+            "tunnel_placement": "outer",
+            "project_docker": "disabled",
+            "leases": [],
+            "state_path": state_path
+        }
+    });
+    fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&registry).expect("serialize feature registry"),
+    )
+    .expect("rewrite feature registry");
+
+    ToolDispatchCliFixture {
+        _assignment: assignment,
+        _fake_runtime: fake_runtime,
+        docker,
+        timeout,
+        inspection,
+        spool,
+        endpoint,
+        ledger,
+        docker_log,
+        response_fault,
+        capability,
+        work_feature: work_feature.to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn write_tool_request(
+    fixture: &ToolDispatchCliFixture,
+    request_id: &str,
+    payload: Value,
+    staged: bool,
+) {
+    let envelope = serde_json::json!({
+        "version": "1",
+        "run_id": "run_123",
+        "lease_id": "browser_requests",
+        "consumer": "coding-agent",
+        "request_id": request_id,
+        "capability": fixture.capability,
+        "payload": payload
+    });
+    let directory = if staged { ".processing" } else { "requests" };
+    let path = fixture
+        .spool
+        .join(directory)
+        .join(format!("{request_id}.json"));
+    fs::write(
+        path,
+        serde_json::to_vec(&envelope).expect("serialize tool request"),
+    )
+    .expect("write tool request");
+}
+
+#[cfg(unix)]
+fn tool_dispatch_command(
+    test_repo: &TestRepo,
+    fixture: &ToolDispatchCliFixture,
+    request_id: &str,
+    wait_seconds: u64,
+) -> StdCommand {
+    let mut command = StdCommand::new(cargo_bin!("branchbox"));
+    command
+        .current_dir(test_repo.path())
+        .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
+        .env("RUST_LOG", "off")
+        .env("BRANCHBOX_DOCKER_PATH", &fixture.docker)
+        .env("BRANCHBOX_TIMEOUT_PATH", &fixture.timeout)
+        .env("FAKE_TOOL_INSPECTION", &fixture.inspection)
+        .env("FAKE_TOOL_SPOOL", &fixture.spool)
+        .env("FAKE_TOOL_DOCKER_LOG", &fixture.docker_log)
+        .env("FAKE_TOOL_RESPONSE_FAULT", &fixture.response_fault)
+        .args([
+            "feature",
+            "dispatch-tool",
+            &fixture.work_feature,
+            "--lease",
+            "browser_requests",
+            "--request-id",
+            request_id,
+            "--wait-seconds",
+            &wait_seconds.to_string(),
+            "--json",
+        ]);
+    command
+}
+
+#[cfg(unix)]
+fn bind_tool_endpoint(path: &Path) -> UnixListener {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("remove prior endpoint: {err}"),
+    }
+    let listener = UnixListener::bind(path).expect("bind trusted tool endpoint");
+    set_mode(path, 0o600);
+    listener
+}
+
+#[cfg(unix)]
+fn read_tool_frame(stream: &mut UnixStream) -> Value {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("bound trusted read");
+    let mut frame = Vec::new();
+    stream
+        .read_to_end(&mut frame)
+        .expect("read trusted request");
+    serde_json::from_slice(&frame).expect("parse trusted request")
+}
+
+#[cfg(unix)]
+fn write_tool_frame(stream: &mut UnixStream, request: &Value) {
+    let response = serde_json::json!({
+        "version": "1",
+        "run_id": request["run_id"],
+        "lease_id": request["lease_id"],
+        "consumer": request["consumer"],
+        "request_id": request["request_id"],
+        "payload": {"accepted": true, "proof": "cached-browser-capture"}
+    });
+    stream
+        .write_all(&serde_json::to_vec(&response).expect("serialize trusted response"))
+        .expect("write trusted response");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("finish trusted response frame");
+}
+
+#[cfg(unix)]
+#[test]
+fn dispatch_tool_cli_recovers_staged_and_lost_responses_then_uses_completed_cache() {
+    let test_repo = init_test_repo();
+    let fixture = create_tool_dispatch_cli_fixture(&test_repo, "tool-replay-proof");
+    let request_id = "browser-capture";
+    // Simulate a dispatcher dying after the request was moved into root-only staging but before a
+    // durable replay claim existed. The next real CLI invocation must recover that exact file.
+    write_tool_request(
+        &fixture,
+        request_id,
+        serde_json::json!({"operation": "capture", "url": "http://127.0.0.1:3000"}),
+        true,
+    );
+
+    let listener = bind_tool_endpoint(&fixture.endpoint);
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let server_attempts = Arc::clone(&attempts);
+    let server_effects = Arc::clone(&effects);
+    let server = thread::spawn(move || -> Result<(), String> {
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| format!("bound replay accept: {err}"))?;
+        let mut original = None;
+        for attempt in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err(format!("timed out waiting for relay attempt {attempt}"));
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => return Err(format!("accept trusted relay: {err}")),
+                }
+            };
+            stream
+                .set_nonblocking(false)
+                .map_err(|err| format!("use blocking trusted stream: {err}"))?;
+            let request = read_tool_frame(&mut stream);
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            if let Some(original) = original.as_ref() {
+                assert_eq!(
+                    &request, original,
+                    "retry changed the trusted request frame"
+                );
+            } else {
+                server_effects.fetch_add(1, Ordering::SeqCst);
+                original = Some(request.clone());
+            }
+            if attempt == 0 {
+                // The endpoint effect completed and was cached, but the correlated reply was lost.
+                drop(stream);
+            } else {
+                write_tool_frame(&mut stream, &request);
+            }
+        }
+        Ok(())
+    });
+
+    let output = tool_dispatch_command(&test_repo, &fixture, request_id, 3)
+        .output()
+        .expect("run dispatch-tool CLI");
+    let server_result = server.join().expect("trusted replay server joined");
+    assert!(
+        output.status.success(),
+        "dispatch-tool did not recover the lost response (server={server_result:?}, attempts={}, effects={}, endpoint_exists={}, ledger={:?}, docker={}): {}",
+        attempts.load(Ordering::SeqCst),
+        effects.load(Ordering::SeqCst),
+        fixture.endpoint.exists(),
+        fs::read_dir(fixture.ledger.join("browser_requests"))
+            .map(|entries| entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default(),
+        fs::read_to_string(&fixture.docker_log).unwrap_or_default(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    server_result.expect("trusted replay server completed");
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("parse dispatch JSON");
+    assert_eq!(payload["status"], "dispatched");
+    assert_eq!(payload["result"]["response"]["accepted"], true);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+    let done = fixture
+        .ledger
+        .join("browser_requests")
+        .join(format!("{request_id}.done"));
+    let claim = done.with_extension("claim");
+    assert!(done.is_file(), "completed replay response was not durable");
+    assert!(
+        !claim.exists(),
+        "active replay claim remained after completion"
+    );
+    let replay_bytes = fs::read(&done).expect("read completed replay record");
+    assert!(
+        !replay_bytes
+            .windows(fixture.capability.len())
+            .any(|window| window == fixture.capability.as_bytes()),
+        "replay ledger persisted the endpoint capability"
+    );
+    assert!(
+        !fixture
+            .spool
+            .join(".processing")
+            .join(format!("{request_id}.json"))
+            .exists(),
+        "staged request remained after its durable claim"
+    );
+
+    // No endpoint is listening now. Success proves the CLI returned the durable completed response
+    // without re-executing or reconnecting to the tool.
+    let cached = tool_dispatch_command(&test_repo, &fixture, request_id, 0)
+        .output()
+        .expect("run cached dispatch-tool CLI");
+    assert!(
+        cached.status.success(),
+        "completed cache was not reusable: {}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+    write_tool_request(
+        &fixture,
+        request_id,
+        serde_json::json!({"operation": "capture", "url": "http://changed.invalid"}),
+        false,
+    );
+    let changed = tool_dispatch_command(&test_repo, &fixture, request_id, 0)
+        .output()
+        .expect("run changed replay");
+    assert!(
+        !changed.status.success(),
+        "changed same-ID request was accepted"
+    );
+    assert!(String::from_utf8_lossy(&changed.stderr)
+        .contains("replay differs from the original exact request"));
+}
+
+#[cfg(unix)]
+#[test]
+fn dispatch_tool_cli_recovers_consumer_spool_failure_from_completed_cache() {
+    let test_repo = init_test_repo();
+    let fixture = create_tool_dispatch_cli_fixture(&test_repo, "tool-response-spool-proof");
+    let request_id = "browser-response-spool";
+    write_tool_request(
+        &fixture,
+        request_id,
+        serde_json::json!({"operation": "capture", "url": "http://127.0.0.1:3000"}),
+        false,
+    );
+    fs::write(&fixture.response_fault, b"fail once").expect("arm response-spool fault");
+
+    let listener = bind_tool_endpoint(&fixture.endpoint);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let server_effects = Arc::clone(&effects);
+    let server = thread::spawn(move || -> Result<(), String> {
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| format!("bound response-spool accept: {err}"))?;
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err("timed out waiting for response-spool relay".to_string());
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => return Err(format!("accept response-spool relay: {err}")),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .map_err(|err| format!("use blocking response-spool stream: {err}"))?;
+        let request = read_tool_frame(&mut stream);
+        server_effects.fetch_add(1, Ordering::SeqCst);
+        write_tool_frame(&mut stream, &request);
+        Ok(())
+    });
+
+    let failed_write = tool_dispatch_command(&test_repo, &fixture, request_id, 0)
+        .output()
+        .expect("run response-spool fault dispatch");
+    let server_result = server.join().expect("response-spool server joined");
+    server_result.expect("response-spool server completed");
+    assert!(
+        !failed_write.status.success(),
+        "one-shot consumer response-spool fault did not fail dispatch"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+    let done = fixture
+        .ledger
+        .join("browser_requests")
+        .join(format!("{request_id}.done"));
+    assert!(
+        done.is_file(),
+        "endpoint response was not durable before the consumer spool failure"
+    );
+    let response = fixture
+        .spool
+        .join("responses")
+        .join(format!("{request_id}.json"));
+    assert!(
+        !response.exists(),
+        "faulted consumer response unexpectedly committed"
+    );
+    assert!(
+        !fixture.response_fault.exists(),
+        "one-shot consumer response fault was not consumed"
+    );
+
+    // The endpoint listener is gone. Success therefore proves BranchBox used the durable
+    // COMPLETED response and retried only the idempotent consumer-spool commit.
+    let recovered = tool_dispatch_command(&test_repo, &fixture, request_id, 0)
+        .output()
+        .expect("recover consumer response-spool commit");
+    assert!(
+        recovered.status.success(),
+        "completed response was not recoverable: {}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&recovered.stdout).expect("parse recovery JSON");
+    assert_eq!(payload["status"], "dispatched");
+    assert_eq!(payload["result"]["response"]["accepted"], true);
+    assert!(response.is_file(), "consumer response was not committed");
+    assert_eq!(
+        effects.load(Ordering::SeqCst),
+        1,
+        "consumer-spool recovery re-executed the trusted endpoint"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_dispatch_tool_cli_calls_serialize_one_endpoint_effect() {
+    let test_repo = init_test_repo();
+    let fixture = create_tool_dispatch_cli_fixture(&test_repo, "tool-concurrency-proof");
+    let request_id = "browser-concurrent";
+    write_tool_request(
+        &fixture,
+        request_id,
+        serde_json::json!({"operation": "capture", "url": "http://127.0.0.1:3000"}),
+        false,
+    );
+    let listener = bind_tool_endpoint(&fixture.endpoint);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let server_effects = Arc::clone(&effects);
+    let server = thread::spawn(move || {
+        listener
+            .set_nonblocking(true)
+            .expect("bound serialized relay accept");
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for serialized relay"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("accept serialized relay: {err}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("use blocking trusted stream");
+        let request = read_tool_frame(&mut stream);
+        server_effects.fetch_add(1, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(350));
+        write_tool_frame(&mut stream, &request);
+
+        listener
+            .set_nonblocking(true)
+            .expect("bound duplicate relay probe");
+        let deadline = Instant::now() + Duration::from_millis(750);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut duplicate, _)) => {
+                    duplicate
+                        .set_nonblocking(false)
+                        .expect("use blocking duplicate stream");
+                    let duplicate_request = read_tool_frame(&mut duplicate);
+                    server_effects.fetch_add(1, Ordering::SeqCst);
+                    write_tool_frame(&mut duplicate, &duplicate_request);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("probe duplicate relay: {err}"),
+            }
+        }
+    });
+
+    let mut first = tool_dispatch_command(&test_repo, &fixture, request_id, 3);
+    let mut second = tool_dispatch_command(&test_repo, &fixture, request_id, 3);
+    let first = thread::spawn(move || first.output().expect("run first concurrent dispatcher"));
+    let second = thread::spawn(move || second.output().expect("run second concurrent dispatcher"));
+    let first = first.join().expect("first dispatcher joined");
+    let second = second.join().expect("second dispatcher joined");
+    for output in [first, second] {
+        assert!(
+            output.status.success(),
+            "concurrent dispatcher failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    server.join().expect("concurrency probe server joined");
+    assert_eq!(
+        effects.load(Ordering::SeqCst),
+        1,
+        "concurrent dispatchers reached the trusted endpoint more than once"
+    );
 }
 
 #[cfg(unix)]

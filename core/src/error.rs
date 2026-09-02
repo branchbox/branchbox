@@ -44,6 +44,15 @@ pub enum Error {
         request_id: String,
     },
 
+    /// A trusted endpoint may have executed the exact request, but its correlated response was
+    /// lost before BranchBox could persist it. Only the digest-bound replay record may retry it.
+    #[error("Tool request relay needs an exact retry: {lease_id}/{request_id}: {reason}")]
+    ToolRequestRelayRetryable {
+        lease_id: String,
+        request_id: String,
+        reason: String,
+    },
+
     /// Worktree contains uncommitted module-managed changes
     #[error("Worktree has module-managed changes: {worktree:?} (dirty entries: {files:?})")]
     WorktreeDirty {

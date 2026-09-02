@@ -328,7 +328,10 @@ fn run_dispatch_tool(args: FeatureDispatchToolArgs) -> Result<()> {
     let result = loop {
         match workflow.dispatch_tool_request(&args.name, &args.lease, &args.request_id) {
             Ok(result) => break result,
-            Err(CoreError::ToolRequestNotPending { .. }) if Instant::now() < deadline => {
+            Err(
+                CoreError::ToolRequestNotPending { .. }
+                | CoreError::ToolRequestRelayRetryable { .. },
+            ) if Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(250));
             }
             Err(CoreError::ToolRequestNotPending { .. }) => {

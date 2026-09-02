@@ -134,6 +134,7 @@ Docker volume, not a bind to the private endpoint.
       "consumer_uid": 1000,
       "endpoint_lease_id": "delivery_endpoint",
       "request_spool_target": "/run/branchbox/leases/tool-requests/delivery",
+      "replay_policy": "exact-digest-replay-v1",
       "expires_at": "2099-01-01T00:00:00Z",
       "materializations": [
         {
@@ -161,7 +162,8 @@ suppresses the endpoint bind. Only its exact named request volume may be writabl
 BranchBox initializes the volume with these paths:
 
 - `.binding.json`: root-owned mode `0444`, containing the non-secret run, lease, consumer, request
-  and response paths, filename convention, and quotas from the signed assignment.
+  and response paths, filename convention, quotas, and optional replay policy from the signed
+  assignment.
 - `.capability`: root-owned mode `0444`, containing a random endpoint-only capability. This token
   authorizes requests to the linked broker endpoint; it is not the broker's source-host, cloud,
   model, or other underlying credential.
@@ -172,7 +174,8 @@ BranchBox initializes the volume with these paths:
   replace it.
 - `.processing/`: root-owned mode `0700` and invisible to the consumer. BranchBox atomically moves
   one finalized request here before reading it, then re-checks its type, owner, mode, size, and link
-  count. A request is therefore consumed once and cannot be path-swapped after validation.
+  count. It retains the exact staged file until the replay claim is durable, closing the
+  read-before-claim process-crash gap, and then removes it exactly.
 
 The request envelope has only these top-level fields:
 
@@ -189,14 +192,32 @@ The request envelope has only these top-level fields:
 ```
 
 The payload is opaque to BranchBox. The trusted endpoint must return the same version, run, lease,
-consumer, and request IDs plus an opaque `payload`. BranchBox first consumes the request into the
-root-only staging directory, strips the capability, claims the request in an owner-only replay
-ledger, and relays one newline-delimited JSON frame followed by write-side EOF. It validates the
-correlated response and writes the response file. A relay failure leaves the claim in place:
-automatic replay is deliberately denied because the external side effect may already have occurred.
+consumer, and request IDs plus an opaque `payload`. BranchBox first moves the request into the
+root-only staging directory and keeps it there until an owner-only replay record containing the
+capability-stripped canonical request and SHA-256 fingerprint is durable. It serializes each request
+ID with a process-crash-safe advisory lock, then relays one newline-delimited JSON frame followed by
+write-side EOF. It validates and durably caches the correlated response before idempotently writing
+the consumer response file.
+
+Replay is denied by default, preserving the original fail-closed behavior for existing manifests.
+A trusted endpoint that itself guarantees exact-request idempotency can explicitly opt in on its
+provider-neutral `tool-request` lease:
+
+```json
+"replay_policy": "exact-digest-replay-v1"
+```
+
+With that signed policy, an interrupted relay may retry only the persisted exact request. A newly
+spooled request must pass the capability check and match the original request and fingerprint;
+changed or malformed same-ID requests remain terminal. Once a correlated response is cached,
+subsequent exact dispatches return it without contacting or re-executing the endpoint. Without the
+signed policy, a relay failure leaves the claim permanently blocked because the external side effect
+may already have occurred.
 An authenticated correlated response is a successful transport even when its opaque payload reports
 a tool-level decline (for example, an optional upload declined in favor of a durable artifact link).
-Only transport, authentication, framing, or correlation failures fail dispatch.
+Only transport, authentication, framing, or correlation failures fail dispatch. With signed exact
+replay enabled, transport failures are retryable only within the dispatcher's bounded wait window;
+authentication, malformed framing, changed fingerprints, and correlation failures remain terminal.
 
 Run the dispatcher concurrently with the coding provider:
 
@@ -208,10 +229,12 @@ branchbox feature dispatch-tool coding-demo \
   --json
 ```
 
-Only absence of the atomic final request is retryable. An exhausted wait returns exit status `75`
-and JSON with `status: "not-pending"` and `retryable: true`. Success returns status `dispatched`.
-Malformed paths, modes, symlinks, quotas, bindings, capabilities, replay claims, relay failures,
-timeouts, and response mismatches are terminal and never share the retryable exit status.
+Absence of the atomic final request is retryable. An exhausted wait returns exit status `75` and
+JSON with `status: "not-pending"` and `retryable: true`. A transport-indeterminate exact replay is
+also retried inside the same bounded wait only when its signed lease opts in. Success returns status
+`dispatched`. Malformed paths, modes, symlinks, quotas, bindings, capabilities, changed requests,
+unsigned replay claims, and response mismatches are terminal and never share the retryable exit
+status.
 
 ## Security contract
 

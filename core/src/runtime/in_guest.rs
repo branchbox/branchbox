@@ -17,11 +17,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const LEGACY_MANIFEST_VERSION: &str = "1";
@@ -40,6 +43,10 @@ const MAX_TOOL_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_TOOL_REQUEST_QUOTA_BYTES: usize = 1024 * 1024;
 const MAX_TOOL_RESPONSE_BYTES: usize = 256 * 1024;
 const TOOL_RELAY_TIMEOUT: Duration = Duration::from_secs(30);
+const TOOL_REQUEST_REPLAY_VERSION: &str = "1";
+const MAX_TOOL_REQUEST_REPLAY_BYTES: usize =
+    MAX_TOOL_REQUEST_BYTES + MAX_TOOL_RESPONSE_BYTES + 4096;
+static TOOL_REQUEST_REPLAY_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const LEGACY_PROVIDER_EXECUTABLE: &str = "codex";
 const LEGACY_PROVIDER_ENVIRONMENT: &str = "OPENAI_API_KEY";
 const REQUIRED_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
@@ -126,6 +133,11 @@ test -d "$requests"
 test ! -L "$requests"
 test "$(stat -c '%u:%a' "$requests")" = "$uid:700"
 request="$requests/$request_id.json"
+processing="$root/.processing"
+test -d "$processing"
+test ! -L "$processing"
+test "$(stat -c '%u:%a' "$processing")" = "0:700"
+staged="$processing/$request_id.json"
 count=0
 total=0
 found=0
@@ -153,16 +165,12 @@ for candidate in "$requests"/* "$requests"/.[!.]* "$requests"/..?*; do
   test "$total" -le "$max_total_bytes"
   test "$candidate" != "$request" || found=1
 done
-test "$found" = "1" || exit 75
-processing="$root/.processing"
-test -d "$processing"
-test ! -L "$processing"
-test "$(stat -c '%u:%a' "$processing")" = "0:700"
-staged="$processing/$request_id.json"
-test ! -e "$staged"
-test ! -L "$staged"
-trap 'rm -f "$staged"' EXIT HUP INT TERM
-mv "$request" "$staged"
+if test -e "$staged" || test -L "$staged"; then
+  test "$found" = "0"
+else
+  test "$found" = "1" || exit 75
+  mv "$request" "$staged"
+fi
 test -f "$staged"
 test ! -L "$staged"
 set -- $(stat -c '%u %a %s %h' "$staged")
@@ -171,9 +179,7 @@ test "$2" = "600"
 test "$3" -gt 0
 test "$3" -le "$max_file_bytes"
 test "$4" = "1"
-dd if="$staged" bs=4096 count=65 2>/dev/null
-rm -f "$staged"
-trap - EXIT HUP INT TERM"#;
+dd if="$staged" bs=4096 count=65 2>/dev/null"#;
 const WRITE_TOOL_RESPONSE_SCRIPT: &str = r#"set -eu
 root="$1"
 uid="$2"
@@ -188,9 +194,20 @@ final="$responses/$request_id.json"
 trap 'rm -f "$temporary"' EXIT HUP INT TERM
 test ! -e "$temporary"
 test ! -L "$temporary"
-test ! -e "$final"
-test ! -L "$final"
 cat >"$temporary"
+if test -e "$final" || test -L "$final"; then
+  test -f "$final"
+  test ! -L "$final"
+  set -- $(stat -c '%u %a %s %h' "$final")
+  test "$1" = "$uid"
+  test "$2" = "400"
+  test "$3" -gt 0
+  test "$4" = "1"
+  cmp -s "$temporary" "$final"
+  rm -f "$temporary"
+  trap - EXIT HUP INT TERM
+  exit 0
+fi
 chown "$uid:$uid" "$temporary"
 chmod 0400 "$temporary"
 mv -f "$temporary" "$final"
@@ -320,6 +337,8 @@ struct ToolRequestSpool {
     volume_name: String,
     capability_source: PathBuf,
     capability_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replay_policy: Option<ToolRequestReplayPolicy>,
 }
 
 #[derive(Debug, Serialize)]
@@ -338,6 +357,8 @@ struct ToolRequestBinding<'a> {
     max_request_bytes: usize,
     max_spool_bytes: usize,
     max_response_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_policy: Option<ToolRequestReplayPolicy>,
 }
 
 fn tool_request_binding<'a>(
@@ -359,6 +380,7 @@ fn tool_request_binding<'a>(
         max_request_bytes: MAX_TOOL_REQUEST_BYTES,
         max_spool_bytes: MAX_TOOL_REQUEST_QUOTA_BYTES,
         max_response_bytes: MAX_TOOL_RESPONSE_BYTES,
+        replay_policy: spool.replay_policy,
     }
 }
 
@@ -433,7 +455,15 @@ struct AssignedLease {
     #[serde(default)]
     request_spool_target: Option<PathBuf>,
     #[serde(default)]
+    replay_policy: Option<ToolRequestReplayPolicy>,
+    #[serde(default)]
     materializations: Vec<AssignedMaterialization>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ToolRequestReplayPolicy {
+    ExactDigestReplayV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1423,7 +1453,7 @@ impl InGuestRuntimeProvider {
                 container_id,
                 "sh",
                 "-c",
-                "set -eu; root=$1; request_id=$2; test -d \"$root/requests\"; rm -f \"$root/requests/$request_id.json\"; test ! -e \"$root/requests/$request_id.json\"",
+                "set -eu; root=$1; request_id=$2; test -d \"$root/requests\"; test -d \"$root/.processing\"; rm -f \"$root/requests/$request_id.json\" \"$root/.processing/$request_id.json\"; test ! -e \"$root/requests/$request_id.json\"; test ! -e \"$root/.processing/$request_id.json\"",
                 "branchbox-remove-tool-request",
                 &spool.target_path.to_string_lossy(),
                 request_id,
@@ -1432,6 +1462,37 @@ impl InGuestRuntimeProvider {
         if !output.status.success() {
             return Err(Error::validation(format!(
                 "Managed tool-request cleanup failed: {}",
+                bounded_failure(&output.stderr)
+            )));
+        }
+        Ok(())
+    }
+
+    fn remove_staged_tool_request(
+        &self,
+        container_id: &str,
+        spool: &ToolRequestSpool,
+        request_id: &str,
+    ) -> Result<()> {
+        validate_tool_request_id(request_id)?;
+        let output = self
+            .bounded_docker_command()
+            .args([
+                "exec",
+                "--user",
+                "0",
+                container_id,
+                "sh",
+                "-c",
+                "set -eu; root=$1; request_id=$2; test -d \"$root/.processing\"; rm -f \"$root/.processing/$request_id.json\"; test ! -e \"$root/.processing/$request_id.json\"",
+                "branchbox-remove-staged-tool-request",
+                &spool.target_path.to_string_lossy(),
+                request_id,
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Managed staged tool-request cleanup failed: {}",
                 bounded_failure(&output.stderr)
             )));
         }
@@ -1495,12 +1556,15 @@ impl InGuestRuntimeProvider {
         Ok(())
     }
 
-    fn claim_tool_request(
+    fn load_or_claim_tool_request(
         &self,
         state: &ProviderState,
         lease_id: &str,
+        consumer: &str,
         request_id: &str,
-    ) -> Result<(PathBuf, PathBuf)> {
+        replay_policy: Option<ToolRequestReplayPolicy>,
+        pending_request: Option<&PersistedToolRelayRequest>,
+    ) -> Result<Option<ToolRequestReplay>> {
         validate_opaque_identifier(lease_id, "tool request lease_id")?;
         validate_tool_request_id(request_id)?;
         let ledger_root = state.tool_request_ledger_path.as_ref().ok_or_else(|| {
@@ -1511,30 +1575,100 @@ impl InGuestRuntimeProvider {
         create_owner_only_directory(&lease_root)?;
         let stem = safe_identity(request_id)?;
         let claim = lease_root.join(format!("{stem}.claim"));
-        let done = lease_root.join(format!("{stem}.done"));
-        if done.exists() {
-            return Err(Error::validation(
-                "Managed tool request was already dispatched",
-            ));
+        if let Some(replay) = load_existing_tool_request_replay(
+            &lease_root,
+            state,
+            lease_id,
+            consumer,
+            request_id,
+            pending_request,
+        )? {
+            require_exact_digest_replay(replay_policy)?;
+            return Ok(Some(replay));
         }
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&claim)
-            .map_err(|err| {
-                if err.kind() == std::io::ErrorKind::AlreadyExists {
-                    Error::validation(
-                        "Managed tool request is already claimed; automatic replay is denied",
-                    )
-                } else {
-                    Error::validation(format!(
-                        "Could not create the managed tool-request replay claim: {err}"
-                    ))
-                }
+
+        let Some(pending_request) = pending_request else {
+            return Ok(None);
+        };
+        let replay = ToolRequestReplayRecord::claimed(pending_request.clone())?;
+        let bytes = serde_json::to_vec(&replay)?;
+        if !persist_new_owner_only_file(&claim, &bytes)? {
+            let replay = load_existing_tool_request_replay(
+                &lease_root,
+                state,
+                lease_id,
+                consumer,
+                request_id,
+                Some(pending_request),
+            )?
+            .ok_or_else(|| {
+                Error::validation("Managed tool-request replay claim disappeared during creation")
             })?;
-        drop(file);
-        set_owner_only(&claim)?;
-        Ok((claim, done))
+            require_exact_digest_replay(replay_policy)?;
+            return Ok(Some(replay));
+        }
+        Ok(Some(ToolRequestReplay {
+            path: claim,
+            state: ToolRequestReplayState::Claimed,
+            record: replay,
+        }))
+    }
+
+    fn acquire_tool_request_attempt_lock(
+        &self,
+        state: &ProviderState,
+        lease_id: &str,
+        request_id: &str,
+    ) -> Result<ToolRequestAttemptGuard> {
+        let ledger_root = state.tool_request_ledger_path.as_ref().ok_or_else(|| {
+            Error::validation("Managed runtime state has no tool-request replay ledger")
+        })?;
+        create_owner_only_directory(ledger_root)?;
+        let lease_root = ledger_root.join(safe_identity(lease_id)?);
+        create_owner_only_directory(&lease_root)?;
+        let path = lease_root.join(format!("{}.attempt", safe_identity(request_id)?));
+        open_and_lock_tool_request_attempt(&path)
+    }
+
+    fn complete_tool_request_replay(
+        &self,
+        replay: ToolRequestReplay,
+        response: ToolRelayResponse,
+    ) -> Result<ToolRequestReplay> {
+        validate_tool_response_binding_fields(&response, &replay.record.request)?;
+        let done = replay.path.with_extension("done");
+        let completed = replay.record.completed(response);
+        let bytes = serde_json::to_vec(&completed)?;
+        if !persist_new_owner_only_file(&done, &bytes)? {
+            let existing = read_tool_request_replay(&done, ToolRequestReplayState::Completed)?;
+            validate_exact_tool_request_replay(&existing, &completed.request)?;
+            let existing_response = existing.response.as_ref().ok_or_else(|| {
+                Error::validation("Completed tool-request replay record has no response")
+            })?;
+            let completed_response = completed.response.as_ref().expect("response was assigned");
+            if existing_response != completed_response {
+                return Err(Error::validation(
+                    "Completed tool-request replay response does not match the persisted result",
+                ));
+            }
+            let _ = fs::remove_file(&replay.path);
+            return Ok(ToolRequestReplay {
+                path: done,
+                state: ToolRequestReplayState::Completed,
+                record: existing,
+            });
+        }
+        fs::remove_file(&replay.path).map_err(|err| {
+            Error::validation(format!(
+                "Trusted tool response was persisted but its active replay claim could not be removed: {err}"
+            ))
+        })?;
+        sync_directory(done.parent().expect("completed replay has a parent"))?;
+        Ok(ToolRequestReplay {
+            path: done,
+            state: ToolRequestReplayState::Completed,
+            record: completed,
+        })
     }
 
     fn dispatch_tool_request(
@@ -1566,44 +1700,75 @@ impl InGuestRuntimeProvider {
         let (_, consumer_uid) =
             self.resolve_container_user_identity(container_id, metadata.container_user.as_deref())?;
         validate_tool_request_consumer_uid(std::slice::from_ref(spool), consumer_uid)?;
-        let mut bytes = self.read_spooled_tool_request(container_id, spool, request_id)?;
-        let request = validate_tool_request_envelope(&bytes, &in_guest.run_id, spool, request_id);
-        bytes.fill(0);
-        let request = request?;
-        let (claim, done) = self.claim_tool_request(&state, lease_id, request_id)?;
-        let relay = ToolRelayRequest {
-            version: "1",
-            run_id: &request.run_id,
-            lease_id: &request.lease_id,
-            consumer: &request.consumer,
-            request_id: &request.request_id,
-            payload: &request.payload,
+        // The advisory lock is acquired before touching the consumer spool. Waiters therefore
+        // reload staged/CLAIMED/COMPLETED state only after the active dispatcher has exited.
+        let _attempt = self.acquire_tool_request_attempt_lock(&state, lease_id, request_id)?;
+        let pending_request = match self.read_spooled_tool_request(container_id, spool, request_id)
+        {
+            Ok(mut bytes) => {
+                let request =
+                    validate_tool_request_envelope(&bytes, &in_guest.run_id, spool, request_id);
+                bytes.fill(0);
+                Some(PersistedToolRelayRequest::from(&request?))
+            }
+            Err(Error::ToolRequestNotPending { .. }) => None,
+            Err(err) => return Err(err),
         };
-        let response = relay_tool_request(&endpoint.source, &relay)?;
-        validate_tool_response_binding(&response, &request)?;
-        self.write_spooled_tool_response(container_id, spool, request_id, &response)
+        let replay = self
+            .load_or_claim_tool_request(
+                &state,
+                lease_id,
+                &spool.consumer,
+                request_id,
+                spool.replay_policy,
+                pending_request.as_ref(),
+            )?
+            .ok_or_else(|| Error::ToolRequestNotPending {
+                lease_id: lease_id.to_string(),
+                request_id: request_id.to_string(),
+            })?;
+        if pending_request.is_some() {
+            self.remove_staged_tool_request(container_id, spool, request_id)?;
+        }
+        let replay = if replay.state == ToolRequestReplayState::Completed {
+            replay
+        } else {
+            let relay = replay.record.request.as_relay();
+            let response = relay_tool_request(&endpoint.source, &relay).map_err(|err| {
+                if matches!(err, Error::ToolRequestRelayRetryable { .. })
+                    && spool.replay_policy
+                        != Some(ToolRequestReplayPolicy::ExactDigestReplayV1)
+                {
+                    Error::validation(
+                        "Trusted tool relay did not return a correlated response; the signed lease denies automatic replay",
+                    )
+                } else {
+                    err
+                }
+            })?;
+            self.complete_tool_request_replay(replay, response)?
+        };
+        let response = replay.record.response.as_ref().ok_or_else(|| {
+            Error::validation("Completed tool-request replay record has no response")
+        })?;
+        self.write_spooled_tool_response(container_id, spool, request_id, response)
             .map_err(|err| {
                 Error::validation(format!(
-                    "Trusted tool responded but its consumer response could not be committed; replay remains blocked: {err}"
+                    "Trusted tool response was persisted but its consumer response could not be committed: {err}"
                 ))
             })?;
-        fs::rename(&claim, &done).map_err(|err| {
-            Error::validation(format!(
-                "Trusted tool responded but its replay ledger could not be finalized: {err}"
-            ))
-        })?;
         self.remove_spooled_tool_request(container_id, spool, request_id)
             .map_err(|err| {
                 Error::validation(format!(
-                    "Trusted tool request was delivered and replay-blocked, but spool cleanup failed: {err}"
+                    "Trusted tool request was delivered and cached, but spool cleanup failed: {err}"
                 ))
             })?;
         Ok(RuntimeToolDispatchResult {
-            run_id: request.run_id.clone(),
-            lease_id: request.lease_id.clone(),
-            consumer: request.consumer.clone(),
-            request_id: request.request_id.clone(),
-            response: response.payload,
+            run_id: replay.record.request.run_id.clone(),
+            lease_id: replay.record.request.lease_id.clone(),
+            consumer: replay.record.request.consumer.clone(),
+            request_id: replay.record.request.request_id.clone(),
+            response: response.payload.clone(),
         })
     }
 }
@@ -1642,7 +1807,44 @@ struct ToolRelayRequest<'a> {
     payload: &'a serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedToolRelayRequest {
+    version: String,
+    run_id: String,
+    lease_id: String,
+    consumer: String,
+    request_id: String,
+    payload: serde_json::Value,
+}
+
+impl From<&ToolRequestEnvelope> for PersistedToolRelayRequest {
+    fn from(request: &ToolRequestEnvelope) -> Self {
+        Self {
+            version: "1".to_string(),
+            run_id: request.run_id.clone(),
+            lease_id: request.lease_id.clone(),
+            consumer: request.consumer.clone(),
+            request_id: request.request_id.clone(),
+            payload: request.payload.clone(),
+        }
+    }
+}
+
+impl PersistedToolRelayRequest {
+    fn as_relay(&self) -> ToolRelayRequest<'_> {
+        ToolRelayRequest {
+            version: "1",
+            run_id: &self.run_id,
+            lease_id: &self.lease_id,
+            consumer: &self.consumer,
+            request_id: &self.request_id,
+            payload: &self.payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ToolRelayResponse {
     version: String,
@@ -1651,6 +1853,48 @@ struct ToolRelayResponse {
     consumer: String,
     request_id: String,
     payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolRequestReplayRecord {
+    version: String,
+    request_sha256: String,
+    request: PersistedToolRelayRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<ToolRelayResponse>,
+}
+
+impl ToolRequestReplayRecord {
+    fn claimed(request: PersistedToolRelayRequest) -> Result<Self> {
+        Ok(Self {
+            version: TOOL_REQUEST_REPLAY_VERSION.to_string(),
+            request_sha256: tool_request_fingerprint(&request)?,
+            request,
+            response: None,
+        })
+    }
+
+    fn completed(mut self, response: ToolRelayResponse) -> Self {
+        self.response = Some(response);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolRequestReplayState {
+    Claimed,
+    Completed,
+}
+
+struct ToolRequestReplay {
+    path: PathBuf,
+    state: ToolRequestReplayState,
+    record: ToolRequestReplayRecord,
+}
+
+struct ToolRequestAttemptGuard {
+    _file: fs::File,
 }
 
 fn apply_provider_process_environment(
@@ -1734,21 +1978,350 @@ fn validate_tool_request_envelope(
     Ok(request)
 }
 
+#[cfg(test)]
 fn validate_tool_response_binding(
     response: &ToolRelayResponse,
     request: &ToolRequestEnvelope,
 ) -> Result<()> {
+    validate_tool_response_binding_values(
+        response,
+        &request.run_id,
+        &request.lease_id,
+        &request.consumer,
+        &request.request_id,
+    )
+}
+
+fn validate_tool_response_binding_fields(
+    response: &ToolRelayResponse,
+    request: &PersistedToolRelayRequest,
+) -> Result<()> {
+    validate_tool_response_binding_values(
+        response,
+        &request.run_id,
+        &request.lease_id,
+        &request.consumer,
+        &request.request_id,
+    )
+}
+
+fn validate_tool_response_binding_values(
+    response: &ToolRelayResponse,
+    run_id: &str,
+    lease_id: &str,
+    consumer: &str,
+    request_id: &str,
+) -> Result<()> {
     if response.version != "1"
-        || response.run_id != request.run_id
-        || response.lease_id != request.lease_id
-        || response.consumer != request.consumer
-        || response.request_id != request.request_id
+        || response.run_id != run_id
+        || response.lease_id != lease_id
+        || response.consumer != consumer
+        || response.request_id != request_id
     {
         return Err(Error::validation(
             "Trusted tool response does not match the claimed request binding",
         ));
     }
     Ok(())
+}
+
+fn tool_request_fingerprint(request: &PersistedToolRelayRequest) -> Result<String> {
+    let bytes = serde_json::to_vec(request)?;
+    if bytes.is_empty() || bytes.len() > MAX_TOOL_REQUEST_BYTES {
+        return Err(Error::validation(
+            "Canonical tool request exceeds its bounded replay size",
+        ));
+    }
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_tool_request_replay(
+    replay: &ToolRequestReplayRecord,
+    state: &ProviderState,
+    lease_id: &str,
+    consumer: &str,
+    request_id: &str,
+) -> Result<()> {
+    if replay.version != TOOL_REQUEST_REPLAY_VERSION
+        || replay.request.version != "1"
+        || state.run_id.as_deref() != Some(replay.request.run_id.as_str())
+        || replay.request.lease_id != lease_id
+        || replay.request.consumer != consumer
+        || replay.request.request_id != request_id
+    {
+        return Err(Error::validation(
+            "Managed tool-request replay record does not match its exact runtime binding",
+        ));
+    }
+    validate_sha256(&replay.request_sha256)?;
+    let actual = tool_request_fingerprint(&replay.request)?;
+    if !constant_time_bytes_equal(actual.as_bytes(), replay.request_sha256.as_bytes()) {
+        return Err(Error::validation(
+            "Managed tool-request replay fingerprint is invalid",
+        ));
+    }
+    match replay.response.as_ref() {
+        Some(response) => validate_tool_response_binding_fields(response, &replay.request),
+        None => Ok(()),
+    }
+}
+
+fn require_exact_digest_replay(policy: Option<ToolRequestReplayPolicy>) -> Result<()> {
+    if policy != Some(ToolRequestReplayPolicy::ExactDigestReplayV1) {
+        return Err(Error::validation(
+            "Managed tool request was already claimed; its signed lease does not permit exact replay",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exact_tool_request_replay(
+    replay: &ToolRequestReplayRecord,
+    pending_request: &PersistedToolRelayRequest,
+) -> Result<()> {
+    let pending_sha256 = tool_request_fingerprint(pending_request)?;
+    if replay.request != *pending_request
+        || !constant_time_bytes_equal(replay.request_sha256.as_bytes(), pending_sha256.as_bytes())
+    {
+        return Err(Error::validation(
+            "Managed tool-request replay differs from the original exact request",
+        ));
+    }
+    Ok(())
+}
+
+fn load_existing_tool_request_replay(
+    lease_root: &Path,
+    state: &ProviderState,
+    lease_id: &str,
+    consumer: &str,
+    request_id: &str,
+    pending_request: Option<&PersistedToolRelayRequest>,
+) -> Result<Option<ToolRequestReplay>> {
+    let stem = safe_identity(request_id)?;
+    for (path, replay_state) in [
+        (
+            lease_root.join(format!("{stem}.done")),
+            ToolRequestReplayState::Completed,
+        ),
+        (
+            lease_root.join(format!("{stem}.claim")),
+            ToolRequestReplayState::Claimed,
+        ),
+    ] {
+        if !path.exists() {
+            continue;
+        }
+        let record = read_tool_request_replay(&path, replay_state)?;
+        validate_tool_request_replay(&record, state, lease_id, consumer, request_id)?;
+        if let Some(pending_request) = pending_request {
+            validate_exact_tool_request_replay(&record, pending_request)?;
+        }
+        return Ok(Some(ToolRequestReplay {
+            path,
+            state: replay_state,
+            record,
+        }));
+    }
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn open_and_lock_tool_request_attempt(path: &Path) -> Result<ToolRequestAttemptGuard> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let file = options.open(path).map_err(|err| {
+        Error::validation(format!(
+            "Could not open managed tool-request attempt lock: {err}"
+        ))
+    })?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.permissions().mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+    {
+        return Err(Error::validation(
+            "Managed tool-request attempt lock must be owner-only and unlinked",
+        ));
+    }
+    loop {
+        // SAFETY: `file` owns this live descriptor for the guard lifetime. `flock` neither retains
+        // the pointer nor accesses Rust memory; EINTR is retried and all other failures close the
+        // descriptor by returning.
+        let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if status == 0 {
+            return Ok(ToolRequestAttemptGuard { _file: file });
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(Error::validation(format!(
+                "Could not lock managed tool-request dispatch attempt: {err}"
+            )));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn open_and_lock_tool_request_attempt(_path: &Path) -> Result<ToolRequestAttemptGuard> {
+    Err(Error::validation(
+        "Trusted tool-request attempt locks require a Unix guest",
+    ))
+}
+
+fn read_tool_request_replay(
+    path: &Path,
+    state: ToolRequestReplayState,
+) -> Result<ToolRequestReplayRecord> {
+    repair_interrupted_tool_request_replay_commit(path)?;
+    let metadata = fs::symlink_metadata(path).map_err(|err| {
+        Error::validation(format!(
+            "Cannot inspect managed tool-request replay record: {err}"
+        ))
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(Error::validation(
+            "Managed tool-request replay record must be a non-empty regular file",
+        ));
+    }
+    if metadata.len() > MAX_TOOL_REQUEST_REPLAY_BYTES as u64 {
+        return Err(Error::validation(
+            "Managed tool-request replay record exceeds its bounded size",
+        ));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o777 != 0o600 || metadata.nlink() != 1 {
+        return Err(Error::validation(
+            "Managed tool-request replay record must be owner-only and unlinked",
+        ));
+    }
+    let bytes = fs::read(path)?;
+    let replay: ToolRequestReplayRecord = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::validation("Managed tool-request replay record is malformed"))?;
+    let expected_response = state == ToolRequestReplayState::Completed;
+    if replay.response.is_some() != expected_response {
+        return Err(Error::validation(
+            "Managed tool-request replay state does not match its record",
+        ));
+    }
+    Ok(replay)
+}
+
+#[cfg(unix)]
+fn repair_interrupted_tool_request_replay_commit(path: &Path) -> Result<()> {
+    let destination = fs::symlink_metadata(path).map_err(|err| {
+        Error::validation(format!(
+            "Cannot inspect managed tool-request replay record: {err}"
+        ))
+    })?;
+    if !destination.file_type().is_file() {
+        return Ok(());
+    }
+    let parent = path.parent().ok_or_else(|| {
+        Error::validation("Managed tool-request replay record has no parent directory")
+    })?;
+    validate_private_directory(parent, "tool-request replay directory")?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::validation("Managed tool-request replay filename is invalid"))?;
+    let prefix = format!(".{filename}.");
+    let mut repaired = false;
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".tmp") {
+            continue;
+        }
+        let staged = fs::symlink_metadata(entry.path())?;
+        if staged.file_type().is_file()
+            && staged.dev() == destination.dev()
+            && staged.ino() == destination.ino()
+        {
+            fs::remove_file(entry.path())?;
+            repaired = true;
+        }
+    }
+    if repaired {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn repair_interrupted_tool_request_replay_commit(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+fn persist_new_owner_only_file(path: &Path, bytes: &[u8]) -> Result<bool> {
+    if bytes.is_empty() || bytes.len() > MAX_TOOL_REQUEST_REPLAY_BYTES {
+        return Err(Error::validation(
+            "Managed tool-request replay record exceeds its bounded size",
+        ));
+    }
+    let parent = path.parent().ok_or_else(|| {
+        Error::validation("Managed tool-request replay record has no parent directory")
+    })?;
+    validate_private_directory(parent, "tool-request replay directory")?;
+    let sequence = TOOL_REQUEST_REPLAY_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::validation("Managed tool-request replay filename is invalid"))?;
+    let temporary = parent.join(format!(
+        ".{filename}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temporary).map_err(|err| {
+        Error::validation(format!(
+            "Could not create managed tool-request replay staging file: {err}"
+        ))
+    })?;
+    let write_result = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        set_owner_only(&temporary)?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&temporary);
+        return Err(err);
+    }
+    let linked = match fs::hard_link(&temporary, path) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(err) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(Error::validation(format!(
+                "Could not commit managed tool-request replay record: {err}"
+            )));
+        }
+    };
+    fs::remove_file(&temporary).map_err(|err| {
+        Error::validation(format!(
+            "Could not remove managed tool-request replay staging link: {err}"
+        ))
+    })?;
+    sync_directory(parent)?;
+    Ok(linked)
 }
 
 fn create_owner_only_directory(path: &Path) -> Result<()> {
@@ -1782,9 +2355,13 @@ fn relay_tool_request(
     endpoint: &Path,
     request: &ToolRelayRequest<'_>,
 ) -> Result<ToolRelayResponse> {
-    let mut stream = UnixStream::connect(endpoint).map_err(|err| {
-        Error::validation(format!("Trusted tool endpoint rejected dispatch: {err}"))
-    })?;
+    let retryable = |reason: &str| Error::ToolRequestRelayRetryable {
+        lease_id: request.lease_id.to_string(),
+        request_id: request.request_id.to_string(),
+        reason: reason.to_string(),
+    };
+    let mut stream = UnixStream::connect(endpoint)
+        .map_err(|_| retryable("endpoint connection failed before a correlated response"))?;
     stream.set_read_timeout(Some(TOOL_RELAY_TIMEOUT))?;
     stream.set_write_timeout(Some(TOOL_RELAY_TIMEOUT))?;
     let mut bytes = serde_json::to_vec(request)?;
@@ -1794,14 +2371,23 @@ fn relay_tool_request(
         ));
     }
     bytes.push(b'\n');
-    stream.write_all(&bytes)?;
+    stream
+        .write_all(&bytes)
+        .map_err(|_| retryable("request delivery completed without a correlated response"))?;
     bytes.fill(0);
-    stream.shutdown(std::net::Shutdown::Write)?;
+    // A fast endpoint can read the EOF, persist its idempotent result, write the response, and
+    // close before this half-close returns. In that ENOTCONN-style race, a valid response may
+    // already be buffered, so always perform the bounded read and let correlation decide success.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
     let mut response = Vec::new();
     stream
         .take((MAX_TOOL_RESPONSE_BYTES + 1) as u64)
-        .read_to_end(&mut response)?;
-    if response.is_empty() || response.len() > MAX_TOOL_RESPONSE_BYTES {
+        .read_to_end(&mut response)
+        .map_err(|_| retryable("trusted response was interrupted before correlation"))?;
+    if response.is_empty() {
+        return Err(retryable("trusted response was lost before correlation"));
+    }
+    if response.len() > MAX_TOOL_RESPONSE_BYTES {
         return Err(Error::validation(
             "Trusted tool response exceeds its bounded relay size",
         ));
@@ -2536,10 +3122,11 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         if lease.scope != LeaseScope::ToolRequest
             && (lease.consumer_uid.is_some()
                 || lease.endpoint_lease_id.is_some()
-                || lease.request_spool_target.is_some())
+                || lease.request_spool_target.is_some()
+                || lease.replay_policy.is_some())
         {
             return Err(Error::validation(
-                "Only tool-request leases may declare a consumer UID, endpoint link, or request spool target",
+                "Only tool-request leases may declare a consumer UID, endpoint link, request spool target, or replay policy",
             ));
         }
         if lease.scope == LeaseScope::SourceControlIdentity && !lease.materializations.is_empty() {
@@ -2743,6 +3330,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     volume_name: tool_request_volume_name(&manifest.run_id, &lease.lease_id),
                     capability_source: source.clone(),
                     capability_sha256: materialization.sha256.clone().expect("validated above"),
+                    replay_policy: lease.replay_policy,
                 });
             }
             mounts.push(InGuestMount {
@@ -5115,6 +5703,7 @@ mod tests {
             volume_name: "branchbox-tool-requests-test".to_string(),
             capability_source: root.path().join("capability"),
             capability_sha256: "0".repeat(64),
+            replay_policy: None,
         };
         let mut provider = InGuestRuntimeProvider {
             devcontainer: PathBuf::from("devcontainer"),
@@ -5134,7 +5723,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn replay_ledger_denies_pending_and_completed_request_reuse() {
+    fn replay_ledger_defaults_to_deny_and_permits_only_signed_exact_digest_replay() {
         let root = tempfile::tempdir().unwrap();
         let ledger = root.path().join("ledger");
         let state = ProviderState {
@@ -5157,16 +5746,103 @@ mod tests {
             docker: PathBuf::from("docker"),
             timeout: PathBuf::from("timeout"),
         };
-        let (claim, done) = provider
-            .claim_tool_request(&state, "delivery_requests", "request_123")
+        let request = PersistedToolRelayRequest {
+            version: "1".to_string(),
+            run_id: "run_123".to_string(),
+            lease_id: "delivery_requests".to_string(),
+            consumer: "coding-agent".to_string(),
+            request_id: "request_123".to_string(),
+            payload: serde_json::json!({"operation": "capture"}),
+        };
+        let initial = provider
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "request_123",
+                None,
+                Some(&request),
+            )
+            .unwrap()
             .unwrap();
+        let interrupted_link = initial.path.parent().unwrap().join(format!(
+            ".{}.999.1.tmp",
+            initial.path.file_name().unwrap().to_string_lossy()
+        ));
+        fs::hard_link(&initial.path, &interrupted_link).unwrap();
         assert!(provider
-            .claim_tool_request(&state, "delivery_requests", "request_123")
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "request_123",
+                None,
+                Some(&request),
+            )
             .is_err());
-        fs::rename(claim, done).unwrap();
+        assert!(
+            !interrupted_link.exists(),
+            "an interrupted durable-link commit was not repaired"
+        );
+        let claimed = provider
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "request_123",
+                Some(ToolRequestReplayPolicy::ExactDigestReplayV1),
+                Some(&request),
+            )
+            .unwrap()
+            .unwrap();
+        let mut changed = request.clone();
+        changed.payload = serde_json::json!({"operation": "changed"});
         assert!(provider
-            .claim_tool_request(&state, "delivery_requests", "request_123")
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "request_123",
+                Some(ToolRequestReplayPolicy::ExactDigestReplayV1),
+                Some(&changed),
+            )
             .is_err());
+        let completed = provider
+            .complete_tool_request_replay(
+                claimed,
+                ToolRelayResponse {
+                    version: "1".to_string(),
+                    run_id: "run_123".to_string(),
+                    lease_id: "delivery_requests".to_string(),
+                    consumer: "coding-agent".to_string(),
+                    request_id: "request_123".to_string(),
+                    payload: serde_json::json!({"accepted": true}),
+                },
+            )
+            .unwrap();
+        assert_eq!(completed.state, ToolRequestReplayState::Completed);
+        assert!(provider
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "request_123",
+                None,
+                None,
+            )
+            .is_err());
+        let cached = provider
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "request_123",
+                Some(ToolRequestReplayPolicy::ExactDigestReplayV1),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.record, completed.record);
         let mut residue = Vec::new();
         provider.erase_materializations(&state, &mut residue);
         assert!(!state.tool_request_ledger_path.as_ref().unwrap().exists());
@@ -5222,8 +5898,23 @@ mod tests {
             docker: PathBuf::from("docker"),
             timeout: fake_timeout,
         };
+        let request = PersistedToolRelayRequest {
+            version: "1".to_string(),
+            run_id: "run_123".to_string(),
+            lease_id: "delivery_requests".to_string(),
+            consumer: "coding-agent".to_string(),
+            request_id: "artifact-delivery".to_string(),
+            payload: serde_json::json!({"operation": "capture"}),
+        };
         provider
-            .claim_tool_request(&state, "delivery_requests", "artifact-delivery")
+            .load_or_claim_tool_request(
+                &state,
+                "delivery_requests",
+                "coding-agent",
+                "artifact-delivery",
+                None,
+                Some(&request),
+            )
             .unwrap();
         provider.remove_tool_request_volumes(&state.tool_request_spools);
         assert_eq!(
