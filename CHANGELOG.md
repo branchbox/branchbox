@@ -58,6 +58,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve Dev Container environment semantics across image, Dockerfile, and Compose runtimes:
+  `containerEnv` is applied at container creation, configured plus explicit `remoteEnv` reaches only
+  lifecycle and exec processes, concurrent exec arguments stay invocation-local, and Docker
+  diagnostics no longer include environment values. Existing containers whose static environment
+  no longer matches now require an explicit recreate. Public container labels bind only canonical
+  environment variable names, never value-derived digests that could expose low-entropy secrets to
+  offline guessing.
+
+- Make trusted `tool-request` delivery recoverable across staged-read, relay-response, and consumer
+  acknowledgement loss when its signed provider-neutral lease opts into
+  `exact-digest-replay-v1`: durable capability-stripped request fingerprints, serialized attempts,
+  cached correlated responses, and exact-only retries prevent duplicate endpoint effects while
+  existing manifests continue to deny replay by default.
+
 - The portable Firecracker netfilter proof now exercises conntrack and UID-owner matching as
   independent rules, with the owner-scoped rule in a user-defined chain attached to `OUTPUT`.
   Consumers can compose exact destination policy without relying on a non-portable combined

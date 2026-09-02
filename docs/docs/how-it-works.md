@@ -103,6 +103,17 @@ devcontainer user and working directory through that user's login shell, restori
 from Mise, asdf, nvm, and similar toolchain managers. `feature list` reports a stopped inner
 devcontainer as `degraded` instead of claiming it is fully active.
 
+BranchBox keeps the Dev Container environment layers distinct. Declared `containerEnv` values are
+installed into a newly created container, including the configured primary service in a Compose
+workspace. Configured `remoteEnv` and explicit `--remote-env NAME=value` overrides are applied only
+to lifecycle commands and `branchbox devcontainer exec` processes; BranchBox does not implicitly
+copy ambient host variables. Since `containerEnv` is static for a container's lifetime, changing it
+for an existing container returns recreate guidance instead of pretending the running container was
+updated. Containers created by an older BranchBox release without this environment binding also
+require one explicit recreation. The public container label binds only the canonical environment
+variable name set; it never hashes values. BranchBox compares expected values directly with the
+inspected container state, and environment values are omitted from Docker diagnostics.
+
 For diagnostic retries, retain a failed sandbox and its nested Docker cache explicitly:
 
 ```bash

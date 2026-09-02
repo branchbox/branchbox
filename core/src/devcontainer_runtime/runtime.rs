@@ -3,11 +3,17 @@
 //! High-level operations for managing devcontainer lifecycle: up, down, exec, build.
 
 use super::config::{DevcontainerConfig, DevcontainerType, LifecycleCommand, StringOrArray};
-use super::docker::{ContainerState, Docker};
+use super::docker::{ComposeExecOptions, ContainerState, Docker};
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tempfile::TempPath;
+
+const BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL: &str =
+    "devcontainer.branchbox.container_env_names_sha256";
 
 /// Devcontainer runtime manager
 pub struct DevcontainerRuntime {
@@ -64,6 +70,28 @@ pub struct ReadConfigResult {
     pub config_path: String,
     pub configuration: DevcontainerConfig,
     pub container_type: String,
+}
+
+#[derive(Serialize)]
+struct ComposeEnvironmentOverride<'a> {
+    services: BTreeMap<&'a str, ComposeServiceEnvironment<'a>>,
+}
+
+#[derive(Serialize)]
+struct ComposeServiceEnvironment<'a> {
+    environment: &'a BTreeMap<String, String>,
+    labels: BTreeMap<&'static str, String>,
+}
+
+fn container_environment_names_digest(environment: &BTreeMap<String, String>) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"branchbox-container-env-names-v1\0");
+    digest.update((environment.len() as u64).to_be_bytes());
+    for name in environment.keys() {
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
 }
 
 /// Options for the `up` command
@@ -164,8 +192,10 @@ impl DevcontainerRuntime {
         }
     }
 
-    /// Get the devcontainer labels for this workspace
-    fn container_labels(&self) -> Vec<(String, String)> {
+    /// Get the stable labels used to locate a devcontainer for this workspace. Mutable
+    /// configuration bindings must not participate in discovery, or a mismatch would hide the
+    /// existing container before validation can reject it.
+    fn container_identity_labels(&self) -> Vec<(String, String)> {
         vec![
             (
                 "devcontainer.local_folder".to_string(),
@@ -178,10 +208,21 @@ impl DevcontainerRuntime {
         ]
     }
 
+    /// Get all labels installed when creating the devcontainer.
+    fn container_labels(&self) -> Vec<(String, String)> {
+        let environment = self.configured_container_environment();
+        let mut labels = self.container_identity_labels();
+        labels.push((
+            BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL.to_string(),
+            container_environment_names_digest(&environment),
+        ));
+        labels
+    }
+
     /// Find existing container for this workspace
     pub fn find_container(&self) -> Result<Option<String>> {
         // First try standard devcontainer labels
-        let labels = self.container_labels();
+        let labels = self.container_identity_labels();
         let label_refs: Vec<(&str, &str)> = labels
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -239,6 +280,94 @@ impl DevcontainerRuntime {
             .replace("${containerWorkspaceFolderBasename}", &workspace_name)
     }
 
+    /// Return only environment declared by the devcontainer configuration. Deliberately avoid
+    /// reading the supervisor's ambient environment: callers must opt in to additional remote
+    /// values explicitly.
+    fn configured_container_environment(&self) -> BTreeMap<String, String> {
+        self.config
+            .container_env
+            .as_ref()
+            .into_iter()
+            .flat_map(|environment| environment.iter())
+            .map(|(name, value)| (name.clone(), self.expand_mount_variables(value)))
+            .collect()
+    }
+
+    /// Merge configured remote environment with one invocation's explicit overrides. The
+    /// explicit CLI value wins, matching the devcontainer metadata merge contract.
+    fn remote_environment(&self, explicit: &HashMap<String, String>) -> BTreeMap<String, String> {
+        let mut environment: BTreeMap<String, String> = self
+            .config
+            .remote_env
+            .as_ref()
+            .into_iter()
+            .flat_map(|environment| environment.iter())
+            .map(|(name, value)| (name.clone(), self.expand_mount_variables(value)))
+            .collect();
+        environment.extend(
+            explicit
+                .iter()
+                .map(|(name, value)| (name.clone(), self.expand_mount_variables(value))),
+        );
+        environment
+    }
+
+    /// Docker Compose has no `up --env` equivalent for service container environment. Add a
+    /// private, invocation-local override file, just as the reference devcontainer CLI does.
+    /// Dollar signs are doubled so Compose does not substitute values a second time.
+    fn compose_container_environment_override(&self, service: &str) -> Result<TempPath> {
+        let configured_environment = self.configured_container_environment();
+        let environment: BTreeMap<String, String> = configured_environment
+            .iter()
+            .map(|(name, value)| (name.clone(), value.replace('$', "$$")))
+            .collect();
+
+        let services = BTreeMap::from([(
+            service,
+            ComposeServiceEnvironment {
+                environment: &environment,
+                labels: BTreeMap::from([(
+                    BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL,
+                    container_environment_names_digest(&configured_environment),
+                )]),
+            },
+        )]);
+        let document = ComposeEnvironmentOverride { services };
+        let mut file = tempfile::Builder::new()
+            .prefix("branchbox-devcontainer-environment-")
+            .suffix(".yaml")
+            .tempfile()
+            .context("Failed to create private devcontainer environment override")?;
+        serde_yaml::to_writer(file.as_file_mut(), &document)
+            .context("Failed to serialize devcontainer environment override")?;
+        file.as_file_mut()
+            .flush()
+            .context("Failed to flush devcontainer environment override")?;
+        file.as_file()
+            .sync_all()
+            .context("Failed to persist devcontainer environment override")?;
+        Ok(file.into_temp_path())
+    }
+
+    fn validate_existing_container_environment(
+        &self,
+        labels: &HashMap<String, String>,
+        actual_environment: &HashMap<String, String>,
+    ) -> Result<()> {
+        let expected = self.configured_container_environment();
+        let expected_names_digest = container_environment_names_digest(&expected);
+        if labels.get(BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL) != Some(&expected_names_digest)
+            || expected
+                .iter()
+                .any(|(name, value)| actual_environment.get(name) != Some(value))
+        {
+            anyhow::bail!(
+                "Existing devcontainer no longer matches containerEnv; rerun with --remove-existing-container"
+            );
+        }
+        Ok(())
+    }
+
     /// Parse a mount string in format "source:target" or "source:target:options"
     fn parse_mount_string(mount: &str) -> Option<(String, String)> {
         // Handle Docker mount syntax: source=...,target=...,type=...
@@ -276,6 +405,7 @@ impl DevcontainerRuntime {
             } else {
                 // Check if it's running
                 let info = self.docker.inspect_container(&container_id)?;
+                self.validate_existing_container_environment(&info.labels, &info.environment)?;
                 if info.state == ContainerState::Running {
                     tracing::info!(container_id = %container_id, "Container already running");
                     return Ok(UpResult {
@@ -314,14 +444,17 @@ impl DevcontainerRuntime {
 
     fn up_compose(&self, options: UpOptions) -> Result<UpResult> {
         let devcontainer_dir = self.devcontainer_dir();
-        let compose_files = self.config.compose_files(&devcontainer_dir);
-        let compose_file_refs: Vec<&Path> = compose_files.iter().map(|p| p.as_path()).collect();
-
         let service = self
             .config
             .service
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Docker Compose config requires 'service' field"))?;
+        let mut compose_files = self.config.compose_files(&devcontainer_dir);
+        let container_environment_override =
+            self.compose_container_environment_override(service)?;
+        compose_files.push(container_environment_override.to_path_buf());
+        let compose_file_refs: Vec<&Path> = compose_files.iter().map(|p| p.as_path()).collect();
+        let remote_environment = self.remote_environment(&options.remote_env);
 
         let project_name = self.workspace_name();
 
@@ -353,7 +486,7 @@ impl DevcontainerRuntime {
 
         // Run lifecycle commands if not skipped
         if !options.skip_post_create {
-            self.run_lifecycle_commands(&container_id)?;
+            self.run_lifecycle_commands(&container_id, &remote_environment)?;
         }
 
         Ok(UpResult {
@@ -485,11 +618,14 @@ impl DevcontainerRuntime {
             .map(|(s, t)| (s.as_str(), t.as_str()))
             .collect();
 
-        // Setup environment
-        let mut env: Vec<(&str, &str)> = Vec::new();
-        for (k, v) in &options.remote_env {
-            env.push((k.as_str(), v.as_str()));
-        }
+        // `containerEnv` belongs to the container creation boundary. Remote environment is
+        // applied only to lifecycle and later tool-spawned processes.
+        let container_environment = self.configured_container_environment();
+        let env: Vec<(&str, &str)> = container_environment
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let remote_environment = self.remote_environment(&options.remote_env);
 
         // Determine command
         let command: Option<Vec<&str>> = if self.config.override_command.unwrap_or(true) {
@@ -524,7 +660,7 @@ impl DevcontainerRuntime {
 
         // Run lifecycle commands if not skipped
         if !options.skip_post_create {
-            self.run_lifecycle_commands(&container_id)?;
+            self.run_lifecycle_commands(&container_id, &remote_environment)?;
         }
 
         Ok(UpResult {
@@ -538,7 +674,11 @@ impl DevcontainerRuntime {
         })
     }
 
-    fn run_lifecycle_commands(&self, container_id: &str) -> Result<()> {
+    fn run_lifecycle_commands(
+        &self,
+        container_id: &str,
+        remote_environment: &BTreeMap<String, String>,
+    ) -> Result<()> {
         let user = self.config.effective_remote_user();
         let workdir = Some(
             self.config
@@ -549,22 +689,22 @@ impl DevcontainerRuntime {
         // Run commands in order
         if let Some(ref cmd) = self.config.on_create_command {
             tracing::info!("Running onCreateCommand");
-            self.run_lifecycle_command(container_id, cmd, user, workdir_ref)?;
+            self.run_lifecycle_command(container_id, cmd, user, workdir_ref, remote_environment)?;
         }
 
         if let Some(ref cmd) = self.config.update_content_command {
             tracing::info!("Running updateContentCommand");
-            self.run_lifecycle_command(container_id, cmd, user, workdir_ref)?;
+            self.run_lifecycle_command(container_id, cmd, user, workdir_ref, remote_environment)?;
         }
 
         if let Some(ref cmd) = self.config.post_create_command {
             tracing::info!("Running postCreateCommand");
-            self.run_lifecycle_command(container_id, cmd, user, workdir_ref)?;
+            self.run_lifecycle_command(container_id, cmd, user, workdir_ref, remote_environment)?;
         }
 
         if let Some(ref cmd) = self.config.post_start_command {
             tracing::info!("Running postStartCommand");
-            self.run_lifecycle_command(container_id, cmd, user, workdir_ref)?;
+            self.run_lifecycle_command(container_id, cmd, user, workdir_ref, remote_environment)?;
         }
 
         Ok(())
@@ -576,17 +716,22 @@ impl DevcontainerRuntime {
         command: &LifecycleCommand,
         user: Option<&str>,
         workdir: Option<&str>,
+        remote_environment: &BTreeMap<String, String>,
     ) -> Result<()> {
+        let environment: Vec<(&str, &str)> = remote_environment
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
         match command {
             LifecycleCommand::String(s) => {
                 let cmd = vec!["sh", "-c", s.as_str()];
                 self.docker
-                    .exec(container_id, &cmd, user, workdir, &[], false)?;
+                    .exec(container_id, &cmd, user, workdir, &environment, false)?;
             }
             LifecycleCommand::Array(arr) => {
                 let cmd: Vec<&str> = arr.iter().map(|s| s.as_str()).collect();
                 self.docker
-                    .exec(container_id, &cmd, user, workdir, &[], false)?;
+                    .exec(container_id, &cmd, user, workdir, &environment, false)?;
             }
             LifecycleCommand::Object(map) => {
                 for (name, cmd) in map {
@@ -594,13 +739,25 @@ impl DevcontainerRuntime {
                     match cmd {
                         StringOrArray::String(s) => {
                             let cmd = vec!["sh", "-c", s.as_str()];
-                            self.docker
-                                .exec(container_id, &cmd, user, workdir, &[], false)?;
+                            self.docker.exec(
+                                container_id,
+                                &cmd,
+                                user,
+                                workdir,
+                                &environment,
+                                false,
+                            )?;
                         }
                         StringOrArray::Array(arr) => {
                             let cmd: Vec<&str> = arr.iter().map(|s| s.as_str()).collect();
-                            self.docker
-                                .exec(container_id, &cmd, user, workdir, &[], false)?;
+                            self.docker.exec(
+                                container_id,
+                                &cmd,
+                                user,
+                                workdir,
+                                &environment,
+                                false,
+                            )?;
                         }
                     }
                 }
@@ -633,6 +790,11 @@ impl DevcontainerRuntime {
             .workdir
             .as_deref()
             .or(Some(default_workdir.as_str()));
+        let remote_environment = self.remote_environment(&options.remote_env);
+        let environment: Vec<(&str, &str)> = remote_environment
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
 
         // For compose-based containers, use compose exec
         if self.config.container_type() == DevcontainerType::DockerCompose {
@@ -645,13 +807,16 @@ impl DevcontainerRuntime {
 
             let cmd_refs: Vec<&str> = command.iter().map(|s| s.as_str()).collect();
 
-            let output = self.docker.compose_exec(
+            let output = self.docker.compose_exec_with_options(
                 &compose_file_refs,
-                Some(&project_name),
                 service,
                 &cmd_refs,
-                user,
-                workdir,
+                ComposeExecOptions {
+                    project_name: Some(&project_name),
+                    user,
+                    workdir,
+                    environment: &environment,
+                },
             )?;
 
             return Ok(ExecResult {
@@ -663,17 +828,11 @@ impl DevcontainerRuntime {
         }
 
         // For other container types, use docker exec directly
-        let env: Vec<(&str, &str)> = options
-            .remote_env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-
         let cmd_refs: Vec<&str> = command.iter().map(|s| s.as_str()).collect();
 
-        let output = self
-            .docker
-            .exec(&container_id, &cmd_refs, user, workdir, &env, false)?;
+        let output =
+            self.docker
+                .exec(&container_id, &cmd_refs, user, workdir, &environment, false)?;
 
         Ok(ExecResult {
             outcome: if output.success { "success" } else { "error" }.to_string(),
@@ -872,5 +1031,72 @@ mod tests {
         // The workspace name should be the temp dir name
         let name = runtime.workspace_name();
         assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn configured_container_and_remote_environment_remain_separate() {
+        let temp_dir = create_test_workspace();
+        std::fs::write(
+            temp_dir.path().join(".devcontainer/devcontainer.json"),
+            r#"{
+                "image": "example.invalid/dev:latest",
+                "containerEnv": {
+                    "CONTAINER_ONLY": "static",
+                    "WORKSPACE_NAME": "${localWorkspaceFolderBasename}"
+                },
+                "remoteEnv": {
+                    "CONFIG_ONLY": "configured",
+                    "PRECEDENCE": "configuration"
+                }
+            }"#,
+        )
+        .unwrap();
+        let runtime = DevcontainerRuntime::new(temp_dir.path()).unwrap();
+
+        let container = runtime.configured_container_environment();
+        assert_eq!(container.get("CONTAINER_ONLY").unwrap(), "static");
+        assert_eq!(
+            container.get("WORKSPACE_NAME").unwrap(),
+            &runtime.workspace_name()
+        );
+        assert!(!container.contains_key("CONFIG_ONLY"));
+
+        let names_digest = container_environment_names_digest(&container);
+        let mut different_values = container.clone();
+        different_values.insert(
+            "CONTAINER_ONLY".to_string(),
+            "different-low-entropy-secret".to_string(),
+        );
+        assert_eq!(
+            container_environment_names_digest(&different_values),
+            names_digest,
+            "the public binding must not depend on containerEnv values"
+        );
+        let mut different_names = container.clone();
+        different_names.insert("ADDED_NAME".to_string(), "static".to_string());
+        assert_ne!(
+            container_environment_names_digest(&different_names),
+            names_digest
+        );
+        let labels: HashMap<_, _> = runtime.container_labels().into_iter().collect();
+        assert_eq!(
+            labels.get(BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL),
+            Some(&names_digest)
+        );
+        assert!(!labels.contains_key("devcontainer.branchbox.container_env_sha256"));
+        assert!(runtime
+            .container_identity_labels()
+            .iter()
+            .all(|(name, _)| name != BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL));
+
+        let explicit = HashMap::from([
+            ("PRECEDENCE".to_string(), "explicit".to_string()),
+            ("EXPLICIT_ONLY".to_string(), "per-command".to_string()),
+        ]);
+        let remote = runtime.remote_environment(&explicit);
+        assert_eq!(remote.get("CONFIG_ONLY").unwrap(), "configured");
+        assert_eq!(remote.get("PRECEDENCE").unwrap(), "explicit");
+        assert_eq!(remote.get("EXPLICIT_ONLY").unwrap(), "per-command");
+        assert!(!remote.contains_key("CONTAINER_ONLY"));
     }
 }
