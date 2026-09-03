@@ -3539,10 +3539,15 @@ fn prepare_in_guest_devcontainer_config(
         }
     }
     let workspace_folder = effective_in_guest_workspace_folder(&config, worktree_path)?;
+    let lease_mounts: Vec<(PathBuf, PathBuf)> = plan
+        .mounts()
+        .map(|(source, target)| (source.to_path_buf(), target.to_path_buf()))
+        .collect();
     let assignment = InGuestComposeAssignment {
         project_environment: project_environment.map(|(source, _)| source),
         service_images: plan.service_images(),
         workspace_consumer: plan.workspace_consumer().is_some(),
+        lease_mounts: &lease_mounts,
     };
     let omitted_services = prepare_outer_tunnel_compose_override(
         repo_root,
@@ -3561,14 +3566,9 @@ fn prepare_in_guest_devcontainer_config(
         .remove("mounts")
         .and_then(|mounts| mounts.as_array().cloned())
         .unwrap_or_default();
-    for (source, target) in plan.mounts() {
-        mounts.push(serde_json::json!({
-            "type": "bind",
-            "source": source,
-            "target": target,
-            "readonly": true
-        }));
-    }
+    // Read-only lease binds are carried by the generated Compose facade, which
+    // preserves their read-only mode; declaring them here as well would have the
+    // same bind resolved twice on the inspected container.
     for (volume, target, _consumer_uid) in plan.tool_request_spools() {
         mounts.push(serde_json::json!({
             "type": "volume",
@@ -4035,6 +4035,11 @@ fn effective_in_guest_workspace_folder(
 struct InGuestComposeAssignment<'a> {
     project_environment: Option<&'a Path>,
     service_images: &'a BTreeMap<String, String>,
+    /// Signed read-only lease binds. These are placed in the generated Compose
+    /// facade rather than devcontainer.json `mounts`, because the Dev Containers
+    /// CLI does not carry the `readonly` property into a Compose project, and the
+    /// running container is then inspected for a read-only bind and fails closed.
+    lease_mounts: &'a [(PathBuf, PathBuf)],
     /// A signed version 3 assignment group-shares the task worktree with a consumer that does
     /// not own it, so the primary service needs the matching Git ownership exceptions.
     workspace_consumer: bool,
@@ -4232,7 +4237,28 @@ fn prepare_outer_tunnel_compose_override(
                 value: serde_yaml::Value::Sequence(env_files),
             })),
         );
-        let safe_volumes = in_guest_primary_volumes(repo_root, worktree_path, workspace_folder)?;
+        let mut safe_volumes =
+            in_guest_primary_volumes(repo_root, worktree_path, workspace_folder)?;
+        safe_volumes.extend(assignment.lease_mounts.iter().map(|(source, target)| {
+            let mut mount = serde_yaml::Mapping::new();
+            mount.insert(
+                serde_yaml::Value::String("type".to_string()),
+                serde_yaml::Value::String("bind".to_string()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("source".to_string()),
+                serde_yaml::Value::String(source.to_string_lossy().into_owned()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("target".to_string()),
+                serde_yaml::Value::String(target.to_string_lossy().into_owned()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("read_only".to_string()),
+                serde_yaml::Value::Bool(true),
+            );
+            serde_yaml::Value::Mapping(mount)
+        }));
         primary.insert(
             serde_yaml::Value::String("volumes".to_string()),
             serde_yaml::Value::Tagged(Box::new(TaggedValue {
@@ -8077,6 +8103,7 @@ mod tests {
                 project_environment: None,
                 service_images: &images,
                 workspace_consumer: false,
+                lease_mounts: &[],
             },
         )
         .unwrap();
@@ -8118,6 +8145,7 @@ mod tests {
                 project_environment: None,
                 service_images: &incomplete,
                 workspace_consumer: false,
+                lease_mounts: &[],
             },
         )
         .unwrap_err()
@@ -8140,6 +8168,7 @@ mod tests {
                 project_environment: None,
                 service_images: &BTreeMap::from([("app".to_string(), images["app"].clone())]),
                 workspace_consumer: false,
+                lease_mounts: &[],
             },
         )
         .unwrap_err()
@@ -8235,6 +8264,7 @@ volumes:
                 project_environment: Some(&project_environment),
                 service_images: &BTreeMap::new(),
                 workspace_consumer: false,
+                lease_mounts: &[],
             },
         )
         .unwrap();
@@ -8376,6 +8406,7 @@ volumes:
                 project_environment: None,
                 service_images: &BTreeMap::new(),
                 workspace_consumer: true,
+                lease_mounts: &[],
             },
         )
         .unwrap();
