@@ -29,6 +29,15 @@ use std::time::Duration;
 
 const LEGACY_MANIFEST_VERSION: &str = "1";
 const MANAGED_MANIFEST_VERSION: &str = "2";
+const WORKSPACE_CONSUMER_MANIFEST_VERSION: &str = "3";
+
+fn is_managed_manifest_version(version: &str) -> bool {
+    matches!(
+        version,
+        MANAGED_MANIFEST_VERSION | WORKSPACE_CONSUMER_MANIFEST_VERSION
+    )
+}
+
 const MANAGED_RUNTIME_ROOT: &str = "/run/branchbox/managed";
 const LEASE_TARGET_ROOT: &str = "/run/branchbox/leases";
 const PROJECT_ENVIRONMENT_TARGET: &str = "/run/branchbox/leases/project-env";
@@ -257,6 +266,7 @@ pub struct InGuestFacadePlan {
     mounts: Vec<InGuestMount>,
     tool_request_spools: Vec<ToolRequestSpool>,
     linked_tool_endpoints: BTreeSet<String>,
+    workspace_consumer: Option<WorkspaceConsumer>,
 }
 
 impl InGuestFacadePlan {
@@ -314,6 +324,214 @@ impl InGuestFacadePlan {
             )
         })
     }
+
+    pub fn workspace_consumer(&self) -> Option<(u32, u32)> {
+        self.workspace_consumer
+            .as_ref()
+            .map(|consumer| (consumer.uid, consumer.gid))
+    }
+
+    pub fn grant_workspace_consumer_access(
+        &self,
+        worktree_path: &Path,
+        common_git_path: &Path,
+    ) -> Result<()> {
+        let Some(consumer) = self.workspace_consumer.as_ref() else {
+            return Ok(());
+        };
+        grant_workspace_consumer_access(worktree_path, common_git_path, consumer)
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct WorkspaceAccessEntry {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    mode: u32,
+    directory: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn grant_workspace_consumer_access(
+    worktree_path: &Path,
+    common_git_path: &Path,
+    consumer: &WorkspaceConsumer,
+) -> Result<()> {
+    // The unprivileged BranchBox process may change an owned file's group only to one of its
+    // delegated groups. The outer runtime must therefore opt into the exact consumer GID both in
+    // the signed assignment and in BranchBox's supplementary groups.
+    let effective_uid = unsafe { libc::geteuid() };
+    let effective_gid = unsafe { libc::getegid() };
+    let group_count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if group_count < 0 {
+        return Err(Error::validation(
+            "Could not inspect in-guest supplementary groups for workspace access",
+        ));
+    }
+    let mut groups = vec![0 as libc::gid_t; group_count as usize];
+    if group_count > 0
+        && unsafe { libc::getgroups(group_count, groups.as_mut_ptr()) } != group_count
+    {
+        return Err(Error::validation(
+            "Could not inspect in-guest supplementary groups for workspace access",
+        ));
+    }
+    if consumer.gid != effective_gid && !groups.contains(&consumer.gid) {
+        return Err(Error::validation(
+            "Workspace consumer GID is not delegated to the in-guest BranchBox runtime",
+        ));
+    }
+
+    let mut entries = Vec::new();
+    for root in [worktree_path, common_git_path] {
+        let root = fs::canonicalize(root).map_err(|err| {
+            Error::validation(format!(
+                "Cannot validate workspace consumer access root '{}': {err}",
+                root.display()
+            ))
+        })?;
+        for entry in walkdir::WalkDir::new(&root).follow_links(false) {
+            let entry = entry.map_err(|err| {
+                Error::validation(format!(
+                    "Cannot inspect workspace consumer access below '{}': {err}",
+                    root.display()
+                ))
+            })?;
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            let metadata = entry.metadata().map_err(|err| {
+                Error::validation(format!(
+                    "Cannot inspect workspace consumer path '{}': {err}",
+                    entry.path().display()
+                ))
+            })?;
+            if metadata.uid() != effective_uid || (!metadata.is_dir() && !metadata.is_file()) {
+                return Err(Error::validation(
+                    "Workspace consumer access requires runtime-owned regular files and directories",
+                ));
+            }
+            entries.push(WorkspaceAccessEntry {
+                path: entry.path().to_path_buf(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                mode: metadata.mode(),
+                directory: metadata.is_dir(),
+            });
+        }
+    }
+
+    for entry in entries {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&entry.path)
+            .map_err(|err| {
+                Error::validation(format!(
+                    "Cannot open workspace consumer path '{}': {err}",
+                    entry.path.display()
+                ))
+            })?;
+        let metadata = file.metadata()?;
+        if metadata.dev() != entry.device
+            || metadata.ino() != entry.inode
+            || metadata.uid() != effective_uid
+            || metadata.is_dir() != entry.directory
+        {
+            return Err(Error::validation(
+                "Workspace consumer path changed during access delegation",
+            ));
+        }
+        if unsafe { libc::fchown(file.as_raw_fd(), u32::MAX, consumer.gid) } != 0 {
+            return Err(Error::validation(format!(
+                "Could not delegate workspace path '{}' to the signed consumer GID",
+                entry.path.display()
+            )));
+        }
+        let executable = entry.directory || entry.mode & 0o111 != 0;
+        let mut mode = entry.mode & 0o1777;
+        mode |= 0o060;
+        if executable {
+            mode |= 0o010;
+        }
+        if entry.directory {
+            mode |= 0o2000;
+        }
+        if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 {
+            return Err(Error::validation(format!(
+                "Could not grant workspace path '{}' to the signed consumer GID",
+                entry.path.display()
+            )));
+        }
+        if entry.directory {
+            set_shared_default_acl(&file, &entry.path)?;
+        }
+    }
+    Ok(())
+}
+
+/// The consumer creates new paths with its own umask, which normally drops group write. The
+/// runtime would then be unable to reclaim its own task worktree at teardown, because removing a
+/// consumer-created directory's contents needs write access to that directory. A POSIX default
+/// ACL makes every path created below a delegated directory inherit the same group-shared access
+/// the delegation itself grants, independent of the consumer's umask. Setting it requires only
+/// ownership of the directory, and it mirrors the delegated mode exactly: owner and group gain
+/// read/write/traverse, other gains nothing beyond the read/traverse the delegation already
+/// preserves, and world write is never granted.
+#[cfg(target_os = "linux")]
+fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
+    const ACL_EA_VERSION: u32 = 2;
+    const ACL_USER_OBJ: u16 = 0x01;
+    const ACL_GROUP_OBJ: u16 = 0x04;
+    const ACL_OTHER: u16 = 0x20;
+    const ACL_UNDEFINED_ID: u32 = u32::MAX;
+    const ACL_READ_WRITE_EXECUTE: u16 = 0b111;
+    const ACL_READ_EXECUTE: u16 = 0b101;
+
+    // Entries must stay in the kernel's canonical tag order.
+    let mut attribute = Vec::with_capacity(4 + 3 * 8);
+    attribute.extend_from_slice(&ACL_EA_VERSION.to_le_bytes());
+    for (tag, permissions) in [
+        (ACL_USER_OBJ, ACL_READ_WRITE_EXECUTE),
+        (ACL_GROUP_OBJ, ACL_READ_WRITE_EXECUTE),
+        (ACL_OTHER, ACL_READ_EXECUTE),
+    ] {
+        attribute.extend_from_slice(&tag.to_le_bytes());
+        attribute.extend_from_slice(&permissions.to_le_bytes());
+        attribute.extend_from_slice(&ACL_UNDEFINED_ID.to_le_bytes());
+    }
+
+    let name = c"system.posix_acl_default";
+    let stored = unsafe {
+        libc::fsetxattr(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            attribute.as_ptr().cast(),
+            attribute.len(),
+            0,
+        )
+    };
+    if stored != 0 {
+        return Err(Error::validation(format!(
+            "Could not make workspace directory '{}' reclaimable by the runtime; the in-guest \
+             filesystem must support POSIX default ACLs",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn grant_workspace_consumer_access(
+    _worktree_path: &Path,
+    _common_git_path: &Path,
+    _consumer: &WorkspaceConsumer,
+) -> Result<()> {
+    Err(Error::validation(
+        "Workspace consumer access delegation requires a Linux in-guest runtime",
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -426,7 +644,16 @@ struct AssignmentManifest {
     #[serde(default)]
     port_proxy_image: Option<String>,
     #[serde(default)]
+    workspace_consumer: Option<WorkspaceConsumer>,
+    #[serde(default)]
     leases: Vec<AssignedLease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceConsumer {
+    uid: u32,
+    gid: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -643,7 +870,7 @@ impl InGuestRuntimeProvider {
         &self,
         container_id: &str,
         configured_user: Option<&str>,
-    ) -> Result<(String, u32)> {
+    ) -> Result<(String, u32, u32)> {
         let user = if let Some(user) = configured_user.filter(|user| !user.is_empty()) {
             user.to_string()
         } else {
@@ -671,7 +898,16 @@ impl InGuestRuntimeProvider {
             )));
         }
         let uid = parse_container_uid(&output.stdout)?;
-        Ok((user, uid))
+        let output =
+            self.bounded_docker_output(&["exec", "--user", &user, container_id, "id", "-g"])?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Could not resolve the primary devcontainer user GID: {}",
+                bounded_failure(&output.stderr)
+            )));
+        }
+        let gid = parse_numeric_container_id(&output.stdout, "GID")?;
+        Ok((user, uid, gid))
     }
 
     fn bind_tool_request_consumer_identity(
@@ -684,11 +920,18 @@ impl InGuestRuntimeProvider {
         })?;
         let state = Self::read_state(&in_guest.state_path)?;
         let assignment = load_assignment(&state.manifest_path)?;
-        if assignment.tool_request_spools.is_empty() {
+        if assignment.tool_request_spools.is_empty()
+            && assignment.manifest.workspace_consumer.is_none()
+        {
             return Ok(());
         }
-        let (user, uid) =
+        let (user, uid, gid) =
             self.resolve_container_user_identity(container_id, metadata.container_user.as_deref())?;
+        validate_workspace_consumer_identity(
+            assignment.manifest.workspace_consumer.as_ref(),
+            uid,
+            gid,
+        )?;
         validate_tool_request_consumer_uid(&assignment.tool_request_spools, uid)?;
         metadata.container_user = Some(user);
         Ok(())
@@ -1697,8 +1940,13 @@ impl InGuestRuntimeProvider {
         let endpoint = assignment
             .tool_endpoint(&spool.endpoint_lease_id)
             .ok_or_else(|| Error::validation("Managed tool endpoint is unavailable"))?;
-        let (_, consumer_uid) =
+        let (_, consumer_uid, consumer_gid) =
             self.resolve_container_user_identity(container_id, metadata.container_user.as_deref())?;
+        validate_workspace_consumer_identity(
+            assignment.manifest.workspace_consumer.as_ref(),
+            consumer_uid,
+            consumer_gid,
+        )?;
         validate_tool_request_consumer_uid(std::slice::from_ref(spool), consumer_uid)?;
         // The advisory lock is acquired before touching the consumer spool. Waiters therefore
         // reload staged/CLAIMED/COMPLETED state only after the active dispatcher has exited.
@@ -2985,6 +3233,7 @@ pub fn load_in_guest_facade_plan(
         mounts: assignment.mounts,
         tool_request_spools: assignment.tool_request_spools,
         linked_tool_endpoints: assignment.linked_tool_endpoints,
+        workspace_consumer: assignment.manifest.workspace_consumer,
     })
 }
 
@@ -2994,7 +3243,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         .map_err(|err| Error::validation(format!("Invalid in-guest assignment manifest: {err}")))?;
     if !matches!(
         manifest.version.as_str(),
-        LEGACY_MANIFEST_VERSION | MANAGED_MANIFEST_VERSION
+        LEGACY_MANIFEST_VERSION | MANAGED_MANIFEST_VERSION | WORKSPACE_CONSUMER_MANIFEST_VERSION
     ) {
         return Err(Error::validation(format!(
             "Unsupported in-guest assignment version '{}'",
@@ -3006,6 +3255,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     validate_opaque_identifier(&manifest.outer_runtime_id, "outer_runtime_id")?;
     validate_git_revision(&manifest.repository.revision)?;
     validate_ports(&manifest.published_ports)?;
+    validate_workspace_consumer(&manifest)?;
     validate_service_images(&manifest.version, &manifest.service_images)?;
     validate_port_proxy_image(
         &manifest.version,
@@ -3078,7 +3328,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     "Model identities must be unique outer leases per consumer",
                 ));
             }
-            if manifest.version == MANAGED_MANIFEST_VERSION
+            if is_managed_manifest_version(&manifest.version)
                 && (lease.executable.as_deref().is_none_or(|executable| {
                     validate_label(executable, "lease.executable").is_err()
                 }) || lease.inherited_environment.len() > MAX_PROVIDER_ENVIRONMENT_BINDINGS
@@ -3374,6 +3624,16 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         return Err(Error::validation(
             "Tool-request consumers require an exact model-identity binding",
         ));
+    }
+    if let Some(consumer) = manifest.workspace_consumer.as_ref() {
+        if tool_request_spools
+            .iter()
+            .any(|spool| spool.consumer_uid != consumer.uid)
+        {
+            return Err(Error::validation(
+                "Tool-request consumer UID must match the workspace consumer UID",
+            ));
+        }
     }
     let mut linked_tool_endpoints = BTreeSet::new();
     for spool in &tool_request_spools {
@@ -3710,13 +3970,36 @@ fn validate_ports(ports: &[RuntimePort]) -> Result<()> {
     Ok(())
 }
 
+fn validate_workspace_consumer(manifest: &AssignmentManifest) -> Result<()> {
+    match (
+        manifest.version.as_str(),
+        manifest.workspace_consumer.as_ref(),
+    ) {
+        (WORKSPACE_CONSUMER_MANIFEST_VERSION, Some(consumer))
+            if consumer.uid > 0
+                && consumer.uid <= i32::MAX as u32
+                && consumer.gid > 0
+                && consumer.gid <= i32::MAX as u32 =>
+        {
+            Ok(())
+        }
+        (WORKSPACE_CONSUMER_MANIFEST_VERSION, _) => Err(Error::validation(
+            "Managed version 3 assignments require one non-root workspace consumer UID and GID",
+        )),
+        (_, None) => Ok(()),
+        _ => Err(Error::validation(
+            "Workspace consumer identity requires a managed version 3 assignment",
+        )),
+    }
+}
+
 fn validate_service_images(version: &str, images: &BTreeMap<String, String>) -> Result<()> {
     if images.is_empty() {
         return Ok(());
     }
-    if version != MANAGED_MANIFEST_VERSION {
+    if !is_managed_manifest_version(version) {
         return Err(Error::validation(
-            "Preloaded service images require a managed version 2 assignment",
+            "Preloaded service images require a managed assignment",
         ));
     }
     if images.len() > MAX_SERVICE_IMAGE_BINDINGS {
@@ -3745,9 +4028,9 @@ fn validate_port_proxy_image(
     let Some(image) = port_proxy_image else {
         return Ok(());
     };
-    if version != MANAGED_MANIFEST_VERSION {
+    if !is_managed_manifest_version(version) {
         return Err(Error::validation(
-            "Preloaded port proxy images require a managed version 2 assignment",
+            "Preloaded port proxy images require a managed assignment",
         ));
     }
     validate_immutable_image_reference(image)
@@ -4523,23 +4806,53 @@ fn validate_container_user_selector(value: &str) -> Result<()> {
 }
 
 fn parse_container_uid(source: &[u8]) -> Result<u32> {
-    let source = std::str::from_utf8(source)
-        .map_err(|_| Error::validation("Container UID resolution returned non-UTF-8 output"))?;
+    parse_numeric_container_id(source, "UID")
+}
+
+fn parse_numeric_container_id(source: &[u8], label: &str) -> Result<u32> {
+    let source = std::str::from_utf8(source).map_err(|_| {
+        Error::validation(format!(
+            "Container {label} resolution returned non-UTF-8 output"
+        ))
+    })?;
     let source = source.trim();
     if source.is_empty() || !source.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Error::validation(
-            "Container UID resolution did not return one numeric UID",
-        ));
+        return Err(Error::validation(format!(
+            "Container {label} resolution did not return one numeric {label}"
+        )));
     }
-    let uid = source
-        .parse::<u32>()
-        .map_err(|_| Error::validation("Container UID is outside the supported Linux UID range"))?;
+    let uid = source.parse::<u32>().map_err(|_| {
+        Error::validation(format!(
+            "Container {label} is outside the supported Linux ID range"
+        ))
+    })?;
     if uid > i32::MAX as u32 {
-        return Err(Error::validation(
-            "Container UID is outside the supported Linux UID range",
-        ));
+        return Err(Error::validation(format!(
+            "Container {label} is outside the supported Linux ID range"
+        )));
     }
     Ok(uid)
+}
+
+fn validate_workspace_consumer_identity(
+    expected: Option<&WorkspaceConsumer>,
+    actual_uid: u32,
+    actual_gid: u32,
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if actual_uid == 0 || actual_gid == 0 {
+        return Err(Error::validation(
+            "Workspace consumers must execute as a non-root devcontainer identity",
+        ));
+    }
+    if actual_uid != expected.uid || actual_gid != expected.gid {
+        return Err(Error::validation(
+            "Workspace consumer identity does not match the resolved devcontainer UID and GID",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_tool_request_consumer_uid(spools: &[ToolRequestSpool], actual_uid: u32) -> Result<()> {
@@ -4874,6 +5187,161 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).unwrap().as_slice(),
         );
         (root, manifest_path, "a".repeat(40))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_three_requires_an_explicit_non_root_workspace_consumer() {
+        let (root, manifest_path, revision) = assignment_fixture(true);
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("agentify");
+        let worktree = workspace.join("coding-demo");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!("3");
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(load_in_guest_facade_plan(
+            &manifest_path,
+            &repository,
+            &workspace,
+            &worktree,
+            "feature/coding-demo",
+            &revision,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("workspace consumer"));
+
+        manifest["workspace_consumer"] = serde_json::json!({"uid": 0, "gid": 1000});
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(load_assignment(&manifest_path).is_err());
+
+        manifest["workspace_consumer"] = serde_json::json!({"uid": 1000, "gid": 1000});
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        let plan = load_in_guest_facade_plan(
+            &manifest_path,
+            &repository,
+            &workspace,
+            &worktree,
+            "feature/coding-demo",
+            &revision,
+        )
+        .unwrap();
+        assert_eq!(plan.workspace_consumer(), Some((1000, 1000)));
+
+        manifest["version"] = serde_json::json!("2");
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(load_assignment(&manifest_path).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_consumer_receives_group_scoped_write_access_without_world_write() {
+        let effective_uid = unsafe { libc::geteuid() };
+        let effective_gid = unsafe { libc::getegid() };
+        if effective_uid == 0 || effective_gid == 0 {
+            return;
+        }
+        let group_count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        assert!(group_count >= 0);
+        let mut groups = vec![0 as libc::gid_t; group_count as usize];
+        if group_count > 0 {
+            assert_eq!(
+                unsafe { libc::getgroups(group_count, groups.as_mut_ptr()) },
+                group_count
+            );
+        }
+        let consumer_gid = groups
+            .into_iter()
+            .find(|group| *group != effective_gid)
+            .unwrap_or(effective_gid);
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path().join("worktree");
+        let common_git = root.path().join("git");
+        fs::create_dir_all(worktree.join("nested")).unwrap();
+        fs::create_dir_all(common_git.join("objects")).unwrap();
+        fs::write(worktree.join("nested/source.rb"), b"source").unwrap();
+        fs::write(common_git.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
+        let nested = worktree.join("nested");
+        let objects = common_git.join("objects");
+        for path in [
+            worktree.as_path(),
+            nested.as_path(),
+            common_git.as_path(),
+            objects.as_path(),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::set_permissions(
+            worktree.join("nested/source.rb"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        grant_workspace_consumer_access(
+            &worktree,
+            &common_git,
+            &WorkspaceConsumer {
+                uid: effective_uid,
+                gid: consumer_gid,
+            },
+        )
+        .unwrap();
+
+        let directory = fs::metadata(worktree.join("nested")).unwrap();
+        let source = fs::metadata(worktree.join("nested/source.rb")).unwrap();
+        assert_eq!(directory.gid(), consumer_gid);
+        assert_eq!(directory.mode() & 0o2070, 0o2070);
+        assert_eq!(directory.mode() & 0o007, 0o005);
+        assert_eq!(directory.mode() & 0o002, 0);
+        assert_eq!(source.gid(), consumer_gid);
+        assert_eq!(source.mode() & 0o070, 0o060);
+        assert_eq!(source.mode() & 0o007, 0o004);
+        assert_eq!(source.mode() & 0o002, 0);
+
+        // A consumer creates new paths with its own umask, so without an inherited default ACL
+        // the runtime could no longer reclaim its own worktree at teardown.
+        let inherited_file = worktree.join("nested/created_after_delegation.rb");
+        fs::write(&inherited_file, b"created by the consumer").unwrap();
+        let inherited_file = fs::metadata(&inherited_file).unwrap();
+        assert_eq!(inherited_file.gid(), consumer_gid);
+        assert_eq!(inherited_file.mode() & 0o060, 0o060);
+        assert_eq!(inherited_file.mode() & 0o002, 0);
+        let inherited_directory = worktree.join("nested/created_after_delegation");
+        fs::create_dir(&inherited_directory).unwrap();
+        let inherited_directory = fs::metadata(&inherited_directory).unwrap();
+        assert_eq!(inherited_directory.gid(), consumer_gid);
+        assert_eq!(inherited_directory.mode() & 0o070, 0o070);
+        assert_eq!(inherited_directory.mode() & 0o002, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_consumer_rejects_a_group_not_delegated_to_branchbox() {
+        let effective_gid = unsafe { libc::getegid() };
+        let group_count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        assert!(group_count >= 0);
+        let mut groups = vec![0 as libc::gid_t; group_count as usize];
+        if group_count > 0 {
+            assert_eq!(
+                unsafe { libc::getgroups(group_count, groups.as_mut_ptr()) },
+                group_count
+            );
+        }
+        let undelegated_gid = (1..=i32::MAX as u32)
+            .rev()
+            .find(|group| *group != effective_gid && !groups.contains(group))
+            .unwrap();
+        let error = grant_workspace_consumer_access(
+            Path::new("/does/not/matter"),
+            Path::new("/does/not/matter"),
+            &WorkspaceConsumer {
+                uid: 1000,
+                gid: undelegated_gid,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not delegated"));
     }
 
     #[cfg(unix)]
@@ -5288,6 +5756,7 @@ mod tests {
             mounts: assignment.mounts.clone(),
             tool_request_spools: Vec::new(),
             linked_tool_endpoints: BTreeSet::new(),
+            workspace_consumer: assignment.manifest.workspace_consumer.clone(),
         };
 
         assert_eq!(signed.len(), 3);
@@ -5344,6 +5813,7 @@ mod tests {
             mounts: assignment.mounts.clone(),
             tool_request_spools: assignment.tool_request_spools.clone(),
             linked_tool_endpoints: assignment.linked_tool_endpoints.clone(),
+            workspace_consumer: assignment.manifest.workspace_consumer.clone(),
         };
 
         assert_eq!(signed.len(), 1);
@@ -6433,11 +6903,12 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
             docker: PathBuf::from("docker"),
             timeout: passthrough_timeout,
         };
-        let (resolved_user, resolved_uid) = provider
+        let (resolved_user, resolved_uid, resolved_gid) = provider
             .resolve_container_user_identity(&container, None)
             .unwrap();
         assert_eq!(resolved_user, "1000:1000");
         assert_eq!(resolved_uid, 1000);
+        assert_eq!(resolved_gid, 1000);
 
         let capability = "request-capability-abcdefghijklmnopqrstuvwxyz012345";
         let binding = serde_json::to_string(&serde_json::json!({
@@ -6800,6 +7271,7 @@ printf '%s\n' "$*" > '{}'
             mounts: assignment.mounts,
             tool_request_spools: Vec::new(),
             linked_tool_endpoints: BTreeSet::new(),
+            workspace_consumer: assignment.manifest.workspace_consumer.clone(),
         };
         assert_eq!(plan.mounts().count(), 0);
     }

@@ -18,7 +18,7 @@ The manifest may live at any absolute path. It and every materialization must be
 
 ```json
 {
-  "version": "1",
+  "version": "3",
   "run_id": "run_opaque",
   "lease_id": "assignment_lease_opaque",
   "outer_runtime_id": "firecracker_vm_opaque",
@@ -28,6 +28,7 @@ The manifest may live at any absolute path. It and every materialization must be
     "revision": "0123456789abcdef0123456789abcdef01234567"
   },
   "task_branch": "feature/coding-demo",
+  "workspace_consumer": { "uid": 1000, "gid": 1000 },
   "tunnel_placement": "outer",
   "published_ports": [{ "host": 3000, "runtime": 3000 }],
   "leases": [
@@ -53,6 +54,31 @@ The manifest may live at any absolute path. It and every materialization must be
   ]
 }
 ```
+
+Version 3 requires one explicit, non-root `workspace_consumer` identity. Before starting the Dev
+Container, BranchBox grants that signed group write access to only the assigned worktree and its
+repository's required Git metadata. Directories receive setgid so newly created paths retain the
+same group, plus a POSIX default ACL so those paths also inherit group read/write regardless of the
+consumer's umask; without it the unprivileged runtime could not reclaim its own worktree at
+teardown once the consumer had created a directory. Files receive group read/write and only
+preserve executable access when already executable. BranchBox never adds world access, follows a
+symlink, or changes a path it does not own. It then resolves the primary container user's actual
+UID and primary GID and fails closed unless both equal the signed identity. The in-guest filesystem
+must support POSIX default ACLs; delegation fails closed when it does not.
+
+The outer runtime must start the unprivileged BranchBox process with the signed consumer GID as a
+supplementary group. This is a narrow delegation, not root authority: the process can group-share
+its own task paths but cannot change ownership or access unrelated files. Omitting this integration
+preserves the version 1 or version 2 behavior and performs no workspace permission delegation.
+
+Because the worktree stays owned by the runtime UID, Git would refuse every command in the coding
+container with `detected dubious ownership`. Version 3 therefore also gives the primary Compose
+service exactly two Git ownership exceptions through the generated facade's overridden
+`environment`: `safe.directory` for the effective task worktree folder and for the canonical Git
+metadata target. They are exact platform-owned paths, never a wildcard, and BranchBox is their only
+possible source because project and provider environments both reserve the `GIT_CONFIG_` prefix; a
+repository's own `GIT_CONFIG_*` values are replaced rather than merged, so a repository cannot
+redirect `core.hooksPath` or any other Git setting into the consumer's process tree.
 
 Supported lease scopes are `model-identity`, `source-control-identity`, `project-environment`, and `platform-tunnel`. An outer platform-tunnel lease cannot have a devcontainer materialization. Host and runtime ports are non-zero and unique. Every signed published port targets the inspected primary devcontainer only; a repository dependency cannot claim it by advertising the same port. Agentify should publish its primary application port (3000) and keep PostgreSQL on the private Compose network. A future multi-service route must extend the signed assignment with an exact service/container identity.
 
@@ -99,6 +125,9 @@ The generated facade:
 - disables cloudflared, Tailscale, ngrok, `/dev/net/tun`, and tunnel-named services with Compose `!override`, and removes dependency edges to them. The Agentify outer boundary owns the only platform connector;
 - gives the primary coding service a private, bounded 1 GiB `/dev/shm`; repository `--shm-size` overrides are removed and host IPC remains forbidden;
 - mounts non-environment manifest-approved individual files read-only; the typed project environment is available only as the primary service's raw env file. It never mounts a Docker/containerd/Podman/BuildKit socket, daemon state directory, or Agentify supervisor directory.
+- for version 3, group-shares only the assigned worktree and required Git metadata with the signed
+  Dev Container UID/GID; the coding container receives neither the outer runtime's UID nor access
+  to sibling runtime files, browser evidence, leases, or supervisor state.
 
 After startup, Docker inspection fails closed if the primary container is privileged, shares a host namespace, receives host devices or elevated capabilities, disables confinement, contains a supervisor socket/directory mount, persists a remote daemon endpoint, or persists `OPENAI_API_KEY`. A readiness exec must also succeed. A repository primary command or container-side lifecycle hook that still assumes stripped SSH/1Password files produces an explicit startup failure; BranchBox does not report the environment ready.
 
@@ -131,4 +160,9 @@ branchbox feature teardown coding-demo \
 
 ## Agentify canary prerequisites
 
-Agentify's current source config still has container-side assumptions that correctly fail this provider: its primary command requires the stripped SSH public-key mount, and `postCreateCommand` requires the stripped 1Password setup. Update those source conventions so the primary container remains alive without host identity and setup treats platform secret loading as optional. `DB_HOST=postgres` is preserved by the safe literal policy; account/admin seed values can arrive through the signed assignment's typed project-environment env file. Model/provider identity such as `OPENAI_API_KEY` remains reserved for the fixed provider execution lane and cannot be persisted through project environment.
+The primary container must remain alive without host identity, and repository setup must treat local
+1Password loading as optional when the platform supplies a typed project environment. `DB_HOST` is
+preserved by the safe literal policy; account/admin seed values and framework encryption keys can
+arrive through the signed assignment's typed project-environment env file. Model/provider identity
+such as `OPENAI_API_KEY` remains reserved for the fixed provider execution lane and cannot be
+persisted through project environment.

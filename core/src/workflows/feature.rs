@@ -487,17 +487,12 @@ impl FeatureWorkflow {
                 self.git
                     .attach_existing_branch(&worktree_path, &branch_name)?;
             }
+        } else if runtime_kind == RuntimeProviderKind::InGuest {
+            self.git
+                .create_without_hooks(&worktree_path, &branch_name, base_branch.as_deref())?;
         } else {
-            if runtime_kind == RuntimeProviderKind::InGuest {
-                self.git.create_without_hooks(
-                    &worktree_path,
-                    &branch_name,
-                    base_branch.as_deref(),
-                )?;
-            } else {
-                self.git
-                    .create(&worktree_path, &branch_name, base_branch.as_deref())?;
-            }
+            self.git
+                .create(&worktree_path, &branch_name, base_branch.as_deref())?;
         }
 
         // Fix git worktree paths to use relative paths for devcontainer compatibility
@@ -516,6 +511,17 @@ impl FeatureWorkflow {
                 return Err(err);
             }
             if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
+                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                return Err(err);
+            }
+            let common_git = match repository_common_git_dir(&self.repo_root) {
+                Ok(path) => path,
+                Err(err) => {
+                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    return Err(err);
+                }
+            };
+            if let Err(err) = plan.grant_workspace_consumer_access(&worktree_path, &common_git) {
                 self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
                 return Err(err);
             }
@@ -3536,6 +3542,7 @@ fn prepare_in_guest_devcontainer_config(
     let assignment = InGuestComposeAssignment {
         project_environment: project_environment.map(|(source, _)| source),
         service_images: plan.service_images(),
+        workspace_consumer: plan.workspace_consumer().is_some(),
     };
     let omitted_services = prepare_outer_tunnel_compose_override(
         repo_root,
@@ -4028,6 +4035,9 @@ fn effective_in_guest_workspace_folder(
 struct InGuestComposeAssignment<'a> {
     project_environment: Option<&'a Path>,
     service_images: &'a BTreeMap<String, String>,
+    /// A signed version 3 assignment group-shares the task worktree with a consumer that does
+    /// not own it, so the primary service needs the matching Git ownership exceptions.
+    workspace_consumer: bool,
 }
 
 fn prepare_outer_tunnel_compose_override(
@@ -4177,7 +4187,10 @@ fn prepare_outer_tunnel_compose_override(
             serde_yaml::Value::String("environment".to_string()),
             serde_yaml::Value::Tagged(Box::new(TaggedValue {
                 tag: Tag::new("!override"),
-                value: serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+                value: serde_yaml::Value::Mapping(in_guest_primary_environment(
+                    assignment.workspace_consumer,
+                    workspace_folder,
+                )),
             })),
         );
         primary.insert(
@@ -4337,6 +4350,38 @@ fn is_platform_connector(name: &str, service: &serde_yaml::Value) -> bool {
         || image.contains("tailscale/tailscale")
         || image.contains("ngrok/ngrok")
         || requires_tun
+}
+
+/// The primary service's environment always replaces the repository's. A signed workspace
+/// consumer additionally receives the two exact Git ownership exceptions it needs: the task
+/// worktree stays owned by the unprivileged BranchBox runtime UID and is only group-shared, so
+/// Git would otherwise refuse every command with `detected dubious ownership`. Only these exact
+/// platform-owned paths are excepted, never a wildcard, and BranchBox alone can set them because
+/// project and provider environments both reserve the `GIT_CONFIG_` prefix.
+fn in_guest_primary_environment(
+    workspace_consumer: bool,
+    workspace_folder: &str,
+) -> serde_yaml::Mapping {
+    let mut environment = serde_yaml::Mapping::new();
+    if !workspace_consumer {
+        return environment;
+    }
+    let exceptions = [workspace_folder, CONTAINER_MAIN_GIT_TARGET];
+    environment.insert(
+        serde_yaml::Value::String("GIT_CONFIG_COUNT".to_string()),
+        serde_yaml::Value::String(exceptions.len().to_string()),
+    );
+    for (index, path) in exceptions.iter().enumerate() {
+        environment.insert(
+            serde_yaml::Value::String(format!("GIT_CONFIG_KEY_{index}")),
+            serde_yaml::Value::String("safe.directory".to_string()),
+        );
+        environment.insert(
+            serde_yaml::Value::String(format!("GIT_CONFIG_VALUE_{index}")),
+            serde_yaml::Value::String((*path).to_string()),
+        );
+    }
+    environment
 }
 
 fn in_guest_primary_volumes(
@@ -8031,6 +8076,7 @@ mod tests {
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &images,
+                workspace_consumer: false,
             },
         )
         .unwrap();
@@ -8071,6 +8117,7 @@ mod tests {
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &incomplete,
+                workspace_consumer: false,
             },
         )
         .unwrap_err()
@@ -8092,6 +8139,7 @@ mod tests {
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &BTreeMap::from([("app".to_string(), images["app"].clone())]),
+                workspace_consumer: false,
             },
         )
         .unwrap_err()
@@ -8186,6 +8234,7 @@ volumes:
             &InGuestComposeAssignment {
                 project_environment: Some(&project_environment),
                 service_images: &BTreeMap::new(),
+                workspace_consumer: false,
             },
         )
         .unwrap();
@@ -8286,6 +8335,87 @@ volumes:
             serde_yaml::Value::Tagged(_)
         ));
         assert!(facade["services"]["postgres"].get("profiles").is_none());
+        let unsigned_environment = match &rails["environment"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_mapping().unwrap(),
+            other => panic!("expected overridden rails environment, got {other:?}"),
+        };
+        assert!(
+            unsigned_environment.is_empty(),
+            "an assignment without a workspace consumer must not add Git ownership exceptions"
+        );
+    }
+
+    #[test]
+    fn in_guest_workspace_consumer_receives_exact_git_ownership_exceptions() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  rails-app:
+    image: registry.example/team/app:mutable
+    environment:
+      GIT_CONFIG_COUNT: "9"
+      GIT_CONFIG_KEY_0: core.hooksPath
+      GIT_CONFIG_VALUE_0: /tmp/repository-hooks
+"#,
+        )
+        .unwrap();
+        prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("rails-app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &BTreeMap::new(),
+                workspace_consumer: true,
+            },
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        // The repository's own Git configuration is replaced, never merged.
+        assert!(!rendered.contains("core.hooksPath"));
+        assert!(!rendered.contains("/tmp/repository-hooks"));
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        let environment = match &facade["services"]["rails-app"]["environment"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_mapping().unwrap().clone(),
+            other => panic!("expected overridden primary environment, got {other:?}"),
+        };
+        let value = |name: &str| {
+            environment
+                .get(serde_yaml::Value::String(name.to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_string)
+        };
+        assert_eq!(value("GIT_CONFIG_COUNT"), Some("2".to_string()));
+        assert_eq!(
+            value("GIT_CONFIG_KEY_0"),
+            Some("safe.directory".to_string())
+        );
+        assert_eq!(
+            value("GIT_CONFIG_VALUE_0"),
+            Some("/workspaces/coding-demo".to_string())
+        );
+        assert_eq!(
+            value("GIT_CONFIG_KEY_1"),
+            Some("safe.directory".to_string())
+        );
+        assert_eq!(
+            value("GIT_CONFIG_VALUE_1"),
+            Some(CONTAINER_MAIN_GIT_TARGET.to_string())
+        );
+        // Only the exact platform-owned task paths are excepted; never a wildcard, and never a
+        // second Git setting that could redirect execution.
+        assert_eq!(environment.len(), 5);
+        assert!(!rendered.contains('*'));
     }
 
     #[test]
