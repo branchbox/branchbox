@@ -4748,9 +4748,23 @@ fn validate_container_inspection(
                     )));
                 }
             } else if enters_managed_namespace {
-                return Err(Error::validation(
-                    "In-guest devcontainer resolved an unsigned managed lease mount",
-                ));
+                // Name the offending mount and the signed set it was compared
+                // against. Without both, an unsigned mount is indistinguishable
+                // from a signed one whose source or destination was rewritten by
+                // the Dev Containers CLI, and telling those apart otherwise costs
+                // a full guest rebuild.
+                let signed = signed_mounts
+                    .keys()
+                    .map(|(source, destination)| {
+                        format!("{} -> {}", source.display(), destination.display())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(Error::validation(format!(
+                    "In-guest devcontainer resolved an unsigned managed lease mount: \
+                     type '{mount_type}' source '{source}' name '{signed_source}' \
+                     destination '{destination}'; signed mounts: [{signed}]"
+                )));
             }
             if (!exact_request_volume && contains_supervisor_mount(source, &allowed_sources))
                 || contains_supervisor_mount(destination, &BTreeSet::new())
