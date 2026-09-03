@@ -3543,11 +3543,16 @@ fn prepare_in_guest_devcontainer_config(
         .mounts()
         .map(|(source, target)| (source.to_path_buf(), target.to_path_buf()))
         .collect();
+    let spool_volumes: Vec<(String, PathBuf)> = plan
+        .tool_request_spools()
+        .map(|(volume, target, _consumer_uid)| (volume.to_string(), target.to_path_buf()))
+        .collect();
     let assignment = InGuestComposeAssignment {
         project_environment: project_environment.map(|(source, _)| source),
         service_images: plan.service_images(),
         workspace_consumer: plan.workspace_consumer().is_some(),
         lease_mounts: &lease_mounts,
+        spool_volumes: &spool_volumes,
     };
     let omitted_services = prepare_outer_tunnel_compose_override(
         repo_root,
@@ -3562,20 +3567,16 @@ fn prepare_in_guest_devcontainer_config(
     let object = value
         .as_object_mut()
         .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
-    let mut mounts = object
+    let mounts = object
         .remove("mounts")
         .and_then(|mounts| mounts.as_array().cloned())
         .unwrap_or_default();
     // Read-only lease binds are carried by the generated Compose facade, which
     // preserves their read-only mode; declaring them here as well would have the
     // same bind resolved twice on the inspected container.
-    for (volume, target, _consumer_uid) in plan.tool_request_spools() {
-        mounts.push(serde_json::json!({
-            "type": "volume",
-            "source": volume,
-            "target": target
-        }));
-    }
+    // Tool-request spool volumes are carried by the generated Compose facade, which
+    // pins their exact name; declaring them here instead lets Compose namespace the
+    // volume under the project and the signed name no longer matches.
     if !mounts.is_empty() {
         object.insert("mounts".to_string(), serde_json::Value::Array(mounts));
     }
@@ -4040,6 +4041,12 @@ struct InGuestComposeAssignment<'a> {
     /// CLI does not carry the `readonly` property into a Compose project, and the
     /// running container is then inspected for a read-only bind and fails closed.
     lease_mounts: &'a [(PathBuf, PathBuf)],
+    /// Signed tool-request spool volumes, as (volume name, target). Like the lease
+    /// binds these belong in the Compose facade: declared through devcontainer.json
+    /// `mounts`, the Dev Containers CLI hands Compose an ordinary volume, which
+    /// Compose then namespaces with the project name. The container is afterwards
+    /// inspected for the signed volume name and fails closed on the prefixed one.
+    spool_volumes: &'a [(String, PathBuf)],
     /// A signed version 3 assignment group-shares the task worktree with a consumer that does
     /// not own it, so the primary service needs the matching Git ownership exceptions.
     workspace_consumer: bool,
@@ -4259,6 +4266,22 @@ fn prepare_outer_tunnel_compose_override(
             );
             serde_yaml::Value::Mapping(mount)
         }));
+        safe_volumes.extend(assignment.spool_volumes.iter().map(|(volume, target)| {
+            let mut mount = serde_yaml::Mapping::new();
+            mount.insert(
+                serde_yaml::Value::String("type".to_string()),
+                serde_yaml::Value::String("volume".to_string()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("source".to_string()),
+                serde_yaml::Value::String(volume.clone()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("target".to_string()),
+                serde_yaml::Value::String(target.to_string_lossy().into_owned()),
+            );
+            serde_yaml::Value::Mapping(mount)
+        }));
         primary.insert(
             serde_yaml::Value::String("volumes".to_string()),
             serde_yaml::Value::Tagged(Box::new(TaggedValue {
@@ -4304,6 +4327,30 @@ fn prepare_outer_tunnel_compose_override(
                 value: filtered,
             })),
         );
+    }
+    if !assignment.spool_volumes.is_empty() {
+        // A top-level volume carrying an explicit `name` is created under exactly
+        // that name; without it Compose prefixes the project name and the signed
+        // volume no longer matches what the container reports.
+        let document_mapping = document
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose facade must be a mapping"))?;
+        let volumes = document_mapping
+            .entry(serde_yaml::Value::String("volumes".to_string()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose facade volumes must be a mapping"))?;
+        for (volume, _target) in assignment.spool_volumes {
+            let mut definition = serde_yaml::Mapping::new();
+            definition.insert(
+                serde_yaml::Value::String("name".to_string()),
+                serde_yaml::Value::String(volume.clone()),
+            );
+            volumes.insert(
+                serde_yaml::Value::String(volume.clone()),
+                serde_yaml::Value::Mapping(definition),
+            );
+        }
     }
     let rendered = serde_yaml::to_string(&document)
         .map_err(|err| Error::config(format!("Failed to serialize Compose facade: {err}")))?;
@@ -8060,6 +8107,71 @@ mod tests {
     }
 
     #[test]
+    fn test_spool_volume_keeps_its_signed_name_under_a_compose_project() {
+        // Compose namespaces a volume with the project name unless the volume
+        // declares an explicit `name`. The running container is inspected for the
+        // signed volume name, so a namespaced volume fails closed as unsigned.
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  app:
+    image: app:mutable
+"#,
+        )
+        .unwrap();
+        let images =
+            BTreeMap::from([("app".to_string(), format!("app@sha256:{}", "c".repeat(64)))]);
+        let spool_volumes = vec![(
+            "branchbox-tool-requests-abc".to_string(),
+            PathBuf::from("/run/branchbox/leases/tool-requests/browser-verification"),
+        )];
+
+        prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &images,
+                workspace_consumer: false,
+                lease_mounts: &[],
+                spool_volumes: &spool_volumes,
+            },
+        )
+        .unwrap();
+
+        let facade: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+        )
+        .unwrap();
+        // Pinned at the top level, so Compose creates it under exactly this name.
+        assert_eq!(
+            facade["volumes"]["branchbox-tool-requests-abc"]["name"].as_str(),
+            Some("branchbox-tool-requests-abc")
+        );
+        let mounted = facade["services"]["app"]["volumes"]
+            .as_sequence()
+            .expect("primary service carries its volumes")
+            .iter()
+            .any(|mount| {
+                mount["type"].as_str() == Some("volume")
+                    && mount["source"].as_str() == Some("branchbox-tool-requests-abc")
+                    && mount["target"].as_str()
+                        == Some("/run/branchbox/leases/tool-requests/browser-verification")
+            });
+        assert!(mounted, "spool volume is attached to the primary service");
+    }
+
+    #[test]
     fn test_preloaded_images_replace_builds_and_disable_pulls_for_all_runnable_services() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
@@ -8104,6 +8216,7 @@ mod tests {
                 service_images: &images,
                 workspace_consumer: false,
                 lease_mounts: &[],
+                spool_volumes: &[],
             },
         )
         .unwrap();
@@ -8146,6 +8259,7 @@ mod tests {
                 service_images: &incomplete,
                 workspace_consumer: false,
                 lease_mounts: &[],
+                spool_volumes: &[],
             },
         )
         .unwrap_err()
@@ -8169,6 +8283,7 @@ mod tests {
                 service_images: &BTreeMap::from([("app".to_string(), images["app"].clone())]),
                 workspace_consumer: false,
                 lease_mounts: &[],
+                spool_volumes: &[],
             },
         )
         .unwrap_err()
@@ -8265,6 +8380,7 @@ volumes:
                 service_images: &BTreeMap::new(),
                 workspace_consumer: false,
                 lease_mounts: &[],
+                spool_volumes: &[],
             },
         )
         .unwrap();
@@ -8407,6 +8523,7 @@ volumes:
                 service_images: &BTreeMap::new(),
                 workspace_consumer: true,
                 lease_mounts: &[],
+                spool_volumes: &[],
             },
         )
         .unwrap();
