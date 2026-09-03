@@ -4703,24 +4703,49 @@ fn validate_container_inspection(
                 || Path::new(destination).starts_with(LEASE_TARGET_ROOT);
             let mut exact_request_volume = false;
             if let Some(expectation) = signed_expectation {
-                let valid = match expectation {
+                let read_write = mount.get("RW").and_then(serde_json::Value::as_bool);
+                // Report which expectation the observed mount broke. Collapsing every
+                // cause into one message leaves an operator unable to tell a writable
+                // bind from a changed source type or a duplicate, and the specific
+                // reason is already computed here.
+                let refusal = match expectation {
                     ManagedMountExpectation::ReadOnlyBind { source_kind, scope } => {
-                        mount_type == "bind"
-                            && mount.get("RW").and_then(serde_json::Value::as_bool) == Some(false)
-                            && validate_managed_source_kind(Path::new(source), *source_kind, *scope)
-                                .is_ok()
+                        if mount_type != "bind" {
+                            Some(format!("expected a bind, observed '{mount_type}'"))
+                        } else if read_write != Some(false) {
+                            Some(format!(
+                                "expected a read-only bind, observed RW={read_write:?}"
+                            ))
+                        } else {
+                            validate_managed_source_kind(Path::new(source), *source_kind, *scope)
+                                .err()
+                                .map(|error| error.to_string())
+                        }
                     }
                     ManagedMountExpectation::WritableRequestSpool => {
                         exact_request_volume = mount_type == "volume"
                             && !signed_source.is_empty()
-                            && mount.get("RW").and_then(serde_json::Value::as_bool) == Some(true);
-                        exact_request_volume
+                            && read_write == Some(true);
+                        if exact_request_volume {
+                            None
+                        } else {
+                            Some(format!(
+                                "expected a named writable volume, observed type '{mount_type}' \
+                                 name '{signed_source}' RW={read_write:?}"
+                            ))
+                        }
                     }
                 };
-                if !valid || !observed_signed_mounts.insert(key) {
-                    return Err(Error::validation(
-                        "Managed lease mount lacks its exact signed access evidence",
-                    ));
+                if let Some(reason) = refusal {
+                    return Err(Error::validation(format!(
+                        "Managed lease mount '{source}' -> '{destination}' lacks its exact signed \
+                         access evidence: {reason}"
+                    )));
+                }
+                if !observed_signed_mounts.insert(key) {
+                    return Err(Error::validation(format!(
+                        "Managed lease mount '{source}' -> '{destination}' was resolved more than once"
+                    )));
                 }
             } else if enters_managed_namespace {
                 return Err(Error::validation(
