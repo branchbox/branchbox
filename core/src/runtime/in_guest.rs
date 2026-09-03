@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
@@ -446,8 +446,9 @@ fn grant_workspace_consumer_access(
         }
         if unsafe { libc::fchown(file.as_raw_fd(), u32::MAX, consumer.gid) } != 0 {
             return Err(Error::validation(format!(
-                "Could not delegate workspace path '{}' to the signed consumer GID",
-                entry.path.display()
+                "Could not delegate workspace path '{}' to the signed consumer GID: {}",
+                entry.path.display(),
+                io::Error::last_os_error()
             )));
         }
         let executable = entry.directory || entry.mode & 0o111 != 0;
@@ -461,8 +462,9 @@ fn grant_workspace_consumer_access(
         }
         if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 {
             return Err(Error::validation(format!(
-                "Could not grant workspace path '{}' to the signed consumer GID",
-                entry.path.display()
+                "Could not grant workspace path '{}' mode {mode:o} to the signed consumer GID: {}",
+                entry.path.display(),
+                io::Error::last_os_error()
             )));
         }
         if entry.directory {
@@ -516,8 +518,9 @@ fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     if stored != 0 {
         return Err(Error::validation(format!(
             "Could not make workspace directory '{}' reclaimable by the runtime; the in-guest \
-             filesystem must support POSIX default ACLs",
-            path.display()
+             filesystem must support POSIX default ACLs: {}",
+            path.display(),
+            io::Error::last_os_error()
         )));
     }
     Ok(())
