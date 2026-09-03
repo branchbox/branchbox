@@ -641,6 +641,10 @@ case "${1:-}" in
       printf '%s\n' '1000'
       exit 0
     fi
+    if test "${5:-}" = "id" && test "${6:-}" = "-g"; then
+      printf '%s\n' '1000'
+      exit 0
+    fi
     while test "$#" -gt 0; do
       case "$1" in
         branchbox-read-tool-request|branchbox-write-tool-response|branchbox-remove-staged-tool-request|branchbox-remove-tool-request)
