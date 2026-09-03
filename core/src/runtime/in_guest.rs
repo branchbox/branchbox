@@ -2223,8 +2223,11 @@ fn validate_tool_request_envelope(
             "Managed tool request exceeds its bounded file size",
         ));
     }
-    let request: ToolRequestEnvelope = serde_json::from_slice(bytes)
-        .map_err(|_| Error::validation("Managed tool request is not canonical JSON"))?;
+    let request: ToolRequestEnvelope = serde_json::from_slice(bytes).map_err(|error| {
+        Error::validation(format!(
+            "Managed tool request is not canonical JSON: {error}"
+        ))
+    })?;
     if request.version != "1"
         || request.run_id != run_id
         || request.lease_id != spool.lease_id
@@ -2473,8 +2476,11 @@ fn read_tool_request_replay(
         ));
     }
     let bytes = fs::read(path)?;
-    let replay: ToolRequestReplayRecord = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::validation("Managed tool-request replay record is malformed"))?;
+    let replay: ToolRequestReplayRecord = serde_json::from_slice(&bytes).map_err(|error| {
+        Error::validation(format!(
+            "Managed tool-request replay record is malformed: {error}"
+        ))
+    })?;
     let expected_response = state == ToolRequestReplayState::Completed;
     if replay.response.is_some() != expected_response {
         return Err(Error::validation(
@@ -2665,8 +2671,11 @@ fn relay_tool_request(
             "Trusted tool response exceeds its bounded relay size",
         ));
     }
-    serde_json::from_slice(&response)
-        .map_err(|_| Error::validation("Trusted tool returned an invalid response envelope"))
+    serde_json::from_slice(&response).map_err(|error| {
+        Error::validation(format!(
+            "Trusted tool returned an invalid response envelope: {error}"
+        ))
+    })
 }
 
 #[cfg(not(unix))]
@@ -4332,8 +4341,11 @@ fn read_tool_request_capability(path: &Path, expected_sha256: &str) -> Result<St
             "Tool-request capability materialization is invalid",
         ));
     }
-    String::from_utf8(bytes)
-        .map_err(|_| Error::validation("Tool-request capability materialization is invalid"))
+    String::from_utf8(bytes).map_err(|error| {
+        Error::validation(format!(
+            "Tool-request capability materialization is invalid: {error}"
+        ))
+    })
 }
 
 fn tool_request_volume_name(run_id: &str, lease_id: &str) -> String {
@@ -4353,8 +4365,11 @@ fn read_provider_environment_value(path: &Path, expected_sha256: &str) -> Result
             "Provider environment materialization is invalid",
         ));
     }
-    String::from_utf8(bytes)
-        .map_err(|_| Error::validation("Provider environment materialization is invalid"))
+    String::from_utf8(bytes).map_err(|error| {
+        Error::validation(format!(
+            "Provider environment materialization is invalid: {error}"
+        ))
+    })
 }
 
 fn is_canonical_environment_name(name: &str) -> bool {
@@ -4845,7 +4860,11 @@ fn configured_container_user(config: &DevcontainerConfig) -> Option<String> {
 
 fn inspected_container_user(source: &[u8]) -> Result<String> {
     let inspected = std::str::from_utf8(source)
-        .map_err(|_| Error::validation("Docker returned a non-UTF-8 container user"))?
+        .map_err(|error| {
+            Error::validation(format!(
+                "Docker returned a non-UTF-8 container user: {error}"
+            ))
+        })?
         .trim();
     if inspected.is_empty() {
         Ok("0".to_string())
