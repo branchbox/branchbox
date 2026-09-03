@@ -5141,7 +5141,13 @@ fn devcontainer_start_failure_code(stderr: &[u8]) -> &'static str {
     let normalized = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     if normalized.contains("security_opt items at") && normalized.contains("are equal") {
         "devcontainer_compose_duplicate_security_option"
-    } else if normalized.contains("postcreatecommand") {
+    } else if normalized.contains("postcreatecommand failed")
+        || (normalized.contains("postcreatecommand") && normalized.contains("exit code"))
+    {
+        // The CLI echoes the resolved devcontainer configuration on failure, so the
+        // bare word appears even when postCreate never ran. Classifying on that
+        // alone reported a failed compose start as a failed postCreate command and
+        // sent the investigation to the wrong layer; require failure wording.
         "devcontainer_post_create_failed"
     } else if normalized.contains("docker compose") {
         "devcontainer_compose_start_failed"
@@ -5189,6 +5195,14 @@ mod tests {
         assert_eq!(
             devcontainer_start_failure_code(b"unexpected secret-only failure"),
             "devcontainer_start_failed"
+        );
+        // A compose start that merely echoes the configuration, postCreateCommand
+        // key included, is a compose failure and must be reported as one.
+        assert_eq!(
+            devcontainer_start_failure_code(
+                b"docker compose up failed; configuration: {\"postCreateCommand\": \"bin/setup\"}"
+            ),
+            "devcontainer_compose_start_failed"
         );
     }
 
