@@ -460,12 +460,34 @@ fn grant_workspace_consumer_access(
         if entry.directory {
             mode |= 0o2000;
         }
-        if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } != 0 {
-            return Err(Error::validation(format!(
-                "Could not grant workspace path '{}' mode {mode:o} to the signed consumer GID: {}",
-                entry.path.display(),
-                io::Error::last_os_error()
-            )));
+        // Setgid is an optimisation here, not the mechanism: the consumer's primary
+        // group already equals the delegated group, so paths it creates carry that
+        // group anyway, and the default ACL below is what actually guarantees the
+        // inherited access. Some kernels and filesystems refuse the setgid bit on a
+        // directory the caller does not own outright, so fall back to the same mode
+        // without it rather than failing a delegation that would otherwise be sound.
+        let mut applied = mode;
+        if unsafe { libc::fchmod(file.as_raw_fd(), applied as libc::mode_t) } != 0 {
+            let first = io::Error::last_os_error();
+            applied = mode & !0o2000;
+            if applied == mode
+                || unsafe { libc::fchmod(file.as_raw_fd(), applied as libc::mode_t) } != 0
+            {
+                let second = io::Error::last_os_error();
+                let observed = file.metadata().ok();
+                return Err(Error::validation(format!(
+                    "Could not grant workspace path '{}' mode {mode:o} to the signed consumer GID: \
+                     {first}; without setgid ({applied:o}): {second}; observed owner {}:{} mode {:o}; \
+                     runtime {}:{} groups {:?}",
+                    entry.path.display(),
+                    observed.as_ref().map(MetadataExt::uid).unwrap_or_default(),
+                    observed.as_ref().map(MetadataExt::gid).unwrap_or_default(),
+                    observed.as_ref().map(|m| m.mode() & 0o7777).unwrap_or_default(),
+                    effective_uid,
+                    effective_gid,
+                    groups
+                )));
+            }
         }
         if entry.directory {
             set_shared_default_acl(&file, &entry.path)?;
