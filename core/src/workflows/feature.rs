@@ -174,6 +174,28 @@ pub struct StartRequest {
     /// Absolute supervisor-authored manifest for an in-guest runtime. The CLI transports only the
     /// path; the manifest transports opaque identities and validated materialization paths.
     pub runtime_manifest: Option<PathBuf>,
+    /// Where the feature's checkout lives. Defaults to a worktree beside the repository.
+    pub workspace_mode: WorkspaceMode,
+}
+
+/// Where a feature's checkout lives.
+///
+/// A worktree lets several features share one clone on a long-lived machine,
+/// which is the whole point on a developer's laptop. It costs something too: the
+/// checkout gains a second identity, its administrative files live under the
+/// repository it was cut from, and both have to be reachable and owned
+/// correctly wherever the work runs.
+///
+/// A caller that clones per run and discards the clone afterwards has no second
+/// consumer to isolate from, so it pays that cost for nothing. `Repository`
+/// checks the branch out in place instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceMode {
+    /// Cut a worktree beside the repository. The default.
+    #[default]
+    Worktree,
+    /// Check the feature branch out in the repository itself.
+    Repository,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -388,9 +410,17 @@ impl FeatureWorkflow {
             .clone()
             .or_else(|| Some(config.feature.branch_prefix.clone()));
         let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
-        let worktree_path = self.worktree_path(&work_feature)?;
+        let repository_workspace = request.workspace_mode == WorkspaceMode::Repository;
+        let worktree_path = if repository_workspace {
+            self.repo_root.clone()
+        } else {
+            self.worktree_path(&work_feature)?
+        };
         let mut branch_exists = self.git.branch_exists(&branch_name)?;
-        let worktree_exists = worktree_path.exists();
+        // In repository mode the checkout already exists -- it is the repository
+        // -- so its presence says nothing about whether this feature was started
+        // before, and must not be read as a collision.
+        let worktree_exists = !repository_workspace && worktree_path.exists();
         let base_branch = request.base_branch.clone();
         let mut warnings = Vec::new();
         let mut reuse_existing = request.reuse_existing;
@@ -487,6 +517,9 @@ impl FeatureWorkflow {
                 self.git
                     .attach_existing_branch(&worktree_path, &branch_name)?;
             }
+        } else if repository_workspace {
+            self.git
+                .checkout_feature_branch(&branch_name, base_branch.as_deref())?;
         } else if runtime_kind == RuntimeProviderKind::InGuest {
             self.git
                 .create_without_hooks(&worktree_path, &branch_name, base_branch.as_deref())?;
@@ -495,10 +528,15 @@ impl FeatureWorkflow {
                 .create(&worktree_path, &branch_name, base_branch.as_deref())?;
         }
 
-        // Fix git worktree paths to use relative paths for devcontainer compatibility
-        if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
-            tracing::warn!("Failed to fix git worktree path: {}", err);
-            warnings.push(format!("Git worktree path fix failed: {}", err));
+        // Both of these exist to make a worktree reachable from the container:
+        // one rewrites the worktree's absolute gitdir pointer, the other projects
+        // its administrative files under the main checkout. A repository
+        // workspace has neither a pointer to rewrite nor metadata to project.
+        if !repository_workspace {
+            if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
+                tracing::warn!("Failed to fix git worktree path: {}", err);
+                warnings.push(format!("Git worktree path fix failed: {}", err));
+            }
         }
 
         // This must be the first repository-content processing step in the trusted guest. It
@@ -510,9 +548,11 @@ impl FeatureWorkflow {
                 self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
                 return Err(err);
             }
-            if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
-                return Err(err);
+            if !repository_workspace {
+                if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
+                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    return Err(err);
+                }
             }
             let common_git = match repository_common_git_dir(&self.repo_root) {
                 Ok(path) => path,
@@ -1837,6 +1877,13 @@ impl FeatureWorkflow {
     }
 
     fn cleanup_failed_in_guest_worktree(&self, worktree_path: &Path, branch_name: &str) {
+        // A repository workspace is the repository. Removing it is never the
+        // right cleanup for a failed start, and the branch is left in place for
+        // the same reason a failed run leaves its clone: the caller owns it.
+        if worktree_path == self.repo_root {
+            tracing::info!("Repository workspace retained after startup failure");
+            return;
+        }
         if worktree_path.exists() {
             if let Err(err) = self.fix_git_worktree_path(worktree_path) {
                 tracing::warn!(
@@ -8104,6 +8151,38 @@ mod tests {
         assert!(config.get("features").is_none());
         assert_eq!(config["updateRemoteUserUID"], false);
         assert_eq!(config["postCreateCommand"], "bin/setup");
+    }
+
+    #[test]
+    fn repository_workspace_checks_out_in_place_and_leaves_no_worktree() {
+        // A caller that clones per run has no second worktree to isolate from,
+        // so the branch belongs in the repository. Nothing beside it should be
+        // created, and the repository must never be removed as cleanup.
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let before: Vec<_> = fs::read_dir(repo_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|value| value.file_name()))
+            .collect();
+
+        let git = GitWorktree::new(repo_path).unwrap();
+        git.checkout_feature_branch("feature/in-place", None)
+            .expect("branch checks out in the repository");
+
+        assert!(
+            git.branch_exists("feature/in-place").unwrap(),
+            "the feature branch exists"
+        );
+        let after: Vec<_> = fs::read_dir(repo_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|value| value.file_name()))
+            .collect();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "no worktree was created beside it"
+        );
+        assert!(repo_path.join(".git").exists(), "the repository is intact");
     }
 
     #[test]

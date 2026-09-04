@@ -84,6 +84,7 @@ pub fn build_start_request(params: StartRequestParams) -> StartRequest {
         prompt_seed: params.prompt_seed,
         runtime: None,
         runtime_manifest: None,
+        workspace_mode: Default::default(),
     }
 }
 

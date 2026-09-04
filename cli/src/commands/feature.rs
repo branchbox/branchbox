@@ -18,7 +18,7 @@ use worktree_core::{
     workflows::feature::{
         DevcontainerReusePolicy, FeatureMetadata, FeatureStatus, FeatureTunnelStatus,
         FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus,
-        StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+        StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary, WorkspaceMode,
     },
     Error as CoreError,
 };
@@ -74,6 +74,14 @@ pub struct FeatureStartArgs {
     /// Allow reusing an existing worktree directory
     #[arg(long)]
     pub reuse: bool,
+
+    /// Check the feature branch out in the repository instead of a worktree.
+    ///
+    /// A worktree lets several features share one clone. A caller that clones
+    /// per run and discards the clone has nothing to share it with, and pays
+    /// for the second checkout identity anyway.
+    #[arg(long, conflicts_with = "reuse")]
+    pub no_worktree: bool,
 
     /// Copy-mode conflict policy when reusing a worktree (fail, preserve, overwrite, inspect)
     #[arg(
@@ -421,6 +429,7 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         no_summary,
         runtime,
         runtime_manifest,
+        no_worktree,
     } = args;
 
     let mode = if minimal || fast {
@@ -467,6 +476,11 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         prompt_seed: prompt_seed.clone(),
         runtime,
         runtime_manifest,
+        workspace_mode: if no_worktree {
+            WorkspaceMode::Repository
+        } else {
+            WorkspaceMode::Worktree
+        },
     };
 
     let _host_validation_override = HostValidationOverride::new(allow_container);
