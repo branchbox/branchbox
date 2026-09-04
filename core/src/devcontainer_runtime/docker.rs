@@ -22,6 +22,7 @@ pub struct ContainerInfo {
     pub name: String,
     pub state: ContainerState,
     pub labels: HashMap<String, String>,
+    pub environment: HashMap<String, String>,
 }
 
 /// Container state
@@ -57,6 +58,13 @@ pub struct DockerOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+}
+
+pub(crate) struct ComposeExecOptions<'a> {
+    pub project_name: Option<&'a str>,
+    pub user: Option<&'a str>,
+    pub workdir: Option<&'a str>,
+    pub environment: &'a [(&'a str, &'a str)],
 }
 
 impl Docker {
@@ -149,11 +157,24 @@ impl Docker {
             })
             .unwrap_or_default();
 
+        let environment: HashMap<String, String> = json["Config"]["Env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+            .filter_map(|entry| {
+                entry
+                    .split_once('=')
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+            })
+            .collect();
+
         Ok(ContainerInfo {
             id,
             name,
             state: ContainerState::from(state_str),
             labels,
+            environment,
         })
     }
 
@@ -401,6 +422,26 @@ impl Docker {
         user: Option<&str>,
         workdir: Option<&str>,
     ) -> Result<DockerOutput> {
+        self.compose_exec_with_options(
+            compose_files,
+            service,
+            command,
+            ComposeExecOptions {
+                project_name,
+                user,
+                workdir,
+                environment: &[],
+            },
+        )
+    }
+
+    pub(crate) fn compose_exec_with_options(
+        &self,
+        compose_files: &[&Path],
+        service: &str,
+        command: &[&str],
+        options: ComposeExecOptions<'_>,
+    ) -> Result<DockerOutput> {
         let mut cmd_parts = self.compose_cmd();
 
         for file in compose_files {
@@ -408,7 +449,7 @@ impl Docker {
             cmd_parts.push(file.to_string_lossy().to_string());
         }
 
-        if let Some(name) = project_name {
+        if let Some(name) = options.project_name {
             cmd_parts.push("-p".to_string());
             cmd_parts.push(name.to_string());
         }
@@ -416,14 +457,19 @@ impl Docker {
         cmd_parts.push("exec".to_string());
         cmd_parts.push("-T".to_string()); // No TTY for non-interactive
 
-        if let Some(u) = user {
+        if let Some(u) = options.user {
             cmd_parts.push("-u".to_string());
             cmd_parts.push(u.to_string());
         }
 
-        if let Some(w) = workdir {
+        if let Some(w) = options.workdir {
             cmd_parts.push("-w".to_string());
             cmd_parts.push(w.to_string());
+        }
+
+        for (key, value) in options.environment {
+            cmd_parts.push("-e".to_string());
+            cmd_parts.push(format!("{key}={value}"));
         }
 
         cmd_parts.push(service.to_string());
@@ -504,25 +550,33 @@ impl Docker {
     // === Internal methods ===
 
     fn run_command(&self, args: &[String]) -> Result<DockerOutput> {
-        tracing::debug!(command = %self.docker_path, args = ?args, "Running docker command");
+        tracing::debug!(
+            command = %self.docker_path,
+            operation = args.first().map(String::as_str).unwrap_or("unknown"),
+            argument_count = args.len(),
+            "Running docker command"
+        );
 
         let output = Command::new(&self.docker_path)
             .args(args)
             .output()
-            .with_context(|| format!("Failed to run docker {}", args.join(" ")))?;
+            .context("Failed to run Docker command")?;
 
         Ok(Self::parse_output(output))
     }
 
     fn run_compose_command(&self, cmd_parts: &[String]) -> Result<DockerOutput> {
-        tracing::debug!(command = ?cmd_parts, "Running docker compose command");
-
         let (program, args) = (&cmd_parts[0], &cmd_parts[1..]);
+        tracing::debug!(
+            command = %program,
+            argument_count = args.len(),
+            "Running docker compose command"
+        );
 
         let output = Command::new(program)
             .args(args)
             .output()
-            .with_context(|| format!("Failed to run {}", cmd_parts.join(" ")))?;
+            .context("Failed to run Docker Compose command")?;
 
         Ok(Self::parse_output(output))
     }

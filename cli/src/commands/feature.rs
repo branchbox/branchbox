@@ -9,6 +9,8 @@ use std::{
     env, fmt,
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::{Duration, Instant},
 };
 use worktree_core::{
     config::BranchBoxConfig,
@@ -16,7 +18,7 @@ use worktree_core::{
     workflows::feature::{
         DevcontainerReusePolicy, FeatureMetadata, FeatureStatus, FeatureTunnelStatus,
         FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus,
-        StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary,
+        StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary, WorkspaceMode,
     },
     Error as CoreError,
 };
@@ -40,6 +42,12 @@ pub enum FeatureCommands {
 
     /// Execute a command through a feature's runtime provider
     Exec(FeatureExecArgs),
+
+    /// Execute an allowlisted coding provider with name-only environment inheritance
+    ExecProvider(FeatureExecProviderArgs),
+
+    /// Dispatch one capability-bound request to a trusted managed tool endpoint
+    DispatchTool(FeatureDispatchToolArgs),
 }
 
 #[derive(Args)]
@@ -66,6 +74,14 @@ pub struct FeatureStartArgs {
     /// Allow reusing an existing worktree directory
     #[arg(long)]
     pub reuse: bool,
+
+    /// Check the feature branch out in the repository instead of a worktree.
+    ///
+    /// A worktree lets several features share one clone. A caller that clones
+    /// per run and discards the clone has nothing to share it with, and pays
+    /// for the second checkout identity anyway.
+    #[arg(long, conflicts_with = "reuse")]
+    pub no_worktree: bool,
 
     /// Copy-mode conflict policy when reusing a worktree (fail, preserve, overwrite, inspect)
     #[arg(
@@ -124,6 +140,10 @@ pub struct FeatureStartArgs {
     /// Workspace isolation runtime (container, sbx, or Linux/KVM local-vm)
     #[arg(long, value_name = "PROVIDER")]
     pub runtime: Option<RuntimeProviderKind>,
+
+    /// Absolute supervisor-authored assignment manifest (required by --runtime in-guest)
+    #[arg(long, value_name = "PATH")]
+    pub runtime_manifest: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -166,6 +186,10 @@ pub struct FeatureTeardownArgs {
     /// Allow running feature teardown from inside a containerized environment
     #[arg(long, alias = "no-host-check")]
     pub allow_container: bool,
+
+    /// Emit deterministic teardown and residue evidence as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args)]
@@ -240,6 +264,59 @@ pub struct FeatureExecArgs {
     pub command: Vec<String>,
 }
 
+#[derive(Args)]
+pub struct FeatureExecProviderArgs {
+    /// Dasherized feature name
+    pub name: String,
+
+    /// Repository path (defaults to current directory)
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Exact provider executable declared by the managed runtime assignment
+    #[arg(long, value_name = "EXECUTABLE")]
+    pub provider: String,
+
+    /// Allowlisted environment name to inherit without transporting its value
+    #[arg(long = "inherit-env", value_name = "NAME")]
+    pub inherit_env: Vec<String>,
+
+    /// Arguments passed to the fixed provider executable
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub command: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct FeatureDispatchToolArgs {
+    /// Dasherized feature name
+    pub name: String,
+
+    /// Repository path (defaults to current directory)
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Exact tool-request lease declared by the managed runtime assignment
+    #[arg(long, value_name = "LEASE_ID")]
+    pub lease: String,
+
+    /// Exact request identifier and spool filename stem
+    #[arg(long, value_name = "REQUEST_ID")]
+    pub request_id: String,
+
+    /// Emit the correlated response as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Wait up to this many seconds for the atomic request file (maximum 300)
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 0,
+        value_parser = clap::value_parser!(u64).range(0..=300)
+    )]
+    pub wait_seconds: u64,
+}
+
 pub fn execute(command: FeatureCommands) -> Result<()> {
     match command {
         FeatureCommands::Start(args) => run_start(args),
@@ -247,7 +324,69 @@ pub fn execute(command: FeatureCommands) -> Result<()> {
         FeatureCommands::List(args) => run_list(args),
         FeatureCommands::Prune(args) => run_prune(args),
         FeatureCommands::Exec(args) => run_exec(args),
+        FeatureCommands::ExecProvider(args) => run_exec_provider(args),
+        FeatureCommands::DispatchTool(args) => run_dispatch_tool(args),
     }
+}
+
+fn run_dispatch_tool(args: FeatureDispatchToolArgs) -> Result<()> {
+    let repo_path = args.repo.unwrap_or_else(|| PathBuf::from("."));
+    let workflow = FeatureWorkflow::new(&repo_path)?;
+    let deadline = Instant::now() + Duration::from_secs(args.wait_seconds);
+    let result = loop {
+        match workflow.dispatch_tool_request(&args.name, &args.lease, &args.request_id) {
+            Ok(result) => break result,
+            Err(
+                CoreError::ToolRequestNotPending { .. }
+                | CoreError::ToolRequestRelayRetryable { .. },
+            ) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(CoreError::ToolRequestNotPending { .. }) => {
+                if args.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "not-pending",
+                            "retryable": true,
+                            "lease_id": args.lease,
+                            "request_id": args.request_id
+                        }))?
+                    );
+                }
+                std::process::exit(75);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "dispatched",
+                "retryable": false,
+                "result": result
+            }))?
+        );
+    } else {
+        println!("{}", serde_json::to_string(&result.response)?);
+    }
+    Ok(())
+}
+
+fn run_exec_provider(args: FeatureExecProviderArgs) -> Result<()> {
+    let repo_path = args.repo.unwrap_or_else(|| PathBuf::from("."));
+    let workflow = FeatureWorkflow::new(&repo_path)?;
+    let exit_code = workflow.exec_provider_runtime_interactive(
+        &args.name,
+        &args.provider,
+        &args.inherit_env,
+        &args.command,
+    )?;
+    if exit_code != 0 {
+        bail!("Managed provider exited with status {exit_code}");
+    }
+    Ok(())
 }
 
 fn run_exec(args: FeatureExecArgs) -> Result<()> {
@@ -289,6 +428,8 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         allow_container,
         no_summary,
         runtime,
+        runtime_manifest,
+        no_worktree,
     } = args;
 
     let mode = if minimal || fast {
@@ -334,6 +475,12 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
         mode,
         prompt_seed: prompt_seed.clone(),
         runtime,
+        runtime_manifest,
+        workspace_mode: if no_worktree {
+            WorkspaceMode::Repository
+        } else {
+            WorkspaceMode::Worktree
+        },
     };
 
     let _host_validation_override = HostValidationOverride::new(allow_container);
@@ -671,6 +818,7 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         complete_spec,
         telemetry,
         allow_container,
+        json,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
@@ -723,7 +871,11 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         }
     }
 
-    print_teardown_summary(&summary);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        print_teardown_summary(&summary);
+    }
 
     Ok(())
 }
@@ -1435,6 +1587,19 @@ fn print_teardown_summary(summary: &TeardownSummary) {
     println!(
         "  Branch deleted: {}",
         if summary.branch_deleted { "yes" } else { "no" }
+    );
+    println!(
+        "  Runtime cleanup verified: {} (residue free: {})",
+        if summary.runtime_teardown.verified {
+            "yes"
+        } else {
+            "no"
+        },
+        if summary.runtime_teardown.residue_free {
+            "yes"
+        } else {
+            "no"
+        }
     );
     if !summary.branch_deleted {
         println!(

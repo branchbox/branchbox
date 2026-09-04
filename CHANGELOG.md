@@ -7,8 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an Agentify-oriented `in-guest` runtime that reconciles a BranchBox worktree and explicit
+  devcontainer facade inside an already-owned Firecracker guest, validates opaque lease file paths
+  and digests, publishes loopback-only ports, exposes correlated container/runtime identity, and
+  returns deterministic teardown residue evidence.
+- Add `feature exec-provider` for the fixed Codex executable with name-only
+  `OPENAI_API_KEY` inheritance into the configured devcontainer user/workspace.
+- Deliver one digest-verified, canonical project-environment materialization only to the primary
+  Compose service through a raw env file, without mounting or serializing its values.
+- Add run-owned shared-directory and Unix tool-endpoint leases with exact read-only primary-container
+  bind evidence and residue-checked directory/socket cleanup.
+- Add provider-neutral `tool-request` leases and `feature dispatch-tool`: coding-container users can
+  submit bounded capability-bound requests through a per-run volume while the owner-only trusted
+  Unix endpoint and its underlying credentials remain outside the container.
+- Bind the Firecracker kernel config into the image manifest, require built-in virtio-vsock
+  support, and prove a trusted guest-to-host transfer without exposing `/dev/vsock` to coding
+  devcontainers.
+- Publish `vmlinux`, `kernel.config`, `rootfs.tar.gz`, and `manifest.json` as a portable, versioned
+  local-VM guest-base contract with built-in legacy IPv4 xtables support for chain, conntrack,
+  UID-owner, TCP-reset rejection, bridge, and NAT policy. CI verifies every published digest and the
+  complete fixed kernel minimum before upload; a disposable trusted network namespace proves the
+  rules without granting `NET_ADMIN` to coding devcontainers.
+
+### Security
+
+- Allow managed in-guest assignments to bind every runnable Compose service to a preloaded,
+  digest-pinned image; the generated facade removes repository builds, disables pulls and
+  devcontainer image derivation, verifies each exact image locally, and fails closed when a binding
+  or preloaded image is missing. Published ports in this mode also require an immutable preloaded
+  proxy image launched outside Compose with Docker pulls disabled.
+- Force the managed in-guest primary devcontainer onto Docker's built-in seccomp profile so direct
+  `AF_VSOCK` access is denied while signed shared-directory leases remain portable to non-root
+  container users.
+- Keep linked trusted-tool sockets at strict owner-only permissions across guest/container UID
+  mismatches; exact run/lease/consumer binding, immutable spool descriptors, single-use replay
+  claims, bounded relay framing, and residue-checked teardown replace direct socket mounts.
+- Restore a non-writable `0022` file-creation mask for every in-guest runtime and managed-provider
+  command, even when the nested container exec implementation supplies an unsafe ambient mask.
+- The in-guest facade runs before host-side repository lifecycle behavior, disables checkout hooks
+  and filter drivers, strips ambient host env/mount authority plus outside/in/from-Docker feature
+  aliases, replaces repository volume and port publication declarations with the exact canonical
+  task-worktree/Git projection and primary-container-only signed loopback proxies, starts only the
+  primary service and its validated dependency closure, omits repository tunnel sidecars, rejects dangerous
+  Compose/build/extends/secondary-service authority and local or remote
+  Docker/containerd/Podman/BuildKit endpoints, and verifies the resolved and running container have
+  no supervisor socket, credential-directory mount, privileged host namespace/device/capability,
+  disabled confinement, persisted daemon endpoint, or model key.
+
 ### Fixed
 
+- Preserve Dev Container environment semantics across image, Dockerfile, and Compose runtimes:
+  `containerEnv` is applied at container creation, configured plus explicit `remoteEnv` reaches only
+  lifecycle and exec processes, concurrent exec arguments stay invocation-local, and Docker
+  diagnostics no longer include environment values. Existing containers whose static environment
+  no longer matches now require an explicit recreate. Public container labels bind only canonical
+  environment variable names, never value-derived digests that could expose low-entropy secrets to
+  offline guessing.
+
+- Make trusted `tool-request` delivery recoverable across staged-read, relay-response, and consumer
+  acknowledgement loss when its signed provider-neutral lease opts into
+  `exact-digest-replay-v1`: durable capability-stripped request fingerprints, serialized attempts,
+  cached correlated responses, and exact-only retries prevent duplicate endpoint effects while
+  existing manifests continue to deny replay by default.
+
+- The portable Firecracker netfilter proof now exercises conntrack and UID-owner matching as
+  independent rules, with the owner-scoped rule in a user-defined chain attached to `OUTPUT`.
+  Consumers can compose exact destination policy without relying on a non-portable combined
+  conntrack/owner match.
+- Compose-backed in-guest devcontainers now receive the mandatory seccomp option from one generated
+  facade only, avoiding duplicate `security_opt` entries from Dev Containers CLI overlays.
+- In-guest devcontainer failures now carry stable content-free diagnostic codes for orchestration
+  feedback without exposing repository output or credential-bearing startup logs.
+- Active in-guest worktrees now use BranchBox's validated `/workspaces/main` Git projection without
+  repository-specific hooks; restoration and normal teardown resolve Git's shared common directory
+  when BranchBox itself is invoked from a linked worktree.
+- In-guest failed starts now pre-record and recover Dev Containers/Compose ownership, remove
+  dependency-only containers, networks, volumes, materializations, worktrees, and task branches,
+  and bypass repository modules/adapters during no-registry cleanup.
+- In-guest coding containers now receive a private, bounded 1 GiB shared-memory allocation while
+  repository shared-memory overrides and host IPC remain disabled.
 - Release changelog generation now authenticates git-cliff GitHub API requests with the scoped
   workflow token, avoiding anonymous API rate-limit failures during publication.
 

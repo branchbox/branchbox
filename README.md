@@ -222,7 +222,9 @@ The `local-vm` provider directly creates a fresh jailed Firecracker VM on x86_64
 then runs Docker, devcontainers, Compose dependencies, and coding tools inside the guest. It uses
 digest-verified kernel/rootfs artifacts, copies back workspace changes after commands, allocates
 collision-safe TAP networks and host ports, blocks guest-initiated access to host/private/metadata
-networks, and deletes its VM, TAP, proxies, key, and writable rootfs during teardown. It is
+networks, and provides a digest-bound virtio-vsock channel only to trusted outer-guest supervisors
+for bounded guest-to-host data transfer. Coding devcontainers receive neither `/dev/vsock` nor a
+Docker control socket. Teardown deletes the VM, TAP, proxies, key, and writable rootfs. It is
 account-free and never mounts the host Docker socket or persistent human credential directories.
 See the local-vm setup and image build instructions in
 [How It Works](https://branchbox.dev/docs/how-it-works#account-free-firecracker-local-vm).

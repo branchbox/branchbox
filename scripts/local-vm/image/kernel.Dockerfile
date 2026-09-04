@@ -16,6 +16,8 @@ RUN curl --http1.1 --retry 5 --retry-delay 2 --retry-all-errors -fsSLo linux.tar
     && tar -xf linux.tar.xz \
     && tar -xf firecracker.tar.gz
 
+COPY kernel-required.config /kernel-required.config
+
 WORKDIR /src/linux-${LINUX_VERSION}
 RUN cp "/src/firecracker-${FIRECRACKER_VERSION#v}/resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config" .config \
     && scripts/config --enable CONFIG_CGROUPS \
@@ -26,22 +28,13 @@ RUN cp "/src/firecracker-${FIRECRACKER_VERSION#v}/resources/guest_configs/microv
     && scripts/config --enable CONFIG_CGROUP_PIDS \
     && scripts/config --enable CONFIG_CGROUP_SCHED \
     && scripts/config --enable CONFIG_CPUSETS \
-    && scripts/config --enable CONFIG_IP_NF_FILTER \
-    && scripts/config --enable CONFIG_IP_NF_NAT \
-    && scripts/config --enable CONFIG_NETFILTER \
-    && scripts/config --enable CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
-    && scripts/config --enable CONFIG_NETFILTER_XT_MATCH_CONNTRACK \
-    && scripts/config --enable CONFIG_NETFILTER_XT_MATCH_MULTIPORT \
-    && scripts/config --enable CONFIG_NETFILTER_XT_MATCH_STATE \
-    && scripts/config --enable CONFIG_NETFILTER_XT_TARGET_MASQUERADE \
-    && scripts/config --enable CONFIG_NET_NS \
-    && scripts/config --enable CONFIG_BRIDGE \
-    && scripts/config --enable CONFIG_BRIDGE_NETFILTER \
-    && scripts/config --enable CONFIG_VETH \
     && scripts/config --enable CONFIG_OVERLAY_FS \
     && scripts/config --enable CONFIG_EXT4_FS \
+    && while IFS= read -r requirement; do scripts/config --enable "${requirement%=y}"; done < /kernel-required.config \
     && make olddefconfig \
+    && while IFS= read -r requirement; do grep -Fqx "$requirement" .config; done < /kernel-required.config \
     && make -j"$(nproc)" vmlinux
 
 FROM scratch AS export
 COPY --from=build /src/linux-6.1.155/vmlinux /vmlinux
+COPY --from=build /src/linux-6.1.155/.config /kernel.config

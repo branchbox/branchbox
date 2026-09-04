@@ -51,6 +51,14 @@ simple_runtime=$(runtime_id_from "$TMP_ROOT/simple-start.json")
 RUNTIME_IDS+=("$simple_runtime")
 test "$(jq -r '.runtime.version.monitor' "$TMP_ROOT/simple-start.json")" != null
 test -f "$TMP_ROOT/simple-feature/agent-proof.txt"
+echo '==> Proving trusted guest-to-host virtio-vsock transfer'
+"$DRIVER" vsock-probe "$simple_runtime" >"$TMP_ROOT/simple-vsock.json"
+test "$(jq -r '.direction' "$TMP_ROOT/simple-vsock.json")" = guest-to-host
+test "$(jq -r '.host_cid' "$TMP_ROOT/simple-vsock.json")" = 2
+echo '==> Proving the versioned legacy IPv4 xtables kernel capability'
+"$DRIVER" netfilter-probe "$simple_runtime" >"$TMP_ROOT/simple-netfilter.json"
+test "$(jq -r '.capability' "$TMP_ROOT/simple-netfilter.json")" = legacy-ipv4-xtables
+test "$(jq -r '.version' "$TMP_ROOT/simple-netfilter.json")" = 1
 "$BRANCHBOX_BIN" feature exec simple-feature --repo "$SIMPLE_REPO" --json -- git status --short \
   >"$TMP_ROOT/simple-exec.json"
 test "$(jq -r '.exit_code' "$TMP_ROOT/simple-exec.json")" = 0
@@ -113,13 +121,30 @@ for feature in stack-one stack-two; do
   RUNTIME_IDS+=("$(runtime_id_from "$TMP_ROOT/$feature-start.json")")
 done
 
+echo '==> Proving fixed-CID isolation through concurrent per-VM UDS paths'
+stack_one_runtime=$(runtime_id_from "$TMP_ROOT/stack-one-start.json")
+stack_two_runtime=$(runtime_id_from "$TMP_ROOT/stack-two-start.json")
+test "$stack_one_runtime" != "$stack_two_runtime"
+"$DRIVER" vsock-probe "$stack_one_runtime" >"$TMP_ROOT/stack-one-vsock.json" &
+stack_one_vsock_pid=$!
+"$DRIVER" vsock-probe "$stack_two_runtime" >"$TMP_ROOT/stack-two-vsock.json" &
+stack_two_vsock_pid=$!
+wait "$stack_one_vsock_pid"
+wait "$stack_two_vsock_pid"
+test "$(jq -r '.guest_cid' "$TMP_ROOT/stack-one-vsock.json")" = 3
+test "$(jq -r '.guest_cid' "$TMP_ROOT/stack-two-vsock.json")" = 3
+test "$(jq -r '.uds_path' "$TMP_ROOT/stack-one-vsock.json")" = ./run/vsock
+test "$(jq -r '.uds_path' "$TMP_ROOT/stack-two-vsock.json")" = ./run/vsock
+test "$(jq -r '.runtime_id' "$TMP_ROOT/stack-one-vsock.json")" != \
+  "$(jq -r '.runtime_id' "$TMP_ROOT/stack-two-vsock.json")"
+
 port_one=$(jq -er '.runtime.published_ports[] | select(.runtime == 3000) | .host' "$TMP_ROOT/stack-one-start.json")
 port_two=$(jq -er '.runtime.published_ports[] | select(.runtime == 3000) | .host' "$TMP_ROOT/stack-two-start.json")
 test "$port_one" != "$port_two"
 
 for feature in stack-one stack-two; do
   if ! "$BRANCHBOX_BIN" feature exec "$feature" --repo "$STACK_REPO" --json -- /usr/bin/bash -c \
-    'echo >/dev/tcp/postgres/5432 && echo >/dev/tcp/redis/6379 && test ! -S /var/run/docker.sock && printf stack-proof > isolation-proof.txt' \
+    'echo >/dev/tcp/postgres/5432 && echo >/dev/tcp/redis/6379 && test ! -S /var/run/docker.sock && test ! -e /dev/vsock && printf stack-proof > isolation-proof.txt' \
     >"$TMP_ROOT/$feature-exec.json"; then
     cat "$TMP_ROOT/$feature-exec.json" >&2
     exit 1
@@ -142,6 +167,13 @@ for runtime_id in "${RUNTIME_IDS[@]}"; do
     echo "orphaned Firecracker process remains for $runtime_id" >&2
     exit 1
   fi
+  if pgrep -af "socat.*${runtime_id}.*vsock" >/dev/null; then
+    echo "orphaned virtio-vsock listener remains for $runtime_id" >&2
+    exit 1
+  fi
+  test ! -e "${BRANCHBOX_LOCAL_VM_JAIL_DIR:-/var/lib/branchbox/local-vm/jailer}/firecracker/$runtime_id"
+  tap="bb$(printf '%s' "$runtime_id" | sha256sum | cut -c1-10)"
+  ! ip link show "$tap" >/dev/null 2>&1
   test ! -e "${BRANCHBOX_LOCAL_VM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/branchbox/local-vm}/$runtime_id"
 done
 RUNTIME_IDS=()

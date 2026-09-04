@@ -103,6 +103,17 @@ devcontainer user and working directory through that user's login shell, restori
 from Mise, asdf, nvm, and similar toolchain managers. `feature list` reports a stopped inner
 devcontainer as `degraded` instead of claiming it is fully active.
 
+BranchBox keeps the Dev Container environment layers distinct. Declared `containerEnv` values are
+installed into a newly created container, including the configured primary service in a Compose
+workspace. Configured `remoteEnv` and explicit `--remote-env NAME=value` overrides are applied only
+to lifecycle commands and `branchbox devcontainer exec` processes; BranchBox does not implicitly
+copy ambient host variables. Since `containerEnv` is static for a container's lifetime, changing it
+for an existing container returns recreate guidance instead of pretending the running container was
+updated. Containers created by an older BranchBox release without this environment binding also
+require one explicit recreation. The public container label binds only the canonical environment
+variable name set; it never hashes values. BranchBox compares expected values directly with the
+inspected container state, and environment values are omitted from Docker diagnostics.
+
 For diagnostic retries, retain a failed sandbox and its nested Docker cache explicitly:
 
 ```bash
@@ -153,14 +164,22 @@ image manifest pin v1.16.1), then build the versioned guest artifacts:
 ```bash
 scripts/local-vm/build-image.sh
 sudo install -d -m 0755 /var/lib/branchbox/local-vm/images/current
-sudo install -m 0644 target/local-vm-image/{vmlinux,rootfs.ext4,manifest.json} \
+sudo install -m 0644 target/local-vm-image/{vmlinux,kernel.config,rootfs.ext4,manifest.json} \
   /var/lib/branchbox/local-vm/images/current/
 branchbox feature start add-oauth --runtime local-vm
 ```
 
 The build recipe pins the kernel, Firecracker guest configuration, Ubuntu base, and devcontainer
-CLI. `manifest.json` records kernel/rootfs SHA-256 digests; startup verifies both before mutation,
-and the registry/JSON API reports those digests with the Firecracker version.
+CLI. `manifest.json` records kernel/rootfs SHA-256 digests plus the kernel-config digest; startup
+fails closed unless the config matches BranchBox's complete fixed requirement list. The portable
+manifest advertises versioned virtio-vsock and legacy IPv4 xtables capabilities without embedding a
+consumer's provider, domain, or firewall-chain policy. After the lifecycle proof passes, CI publishes
+`vmlinux`, `kernel.config`, `rootfs.tar.gz`, and `manifest.json` together. Immediately before upload,
+it re-verifies the kernel, kernel-config, and rootfs-archive digests plus the complete fixed kernel
+requirement list. The runtime attaches one Firecracker vsock device for trusted
+guest-supervisor-to-host transfers. Its UDS is never passed into the coding
+devcontainer, which also cannot access `/dev/vsock` or either Docker control plane. The registry/JSON
+API reports the kernel/rootfs digests with the Firecracker version.
 
 Each feature gets a disposable writable rootfs, one-time SSH key, TAP subnet, NAT policy, and host
 port proxies. The project directory is synchronized to the same absolute guest path before runtime
@@ -174,11 +193,18 @@ Callers can explicitly inject scoped, disposable files by setting
 permissions and are removed with the VM. This is an injection seam, not an ambient credential
 binding. `BRANCHBOX_LOCAL_VM_STATE_DIR`, `BRANCHBOX_LOCAL_VM_IMAGE_DIR`,
 `BRANCHBOX_LOCAL_VM_JAIL_DIR`, `BRANCHBOX_LOCAL_VM_VCPUS`, and
-`BRANCHBOX_LOCAL_VM_MEMORY_MIB` provide host-policy overrides.
+`BRANCHBOX_LOCAL_VM_MEMORY_MIB` provide host-policy overrides. Image builders can set
+`BRANCHBOX_LOCAL_VM_ROOTFS_IMAGE` to keep the temporary Docker build tag in a caller-owned
+namespace. A root-owned supervisor must set `BRANCHBOX_LOCAL_VM_JAIL_UID` and
+`BRANCHBOX_LOCAL_VM_JAIL_GID` to a dedicated non-root execution identity; root is never accepted as
+the Firecracker process identity.
 
 Run `scripts/manual-local-vm-e2e.sh` on a KVM host to prove single-container and concurrent
 app/Postgres/Redis workspaces, captured and interactive execution, port publication, network/socket
-isolation, immutable artifact reporting, and orphan-free teardown.
+isolation, the versioned legacy IPv4 xtables rules in a disposable trusted network namespace,
+immutable artifact reporting, and orphan-free teardown. This does not grant `NET_ADMIN` to a coding
+devcontainer; it proves only that a trusted outer guest process can apply policy supplied by its
+runtime owner.
 
 ## Stack Detection
 

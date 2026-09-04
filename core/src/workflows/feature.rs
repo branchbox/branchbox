@@ -1,11 +1,13 @@
 use crate::{
     adapters,
     config::BranchBoxConfig,
-    devcontainer_runtime::{ComposeFileRef, DevcontainerConfig},
+    devcontainer_runtime::DevcontainerConfig,
     git::GitWorktree,
     modules::{self, ModuleHandle, SpecStatus},
     naming,
-    runtime::{self, RuntimeContext, RuntimeMetadata, RuntimePort, RuntimeProviderKind},
+    runtime::{
+        self, InGuestFacadePlan, RuntimeContext, RuntimeMetadata, RuntimePort, RuntimeProviderKind,
+    },
     tunnel::{
         cloudflared::CloudflaredProvider, ProvisioningIntent, ProvisioningOutcome,
         TunnelDescriptor, TunnelProvider,
@@ -169,6 +171,31 @@ pub struct StartRequest {
     pub prompt_seed: Option<String>,
     /// Optional execution-boundary override. Defaults to project configuration.
     pub runtime: Option<RuntimeProviderKind>,
+    /// Absolute supervisor-authored manifest for an in-guest runtime. The CLI transports only the
+    /// path; the manifest transports opaque identities and validated materialization paths.
+    pub runtime_manifest: Option<PathBuf>,
+    /// Where the feature's checkout lives. Defaults to a worktree beside the repository.
+    pub workspace_mode: WorkspaceMode,
+}
+
+/// Where a feature's checkout lives.
+///
+/// A worktree lets several features share one clone on a long-lived machine,
+/// which is the whole point on a developer's laptop. It costs something too: the
+/// checkout gains a second identity, its administrative files live under the
+/// repository it was cut from, and both have to be reachable and owned
+/// correctly wherever the work runs.
+///
+/// A caller that clones per run and discards the clone afterwards has no second
+/// consumer to isolate from, so it pays that cost for nothing. `Repository`
+/// checks the branch out in place instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceMode {
+    /// Cut a worktree beside the repository. The default.
+    #[default]
+    Worktree,
+    /// Check the feature branch out in the repository itself.
+    Repository,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -267,7 +294,7 @@ pub struct TeardownRequest {
 }
 
 /// Result of running feature teardown workflow.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct TeardownSummary {
     pub work_feature: String,
     pub branch_name: String,
@@ -275,11 +302,12 @@ pub struct TeardownSummary {
     pub branch_deleted: bool,
     pub adapter_cleanup_warnings: Vec<String>,
     pub module_reports: Vec<ModuleTeardownReport>,
+    pub runtime_teardown: runtime::RuntimeTeardownReport,
     pub warnings: Vec<String>,
 }
 
 /// Module teardown execution report.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ModuleTeardownReport {
     pub name: String,
     pub teardown_ok: bool,
@@ -352,6 +380,24 @@ impl FeatureWorkflow {
         let work_feature = self.resolve_work_feature(&request)?;
         let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_default();
         let runtime_kind = request.runtime.unwrap_or(config.runtime.provider);
+        match (runtime_kind, request.runtime_manifest.as_deref()) {
+            (RuntimeProviderKind::InGuest, None) => {
+                return Err(Error::validation(
+                    "--runtime in-guest requires --runtime-manifest with a trusted guest path",
+                ));
+            }
+            (RuntimeProviderKind::InGuest, Some(path)) if !path.is_absolute() => {
+                return Err(Error::validation(
+                    "--runtime-manifest must be an absolute path inside the trusted guest",
+                ));
+            }
+            (RuntimeProviderKind::InGuest, Some(_)) | (_, None) => {}
+            (_, Some(_)) => {
+                return Err(Error::validation(
+                    "--runtime-manifest is accepted only with --runtime in-guest",
+                ));
+            }
+        }
         if request.keep_runtime_on_failure && runtime_kind != RuntimeProviderKind::Sbx {
             return Err(Error::validation(
                 "--keep-runtime-on-failure and --reuse-runtime are only supported with the SBX runtime",
@@ -364,9 +410,17 @@ impl FeatureWorkflow {
             .clone()
             .or_else(|| Some(config.feature.branch_prefix.clone()));
         let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
-        let worktree_path = self.worktree_path(&work_feature)?;
+        let repository_workspace = request.workspace_mode == WorkspaceMode::Repository;
+        let worktree_path = if repository_workspace {
+            self.repo_root.clone()
+        } else {
+            self.worktree_path(&work_feature)?
+        };
         let mut branch_exists = self.git.branch_exists(&branch_name)?;
-        let worktree_exists = worktree_path.exists();
+        // In repository mode the checkout already exists -- it is the repository
+        // -- so its presence says nothing about whether this feature was started
+        // before, and must not be read as a collision.
+        let worktree_exists = !repository_workspace && worktree_path.exists();
         let base_branch = request.base_branch.clone();
         let mut warnings = Vec::new();
         let mut reuse_existing = request.reuse_existing;
@@ -408,6 +462,32 @@ impl FeatureWorkflow {
             }
         }
 
+        let workspace_mount_path = worktree_path.parent().unwrap_or(&worktree_path);
+        let repository_revision = resolve_git_object(
+            &self.repo_root,
+            if reuse_existing {
+                &branch_name
+            } else {
+                base_branch.as_deref().unwrap_or("HEAD")
+            },
+        )?;
+        let in_guest_plan = if runtime_kind == RuntimeProviderKind::InGuest {
+            validate_untrusted_checkout_attributes(&self.repo_root, &repository_revision)?;
+            Some(runtime::load_in_guest_facade_plan(
+                request
+                    .runtime_manifest
+                    .as_deref()
+                    .expect("validated in-guest manifest"),
+                &self.repo_root,
+                workspace_mount_path,
+                &worktree_path,
+                &branch_name,
+                &repository_revision,
+            )?)
+        } else {
+            None
+        };
+
         if !reuse_existing && branch_exists {
             return Err(Error::BranchExists(branch_name.clone()));
         }
@@ -430,20 +510,64 @@ impl FeatureWorkflow {
                 "Recreating missing worktree for existing branch {}",
                 branch_name
             );
+            if runtime_kind == RuntimeProviderKind::InGuest {
+                self.git
+                    .attach_existing_branch_without_hooks(&worktree_path, &branch_name)?;
+            } else {
+                self.git
+                    .attach_existing_branch(&worktree_path, &branch_name)?;
+            }
+        } else if repository_workspace {
             self.git
-                .attach_existing_branch(&worktree_path, &branch_name)?;
+                .checkout_feature_branch(&branch_name, base_branch.as_deref())?;
+        } else if runtime_kind == RuntimeProviderKind::InGuest {
+            self.git
+                .create_without_hooks(&worktree_path, &branch_name, base_branch.as_deref())?;
         } else {
             self.git
                 .create(&worktree_path, &branch_name, base_branch.as_deref())?;
         }
 
-        // Fix git worktree paths to use relative paths for devcontainer compatibility
-        if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
-            tracing::warn!("Failed to fix git worktree path: {}", err);
-            warnings.push(format!("Git worktree path fix failed: {}", err));
+        // Both of these exist to make a worktree reachable from the container:
+        // one rewrites the worktree's absolute gitdir pointer, the other projects
+        // its administrative files under the main checkout. A repository
+        // workspace has neither a pointer to rewrite nor metadata to project.
+        if !repository_workspace {
+            if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
+                tracing::warn!("Failed to fix git worktree path: {}", err);
+                warnings.push(format!("Git worktree path fix failed: {}", err));
+            }
         }
 
-        let stash_state = if !reuse_existing {
+        // This must be the first repository-content processing step in the trusted guest. It
+        // strips host lifecycle hooks and ambient mounts before any Dev Containers command runs.
+        if let Some(plan) = in_guest_plan.as_ref() {
+            if let Err(err) =
+                prepare_in_guest_devcontainer_config(&self.repo_root, &worktree_path, plan)
+            {
+                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                return Err(err);
+            }
+            if !repository_workspace {
+                if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
+                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    return Err(err);
+                }
+            }
+            let common_git = match repository_common_git_dir(&self.repo_root) {
+                Ok(path) => path,
+                Err(err) => {
+                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    return Err(err);
+                }
+            };
+            if let Err(err) = plan.grant_workspace_consumer_access(&worktree_path, &common_git) {
+                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                return Err(err);
+            }
+        }
+
+        let stash_state = if runtime_kind != RuntimeProviderKind::InGuest && !reuse_existing {
             match self.capture_stash(&work_feature) {
                 Ok(state) => state,
                 Err(err) => {
@@ -455,14 +579,20 @@ impl FeatureWorkflow {
             StashState::default()
         };
 
-        self.ensure_spec_for_start(&work_feature, &worktree_path, &branch_name, &mut warnings);
+        if runtime_kind != RuntimeProviderKind::InGuest {
+            self.ensure_spec_for_start(&work_feature, &worktree_path, &branch_name, &mut warnings);
+        }
 
         let adapter_copy_allowed = !reuse_existing;
-        let adapter_summary = match self.prepare_adapter(&worktree_path, adapter_copy_allowed) {
-            Ok(summary) => Some(summary),
-            Err(err) => {
-                warnings.push(err);
-                None
+        let adapter_summary = if runtime_kind == RuntimeProviderKind::InGuest {
+            None
+        } else {
+            match self.prepare_adapter(&worktree_path, adapter_copy_allowed) {
+                Ok(summary) => Some(summary),
+                Err(err) => {
+                    warnings.push(err);
+                    None
+                }
             }
         };
 
@@ -478,6 +608,17 @@ impl FeatureWorkflow {
             );
         }
 
+        if runtime_kind == RuntimeProviderKind::InGuest {
+            for name in ["devcontainer", "compose", "database", "tunnel", "specs"] {
+                register_module_skip(
+                    &mut module_skip,
+                    &mut skip_records,
+                    name,
+                    ModuleSkipReason::Policy,
+                );
+            }
+        }
+
         if matches!(request.mode, StartMode::Minimal) {
             for default in ["devcontainer", "compose", "specs"] {
                 register_module_skip(
@@ -490,7 +631,7 @@ impl FeatureWorkflow {
         }
 
         let policy_enforced = load_policy_enforced_modules();
-        if !policy_enforced.is_empty() {
+        if runtime_kind != RuntimeProviderKind::InGuest && !policy_enforced.is_empty() {
             skip_records.retain(|record| {
                 if policy_enforced.contains(&record.name) {
                     warnings.push(format!(
@@ -525,20 +666,37 @@ impl FeatureWorkflow {
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root, &module_skip);
+        } = if runtime_kind == RuntimeProviderKind::InGuest {
+            modules::ModulePlan::new(Vec::new(), Vec::new())
+        } else {
+            modules::detect_modules(&self.repo_root, &module_skip)
+        };
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings.clone());
         }
 
-        let forced_modules = policy_enforced.clone();
+        let forced_modules = if runtime_kind == RuntimeProviderKind::InGuest {
+            HashSet::new()
+        } else {
+            policy_enforced.clone()
+        };
 
-        let env_outcome = self.prepare_env(
-            &worktree_path,
-            &work_feature,
-            &branch_name,
-            reuse_existing,
-            &mut warnings,
-        )?;
+        let env_outcome = if runtime_kind == RuntimeProviderKind::InGuest {
+            EnvOutcome {
+                env_path: None,
+                feature_url: None,
+                compose_project_name: None,
+                skipped: true,
+            }
+        } else {
+            self.prepare_env(
+                &worktree_path,
+                &work_feature,
+                &branch_name,
+                reuse_existing,
+                &mut warnings,
+            )?
+        };
         if env_outcome.skipped {
             warnings.push("Skipped .env provisioning (source file not found)".to_string());
         }
@@ -603,7 +761,7 @@ impl FeatureWorkflow {
             });
         }
         let module_reports = setup_outcome.reports;
-        if !reuse_existing {
+        if runtime_kind != RuntimeProviderKind::InGuest && !reuse_existing {
             let stash_warnings = self.apply_stash_to_worktree(&stash_state, &worktree_path);
             if !stash_warnings.is_empty() {
                 warnings.extend(stash_warnings);
@@ -623,24 +781,52 @@ impl FeatureWorkflow {
         let runtime_name = compose_project_name
             .as_deref()
             .unwrap_or(&fallback_runtime_name);
-        let workspace_mount_path = worktree_path.parent().unwrap_or(&worktree_path);
-        let published_ports = runtime_ports(&worktree_path);
+        let published_ports = in_guest_plan
+            .as_ref()
+            .map(|plan| plan.published_ports().to_vec())
+            .unwrap_or_else(|| runtime_ports(&worktree_path));
 
         if runtime_kind == RuntimeProviderKind::Sbx {
-            prepare_sbx_devcontainer_config(&worktree_path, &config.runtime.sbx.run_services)?;
+            prepare_sbx_devcontainer_config(
+                &self.repo_root,
+                &worktree_path,
+                &config.runtime.sbx.run_services,
+            )?;
         }
 
         // Tunnel credentials are part of the Compose input. Materialize them before creating an
         // outer runtime or asking devcontainers to validate/start the project.
         let service_url_for_tunnel = self
             .resolve_tunnel_service_url(adapter_summary.as_ref().map(|s| s.service_url.as_str()));
-        let (tunnel_state, mut tunnel_warnings) = self.prepare_tunnel_state(
-            skip_tunnel_provisioning,
-            &work_feature,
-            &worktree_path,
-            feature_url.as_deref(),
-            &service_url_for_tunnel,
-        )?;
+        let (tunnel_state, mut tunnel_warnings) = if in_guest_plan.is_some() {
+            (
+                Some(FeatureTunnelState {
+                    provider: "outer".to_string(),
+                    hostname: feature_url.clone(),
+                    service_url: published_ports
+                        .first()
+                        .map(|port| format!("http://127.0.0.1:{}", port.host)),
+                    status: FeatureTunnelStatus::Pending,
+                    descriptor: None,
+                    instructions: None,
+                    notes: Some(
+                        "The managed orchestrator owns the exclusive outer-boundary tunnel connector"
+                            .to_string(),
+                    ),
+                    last_updated: Utc::now(),
+                    removed_at: None,
+                }),
+                Vec::new(),
+            )
+        } else {
+            self.prepare_tunnel_state(
+                skip_tunnel_provisioning,
+                &work_feature,
+                &worktree_path,
+                feature_url.as_deref(),
+                &service_url_for_tunnel,
+            )?
+        };
         if !tunnel_warnings.is_empty() {
             warnings.append(&mut tunnel_warnings);
         }
@@ -666,24 +852,30 @@ impl FeatureWorkflow {
             runtime_name,
             workspace_mount_path,
             published_ports: &published_ports,
+            runtime_manifest_path: request.runtime_manifest.as_deref(),
         };
-        let runtime_metadata = match runtime_provider.prepare(&runtime_context) {
+        let mut runtime_metadata = match runtime_provider.prepare(&runtime_context) {
             Ok(metadata) => metadata,
             Err(err) => {
                 self.rollback_prepared_tunnel(tunnel_state.as_ref());
+                if runtime_kind == RuntimeProviderKind::InGuest {
+                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                }
                 return Err(err);
             }
         };
         let environment_result =
-            runtime_provider.start_environment(&runtime_context, &runtime_metadata);
+            runtime_provider.start_environment(&runtime_context, &mut runtime_metadata);
 
-        // Repository lifecycle hooks may rewrite the shared worktree .git file
-        // to an absolute in-container path. Convert it back to BranchBox's
-        // host/container-portable relative form before either returning or
-        // attempting cleanup after a failed startup.
-        if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
-            tracing::warn!("Failed to restore git worktree path: {}", err);
-            warnings.push(format!("Git worktree path restore failed: {}", err));
+        // Keep successful in-guest worktrees pointed at the exact container Git projection while
+        // the coding environment is active. Failed starts and other runtime providers need the
+        // host-portable pointer immediately; normal in-guest teardown repairs it before status and
+        // removal checks.
+        if runtime_kind != RuntimeProviderKind::InGuest || environment_result.is_err() {
+            if let Err(err) = self.fix_git_worktree_path(&worktree_path) {
+                tracing::warn!("Failed to restore git worktree path: {}", err);
+                warnings.push(format!("Git worktree path restore failed: {}", err));
+            }
         }
 
         if let Err(err) = environment_result {
@@ -734,13 +926,21 @@ impl FeatureWorkflow {
                     work_feature
                 )));
             }
-            if let Err(cleanup_err) = runtime_provider.destroy(&runtime_metadata) {
-                tracing::warn!(
+            match runtime_provider.destroy(&runtime_metadata) {
+                Ok(report) if !report.residue_free => tracing::warn!(
+                    "Runtime cleanup after startup failure left residue: {:?}",
+                    report.residue
+                ),
+                Ok(_) => {}
+                Err(cleanup_err) => tracing::warn!(
                     "Failed to clean up runtime after environment startup failure: {}",
                     cleanup_err
-                );
+                ),
             }
             self.rollback_prepared_tunnel(tunnel_state.as_ref());
+            if runtime_kind == RuntimeProviderKind::InGuest {
+                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+            }
             return Err(err);
         }
 
@@ -868,14 +1068,28 @@ impl FeatureWorkflow {
         let branch_prefix = branch_prefix.or_else(|| Some(config.feature.branch_prefix.clone()));
         let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
         let worktree_path = self.worktree_path(&work_feature)?;
-        let runtime_metadata = self
-            .state
-            .get_feature(&work_feature)?
-            .map(|metadata| metadata.runtime)
-            .unwrap_or_default();
+        let recorded_metadata = self.state.get_feature(&work_feature)?;
+        let runtime_metadata = match recorded_metadata.as_ref() {
+            Some(metadata) => metadata.runtime.clone(),
+            None => runtime::recover_in_guest_runtime_metadata(&self.repo_root, &worktree_path)?
+                .unwrap_or_default(),
+        };
+        let in_guest_teardown = runtime_metadata.provider == RuntimeProviderKind::InGuest;
         let worktree_exists = worktree_path.exists();
         if !worktree_exists && !force_remove {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
+        }
+
+        // Repository lifecycle hooks can leave an in-guest worktree pointing at the container's
+        // view of the shared Git metadata. Repair that pointer before status/dirty checks use it.
+        // Forced teardown retains the existing best-effort filesystem fallback for irreparable
+        // or already-partially-removed worktrees.
+        if worktree_exists && in_guest_teardown && !force_remove {
+            self.fix_git_worktree_path(&worktree_path).map_err(|err| {
+                Error::validation(format!(
+                    "Cannot restore in-guest Git worktree metadata before teardown: {err}"
+                ))
+            })?;
         }
 
         let skip_dirty_validation = force_remove || force_remove_modules;
@@ -905,7 +1119,7 @@ impl FeatureWorkflow {
         let mut warnings = Vec::new();
         let mut skip_modules: Vec<String> = Vec::new();
 
-        if let Ok(Some(_metadata)) = self.state.get_feature(&work_feature) {
+        if !in_guest_teardown && recorded_metadata.is_some() {
             match self.tunnel_remove(TunnelRemoveRequest {
                 work_feature: work_feature.clone(),
                 force: force_remove,
@@ -921,7 +1135,11 @@ impl FeatureWorkflow {
         let modules::ModulePlan {
             handles,
             warnings: dependency_warnings,
-        } = modules::detect_modules(&self.repo_root, &skip_modules);
+        } = if in_guest_teardown {
+            modules::ModulePlan::new(Vec::new(), Vec::new())
+        } else {
+            modules::detect_modules(&self.repo_root, &skip_modules)
+        };
         let (module_reports, module_warnings) = if worktree_exists {
             self.run_module_teardown(handles, &worktree_path)
         } else {
@@ -939,16 +1157,21 @@ impl FeatureWorkflow {
                 worktree_path.display()
             ));
         }
-        self.handle_spec_on_teardown(
-            &work_feature,
-            &branch_name,
-            &worktree_path,
-            complete_spec,
-            &mut warnings,
-        );
+        if !in_guest_teardown {
+            self.handle_spec_on_teardown(
+                &work_feature,
+                &branch_name,
+                &worktree_path,
+                complete_spec,
+                &mut warnings,
+            );
+        }
 
-        let (adapter_cleanup_warnings, adapter_detection_warning) =
-            self.cleanup_adapter(&worktree_path);
+        let (adapter_cleanup_warnings, adapter_detection_warning) = if in_guest_teardown {
+            (Vec::new(), None)
+        } else {
+            self.cleanup_adapter(&worktree_path)
+        };
 
         match previous_complete {
             Some(value) => std::env::set_var("BRANCHBOX_COMPLETE_SPEC", value),
@@ -958,15 +1181,22 @@ impl FeatureWorkflow {
             warnings.push(message);
         }
 
-        match runtime::provider(runtime_metadata.provider)
+        let runtime_teardown = match runtime::provider(runtime_metadata.provider)
             .and_then(|provider| provider.destroy(&runtime_metadata))
         {
-            Ok(()) => {}
-            Err(err) => warnings.push(format!(
-                "Runtime '{}' teardown failed: {}",
-                runtime_metadata.provider, err
-            )),
-        }
+            Ok(report) => report,
+            Err(err) => {
+                warnings.push(format!(
+                    "Runtime '{}' teardown failed: {}",
+                    runtime_metadata.provider, err
+                ));
+                runtime::RuntimeTeardownReport::unverified(
+                    runtime_metadata.provider,
+                    runtime_metadata.runtime_id.clone(),
+                    err.to_string(),
+                )
+            }
+        };
 
         let mut worktree_removed = false;
         if worktree_exists {
@@ -1039,6 +1269,7 @@ impl FeatureWorkflow {
             branch_deleted,
             adapter_cleanup_warnings,
             module_reports,
+            runtime_teardown,
             warnings,
         })
     }
@@ -1108,6 +1339,52 @@ impl FeatureWorkflow {
         }
         let provider = runtime::provider(metadata.runtime.provider)?;
         provider.exec_interactive(&metadata.runtime, &metadata.worktree_path, command)
+    }
+
+    /// Execute the exact provider entrypoint and environment declared by the managed assignment.
+    pub fn exec_provider_runtime_interactive(
+        &self,
+        work_feature: &str,
+        coding_provider: &str,
+        inherited_environment: &[String],
+        args: &[String],
+    ) -> Result<i32> {
+        let metadata = self
+            .state
+            .get_feature(work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
+        if metadata.status != FeatureStatus::Active {
+            return Err(Error::validation(format!(
+                "Feature '{work_feature}' is not active"
+            )));
+        }
+        let provider = runtime::provider(metadata.runtime.provider)?;
+        provider.exec_provider_interactive(
+            &metadata.runtime,
+            coding_provider,
+            inherited_environment,
+            args,
+        )
+    }
+
+    /// Dispatch one capability-bound consumer request to its managed trusted endpoint.
+    pub fn dispatch_tool_request(
+        &self,
+        work_feature: &str,
+        lease_id: &str,
+        request_id: &str,
+    ) -> Result<runtime::RuntimeToolDispatchResult> {
+        let metadata = self
+            .state
+            .get_feature(work_feature)?
+            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
+        if metadata.status != FeatureStatus::Active {
+            return Err(Error::validation(format!(
+                "Feature '{work_feature}' is not active"
+            )));
+        }
+        let provider = runtime::provider(metadata.runtime.provider)?;
+        provider.dispatch_tool_request(&metadata.runtime, lease_id, request_id)
     }
 
     /// Open (provision) a tunnel for an existing feature.
@@ -1599,6 +1876,51 @@ impl FeatureWorkflow {
         }
     }
 
+    fn cleanup_failed_in_guest_worktree(&self, worktree_path: &Path, branch_name: &str) {
+        // A repository workspace is the repository. Removing it is never the
+        // right cleanup for a failed start, and the branch is left in place for
+        // the same reason a failed run leaves its clone: the caller owns it.
+        if worktree_path == self.repo_root {
+            tracing::info!("Repository workspace retained after startup failure");
+            return;
+        }
+        if worktree_path.exists() {
+            if let Err(err) = self.fix_git_worktree_path(worktree_path) {
+                tracing::warn!(
+                    "Failed to restore in-guest Git metadata before startup cleanup: {}",
+                    err
+                );
+            }
+            if let Err(err) = self.git.remove(worktree_path, true) {
+                tracing::warn!(
+                    "Failed to remove in-guest worktree after startup failure: {}",
+                    err
+                );
+                if let Err(fs_err) = fs::remove_dir_all(worktree_path) {
+                    tracing::warn!(
+                        "Failed to remove in-guest worktree directory after startup failure: {}",
+                        fs_err
+                    );
+                }
+            }
+        }
+        if let Err(err) = self.git.prune() {
+            tracing::warn!(
+                "Failed to prune in-guest worktree metadata after startup failure: {}",
+                err
+            );
+        }
+        if self.git.branch_exists(branch_name).unwrap_or(false) {
+            if let Err(err) = self.git.delete_branch(branch_name, true) {
+                tracing::warn!(
+                    "Failed to delete in-guest task branch '{}' after startup failure: {}",
+                    branch_name,
+                    err
+                );
+            }
+        }
+    }
+
     fn detect_module_dirty_changes(&self, worktree_path: &Path) -> Result<Vec<String>> {
         if !worktree_path.exists() {
             return Ok(Vec::new());
@@ -1653,7 +1975,10 @@ impl FeatureWorkflow {
     fn is_module_managed_path(path: &str) -> bool {
         use std::ffi::OsStr;
 
-        if path == ".devcontainer/branchbox-sbx.json" {
+        if matches!(
+            path,
+            ".devcontainer/.devcontainer.json" | ".devcontainer/.branchbox-sbx-compose.yaml"
+        ) {
             return false;
         }
 
@@ -2948,20 +3273,32 @@ impl FeatureWorkflow {
             return Ok(());
         }
 
-        let authoritative_target = fs::canonicalize(current_path).map_err(|err| {
+        let repository_worktrees = self.repository_worktrees_dir()?;
+        let current_target = Path::new(current_path);
+        let container_worktrees = Path::new("/workspaces/main/.git/worktrees");
+        let target_to_validate = match current_target.strip_prefix(container_worktrees) {
+            Ok(relative) => {
+                let components: Vec<_> = relative.components().collect();
+                if components.len() != 1
+                    || !matches!(components[0], std::path::Component::Normal(_))
+                {
+                    return Err(Error::validation(format!(
+                        "Container gitdir target '{}' is not a single repository worktree entry; preserving the original worktree pointer",
+                        current_path
+                    )));
+                }
+                repository_worktrees.join(relative)
+            }
+            Err(_) => current_target.to_path_buf(),
+        };
+
+        let authoritative_target = fs::canonicalize(&target_to_validate).map_err(|err| {
             Error::validation(format!(
-                "Cannot validate absolute gitdir target '{}'; preserving the original worktree pointer: {err}",
-                current_path
+                "Cannot validate gitdir target '{}' as '{}'; preserving the original worktree pointer: {err}",
+                current_path,
+                target_to_validate.display()
             ))
         })?;
-        let repository_worktrees = fs::canonicalize(self.repo_root.join(".git"))
-            .map_err(|err| {
-                Error::validation(format!(
-                    "Cannot validate repository Git metadata at '{}': {err}",
-                    self.repo_root.join(".git").display()
-                ))
-            })?
-            .join("worktrees");
         if !authoritative_target.starts_with(&repository_worktrees) {
             return Err(Error::validation(format!(
                 "Absolute gitdir target '{}' does not belong to repository '{}'; preserving the original worktree pointer",
@@ -3017,6 +3354,115 @@ impl FeatureWorkflow {
 
         Ok(())
     }
+
+    /// Point the active worktree at the exact Git metadata projection exposed inside a managed
+    /// in-guest devcontainer. The target entry is derived from validated host metadata; repository
+    /// content cannot select another worktree or escape the shared Git directory.
+    fn set_in_guest_git_worktree_path(&self, worktree_path: &Path) -> Result<()> {
+        let git_file = worktree_path.join(".git");
+        if !git_file.is_file() {
+            return Err(Error::validation(format!(
+                "No .git file found in worktree at {}",
+                worktree_path.display()
+            )));
+        }
+
+        let content = fs::read_to_string(&git_file)?;
+        let gitdir_line = content
+            .lines()
+            .find(|line| line.starts_with("gitdir:"))
+            .ok_or_else(|| Error::validation("No gitdir: line found in .git file".to_string()))?;
+        let current_path = gitdir_line.strip_prefix("gitdir:").unwrap_or("").trim();
+        let repository_worktrees = self.repository_worktrees_dir()?;
+        let container_worktrees = Path::new("/workspaces/main/.git/worktrees");
+
+        let target_to_validate =
+            if let Ok(relative) = Path::new(current_path).strip_prefix(container_worktrees) {
+                repository_worktrees.join(relative)
+            } else if Path::new(current_path).is_absolute() {
+                PathBuf::from(current_path)
+            } else {
+                worktree_path.join(current_path)
+            };
+        let authoritative_target = fs::canonicalize(&target_to_validate).map_err(|err| {
+            Error::validation(format!(
+                "Cannot validate in-guest gitdir target '{}' as '{}': {err}",
+                current_path,
+                target_to_validate.display()
+            ))
+        })?;
+        let entry = authoritative_target
+            .strip_prefix(&repository_worktrees)
+            .ok()
+            .and_then(|relative| {
+                let components: Vec<_> = relative.components().collect();
+                (components.len() == 1 && matches!(components[0], std::path::Component::Normal(_)))
+                    .then_some(components[0].as_os_str())
+            })
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "Git metadata target '{}' is not one exact repository worktree entry",
+                    authoritative_target.display()
+                ))
+            })?;
+        let entry = entry
+            .to_str()
+            .ok_or_else(|| Error::validation("Invalid UTF-8 in Git worktree entry".to_string()))?;
+        let container_target = container_worktrees.join(entry);
+        let new_gitdir_line = format!("gitdir: {}", container_target.display());
+        let new_content = content.replacen(gitdir_line, &new_gitdir_line, 1);
+        write_text_file(&git_file, &new_content)?;
+
+        tracing::info!(
+            "Projected Git worktree metadata into managed devcontainer: {}",
+            container_target.display()
+        );
+        Ok(())
+    }
+
+    /// Resolve the repository's authoritative shared Git metadata. `repo_root` may itself be a
+    /// linked worktree, so canonicalizing `<repo_root>/.git` is insufficient: it resolves to that
+    /// worktree's entry instead of the common directory that owns all sibling worktrees.
+    fn repository_worktrees_dir(&self) -> Result<PathBuf> {
+        Ok(repository_common_git_dir(&self.repo_root)?.join("worktrees"))
+    }
+}
+
+fn repository_common_git_dir(repo_root: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| {
+            Error::git(format!(
+                "Failed to resolve repository shared Git metadata: {err}"
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(Error::git(format!(
+            "Failed to resolve repository shared Git metadata: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Err(Error::validation(
+            "Repository shared Git metadata path is empty".to_string(),
+        ));
+    }
+    let common_dir = PathBuf::from(raw);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        repo_root.join(common_dir)
+    };
+    fs::canonicalize(&common_dir).map_err(|err| {
+        Error::validation(format!(
+            "Cannot validate repository shared Git metadata at '{}': {err}",
+            common_dir.display()
+        ))
+    })
 }
 
 fn relative_path_between(from: &Path, to: &Path) -> Option<PathBuf> {
@@ -3066,16 +3512,28 @@ fn devcontainer_requires_cloudflared_env(worktree_path: &Path) -> bool {
     })
 }
 
-fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]) -> Result<()> {
-    let (config, config_path) = DevcontainerConfig::load(worktree_path)
-        .map_err(|err| Error::validation(format!("Could not inspect SBX devcontainer: {err}")))?;
+const SBX_DEVCONTAINER_CONFIG: &str = ".devcontainer.json";
+const SBX_COMPOSE_OVERRIDE: &str = ".branchbox-sbx-compose.yaml";
+const IN_GUEST_SHM_SIZE: &str = "1gb";
+const CONTAINER_MAIN_GIT_TARGET: &str = "/workspaces/main/.git";
+const IN_GUEST_SECCOMP_SECURITY_OPTION: &str = "seccomp=builtin";
+
+fn prepare_in_guest_devcontainer_config(
+    repo_root: &Path,
+    worktree_path: &Path,
+    plan: &InGuestFacadePlan,
+) -> Result<()> {
+    let (config, config_path) = DevcontainerConfig::load(worktree_path).map_err(|err| {
+        Error::validation(format!("Could not inspect in-guest devcontainer: {err}"))
+    })?;
+    let source = fs::read_to_string(&config_path)?;
+    let mut value = jsonc_parser::parse_to_serde_value(&source, &Default::default())
+        .map_err(|err| Error::validation(format!("Failed to parse devcontainer JSONC: {err:?}")))?
+        .ok_or_else(|| Error::validation("Devcontainer configuration is empty"))?;
+
     let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
-    let compose_files: Vec<PathBuf> = match config.docker_compose_file.as_ref() {
-        Some(ComposeFileRef::Single(path)) => vec![devcontainer_dir.join(path)],
-        Some(ComposeFileRef::Multiple(paths)) => paths
-            .iter()
-            .map(|path| devcontainer_dir.join(path))
-            .collect(),
+    let compose_references: Vec<String> = match config.docker_compose_file.as_ref() {
+        Some(reference) => reference.to_vec(),
         None => [
             "compose.yaml",
             "compose.yml",
@@ -3083,13 +3541,1042 @@ fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]
             "docker-compose.yml",
         ]
         .iter()
-        .map(|path| devcontainer_dir.join(path))
-        .filter(|path| path.exists())
+        .filter(|path| devcontainer_dir.join(path).exists())
+        .map(|path| (*path).to_string())
         .collect(),
     };
-    let mut unsupported_services = Vec::new();
+    let compose_files: Vec<PathBuf> = compose_references
+        .iter()
+        .map(|path| devcontainer_dir.join(path))
+        .collect();
+    let preloaded_image_mode = !plan.service_images().is_empty();
+    let security_option_in_devcontainer = config.service.is_none() || compose_files.is_empty();
+    sanitize_in_guest_devcontainer_json(
+        &mut value,
+        security_option_in_devcontainer,
+        preloaded_image_mode,
+    )?;
+    for compose_file in &compose_files {
+        if let Ok(document) = fs::read_to_string(compose_file).and_then(|source| {
+            serde_yaml::from_str::<serde_yaml::Value>(&source)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+        }) {
+            reject_supervisor_socket_references_yaml(&document)?;
+            validate_in_guest_compose_security(
+                &document,
+                config.service.as_deref(),
+                devcontainer_dir,
+                worktree_path,
+            )?;
+        }
+    }
+
+    prepare_sbx_compose_override(
+        repo_root,
+        devcontainer_dir,
+        config.service.as_deref(),
+        &compose_files,
+    )?;
+    let project_environment = plan.project_environment();
+    if let Some((_, consumer)) = project_environment {
+        if config.service.as_deref() != Some(consumer) {
+            return Err(Error::validation(format!(
+                "Project-environment consumer '{consumer}' must match the primary devcontainer service"
+            )));
+        }
+    }
+    let workspace_folder = effective_in_guest_workspace_folder(&config, worktree_path)?;
+    let lease_mounts: Vec<(PathBuf, PathBuf)> = plan
+        .mounts()
+        .map(|(source, target)| (source.to_path_buf(), target.to_path_buf()))
+        .collect();
+    let spool_volumes: Vec<(String, PathBuf)> = plan
+        .tool_request_spools()
+        .map(|(volume, target, _consumer_uid)| (volume.to_string(), target.to_path_buf()))
+        .collect();
+    let assignment = InGuestComposeAssignment {
+        project_environment: project_environment.map(|(source, _)| source),
+        service_images: plan.service_images(),
+        workspace_consumer: plan.workspace_consumer().is_some(),
+        lease_mounts: &lease_mounts,
+        spool_volumes: &spool_volumes,
+    };
+    let omitted_services = prepare_outer_tunnel_compose_override(
+        repo_root,
+        worktree_path,
+        devcontainer_dir,
+        config.service.as_deref(),
+        &workspace_folder,
+        &compose_files,
+        &assignment,
+    )?;
+
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
+    let mounts = object
+        .remove("mounts")
+        .and_then(|mounts| mounts.as_array().cloned())
+        .unwrap_or_default();
+    // Read-only lease binds are carried by the generated Compose facade, which
+    // preserves their read-only mode; declaring them here as well would have the
+    // same bind resolved twice on the inspected container.
+    // Tool-request spool volumes are carried by the generated Compose facade, which
+    // pins their exact name; declaring them here instead lets Compose namespace the
+    // volume under the project and the signed name no longer matches.
+    if !mounts.is_empty() {
+        object.insert("mounts".to_string(), serde_json::Value::Array(mounts));
+    }
+    object.insert(
+        "workspaceFolder".to_string(),
+        serde_json::Value::String(workspace_folder),
+    );
+
+    object.remove("runServices");
+    if let Some(primary) = config.service.as_deref() {
+        if omitted_services.contains(primary) {
+            return Err(Error::validation(
+                "The primary devcontainer service cannot be the outer cloudflared connector",
+            ));
+        }
+        // Compose starts the validated dependency closure of the primary service. Do not let a
+        // repository opt independent or connector services into the in-guest startup set.
+        object.insert("runServices".to_string(), serde_json::json!([primary]));
+    }
+
+    if devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).is_file() {
+        let mut references = compose_references;
+        references.retain(|reference| reference != SBX_COMPOSE_OVERRIDE);
+        references.push(SBX_COMPOSE_OVERRIDE.to_string());
+        object.insert(
+            "dockerComposeFile".to_string(),
+            serde_json::json!(references),
+        );
+    }
+
+    let generated = devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG);
+    if generated == config_path {
+        return Err(Error::validation(
+            "In-guest runtime overlays for a top-level .devcontainer.json are not supported; move the source config to .devcontainer/devcontainer.json",
+        ));
+    }
+    write_text_file(
+        &generated,
+        &format!("{}\n", serde_json::to_string_pretty(&value)?),
+    )?;
+    Ok(())
+}
+
+fn sanitize_in_guest_devcontainer_json(
+    value: &mut serde_json::Value,
+    security_option_in_devcontainer: bool,
+    preloaded_image_mode: bool,
+) -> Result<()> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
+    object.remove("initializeCommand");
+    if let Some(environment) = object
+        .get_mut("containerEnv")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        environment.retain(|name, value| {
+            value
+                .as_str()
+                .is_some_and(|value| is_safe_nonsecret_container_environment(name, value))
+        });
+    }
+    object.remove("remoteEnv");
+    object.remove("workspaceMount");
+    object.remove("mounts");
+    object.remove("appPort");
+    object.remove("forwardPorts");
+    object.remove("portsAttributes");
+    object.remove("otherPortsAttributes");
+    object.remove("capAdd");
+    if security_option_in_devcontainer {
+        object.insert(
+            "securityOpt".to_string(),
+            serde_json::json!([IN_GUEST_SECCOMP_SECURITY_OPTION]),
+        );
+    } else {
+        // Compose devcontainers receive the same mandatory option from the generated service
+        // facade. Repeating it in devcontainer.json makes the CLI generate a later Compose
+        // fragment with the same list entry, which Compose rejects as a duplicate.
+        object.remove("securityOpt");
+    }
+    object.insert("privileged".to_string(), serde_json::Value::Bool(false));
+
+    if preloaded_image_mode {
+        // The assigned image already contains the complete devcontainer toolchain. Features,
+        // Dockerfile configuration, and UID rewriting make the Dev Containers CLI derive a new
+        // image, which would violate the no-build assignment contract.
+        object.remove("features");
+        object.remove("build");
+        object.insert(
+            "updateRemoteUserUID".to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
+
+    if let Some(features) = object
+        .get_mut("features")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        features.retain(|feature, _| !is_project_docker_feature(feature));
+    }
+    if let Some(build) = object
+        .get_mut("build")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        build.remove("args");
+        for forbidden in ["ssh", "secrets", "privileged", "entitlements"] {
+            if build.contains_key(forbidden) {
+                return Err(Error::validation(format!(
+                    "In-guest devcontainer rejects build.{forbidden}"
+                )));
+            }
+        }
+    }
+    if let Some(run_args) = object
+        .get_mut("runArgs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        let mut sanitized = Vec::new();
+        let mut index = 0;
+        while index < run_args.len() {
+            let argument = run_args[index].as_str().unwrap_or_default();
+            if matches!(
+                argument,
+                "--env-file"
+                    | "--volume"
+                    | "-v"
+                    | "--mount"
+                    | "--shm-size"
+                    | "--device"
+                    | "--cap-add"
+                    | "--security-opt"
+                    | "--network"
+                    | "--network-mode"
+                    | "--pid"
+                    | "--ipc"
+                    | "--cgroupns"
+            ) {
+                index += 2;
+                continue;
+            }
+            let normalized = argument.to_ascii_lowercase();
+            if normalized.starts_with("--env-file=")
+                || normalized.starts_with("--volume=")
+                || normalized.starts_with("--mount=")
+                || normalized.starts_with("--shm-size=")
+                || normalized.starts_with("--device=")
+                || normalized.starts_with("--cap-add=")
+                || normalized.starts_with("--security-opt=")
+                || normalized.starts_with("--network=")
+                || normalized.starts_with("--network-mode=")
+                || normalized.starts_with("--pid=")
+                || normalized.starts_with("--ipc=")
+                || normalized.starts_with("--cgroupns=")
+                || normalized == "--ipc=host"
+                || normalized == "--pid=host"
+                || normalized == "--privileged"
+                || contains_supervisor_reference(argument)
+            {
+                index += 1;
+                continue;
+            }
+            sanitized.push(run_args[index].clone());
+            index += 1;
+        }
+        *run_args = sanitized;
+    }
+    Ok(())
+}
+
+fn is_project_docker_feature(feature: &str) -> bool {
+    let normalized = feature.to_ascii_lowercase();
+    [
+        "docker-outside-of-docker",
+        "docker-in-docker",
+        "docker-from-docker",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn is_safe_nonsecret_container_environment(name: &str, value: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    let connectivity_key = name == "HOST"
+        || name == "PORT"
+        || name.ends_with("_HOST")
+        || name.ends_with("_PORT")
+        || matches!(
+            name.as_str(),
+            "RAILS_ENV" | "RACK_ENV" | "NODE_ENV" | "APP_ENV"
+        );
+    let platform_or_secret = [
+        "TOKEN",
+        "PASSWORD",
+        "SECRET",
+        "CREDENTIAL",
+        "AUTH",
+        "API_KEY",
+        "PRIVATE_KEY",
+        "TUNNEL",
+        "DEV_HOSTNAME",
+        "DOCKER",
+    ]
+    .iter()
+    .any(|fragment| name.contains(fragment));
+    connectivity_key
+        && !platform_or_secret
+        && !value.is_empty()
+        && value.len() <= 128
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-')
+        })
+}
+
+fn reject_supervisor_socket_references_yaml(value: &serde_yaml::Value) -> Result<()> {
+    match value {
+        serde_yaml::Value::String(value) => {
+            if contains_supervisor_socket_reference(value) {
+                return Err(Error::validation(
+                    "In-guest Compose may not reference a Docker or containerd supervisor socket",
+                ));
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Sequence(values) => {
+            for value in values {
+                reject_supervisor_socket_references_yaml(value)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Mapping(values) => {
+            for (key, value) in values {
+                if key
+                    .as_str()
+                    .is_some_and(contains_supervisor_socket_reference)
+                {
+                    return Err(Error::validation(
+                        "In-guest Compose may not configure container supervisor authority",
+                    ));
+                }
+                reject_supervisor_socket_references_yaml(value)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Tagged(value) => reject_supervisor_socket_references_yaml(&value.value),
+        _ => Ok(()),
+    }
+}
+
+fn validate_in_guest_compose_security(
+    document: &serde_yaml::Value,
+    primary_service: Option<&str>,
+    devcontainer_dir: &Path,
+    worktree_path: &Path,
+) -> Result<()> {
+    if document
+        .get("volumes")
+        .and_then(serde_yaml::Value::as_mapping)
+        .is_some_and(|volumes| {
+            volumes.values().any(|volume| {
+                volume
+                    .get("external")
+                    .and_then(serde_yaml::Value::as_bool)
+                    .unwrap_or(false)
+            })
+        })
+    {
+        return Err(Error::validation(
+            "In-guest Compose may not attach external volumes shared with the supervisor",
+        ));
+    }
+    let Some(services) = document
+        .get("services")
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(());
+    };
+    for (name, service) in services {
+        let name = name.as_str().unwrap_or_default();
+        let connector = is_platform_connector(name, service);
+        if service.get("extends").is_some() {
+            return Err(Error::validation(format!(
+                "In-guest Compose rejects service '{name}' extends because inherited host mounts cannot be proven safe"
+            )));
+        }
+        if let Some(build) = service.get("build").and_then(serde_yaml::Value::as_mapping) {
+            for forbidden in [
+                "ssh",
+                "secrets",
+                "privileged",
+                "entitlements",
+                "additional_contexts",
+            ] {
+                if build.contains_key(serde_yaml::Value::String(forbidden.to_string())) {
+                    return Err(Error::validation(format!(
+                        "In-guest Compose rejects build.{forbidden} for service '{name}'"
+                    )));
+                }
+            }
+            if build
+                .get("network")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|network| network == "host")
+            {
+                return Err(Error::validation(format!(
+                    "In-guest Compose rejects host-network builds for service '{name}'"
+                )));
+            }
+            if build
+                .get("context")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|context| {
+                    if context.starts_with('/') || context.contains("${") {
+                        return true;
+                    }
+                    match (
+                        fs::canonicalize(devcontainer_dir.join(context)),
+                        fs::canonicalize(worktree_path.parent().unwrap_or(worktree_path)),
+                    ) {
+                        (Ok(resolved), Ok(workspace)) => !resolved.starts_with(workspace),
+                        _ => true,
+                    }
+                })
+            {
+                return Err(Error::validation(format!(
+                    "In-guest Compose rejects ambient/absolute build context for service '{name}'"
+                )));
+            }
+        }
+        if !connector {
+            let privileged = service
+                .get("privileged")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false);
+            let host_namespace = ["pid", "ipc", "network_mode", "cgroup"].iter().any(|key| {
+                service
+                    .get(*key)
+                    .and_then(serde_yaml::Value::as_str)
+                    .is_some_and(|value| value == "host")
+            });
+            let elevated_capability = service
+                .get("cap_add")
+                .and_then(serde_yaml::Value::as_sequence)
+                .is_some_and(|capabilities| {
+                    capabilities.iter().any(|capability| {
+                        capability.as_str().is_some_and(|capability| {
+                            matches!(
+                                capability.to_ascii_uppercase().as_str(),
+                                "ALL" | "SYS_ADMIN" | "NET_ADMIN" | "SYS_PTRACE"
+                            )
+                        })
+                    })
+                });
+            if privileged || host_namespace || elevated_capability {
+                return Err(Error::validation(format!(
+                    "In-guest Compose rejects privileged host authority for service '{name}'"
+                )));
+            }
+            if service.get("secrets").is_some() || service.get("configs").is_some() {
+                return Err(Error::validation(format!(
+                    "In-guest Compose requires service '{name}' secrets/configs to use manifest materializations"
+                )));
+            }
+            if service
+                .get("volumes")
+                .and_then(serde_yaml::Value::as_sequence)
+                .is_some_and(|volumes| {
+                    volumes.iter().any(|volume| {
+                        volume.as_str().is_some_and(|volume| {
+                            let source = volume.split(':').next().unwrap_or_default();
+                            source.starts_with('/')
+                                || source.starts_with('~')
+                                || source.contains("${")
+                        }) || volume.as_mapping().is_some_and(|volume| {
+                            volume
+                                .get(serde_yaml::Value::String("source".to_string()))
+                                .and_then(serde_yaml::Value::as_str)
+                                .is_some_and(|source| {
+                                    source.starts_with('/')
+                                        || source.starts_with('~')
+                                        || source.contains("${")
+                                })
+                        })
+                    })
+                })
+                && primary_service != Some(name)
+            {
+                return Err(Error::validation(format!(
+                    "In-guest Compose rejects ambient host paths for secondary service '{name}'"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn contains_supervisor_socket_reference(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    [
+        "docker.sock",
+        "containerd.sock",
+        "podman.sock",
+        "buildkit.sock",
+        "buildkitd.sock",
+        "/var/run/docker",
+        "/run/docker",
+        "/var/lib/docker",
+        "/run/containerd",
+        "/var/lib/containerd",
+        "/run/podman",
+        "/run/buildkit",
+        "docker_host",
+        "container_host",
+        "containerd_address",
+        "buildkit_host",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn contains_supervisor_reference(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    contains_supervisor_socket_reference(&normalized)
+        || normalized.contains("/run/agentify-assignment")
+        || normalized.contains("/run/agentify-runtime")
+        || normalized.contains("/run/branchbox/managed")
+}
+
+fn effective_in_guest_workspace_folder(
+    config: &DevcontainerConfig,
+    worktree_path: &Path,
+) -> Result<String> {
+    let basename = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    let folder = config.effective_workspace_folder(basename);
+    let path = Path::new(&folder);
+    if !path.is_absolute()
+        || path == Path::new("/workspaces")
+        || !path.starts_with("/workspaces")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+        || contains_supervisor_reference(&folder)
+    {
+        return Err(Error::validation(
+            "In-guest workspaceFolder must be a normalized path below the platform-owned /workspaces root",
+        ));
+    }
+    Ok(folder)
+}
+
+struct InGuestComposeAssignment<'a> {
+    project_environment: Option<&'a Path>,
+    service_images: &'a BTreeMap<String, String>,
+    /// Signed read-only lease binds. These are placed in the generated Compose
+    /// facade rather than devcontainer.json `mounts`, because the Dev Containers
+    /// CLI does not carry the `readonly` property into a Compose project, and the
+    /// running container is then inspected for a read-only bind and fails closed.
+    lease_mounts: &'a [(PathBuf, PathBuf)],
+    /// Signed tool-request spool volumes, as (volume name, target). Like the lease
+    /// binds these belong in the Compose facade: declared through devcontainer.json
+    /// `mounts`, the Dev Containers CLI hands Compose an ordinary volume, which
+    /// Compose then namespaces with the project name. The container is afterwards
+    /// inspected for the signed volume name and fails closed on the prefixed one.
+    spool_volumes: &'a [(String, PathBuf)],
+    /// A signed version 3 assignment group-shares the task worktree with a consumer that does
+    /// not own it, so the primary service needs the matching Git ownership exceptions.
+    workspace_consumer: bool,
+}
+
+fn prepare_outer_tunnel_compose_override(
+    repo_root: &Path,
+    worktree_path: &Path,
+    devcontainer_dir: &Path,
+    primary_service: Option<&str>,
+    workspace_folder: &str,
+    compose_files: &[PathBuf],
+    assignment: &InGuestComposeAssignment<'_>,
+) -> Result<std::collections::BTreeSet<String>> {
+    use serde_yaml::value::{Tag, TaggedValue};
+
+    let mut definitions = BTreeMap::new();
+    let mut omitted = std::collections::BTreeSet::new();
     for compose_file in compose_files {
-        let Ok(content) = fs::read_to_string(&compose_file) else {
+        let Ok(source) = fs::read_to_string(compose_file) else {
+            continue;
+        };
+        let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&source) else {
+            continue;
+        };
+        if !assignment.service_images.is_empty() && document.get("include").is_some() {
+            return Err(Error::validation(
+                "Preloaded service image assignments reject Compose include because indirect services cannot be bound exactly",
+            ));
+        }
+        let Some(services) = document
+            .get("services")
+            .and_then(serde_yaml::Value::as_mapping)
+        else {
+            continue;
+        };
+        for (name, service) in services {
+            let Some(name) = name.as_str() else {
+                continue;
+            };
+            definitions.insert(name.to_string(), service.clone());
+            if is_platform_connector(name, service) {
+                omitted.insert(name.to_string());
+            }
+        }
+    }
+    validate_preloaded_service_image_coverage(
+        &definitions,
+        &omitted,
+        primary_service,
+        assignment.service_images,
+    )?;
+    let override_path = devcontainer_dir.join(SBX_COMPOSE_OVERRIDE);
+    let mut document = if override_path.is_file() {
+        serde_yaml::from_str::<serde_yaml::Value>(&fs::read_to_string(&override_path)?)
+            .map_err(|err| Error::config(format!("Invalid generated Compose facade: {err}")))?
+    } else {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    };
+    let document_mapping = document
+        .as_mapping_mut()
+        .ok_or_else(|| Error::config("Generated Compose facade must be a mapping"))?;
+    let services_key = serde_yaml::Value::String("services".to_string());
+    let services = document_mapping
+        .entry(services_key)
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+        .as_mapping_mut()
+        .ok_or_else(|| Error::config("Generated Compose facade services must be a mapping"))?;
+
+    for name in &omitted {
+        let service = services
+            .entry(serde_yaml::Value::String(name.clone()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
+        service.insert(
+            serde_yaml::Value::String("profiles".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+                    "branchbox-outer-tunnel-disabled".to_string(),
+                )]),
+            })),
+        );
+        for key in ["env_file", "volumes", "devices", "cap_add"] {
+            service.insert(
+                serde_yaml::Value::String(key.to_string()),
+                serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                    tag: Tag::new("!override"),
+                    value: serde_yaml::Value::Sequence(Vec::new()),
+                })),
+            );
+        }
+        service.insert(
+            serde_yaml::Value::String("environment".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            })),
+        );
+    }
+
+    for name in definitions.keys() {
+        let service = services
+            .entry(serde_yaml::Value::String(name.clone()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
+        for key in ["env_file", "volumes", "ports", "expose"] {
+            service.insert(
+                serde_yaml::Value::String(key.to_string()),
+                serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                    tag: Tag::new("!override"),
+                    value: serde_yaml::Value::Sequence(Vec::new()),
+                })),
+            );
+        }
+    }
+
+    for (name, image) in assignment.service_images {
+        let service = services
+            .entry(serde_yaml::Value::String(name.clone()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
+        service.insert(
+            serde_yaml::Value::String("image".to_string()),
+            serde_yaml::Value::String(image.clone()),
+        );
+        service.insert(
+            serde_yaml::Value::String("build".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!reset"),
+                value: serde_yaml::Value::Null,
+            })),
+        );
+        service.insert(
+            serde_yaml::Value::String("pull_policy".to_string()),
+            serde_yaml::Value::String("never".to_string()),
+        );
+    }
+
+    if let Some(primary_service) = primary_service {
+        let primary = services
+            .entry(serde_yaml::Value::String(primary_service.to_string()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated primary service facade must be a mapping"))?;
+        primary.insert(
+            serde_yaml::Value::String("environment".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Mapping(in_guest_primary_environment(
+                    assignment.workspace_consumer,
+                    workspace_folder,
+                )),
+            })),
+        );
+        primary.insert(
+            serde_yaml::Value::String("shm_size".to_string()),
+            serde_yaml::Value::String(IN_GUEST_SHM_SIZE.to_string()),
+        );
+        primary.insert(
+            serde_yaml::Value::String("security_opt".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+                    IN_GUEST_SECCOMP_SECURITY_OPTION.to_string(),
+                )]),
+            })),
+        );
+        let env_files = assignment
+            .project_environment
+            .map(|source| {
+                let mut entry = serde_yaml::Mapping::new();
+                entry.insert(
+                    serde_yaml::Value::String("path".to_string()),
+                    serde_yaml::Value::String(source.to_string_lossy().into_owned()),
+                );
+                entry.insert(
+                    serde_yaml::Value::String("required".to_string()),
+                    serde_yaml::Value::Bool(true),
+                );
+                entry.insert(
+                    serde_yaml::Value::String("format".to_string()),
+                    serde_yaml::Value::String("raw".to_string()),
+                );
+                vec![serde_yaml::Value::Mapping(entry)]
+            })
+            .unwrap_or_default();
+        primary.insert(
+            serde_yaml::Value::String("env_file".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Sequence(env_files),
+            })),
+        );
+        let mut safe_volumes =
+            in_guest_primary_volumes(repo_root, worktree_path, workspace_folder)?;
+        safe_volumes.extend(assignment.lease_mounts.iter().map(|(source, target)| {
+            let mut mount = serde_yaml::Mapping::new();
+            mount.insert(
+                serde_yaml::Value::String("type".to_string()),
+                serde_yaml::Value::String("bind".to_string()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("source".to_string()),
+                serde_yaml::Value::String(source.to_string_lossy().into_owned()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("target".to_string()),
+                serde_yaml::Value::String(target.to_string_lossy().into_owned()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("read_only".to_string()),
+                serde_yaml::Value::Bool(true),
+            );
+            serde_yaml::Value::Mapping(mount)
+        }));
+        safe_volumes.extend(assignment.spool_volumes.iter().map(|(volume, target)| {
+            let mut mount = serde_yaml::Mapping::new();
+            mount.insert(
+                serde_yaml::Value::String("type".to_string()),
+                serde_yaml::Value::String("volume".to_string()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("source".to_string()),
+                serde_yaml::Value::String(volume.clone()),
+            );
+            mount.insert(
+                serde_yaml::Value::String("target".to_string()),
+                serde_yaml::Value::String(target.to_string_lossy().into_owned()),
+            );
+            serde_yaml::Value::Mapping(mount)
+        }));
+        primary.insert(
+            serde_yaml::Value::String("volumes".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: serde_yaml::Value::Sequence(safe_volumes),
+            })),
+        );
+    }
+
+    for (name, definition) in definitions {
+        if omitted.contains(&name) {
+            continue;
+        }
+        let Some(depends_on) = definition.get("depends_on") else {
+            continue;
+        };
+        let filtered = match depends_on {
+            serde_yaml::Value::Sequence(values) => serde_yaml::Value::Sequence(
+                values
+                    .iter()
+                    .filter(|value| value.as_str().is_none_or(|name| !omitted.contains(name)))
+                    .cloned()
+                    .collect(),
+            ),
+            serde_yaml::Value::Mapping(values) => serde_yaml::Value::Mapping(
+                values
+                    .iter()
+                    .filter(|(name, _)| name.as_str().is_none_or(|name| !omitted.contains(name)))
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            ),
+            _ => continue,
+        };
+        let service = services
+            .entry(serde_yaml::Value::String(name))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
+        service.insert(
+            serde_yaml::Value::String("depends_on".to_string()),
+            serde_yaml::Value::Tagged(Box::new(TaggedValue {
+                tag: Tag::new("!override"),
+                value: filtered,
+            })),
+        );
+    }
+    if !assignment.spool_volumes.is_empty() {
+        // A top-level volume carrying an explicit `name` is created under exactly
+        // that name; without it Compose prefixes the project name and the signed
+        // volume no longer matches what the container reports.
+        let document_mapping = document
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose facade must be a mapping"))?;
+        let volumes = document_mapping
+            .entry(serde_yaml::Value::String("volumes".to_string()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose facade volumes must be a mapping"))?;
+        for (volume, _target) in assignment.spool_volumes {
+            let mut definition = serde_yaml::Mapping::new();
+            definition.insert(
+                serde_yaml::Value::String("name".to_string()),
+                serde_yaml::Value::String(volume.clone()),
+            );
+            volumes.insert(
+                serde_yaml::Value::String(volume.clone()),
+                serde_yaml::Value::Mapping(definition),
+            );
+        }
+    }
+    let rendered = serde_yaml::to_string(&document)
+        .map_err(|err| Error::config(format!("Failed to serialize Compose facade: {err}")))?;
+    write_text_file(&override_path, &rendered)?;
+    Ok(omitted)
+}
+
+fn validate_preloaded_service_image_coverage(
+    definitions: &BTreeMap<String, serde_yaml::Value>,
+    omitted: &std::collections::BTreeSet<String>,
+    primary_service: Option<&str>,
+    service_images: &BTreeMap<String, String>,
+) -> Result<()> {
+    if service_images.is_empty() {
+        return Ok(());
+    }
+    let primary = primary_service.ok_or_else(|| {
+        Error::validation(
+            "Preloaded service images require a Compose-backed primary devcontainer service",
+        )
+    })?;
+    let runnable = definitions
+        .keys()
+        .filter(|name| !omitted.contains(*name))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if !runnable.contains(primary) {
+        return Err(Error::validation(format!(
+            "Preloaded service image assignment cannot resolve primary Compose service '{primary}'"
+        )));
+    }
+    let assigned = service_images
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = runnable.difference(&assigned).cloned().collect::<Vec<_>>();
+    let unknown = assigned.difference(&runnable).cloned().collect::<Vec<_>>();
+    if !missing.is_empty() || !unknown.is_empty() {
+        let mut details = Vec::new();
+        if !missing.is_empty() {
+            details.push(format!("missing: {}", missing.join(", ")));
+        }
+        if !unknown.is_empty() {
+            details.push(format!("unknown or disabled: {}", unknown.join(", ")));
+        }
+        return Err(Error::validation(format!(
+            "Preloaded service images must bind every runnable Compose service exactly ({})",
+            details.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+fn is_platform_connector(name: &str, service: &serde_yaml::Value) -> bool {
+    let name = name.to_ascii_lowercase();
+    let image = service
+        .get("image")
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let requires_tun = service.get("devices").is_some_and(|devices| {
+        serde_yaml::to_string(devices).is_ok_and(|rendered| rendered.contains("/dev/net/tun"))
+    });
+    name == "cloudflared"
+        || name == "tailscale"
+        || name == "ngrok"
+        || name == "tunnel"
+        || name.ends_with("-tunnel")
+        || image.contains("cloudflare/cloudflared")
+        || image.contains("tailscale/tailscale")
+        || image.contains("ngrok/ngrok")
+        || requires_tun
+}
+
+/// The primary service's environment always replaces the repository's. A signed workspace
+/// consumer additionally receives the two exact Git ownership exceptions it needs: the task
+/// worktree stays owned by the unprivileged BranchBox runtime UID and is only group-shared, so
+/// Git would otherwise refuse every command with `detected dubious ownership`. Only these exact
+/// platform-owned paths are excepted, never a wildcard, and BranchBox alone can set them because
+/// project and provider environments both reserve the `GIT_CONFIG_` prefix.
+fn in_guest_primary_environment(
+    workspace_consumer: bool,
+    workspace_folder: &str,
+) -> serde_yaml::Mapping {
+    let mut environment = serde_yaml::Mapping::new();
+    if !workspace_consumer {
+        return environment;
+    }
+    let exceptions = [workspace_folder, CONTAINER_MAIN_GIT_TARGET];
+    environment.insert(
+        serde_yaml::Value::String("GIT_CONFIG_COUNT".to_string()),
+        serde_yaml::Value::String(exceptions.len().to_string()),
+    );
+    for (index, path) in exceptions.iter().enumerate() {
+        environment.insert(
+            serde_yaml::Value::String(format!("GIT_CONFIG_KEY_{index}")),
+            serde_yaml::Value::String("safe.directory".to_string()),
+        );
+        environment.insert(
+            serde_yaml::Value::String(format!("GIT_CONFIG_VALUE_{index}")),
+            serde_yaml::Value::String((*path).to_string()),
+        );
+    }
+    environment
+}
+
+fn in_guest_primary_volumes(
+    repo_root: &Path,
+    worktree_path: &Path,
+    workspace_folder: &str,
+) -> Result<Vec<serde_yaml::Value>> {
+    let authoritative_worktree = fs::canonicalize(worktree_path).map_err(|err| {
+        Error::validation(format!(
+            "Cannot prepare in-guest task worktree facade from '{}': {err}",
+            worktree_path.display()
+        ))
+    })?;
+    let mut workspace = serde_yaml::Mapping::new();
+    workspace.insert(
+        serde_yaml::Value::String("type".to_string()),
+        serde_yaml::Value::String("bind".to_string()),
+    );
+    workspace.insert(
+        serde_yaml::Value::String("source".to_string()),
+        serde_yaml::Value::String(authoritative_worktree.to_string_lossy().into_owned()),
+    );
+    workspace.insert(
+        serde_yaml::Value::String("target".to_string()),
+        serde_yaml::Value::String(workspace_folder.to_string()),
+    );
+
+    let authoritative_git = repository_common_git_dir(repo_root)?;
+    let mut git = serde_yaml::Mapping::new();
+    git.insert(
+        serde_yaml::Value::String("type".to_string()),
+        serde_yaml::Value::String("bind".to_string()),
+    );
+    git.insert(
+        serde_yaml::Value::String("source".to_string()),
+        serde_yaml::Value::String(authoritative_git.to_string_lossy().into_owned()),
+    );
+    git.insert(
+        serde_yaml::Value::String("target".to_string()),
+        serde_yaml::Value::String(CONTAINER_MAIN_GIT_TARGET.to_string()),
+    );
+    Ok(vec![
+        serde_yaml::Value::Mapping(workspace),
+        serde_yaml::Value::Mapping(git),
+    ])
+}
+
+fn prepare_sbx_devcontainer_config(
+    repo_root: &Path,
+    worktree_path: &Path,
+    run_services: &[String],
+) -> Result<()> {
+    let (config, config_path) = DevcontainerConfig::load(worktree_path)
+        .map_err(|err| Error::validation(format!("Could not inspect SBX devcontainer: {err}")))?;
+    let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
+    let compose_references: Vec<String> = match config.docker_compose_file.as_ref() {
+        Some(reference) => reference.to_vec(),
+        None => [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ]
+        .iter()
+        .filter(|path| devcontainer_dir.join(path).exists())
+        .map(|path| (*path).to_string())
+        .collect(),
+    };
+    let compose_files: Vec<PathBuf> = compose_references
+        .iter()
+        .map(|path| devcontainer_dir.join(path))
+        .collect();
+    let mut unsupported_services = Vec::new();
+    for compose_file in &compose_files {
+        let Ok(content) = fs::read_to_string(compose_file) else {
             continue;
         };
         let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&content) else {
@@ -3158,9 +4645,15 @@ fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]
                 .join(", ")
         )));
     }
-    if run_services.is_empty() {
-        let generated = devcontainer_dir.join("branchbox-sbx.json");
-        if generated.exists() {
+    let compose_override = prepare_sbx_compose_override(
+        repo_root,
+        devcontainer_dir,
+        config.service.as_deref(),
+        &compose_files,
+    )?;
+    let generated = devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG);
+    if run_services.is_empty() && compose_override.is_none() {
+        if generated.exists() && generated != config_path {
             fs::remove_file(generated)?;
         }
         return Ok(());
@@ -3173,13 +4666,127 @@ fn prepare_sbx_devcontainer_config(worktree_path: &Path, run_services: &[String]
     let object = value
         .as_object_mut()
         .ok_or_else(|| Error::validation("Devcontainer configuration must be a JSON object"))?;
-    object.insert("runServices".to_string(), serde_json::json!(run_services));
+    if !run_services.is_empty() {
+        object.insert("runServices".to_string(), serde_json::json!(run_services));
+    }
+    if let Some(override_name) = compose_override {
+        let mut references = compose_references;
+        references.retain(|reference| reference != &override_name);
+        references.push(override_name);
+        object.insert(
+            "dockerComposeFile".to_string(),
+            serde_json::json!(references),
+        );
+    }
     let rendered = serde_json::to_string_pretty(&value)?;
-    write_text_file(
-        &devcontainer_dir.join("branchbox-sbx.json"),
-        &format!("{rendered}\n"),
-    )?;
+    if generated == config_path {
+        return Err(Error::validation(
+            "SBX runtime overlays for a top-level .devcontainer.json are not yet supported; move the source config to .devcontainer/devcontainer.json"
+                .to_string(),
+        ));
+    }
+    write_text_file(&generated, &format!("{rendered}\n"))?;
     Ok(())
+}
+
+fn prepare_sbx_compose_override(
+    repo_root: &Path,
+    devcontainer_dir: &Path,
+    primary_service: Option<&str>,
+    compose_files: &[PathBuf],
+) -> Result<Option<String>> {
+    let override_path = devcontainer_dir.join(SBX_COMPOSE_OVERRIDE);
+    let Some(primary_service) = primary_service else {
+        if override_path.exists() {
+            fs::remove_file(override_path)?;
+        }
+        return Ok(None);
+    };
+
+    let mut primary_found = false;
+    let mut replace_main_git_mount = false;
+    for compose_file in compose_files {
+        let Ok(source) = fs::read_to_string(compose_file) else {
+            continue;
+        };
+        let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&source) else {
+            continue;
+        };
+        let Some(service) = document
+            .get("services")
+            .and_then(|services| services.get(primary_service))
+        else {
+            continue;
+        };
+        primary_found = true;
+        replace_main_git_mount |= service
+            .get("volumes")
+            .and_then(serde_yaml::Value::as_sequence)
+            .is_some_and(|volumes| volumes.iter().any(compose_volume_targets_main_git));
+    }
+
+    if !primary_found {
+        if override_path.exists() {
+            fs::remove_file(override_path)?;
+        }
+        return Ok(None);
+    }
+
+    let mut service = serde_yaml::Mapping::new();
+    service.insert(
+        serde_yaml::Value::String("restart".to_string()),
+        serde_yaml::Value::String("unless-stopped".to_string()),
+    );
+    if replace_main_git_mount {
+        let authoritative_git = repository_common_git_dir(repo_root)?;
+        let mut volume = serde_yaml::Mapping::new();
+        volume.insert(
+            serde_yaml::Value::String("type".to_string()),
+            serde_yaml::Value::String("bind".to_string()),
+        );
+        volume.insert(
+            serde_yaml::Value::String("source".to_string()),
+            serde_yaml::Value::String(authoritative_git.to_string_lossy().into_owned()),
+        );
+        volume.insert(
+            serde_yaml::Value::String("target".to_string()),
+            serde_yaml::Value::String(CONTAINER_MAIN_GIT_TARGET.to_string()),
+        );
+        service.insert(
+            serde_yaml::Value::String("volumes".to_string()),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(volume)]),
+        );
+    }
+
+    let mut services = serde_yaml::Mapping::new();
+    services.insert(
+        serde_yaml::Value::String(primary_service.to_string()),
+        serde_yaml::Value::Mapping(service),
+    );
+    let mut document = serde_yaml::Mapping::new();
+    document.insert(
+        serde_yaml::Value::String("services".to_string()),
+        serde_yaml::Value::Mapping(services),
+    );
+    let rendered = serde_yaml::to_string(&serde_yaml::Value::Mapping(document)).map_err(|err| {
+        Error::config(format!("Failed to serialize the SBX Compose facade: {err}"))
+    })?;
+    write_text_file(&override_path, &rendered)?;
+    Ok(Some(SBX_COMPOSE_OVERRIDE.to_string()))
+}
+
+fn compose_volume_targets_main_git(volume: &serde_yaml::Value) -> bool {
+    if let Some(short) = volume.as_str() {
+        return short
+            .split(':')
+            .any(|component| component == CONTAINER_MAIN_GIT_TARGET);
+    }
+    volume.as_mapping().is_some_and(|mapping| {
+        mapping
+            .get(serde_yaml::Value::String("target".to_string()))
+            .and_then(serde_yaml::Value::as_str)
+            == Some(CONTAINER_MAIN_GIT_TARGET)
+    })
 }
 
 fn runtime_ports(worktree_path: &Path) -> Vec<RuntimePort> {
@@ -3472,6 +5079,107 @@ fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
     } else {
         format!("{}/{}", prefix, work_feature)
     }
+}
+
+fn resolve_git_object(repo_root: &Path, revision: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| {
+            Error::git(format!(
+                "Failed to resolve Git revision '{revision}': {err}"
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(Error::git(format!(
+            "Git revision '{revision}' could not be resolved to a commit"
+        )));
+    }
+    let digest = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !matches!(digest.len(), 40 | 64)
+        || !digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(Error::git(format!(
+            "Git revision '{revision}' resolved to an invalid object digest"
+        )));
+    }
+    Ok(digest)
+}
+
+fn validate_untrusted_checkout_attributes(repo_root: &Path, revision: &str) -> Result<()> {
+    let listing = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            revision,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| Error::git(format!("Failed to inspect untrusted Git attributes: {err}")))?;
+    if !listing.status.success() {
+        return Err(Error::git(
+            "Failed to enumerate untrusted repository attributes",
+        ));
+    }
+    for path in listing
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let path = String::from_utf8_lossy(path);
+        if !path.ends_with(".gitattributes") {
+            continue;
+        }
+        let object = format!("{revision}:{path}");
+        let content = Command::new("git")
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.attributesFile=/dev/null",
+                "show",
+                &object,
+            ])
+            .current_dir(repo_root)
+            .output()
+            .map_err(|err| {
+                Error::git(format!("Failed to inspect untrusted attribute file: {err}"))
+            })?;
+        if !content.status.success() {
+            return Err(Error::git(format!(
+                "Failed to read untrusted attribute file '{path}'"
+            )));
+        }
+        let defines_filter = String::from_utf8_lossy(&content.stdout)
+            .lines()
+            .any(|line| {
+                let line = line.split('#').next().unwrap_or_default();
+                line.split_ascii_whitespace().any(|attribute| {
+                    attribute == "filter"
+                        || attribute == "-filter"
+                        || attribute.starts_with("filter=")
+                })
+            });
+        if defines_filter {
+            return Err(Error::validation(format!(
+                "In-guest worktree checkout rejects filter attributes in '{path}' because smudge/process filters execute in the trusted guest"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_repo_root(path: &Path) -> Result<PathBuf> {
@@ -6049,6 +7757,143 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_git_worktree_path_translates_container_main_metadata() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let metadata_path = repo_path.join(".git/worktrees/feature-test");
+        fs::create_dir_all(&metadata_path).unwrap();
+        let git_file = worktree_path.join(".git");
+        fs::write(
+            &git_file,
+            "gitdir: /workspaces/main/.git/worktrees/feature-test\n",
+        )
+        .unwrap();
+
+        workflow.fix_git_worktree_path(&worktree_path).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&git_file).unwrap(),
+            "gitdir: ../.git/worktrees/feature-test\n"
+        );
+    }
+
+    #[test]
+    fn test_in_guest_git_worktree_projection_round_trips_when_repo_is_a_worktree() {
+        let temp_dir = TempDir::new().unwrap();
+        let main_repo = temp_dir.path().join("agentify");
+        fs::create_dir_all(&main_repo).unwrap();
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        fs::write(main_repo.join("README.md"), "# Agentify\n").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+
+        let source_worktree = temp_dir.path().join("coding-demo-e2e-integrated");
+        let source_created = Command::new("git")
+            .args(["worktree", "add", "-b", "feature/source"])
+            .arg(&source_worktree)
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        assert!(source_created.status.success());
+
+        let task_worktree = temp_dir.path().join("aex-nested-source");
+        let task_created = Command::new("git")
+            .args(["worktree", "add", "-b", "feature/aex-nested-source"])
+            .arg(&task_worktree)
+            .current_dir(&source_worktree)
+            .output()
+            .unwrap();
+        assert!(task_created.status.success());
+
+        let workflow = FeatureWorkflow::new(&source_worktree).unwrap();
+        let volumes = in_guest_primary_volumes(
+            &source_worktree,
+            &task_worktree,
+            "/workspaces/aex-nested-source",
+        )
+        .unwrap();
+        assert_eq!(
+            volumes[1].get("source").and_then(serde_yaml::Value::as_str),
+            Some(
+                fs::canonicalize(main_repo.join(".git"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        workflow
+            .set_in_guest_git_worktree_path(&task_worktree)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(task_worktree.join(".git")).unwrap(),
+            "gitdir: /workspaces/main/.git/worktrees/aex-nested-source\n"
+        );
+
+        workflow.fix_git_worktree_path(&task_worktree).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(task_worktree.join(".git")).unwrap(),
+            "gitdir: ../agentify/.git/worktrees/aex-nested-source\n"
+        );
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&task_worktree)
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "repaired nested worktree is unusable: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    #[test]
+    fn test_fix_git_worktree_path_rejects_nested_container_metadata() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("feature-test");
+        fs::create_dir_all(&worktree_path).unwrap();
+        let git_file = worktree_path.join(".git");
+        let original = "gitdir: /workspaces/main/.git/worktrees/../config\n";
+        fs::write(&git_file, original).unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        let error = workflow
+            .fix_git_worktree_path(&worktree_path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not a single repository worktree entry"));
+        assert_eq!(fs::read_to_string(&git_file).unwrap(), original);
+    }
+
+    #[test]
     fn test_fix_git_worktree_path_preserves_original_when_target_is_missing() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
@@ -6069,6 +7914,810 @@ mod tests {
 
         assert!(error.contains("preserving the original worktree pointer"));
         assert_eq!(fs::read_to_string(&git_file).unwrap(), original);
+    }
+
+    #[test]
+    fn test_prepare_sbx_devcontainer_adds_git_and_restart_compose_facade() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{
+  "dockerComposeFile": "compose.yaml",
+  "service": "app"
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            r#"services:
+  app:
+    image: alpine:3.19
+    volumes:
+      - ../../main/.git:/workspaces/main/.git
+"#,
+        )
+        .unwrap();
+
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &["app".to_string()]).unwrap();
+
+        let generated: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(generated["runServices"], serde_json::json!(["app"]));
+        assert_eq!(
+            generated["dockerComposeFile"],
+            serde_json::json!(["compose.yaml", SBX_COMPOSE_OVERRIDE])
+        );
+
+        let facade: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+        )
+        .unwrap();
+        let app = &facade["services"]["app"];
+        assert_eq!(app["restart"].as_str(), Some("unless-stopped"));
+        assert_eq!(
+            app["volumes"][0]["source"].as_str(),
+            Some(
+                fs::canonicalize(repo_path.join(".git"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            app["volumes"][0]["target"].as_str(),
+            Some(CONTAINER_MAIN_GIT_TARGET)
+        );
+        assert_eq!(app["volumes"][0]["type"].as_str(), Some("bind"));
+    }
+
+    #[test]
+    fn test_prepare_sbx_devcontainer_restarts_primary_without_git_facade() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.19\n",
+        )
+        .unwrap();
+
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &[]).unwrap();
+
+        let facade: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            facade["services"]["app"]["restart"].as_str(),
+            Some("unless-stopped")
+        );
+        assert!(facade["services"]["app"].get("volumes").is_none());
+    }
+
+    #[test]
+    fn test_prepare_sbx_devcontainer_removes_stale_runtime_facade() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let devcontainer_dir = repo_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let source_config = devcontainer_dir.join("devcontainer.json");
+        fs::write(
+            &source_config,
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.19\n",
+        )
+        .unwrap();
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &[]).unwrap();
+        assert!(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
+
+        fs::write(&source_config, r#"{"image":"alpine:3.19"}"#).unwrap();
+        prepare_sbx_devcontainer_config(repo_path, repo_path, &[]).unwrap();
+
+        assert!(!devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(!devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
+        assert_eq!(
+            fs::read_to_string(source_config).unwrap(),
+            r#"{"image":"alpine:3.19"}"#
+        );
+    }
+
+    #[test]
+    fn test_in_guest_sanitizer_removes_host_hooks_ambient_env_and_supervisor_docker_feature() {
+        let mut config = serde_json::json!({
+            "initializeCommand": "op read secret",
+            "features": {
+                "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+                "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+                "ghcr.io/devcontainers-contrib/features/docker-from-docker:1": {},
+                "ghcr.io/devcontainers/features/node:1": {}
+            },
+            "containerEnv": {"OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"},
+            "remoteEnv": {"TOKEN": "ambient"},
+            "mounts": [
+                "source=${localEnv:HOME}/.ssh/id.pub,target=/tmp/id.pub,type=bind",
+                "source=project-data,target=/project-data,type=volume"
+            ],
+            "appPort": ["127.0.0.1:2222:22"],
+            "forwardPorts": [3000, 5432],
+            "portsAttributes": {"3000": {"label": "Repository app"}},
+            "otherPortsAttributes": {"onAutoForward": "openBrowser"},
+            "securityOpt": ["seccomp=unconfined"],
+            "runArgs": [
+                "--env-file", "../.env", "--shm-size", "8g", "--shm-size=16g",
+                "--ipc=host", "--network", "host", "--device=/dev/kvm",
+                "--cap-add", "SYS_ADMIN", "--privileged", "--init"
+            ],
+            "postCreateCommand": "bin/setup"
+        });
+
+        sanitize_in_guest_devcontainer_json(&mut config, true, false).unwrap();
+
+        assert!(config.get("initializeCommand").is_none());
+        assert!(config["containerEnv"].as_object().unwrap().is_empty());
+        assert!(config.get("remoteEnv").is_none());
+        assert!(config["features"]
+            .get("ghcr.io/devcontainers/features/docker-outside-of-docker:1")
+            .is_none());
+        assert!(config["features"]
+            .get("ghcr.io/devcontainers/features/docker-in-docker:2")
+            .is_none());
+        assert!(config["features"]
+            .get("ghcr.io/devcontainers-contrib/features/docker-from-docker:1")
+            .is_none());
+        assert!(config["features"]
+            .get("ghcr.io/devcontainers/features/node:1")
+            .is_some());
+        assert!(config.get("mounts").is_none());
+        assert!(config.get("appPort").is_none());
+        assert!(config.get("forwardPorts").is_none());
+        assert!(config.get("portsAttributes").is_none());
+        assert!(config.get("otherPortsAttributes").is_none());
+        assert_eq!(
+            config["securityOpt"],
+            serde_json::json!([IN_GUEST_SECCOMP_SECURITY_OPTION])
+        );
+        assert_eq!(config["runArgs"], serde_json::json!(["--init"]));
+        assert_eq!(config["postCreateCommand"], "bin/setup");
+    }
+
+    #[test]
+    fn test_in_guest_sanitizer_preserves_only_safe_literal_connectivity_environment() {
+        let mut config = serde_json::json!({
+            "image": "alpine",
+            "containerEnv": {
+                "DB_HOST": "postgres",
+                "PORT": "3000",
+                "RAILS_ENV": "development",
+                "TUNNEL_HOST": "edge",
+                "OPENAI_API_KEY": "secret",
+                "DB_PASSWORD": "postgres",
+                "ENV_FILE": ".env",
+                "REDIS_HOST": "${localEnv:REDIS_HOST}"
+            }
+        });
+        sanitize_in_guest_devcontainer_json(&mut config, true, false).unwrap();
+        assert_eq!(
+            config["containerEnv"],
+            serde_json::json!({
+                "DB_HOST": "postgres",
+                "PORT": "3000",
+                "RAILS_ENV": "development"
+            })
+        );
+    }
+
+    #[test]
+    fn test_in_guest_compose_security_option_is_owned_only_by_the_compose_facade() {
+        let mut config = serde_json::json!({
+            "dockerComposeFile": "compose.yaml",
+            "service": "app",
+            "securityOpt": ["seccomp=unconfined"]
+        });
+
+        sanitize_in_guest_devcontainer_json(&mut config, false, false).unwrap();
+
+        assert!(config.get("securityOpt").is_none());
+    }
+
+    #[test]
+    fn test_preloaded_image_mode_disables_devcontainer_image_derivation() {
+        let mut config = serde_json::json!({
+            "build": {"dockerfile": "Dockerfile"},
+            "features": {"ghcr.io/devcontainers/features/rust:1": {}},
+            "updateRemoteUserUID": true,
+            "postCreateCommand": "bin/setup"
+        });
+
+        sanitize_in_guest_devcontainer_json(&mut config, false, true).unwrap();
+
+        assert!(config.get("build").is_none());
+        assert!(config.get("features").is_none());
+        assert_eq!(config["updateRemoteUserUID"], false);
+        assert_eq!(config["postCreateCommand"], "bin/setup");
+    }
+
+    #[test]
+    fn repository_workspace_checks_out_in_place_and_leaves_no_worktree() {
+        // A caller that clones per run has no second worktree to isolate from,
+        // so the branch belongs in the repository. Nothing beside it should be
+        // created, and the repository must never be removed as cleanup.
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let before: Vec<_> = fs::read_dir(repo_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|value| value.file_name()))
+            .collect();
+
+        let git = GitWorktree::new(repo_path).unwrap();
+        git.checkout_feature_branch("feature/in-place", None)
+            .expect("branch checks out in the repository");
+
+        assert!(
+            git.branch_exists("feature/in-place").unwrap(),
+            "the feature branch exists"
+        );
+        let after: Vec<_> = fs::read_dir(repo_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|value| value.file_name()))
+            .collect();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "no worktree was created beside it"
+        );
+        assert!(repo_path.join(".git").exists(), "the repository is intact");
+    }
+
+    #[test]
+    fn test_spool_volume_keeps_its_signed_name_under_a_compose_project() {
+        // Compose namespaces a volume with the project name unless the volume
+        // declares an explicit `name`. The running container is inspected for the
+        // signed volume name, so a namespaced volume fails closed as unsigned.
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  app:
+    image: app:mutable
+"#,
+        )
+        .unwrap();
+        let images =
+            BTreeMap::from([("app".to_string(), format!("app@sha256:{}", "c".repeat(64)))]);
+        let spool_volumes = vec![(
+            "branchbox-tool-requests-abc".to_string(),
+            PathBuf::from("/run/branchbox/leases/tool-requests/browser-verification"),
+        )];
+
+        prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &images,
+                workspace_consumer: false,
+                lease_mounts: &[],
+                spool_volumes: &spool_volumes,
+            },
+        )
+        .unwrap();
+
+        let facade: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+        )
+        .unwrap();
+        // Pinned at the top level, so Compose creates it under exactly this name.
+        assert_eq!(
+            facade["volumes"]["branchbox-tool-requests-abc"]["name"].as_str(),
+            Some("branchbox-tool-requests-abc")
+        );
+        let mounted = facade["services"]["app"]["volumes"]
+            .as_sequence()
+            .expect("primary service carries its volumes")
+            .iter()
+            .any(|mount| {
+                mount["type"].as_str() == Some("volume")
+                    && mount["source"].as_str() == Some("branchbox-tool-requests-abc")
+                    && mount["target"].as_str()
+                        == Some("/run/branchbox/leases/tool-requests/browser-verification")
+            });
+        assert!(mounted, "spool volume is attached to the primary service");
+    }
+
+    #[test]
+    fn test_preloaded_images_replace_builds_and_disable_pulls_for_all_runnable_services() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  app:
+    build: {context: ..}
+    depends_on: [database, tunnel]
+  database:
+    image: database:mutable
+  tunnel:
+    image: tunnel:mutable
+"#,
+        )
+        .unwrap();
+        let digest = "c".repeat(64);
+        let images = BTreeMap::from([
+            (
+                "app".to_string(),
+                format!("registry.example/team/app@sha256:{digest}"),
+            ),
+            (
+                "database".to_string(),
+                format!("registry.example/team/database@sha256:{digest}"),
+            ),
+        ]);
+
+        let omitted = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &images,
+                workspace_consumer: false,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(omitted, ["tunnel".to_string()].into_iter().collect());
+
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        assert!(rendered.contains("build: !reset null"));
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        for (service, image) in &images {
+            assert_eq!(
+                facade["services"][service]["image"].as_str(),
+                Some(image.as_str())
+            );
+            assert_eq!(
+                facade["services"][service]["pull_policy"].as_str(),
+                Some("never")
+            );
+            let build = &facade["services"][service]["build"];
+            assert!(matches!(
+                build,
+                serde_yaml::Value::Tagged(tagged)
+                    if tagged.tag == serde_yaml::value::Tag::new("!reset")
+                        && tagged.value.is_null()
+            ));
+        }
+
+        let incomplete = BTreeMap::from([(
+            "app".to_string(),
+            format!("registry.example/team/app@sha256:{digest}"),
+        )]);
+        let error = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &incomplete,
+                workspace_consumer: false,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("missing: database"));
+
+        fs::write(
+            &compose,
+            "include: [sidecars.yaml]\nservices:\n  app:\n    image: app:mutable\n",
+        )
+        .unwrap();
+        let error = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &BTreeMap::from([("app".to_string(), images["app"].clone())]),
+                workspace_consumer: false,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("reject Compose include"));
+    }
+
+    #[test]
+    fn test_in_guest_compose_facade_omits_platform_connectors_and_ambient_authority() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            worktree_path.join(".gitignore"),
+            ".devcontainer/.1password-service-account-token\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join(".1password-service-account-token"),
+            "ignored-credential-must-not-be-mounted\n",
+        )
+        .unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+    volumes: [tailscale-state:/var/lib/tailscale]
+    devices: [/dev/net/tun:/dev/net/tun]
+    cap_add: [net_admin, net_raw]
+    network_mode: service:rails-app
+    depends_on: [rails-app]
+  rails-app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ../..:/workspaces:cached
+      - ../../main/.git:/workspaces/main/.git:cached
+      - agentify_codex_auth:/home/vscode/.codex
+      - ${HOME}/.ssh/id.pub:/tmp/id.pub:ro
+      - ./.1password-service-account-token:/run/secrets/agentify-op-service-account-token:ro
+    ports: ["127.0.0.1:2222:22"]
+    expose: ["3000"]
+    env_file: [.rails-app.env]
+    depends_on: [postgres, cloudflared, tailscale]
+  postgres:
+    image: postgres:16
+    volumes:
+      - ./ignored-db-credential:/run/secrets/ignored-db-credential:ro
+      - postgres-data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    expose: ["5432"]
+    env_file: [.postgres.env]
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    env_file: [.cloudflared.env]
+volumes:
+  agentify_codex_auth:
+  postgres-data:
+  tailscale-state:
+"#,
+        )
+        .unwrap();
+
+        prepare_sbx_compose_override(
+            repo_path,
+            &devcontainer_dir,
+            Some("rails-app"),
+            std::slice::from_ref(&compose),
+        )
+        .unwrap();
+        let project_environment = repo_path.join("project-environment.env");
+        fs::write(
+            &project_environment,
+            "ACCOUNT_NAME=Matchup\nADMIN_PASSWORD=never-render-this-value\n",
+        )
+        .unwrap();
+        let omitted = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("rails-app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: Some(&project_environment),
+                service_images: &BTreeMap::new(),
+                workspace_consumer: false,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            omitted,
+            ["cloudflared".to_string(), "tailscale".to_string()]
+                .into_iter()
+                .collect()
+        );
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        assert!(rendered.contains("!override"));
+        assert!(!rendered.contains("agentify_codex_auth"));
+        assert!(!rendered.contains("${HOME}"));
+        assert!(!rendered.contains(".1password-service-account-token"));
+        assert!(!rendered.contains("ignored-db-credential"));
+        assert!(!rendered.contains("postgres-data"));
+        assert!(!rendered.contains("127.0.0.1:2222:22"));
+        assert!(!rendered.contains("never-render-this-value"));
+        assert!(rendered.contains("format: raw"));
+        assert!(rendered.contains(&project_environment.to_string_lossy().into_owned()));
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        let rails = &facade["services"]["rails-app"];
+        let rails_volumes = match &rails["volumes"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden rails volumes, got {other:?}"),
+        };
+        assert_eq!(rails_volumes.len(), 2);
+        assert_eq!(
+            rails_volumes[0]["source"].as_str(),
+            Some(fs::canonicalize(&worktree_path).unwrap().to_str().unwrap())
+        );
+        assert_eq!(
+            rails_volumes[0]["target"].as_str(),
+            Some("/workspaces/coding-demo")
+        );
+        assert_eq!(rails_volumes[0]["type"].as_str(), Some("bind"));
+        assert_eq!(
+            rails_volumes[1]["source"].as_str(),
+            Some(
+                fs::canonicalize(repo_path.join(".git"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            rails_volumes[1]["target"].as_str(),
+            Some(CONTAINER_MAIN_GIT_TARGET)
+        );
+        assert!(matches!(rails["env_file"], serde_yaml::Value::Tagged(_)));
+        assert!(matches!(rails["depends_on"], serde_yaml::Value::Tagged(_)));
+        let depends_on = match &rails["depends_on"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden rails dependencies, got {other:?}"),
+        };
+        assert_eq!(depends_on, &[serde_yaml::Value::String("postgres".into())]);
+        assert_eq!(rails["shm_size"].as_str(), Some(IN_GUEST_SHM_SIZE));
+        let security_options = match &rails["security_opt"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden primary security options, got {other:?}"),
+        };
+        assert_eq!(
+            security_options,
+            &[serde_yaml::Value::String(
+                IN_GUEST_SECCOMP_SECURITY_OPTION.into()
+            )]
+        );
+        assert!(rails.get("ipc").is_none());
+        for name in ["rails-app", "postgres", "cloudflared", "tailscale"] {
+            for key in ["ports", "expose"] {
+                let value = &facade["services"][name][key];
+                assert!(matches!(value, serde_yaml::Value::Tagged(_)));
+                let sequence = match value {
+                    serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+                    _ => unreachable!(),
+                };
+                assert!(sequence.is_empty(), "{name}.{key} retained publication");
+            }
+        }
+        for name in ["postgres", "cloudflared", "tailscale"] {
+            let value = &facade["services"][name]["volumes"];
+            let sequence = match value {
+                serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+                other => panic!("expected overridden {name} volumes, got {other:?}"),
+            };
+            assert!(sequence.is_empty(), "{name} retained a repository volume");
+        }
+        assert!(matches!(
+            facade["services"]["cloudflared"]["profiles"],
+            serde_yaml::Value::Tagged(_)
+        ));
+        assert!(matches!(
+            facade["services"]["tailscale"]["devices"],
+            serde_yaml::Value::Tagged(_)
+        ));
+        assert!(matches!(
+            facade["services"]["tailscale"]["cap_add"],
+            serde_yaml::Value::Tagged(_)
+        ));
+        assert!(facade["services"]["postgres"].get("profiles").is_none());
+        let unsigned_environment = match &rails["environment"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_mapping().unwrap(),
+            other => panic!("expected overridden rails environment, got {other:?}"),
+        };
+        assert!(
+            unsigned_environment.is_empty(),
+            "an assignment without a workspace consumer must not add Git ownership exceptions"
+        );
+    }
+
+    #[test]
+    fn in_guest_workspace_consumer_receives_exact_git_ownership_exceptions() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            r#"services:
+  rails-app:
+    image: registry.example/team/app:mutable
+    environment:
+      GIT_CONFIG_COUNT: "9"
+      GIT_CONFIG_KEY_0: core.hooksPath
+      GIT_CONFIG_VALUE_0: /tmp/repository-hooks
+"#,
+        )
+        .unwrap();
+        prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("rails-app"),
+            "/workspaces/coding-demo",
+            std::slice::from_ref(&compose),
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &BTreeMap::new(),
+                workspace_consumer: true,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        // The repository's own Git configuration is replaced, never merged.
+        assert!(!rendered.contains("core.hooksPath"));
+        assert!(!rendered.contains("/tmp/repository-hooks"));
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        let environment = match &facade["services"]["rails-app"]["environment"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_mapping().unwrap().clone(),
+            other => panic!("expected overridden primary environment, got {other:?}"),
+        };
+        let value = |name: &str| {
+            environment
+                .get(serde_yaml::Value::String(name.to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_string)
+        };
+        assert_eq!(value("GIT_CONFIG_COUNT"), Some("2".to_string()));
+        assert_eq!(
+            value("GIT_CONFIG_KEY_0"),
+            Some("safe.directory".to_string())
+        );
+        assert_eq!(
+            value("GIT_CONFIG_VALUE_0"),
+            Some("/workspaces/coding-demo".to_string())
+        );
+        assert_eq!(
+            value("GIT_CONFIG_KEY_1"),
+            Some("safe.directory".to_string())
+        );
+        assert_eq!(
+            value("GIT_CONFIG_VALUE_1"),
+            Some(CONTAINER_MAIN_GIT_TARGET.to_string())
+        );
+        // Only the exact platform-owned task paths are excepted; never a wildcard, and never a
+        // second Git setting that could redirect execution.
+        assert_eq!(environment.len(), 5);
+        assert!(!rendered.contains('*'));
+    }
+
+    #[test]
+    fn test_in_guest_workspace_folder_is_expanded_and_normalized() {
+        let config = DevcontainerConfig {
+            workspace_folder: Some("/workspaces/${localWorkspaceFolderBasename}".to_string()),
+            ..DevcontainerConfig::default()
+        };
+        assert_eq!(
+            effective_in_guest_workspace_folder(&config, Path::new("/workspace/coding-demo"))
+                .unwrap(),
+            "/workspaces/coding-demo"
+        );
+
+        for folder in [
+            "relative",
+            "/",
+            "/workspaces",
+            "/home/vscode/.ssh",
+            "/etc/task",
+            "/run/agentify-runtime/task",
+            "/run/branchbox/leases/code",
+        ] {
+            let config = DevcontainerConfig {
+                workspace_folder: Some(folder.to_string()),
+                ..DevcontainerConfig::default()
+            };
+            assert!(
+                effective_in_guest_workspace_folder(&config, Path::new("/workspace/coding-demo"))
+                    .is_err(),
+                "unexpectedly accepted {folder}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_in_guest_compose_rejects_extends_privilege_build_authority_and_secondary_host_paths() {
+        for source in [
+            "services:\n  app:\n    extends: {file: base.yaml, service: app}\n",
+            "services:\n  app:\n    privileged: true\n",
+            "services:\n  app:\n    build: {context: ., ssh: default}\n",
+            "services:\n  app:\n    build: {context: /run/agentify-assignment}\n",
+            "services:\n  app:\n    secrets: [project-token]\n",
+            "services:\n  app:\n    image: alpine\n  worker:\n    image: alpine\n    volumes: [/etc:/host-etc:ro]\n",
+        ] {
+            let document: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+            let temp = tempfile::tempdir().unwrap();
+            let devcontainer = temp.path().join("repo/.devcontainer");
+            fs::create_dir_all(&devcontainer).unwrap();
+            assert!(
+                validate_in_guest_compose_security(
+                    &document,
+                    Some("app"),
+                    &devcontainer,
+                    &temp.path().join("repo")
+                )
+                .is_err(),
+                "unexpectedly accepted: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_in_guest_compose_rejects_alternate_supervisor_endpoints() {
+        for source in [
+            "services:\n  app:\n    environment: {DOCKER_HOST: tcp://supervisor:2375}\n",
+            "services:\n  app:\n    volumes: [/run/podman/podman.sock:/run/podman/podman.sock]\n",
+            "services:\n  app:\n    volumes: [/run/buildkit:/run/buildkit]\n",
+        ] {
+            let document: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+            assert!(
+                reject_supervisor_socket_references_yaml(&document).is_err(),
+                "unexpectedly accepted: {source}"
+            );
+        }
     }
 
     #[test]

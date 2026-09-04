@@ -5,17 +5,28 @@
 //! describes the developer environment, while a runtime provider decides where
 //! that environment and its Docker/Compose workloads execute.
 
-use crate::{Error, Result};
+use crate::{
+    devcontainer_runtime::{DevcontainerConfig, MountConfig},
+    Error, Result,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+mod in_guest;
 mod local_vm;
+pub(crate) use in_guest::recover_runtime_metadata as recover_in_guest_runtime_metadata;
+use in_guest::InGuestRuntimeProvider;
+pub use in_guest::{
+    load_in_guest_facade_plan, InGuestFacadePlan, InGuestLeaseRecord, InGuestRuntimeMetadata,
+    InGuestTunnelPlacement,
+};
 use local_vm::LocalVmRuntimeProvider;
 
 /// Runtime implementations selectable for a workspace.
@@ -28,6 +39,8 @@ pub enum RuntimeProviderKind {
     Container,
     /// Experimental Docker Sandboxes microVM backend.
     Sbx,
+    /// Devcontainer runtime inside an isolation boundary already owned by the caller.
+    InGuest,
     /// Reserved account-free local microVM backend.
     LocalVm,
 }
@@ -37,6 +50,7 @@ impl fmt::Display for RuntimeProviderKind {
         f.write_str(match self {
             Self::Container => "container",
             Self::Sbx => "sbx",
+            Self::InGuest => "in-guest",
             Self::LocalVm => "local-vm",
         })
     }
@@ -49,9 +63,10 @@ impl FromStr for RuntimeProviderKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "container" | "current" => Ok(Self::Container),
             "sbx" => Ok(Self::Sbx),
+            "in-guest" | "in_guest" | "devcontainer" => Ok(Self::InGuest),
             "local-vm" | "local_vm" => Ok(Self::LocalVm),
             other => Err(format!(
-                "unknown runtime provider '{other}'; expected container, sbx, or local-vm"
+                "unknown runtime provider '{other}'; expected container, sbx, in-guest, or local-vm"
             )),
         }
     }
@@ -66,6 +81,21 @@ pub struct RuntimeMetadata {
     pub runtime_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published_ports: Vec<RuntimePort>,
+    /// Primary devcontainer identity returned by the Dev Containers CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    /// Effective workspace folder inside the primary devcontainer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_folder: Option<String>,
+    /// Effective user selected by the devcontainer configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_user: Option<String>,
+    /// Explicit runtime devcontainer configuration used for all lifecycle operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<PathBuf>,
+    /// Orchestrator-owned outer-boundary and lease correlation for the in-guest provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_guest: Option<InGuestRuntimeMetadata>,
     /// Immutable runtime artifact/version evidence supplied by VM-backed providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<RuntimeVersionMetadata>,
@@ -85,6 +115,11 @@ impl Default for RuntimeMetadata {
             provider: RuntimeProviderKind::Container,
             runtime_id: None,
             published_ports: Vec::new(),
+            container_id: None,
+            workspace_folder: None,
+            container_user: None,
+            config_path: None,
+            in_guest: None,
             version: None,
         }
     }
@@ -111,6 +146,64 @@ pub struct RuntimeExecResult {
     pub stderr: String,
 }
 
+/// Correlated response returned by a trusted, provider-neutral tool dispatcher.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeToolDispatchResult {
+    pub run_id: String,
+    pub lease_id: String,
+    pub consumer: String,
+    pub request_id: String,
+    pub response: serde_json::Value,
+}
+
+/// Deterministic resource residue observed after provider teardown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeResidue {
+    pub kind: String,
+    pub identifiers: Vec<String>,
+}
+
+/// Structured runtime teardown evidence returned to the caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeTeardownReport {
+    pub provider: RuntimeProviderKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
+    pub verified: bool,
+    pub residue_free: bool,
+    #[serde(default)]
+    pub residue: Vec<RuntimeResidue>,
+}
+
+impl RuntimeTeardownReport {
+    pub(crate) fn residue_free(provider: RuntimeProviderKind, runtime_id: Option<String>) -> Self {
+        Self {
+            provider,
+            runtime_id,
+            verified: true,
+            residue_free: true,
+            residue: Vec::new(),
+        }
+    }
+
+    pub fn unverified(
+        provider: RuntimeProviderKind,
+        runtime_id: Option<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider,
+            runtime_id,
+            verified: false,
+            residue_free: false,
+            residue: vec![RuntimeResidue {
+                kind: "teardown-error".to_string(),
+                identifiers: vec![reason.into()],
+            }],
+        }
+    }
+}
+
 /// Inputs shared by runtime implementations during workspace provisioning.
 #[derive(Debug)]
 pub struct RuntimeContext<'a> {
@@ -123,6 +216,9 @@ pub struct RuntimeContext<'a> {
     /// templates reference sibling worktrees and shared configuration here.
     pub workspace_mount_path: &'a Path,
     pub published_ports: &'a [RuntimePort],
+    /// Opaque supervisor-authored lease/materialization manifest. The path may be passed to the
+    /// provider; the file's secret material is never accepted as a CLI argument.
+    pub runtime_manifest_path: Option<&'a Path>,
 }
 
 /// Execution-boundary lifecycle contract.
@@ -157,7 +253,7 @@ pub trait RuntimeProvider {
     fn start_environment(
         &self,
         context: &RuntimeContext<'_>,
-        metadata: &RuntimeMetadata,
+        metadata: &mut RuntimeMetadata,
     ) -> Result<()>;
 
     /// Execute an arbitrary command in the workspace boundary.
@@ -177,8 +273,35 @@ pub trait RuntimeProvider {
         command: &[String],
     ) -> Result<i32>;
 
+    /// Execute the exact provider entrypoint and environment admitted by a managed assignment.
+    /// Providers that do not implement this trusted lane reject it instead of falling back to
+    /// arbitrary exec.
+    fn exec_provider_interactive(
+        &self,
+        _metadata: &RuntimeMetadata,
+        _provider: &str,
+        _inherited_environment: &[String],
+        _args: &[String],
+    ) -> Result<i32> {
+        Err(Error::validation(
+            "This runtime does not support trusted coding-provider execution",
+        ))
+    }
+
+    /// Dispatch one capability-bound request from a consumer spool to its trusted endpoint.
+    fn dispatch_tool_request(
+        &self,
+        _metadata: &RuntimeMetadata,
+        _lease_id: &str,
+        _request_id: &str,
+    ) -> Result<RuntimeToolDispatchResult> {
+        Err(Error::validation(
+            "This runtime does not support trusted tool-request dispatch",
+        ))
+    }
+
     /// Remove provider-owned state before the BranchBox worktree is removed.
-    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<()>;
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport>;
 }
 
 /// Resolve a runtime provider without making optional provider dependencies
@@ -187,6 +310,7 @@ pub fn provider(kind: RuntimeProviderKind) -> Result<Box<dyn RuntimeProvider>> {
     match kind {
         RuntimeProviderKind::Container => Ok(Box::new(ContainerRuntimeProvider)),
         RuntimeProviderKind::Sbx => Ok(Box::new(SbxRuntimeProvider::new()?)),
+        RuntimeProviderKind::InGuest => Ok(Box::new(InGuestRuntimeProvider::new()?)),
         RuntimeProviderKind::LocalVm => Ok(Box::new(LocalVmRuntimeProvider::new()?)),
     }
 }
@@ -206,7 +330,7 @@ impl RuntimeProvider for ContainerRuntimeProvider {
     fn start_environment(
         &self,
         _context: &RuntimeContext<'_>,
-        _metadata: &RuntimeMetadata,
+        _metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
         Ok(())
     }
@@ -253,8 +377,11 @@ impl RuntimeProvider for ContainerRuntimeProvider {
         Ok(status.code().unwrap_or(-1))
     }
 
-    fn destroy(&self, _metadata: &RuntimeMetadata) -> Result<()> {
-        Ok(())
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
+        Ok(RuntimeTeardownReport::residue_free(
+            self.kind(),
+            metadata.runtime_id.clone(),
+        ))
     }
 }
 
@@ -263,29 +390,37 @@ struct SbxRuntimeProvider {
     binary: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SbxHostFileProjection {
+    host_source: PathBuf,
+    sandbox_relative: PathBuf,
+}
+
 impl SbxRuntimeProvider {
     const MAX_FAILURE_DETAIL_LINES: usize = 12;
     const MAX_FAILURE_DETAIL_BYTES: usize = 2_048;
-    const DEVCONTAINER_UP: &'static str = "set --; if [ -f .devcontainer/branchbox-sbx.json ]; then set -- --config .devcontainer/branchbox-sbx.json; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer up --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli up --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
-    const DEVCONTAINER_PROBE: &'static str = "config_args=''; if [ -f .devcontainer/branchbox-sbx.json ]; then config_args='--config .devcontainer/branchbox-sbx.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args true; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args true; else exit 127; fi";
-    const DEVCONTAINER_EXEC: &'static str = "config_args=''; if [ -f .devcontainer/branchbox-sbx.json ]; then config_args='--config .devcontainer/branchbox-sbx.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
+    const DEVCONTAINER_UP: &'static str = "set --; if [ -f .devcontainer/.devcontainer.json ]; then set -- --config .devcontainer/.devcontainer.json; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer up --workspace-folder . \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli up --workspace-folder . \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
+    const DEVCONTAINER_PROBE: &'static str = "config_args=''; if [ -f .devcontainer/.devcontainer.json ]; then config_args='--config .devcontainer/.devcontainer.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args true; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args true; else exit 127; fi";
+    const DEVCONTAINER_EXEC: &'static str = "config_args=''; if [ -f .devcontainer/.devcontainer.json ]; then config_args='--config .devcontainer/.devcontainer.json'; fi; if command -v devcontainer >/dev/null 2>&1; then exec devcontainer exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; elif command -v npx >/dev/null 2>&1; then exec env -u NPM_CONFIG_PREFIX npx --yes @devcontainers/cli exec --workspace-folder . $config_args /bin/sh -lc 'exec \"${SHELL:-/bin/sh}\" -lic '\"'\"'exec \"$@\"'\"'\"' branchbox-login \"$@\"' branchbox-devcontainer-shell \"$@\"; else echo 'BranchBox SBX requires devcontainer or npx inside the sandbox shell image' >&2; exit 127; fi";
     const PORT_PROXY_BOOTSTRAP: &'static str = r#"set -eu
 container_id="$1"
 runtime_port="$2"
 proxy_name="branchbox-port-proxy-${runtime_port}"
 network_id=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id")
-target_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_id")
+target_host=$(docker inspect -f '{{.Name}}' "$container_id")
+target_host=${target_host#/}
 docker rm -f "$proxy_name" >/dev/null 2>&1 || true
 for candidate_id in $(docker ps --filter "network=${network_id}" -q); do
     exposed_ports=$(docker inspect -f '{{json .Config.ExposedPorts}}' "$candidate_id")
     case "$exposed_ports" in
         *\"${runtime_port}/tcp\"*)
-            target_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$candidate_id")
+            target_host=$(docker inspect -f '{{.Name}}' "$candidate_id")
+            target_host=${target_host#/}
             break
             ;;
     esac
 done
-exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "${runtime_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_ip}:${runtime_port}""#;
+exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "${runtime_port}:${runtime_port}" alpine/socat -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 
     fn new() -> Result<Self> {
         let binary = match std::env::var_os("BRANCHBOX_SBX_PATH") {
@@ -417,6 +552,90 @@ exec docker run -d --name "$proxy_name" --restart unless-stopped --network "$net
                 "Docker Sandboxes could not start existing runtime '{sandbox_name}': {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
+        }
+        Ok(())
+    }
+
+    fn sandbox_home(&self, sandbox_name: &str) -> Result<PathBuf> {
+        let output = self.run(&["exec", sandbox_name, "sh", "-lc", "printf '%s' \"$HOME\""])?;
+        if !output.status.success() {
+            return Err(Error::validation(format!(
+                "Docker Sandboxes could not resolve the runtime home for '{sandbox_name}'"
+            )));
+        }
+        let home = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        if !home.is_absolute()
+            || home
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(Error::validation(format!(
+                "Docker Sandboxes returned an invalid runtime home for '{sandbox_name}'"
+            )));
+        }
+        Ok(home)
+    }
+
+    fn project_supported_host_files(&self, sandbox_name: &str, worktree_path: &Path) -> Result<()> {
+        if !worktree_path
+            .join(".devcontainer/devcontainer.json")
+            .exists()
+            && !worktree_path.join(".devcontainer.json").exists()
+        {
+            return Ok(());
+        }
+        let (config, _) = DevcontainerConfig::load(worktree_path).map_err(|err| {
+            Error::validation(format!(
+                "Could not inspect devcontainer mounts for SBX projection: {err}"
+            ))
+        })?;
+        let Some(mounts) = config.mounts.as_deref() else {
+            return Ok(());
+        };
+        let host_home = dirs::home_dir()
+            .ok_or_else(|| Error::validation("Cannot determine the host home directory"))?;
+        let projections = supported_sbx_host_file_projections(mounts, &host_home)?;
+        if projections.is_empty() {
+            return Ok(());
+        }
+        let sandbox_home = self.sandbox_home(sandbox_name)?;
+        for projection in projections {
+            let destination = sandbox_home.join(&projection.sandbox_relative);
+            let parent = destination.parent().ok_or_else(|| {
+                Error::validation("Cannot determine SBX projected-file parent directory")
+            })?;
+            let parent = parent.to_string_lossy();
+            let mkdir = self.run(&["exec", sandbox_name, "mkdir", "-p", parent.as_ref()])?;
+            if !mkdir.status.success() {
+                return Err(Error::validation(format!(
+                    "Docker Sandboxes could not prepare a public-key projection in '{sandbox_name}'"
+                )));
+            }
+
+            // A failed bind may have materialized the file path as an empty directory. Removing
+            // only that exact, empty, allowlisted public-key path makes retries self-healing.
+            let destination_text = destination.to_string_lossy();
+            let _ = self.run(&["exec", sandbox_name, "rmdir", destination_text.as_ref()]);
+            let source = projection.host_source.to_string_lossy();
+            let remote = format!("{sandbox_name}:{}", destination.display());
+            let copied = self.run(&["cp", source.as_ref(), &remote])?;
+            if !copied.status.success() {
+                return Err(Error::validation(format!(
+                    "Docker Sandboxes could not project an allowlisted public key into '{sandbox_name}'"
+                )));
+            }
+            let chmod = self.run(&[
+                "exec",
+                sandbox_name,
+                "chmod",
+                "0644",
+                destination_text.as_ref(),
+            ])?;
+            if !chmod.status.success() {
+                return Err(Error::validation(format!(
+                    "Docker Sandboxes could not secure a projected public key in '{sandbox_name}'"
+                )));
+            }
         }
         Ok(())
     }
@@ -768,23 +987,38 @@ impl RuntimeProvider for SbxRuntimeProvider {
             }
         }
 
+        if let Err(err) = self.project_supported_host_files(&sandbox_name, context.worktree_path) {
+            if created {
+                let _ = self.run(&["rm", "--force", &sandbox_name]);
+            }
+            return Err(err);
+        }
+
         Ok(RuntimeMetadata {
             provider: self.kind(),
             runtime_id: Some(sandbox_name),
             published_ports,
             version: None,
+            ..RuntimeMetadata::default()
         })
     }
 
     fn start_environment(
         &self,
         context: &RuntimeContext<'_>,
-        metadata: &RuntimeMetadata,
+        metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
-        let runtime_id = self.runtime_id(metadata)?;
-        let container_id = self.start_devcontainer(runtime_id, context.worktree_path)?;
+        let runtime_id = self.runtime_id(metadata)?.to_string();
+        let container_id = self.start_devcontainer(&runtime_id, context.worktree_path)?;
+        metadata.container_id = Some(container_id.clone());
+        metadata.workspace_folder = Some(context.worktree_path.to_string_lossy().into_owned());
+        metadata.config_path = Some(
+            context
+                .worktree_path
+                .join(".devcontainer/.devcontainer.json"),
+        );
         for port in &metadata.published_ports {
-            self.start_port_proxy(runtime_id, &container_id, *port)?;
+            self.start_port_proxy(&runtime_id, &container_id, *port)?;
         }
         Ok(())
     }
@@ -847,9 +1081,9 @@ impl RuntimeProvider for SbxRuntimeProvider {
         Ok(status.code().unwrap_or(-1))
     }
 
-    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<()> {
+    fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
         let Some(runtime_id) = metadata.runtime_id.as_deref() else {
-            return Ok(());
+            return Ok(RuntimeTeardownReport::residue_free(self.kind(), None));
         };
         let output = self.run(&["rm", "--force", runtime_id])?;
         if !output.status.success() {
@@ -858,8 +1092,78 @@ impl RuntimeProvider for SbxRuntimeProvider {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        Ok(())
+        Ok(RuntimeTeardownReport::residue_free(
+            self.kind(),
+            Some(runtime_id.to_string()),
+        ))
     }
+}
+
+fn supported_sbx_host_file_projections(
+    mounts: &[MountConfig],
+    host_home: &Path,
+) -> Result<Vec<SbxHostFileProjection>> {
+    const LOCAL_HOME_PREFIX: &str = "${localEnv:HOME}/";
+    let mut projections = Vec::new();
+    for mount in mounts {
+        let source = match mount {
+            MountConfig::String(value) => {
+                let is_bind = value.split(',').any(|field| field.trim() == "type=bind");
+                if !is_bind {
+                    continue;
+                }
+                value.split(',').find_map(|field| {
+                    field
+                        .trim()
+                        .strip_prefix("source=")
+                        .or_else(|| field.trim().strip_prefix("src="))
+                })
+            }
+            MountConfig::Object {
+                mount_type, source, ..
+            } if mount_type.as_deref() == Some("bind") => source.as_deref(),
+            MountConfig::Object { .. } => None,
+        };
+        let Some(relative_source) =
+            source.and_then(|source| source.strip_prefix(LOCAL_HOME_PREFIX))
+        else {
+            continue;
+        };
+        let relative = Path::new(relative_source);
+        let components: Vec<_> = relative.components().collect();
+        let supported = components.len() == 2
+            && matches!(components[0], std::path::Component::Normal(name) if name == ".ssh")
+            && matches!(components[1], std::path::Component::Normal(_))
+            && relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".pub"));
+        if !supported {
+            continue;
+        }
+
+        let host_source = host_home.join(relative);
+        let metadata = fs::symlink_metadata(&host_source).map_err(|err| {
+            Error::validation(format!(
+                "Cannot inspect the configured SBX public-key mount '{}': {err}",
+                host_source.display()
+            ))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(Error::validation(format!(
+                "SBX public-key mount '{}' must be a regular file, not a directory or symbolic link",
+                host_source.display()
+            )));
+        }
+        let projection = SbxHostFileProjection {
+            host_source,
+            sandbox_relative: relative.to_path_buf(),
+        };
+        if !projections.contains(&projection) {
+            projections.push(projection);
+        }
+    }
+    Ok(projections)
 }
 
 #[cfg(test)]
@@ -908,6 +1212,60 @@ mod tests {
     }
 
     #[test]
+    fn sbx_projects_only_regular_public_keys_from_host_home_mounts() {
+        let host_home = tempfile::tempdir().unwrap();
+        let ssh = host_home.path().join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        let public_key = ssh.join("agentify-demo.pub");
+        std::fs::write(&public_key, "ssh-ed25519 test\n").unwrap();
+        std::fs::write(ssh.join("agentify-demo"), "private-material\n").unwrap();
+        let mounts = vec![
+            MountConfig::String(
+                "source=${localEnv:HOME}/.ssh/agentify-demo.pub,target=/home/dev/.ssh/agentify-demo.pub,type=bind"
+                    .to_string(),
+            ),
+            MountConfig::String(
+                "source=${localEnv:HOME}/.ssh/agentify-demo,target=/home/dev/.ssh/agentify-demo,type=bind"
+                    .to_string(),
+            ),
+        ];
+
+        let projections = supported_sbx_host_file_projections(&mounts, host_home.path()).unwrap();
+
+        assert_eq!(
+            projections,
+            vec![SbxHostFileProjection {
+                host_source: public_key,
+                sandbox_relative: PathBuf::from(".ssh/agentify-demo.pub"),
+            }]
+        );
+    }
+
+    #[test]
+    fn sbx_rejects_public_key_mounts_that_are_not_regular_files() {
+        let host_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(host_home.path().join(".ssh/not-a-file.pub")).unwrap();
+        let mounts = vec![MountConfig::Object {
+            mount_type: Some("bind".to_string()),
+            source: Some("${localEnv:HOME}/.ssh/not-a-file.pub".to_string()),
+            target: "/home/dev/.ssh/not-a-file.pub".to_string(),
+        }];
+
+        let error = supported_sbx_host_file_projections(&mounts, host_home.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must be a regular file"));
+    }
+
+    #[test]
+    fn sbx_port_proxy_uses_stable_container_names_instead_of_ephemeral_ips() {
+        assert!(SbxRuntimeProvider::PORT_PROXY_BOOTSTRAP.contains("{{.Name}}"));
+        assert!(SbxRuntimeProvider::PORT_PROXY_BOOTSTRAP.contains("TCP:${target_host}"));
+        assert!(!SbxRuntimeProvider::PORT_PROXY_BOOTSTRAP.contains(".IPAddress"));
+    }
+
+    #[test]
     fn legacy_runtime_metadata_defaults_to_container() {
         let metadata: RuntimeMetadata = serde_json::from_str("{}").unwrap();
         assert_eq!(metadata, RuntimeMetadata::default());
@@ -943,6 +1301,7 @@ mod tests {
                 runtime_name: "storefront-oauth-flow",
                 workspace_mount_path: workspace.path(),
                 published_ports: &ports,
+                runtime_manifest_path: None,
             })
             .unwrap();
 
@@ -999,7 +1358,9 @@ exit 42
             runtime_id: Some("branchbox-redaction-test".to_string()),
             published_ports: Vec::new(),
             version: None,
+            ..RuntimeMetadata::default()
         };
+        let mut metadata = metadata;
 
         let error = provider
             .start_environment(
@@ -1009,8 +1370,9 @@ exit 42
                     runtime_name: "redaction-test",
                     workspace_mount_path: workspace.path(),
                     published_ports: &[],
+                    runtime_manifest_path: None,
                 },
-                &metadata,
+                &mut metadata,
             )
             .unwrap_err()
             .to_string();

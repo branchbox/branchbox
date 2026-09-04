@@ -15,6 +15,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 git2.workspace = true
 regex.workspace = true
+sha2.workspace = true
 which.workspace = true
 walkdir.workspace = true
 pathdiff.workspace = true
@@ -25,10 +26,10 @@ chrono.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 jsonc-parser.workspace = true
+tempfile.workspace = true
 
 dialoguer = "0.11"
 
 [dev-dependencies]
 rstest.workspace = true
-tempfile.workspace = true
 mockito.workspace = true

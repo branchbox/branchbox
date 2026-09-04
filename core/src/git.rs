@@ -58,12 +58,81 @@ impl GitWorktree {
     /// ).unwrap();
     /// ```
     pub fn create(&self, path: &Path, branch: &str, base_branch: Option<&str>) -> Result<()> {
+        self.create_with_checkout_policy(path, branch, base_branch, true)
+    }
+
+    /// Create a worktree for an untrusted repository revision without running repository hooks or
+    /// ambient global attributes. Callers must separately reject repository filter attributes.
+    /// Checks the feature branch out in the repository itself, creating or
+    /// resetting it, without adding a worktree.
+    ///
+    /// This is the checkout a caller wants when the clone is made for one run
+    /// and discarded afterwards: there is no second worktree to isolate from, so
+    /// the branch can simply live in the repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::git`] if the checkout cannot be performed.
+    pub fn checkout_feature_branch(&self, branch: &str, base_branch: Option<&str>) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(&self.repo_path);
+        cmd.args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+        ]);
+        cmd.arg("checkout").arg("-B").arg(branch);
+        if let Some(base) = base_branch {
+            cmd.arg(base);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| Error::git(format!("Failed to execute git checkout: {}", e)))?;
+        if !output.status.success() {
+            return Err(Error::git(format!(
+                "Git checkout failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        tracing::info!("Checked out {} in the repository", branch);
+        Ok(())
+    }
+
+    pub fn create_without_hooks(
+        &self,
+        path: &Path,
+        branch: &str,
+        base_branch: Option<&str>,
+    ) -> Result<()> {
+        self.create_with_checkout_policy(path, branch, base_branch, false)
+    }
+
+    fn create_with_checkout_policy(
+        &self,
+        path: &Path,
+        branch: &str,
+        base_branch: Option<&str>,
+        allow_hooks: bool,
+    ) -> Result<()> {
         if path.exists() {
             return Err(Error::WorktreeExists(path.to_path_buf()));
         }
 
         let mut cmd = Command::new("git");
         cmd.current_dir(&self.repo_path);
+        if !allow_hooks {
+            cmd.args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.attributesFile=/dev/null",
+            ]);
+        }
         cmd.arg("worktree").arg("add");
 
         // Add -B flag to create/reset branch
@@ -94,6 +163,20 @@ impl GitWorktree {
 
     /// Attach an existing branch to a worktree path without resetting it.
     pub fn attach_existing_branch(&self, path: &Path, branch: &str) -> Result<()> {
+        self.attach_existing_branch_with_checkout_policy(path, branch, true)
+    }
+
+    /// Attach an untrusted branch without running repository hooks or ambient global attributes.
+    pub fn attach_existing_branch_without_hooks(&self, path: &Path, branch: &str) -> Result<()> {
+        self.attach_existing_branch_with_checkout_policy(path, branch, false)
+    }
+
+    fn attach_existing_branch_with_checkout_policy(
+        &self,
+        path: &Path,
+        branch: &str,
+        allow_hooks: bool,
+    ) -> Result<()> {
         if path.exists() {
             return Err(Error::WorktreeExists(path.to_path_buf()));
         }
@@ -105,6 +188,16 @@ impl GitWorktree {
 
         let mut cmd = Command::new("git");
         cmd.current_dir(&self.repo_path);
+        if !allow_hooks {
+            cmd.args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.attributesFile=/dev/null",
+            ]);
+        }
         cmd.arg("worktree").arg("add");
         cmd.arg(path);
         cmd.arg(branch);

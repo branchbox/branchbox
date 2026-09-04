@@ -52,7 +52,7 @@ pub enum DevcontainerCommands {
         #[arg(long)]
         skip_post_create: bool,
 
-        /// Remote environment variables (name=value)
+        /// Remote environment variables for lifecycle commands (name=value)
         #[arg(long)]
         remote_env: Vec<String>,
 
@@ -87,7 +87,7 @@ pub enum DevcontainerCommands {
         #[arg(long)]
         workdir: Option<String>,
 
-        /// Remote environment variables (name=value)
+        /// Remote environment variables for this command (name=value; overrides remoteEnv)
         #[arg(long)]
         remote_env: Vec<String>,
 

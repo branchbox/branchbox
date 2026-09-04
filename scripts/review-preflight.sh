@@ -104,6 +104,18 @@ check_required_literal \
   "Missing empty-signing-key preservation warning in init-host script." \
   "was empty; keeping existing key file." \
   core/src/bootstrap/templates/common/init-host.sh
+# A refusal in the in-guest boundary must name its own cause. Six separate layers
+# each caught an error, discarded the reason, and substituted a generic string,
+# so a production failure arrived as an unattributable code and every diagnosis
+# cost a full guest rebuild. The cause may still be withheld when it could carry
+# credential or consumer-supplied content -- annotate those with a
+# `cause-withheld:` comment stating why, so the omission is a decision on the
+# record rather than an accident.
+check_forbidden_pattern \
+  "In-guest refusal discards its cause without a 'cause-withheld:' justification." \
+  'map_err\(\|_\| ?Error::validation' \
+  core/src/runtime/in_guest.rs
+
 check_forbidden_pattern \
   "Found raw GitHub token interpolation in setup-git credential helper." \
   'password=\$\{?github_token\}?' \

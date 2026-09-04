@@ -189,6 +189,8 @@ Commands:
   list      List known feature worktrees from the registry
   prune     Tear down all active feature worktrees
   exec      Execute a command through a feature's runtime provider
+  exec-provider  Execute an allowlisted coding provider with name-only environment inheritance
+  dispatch-tool  Dispatch one capability-bound request to a trusted managed tool endpoint
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -260,6 +262,30 @@ Options:
       --repo <REPO>  Repository path (defaults to current directory)
       --json         Emit captured command output as JSON
   -h, --help         Print help
+```
+
+## branchbox feature dispatch-tool
+
+The dispatcher can run concurrently with the coding provider. Exit status `75` means the exact
+atomic request file was not present before `--wait-seconds` expired; every malformed or failed
+request is a terminal non-75 error. With `--json`, both success and not-pending outcomes are
+structured for an orchestrator.
+
+```text
+Dispatch one capability-bound request to a trusted managed tool endpoint
+
+Usage: branchbox feature dispatch-tool [OPTIONS] --lease <LEASE_ID> --request-id <REQUEST_ID> <NAME>
+
+Arguments:
+  <NAME>  Dasherized feature name
+
+Options:
+      --repo <REPO>              Repository path (defaults to current directory)
+      --lease <LEASE_ID>         Exact tool-request lease declared by the managed runtime assignment
+      --request-id <REQUEST_ID>  Exact request identifier and spool filename stem
+      --json                     Emit the correlated response as JSON
+      --wait-seconds <SECONDS>   Wait up to this many seconds for the atomic request file (maximum 300) [default: 0]
+  -h, --help                     Print help
 ```
 
 ## branchbox feature teardown

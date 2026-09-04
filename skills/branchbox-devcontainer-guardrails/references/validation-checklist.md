@@ -16,6 +16,17 @@ cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fa
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
 ```
 
+For Agentify `in-guest` lifecycle or project-environment changes, also run the focused adversarial
+coverage before the full suite:
+
+```bash
+cargo test -p worktree-core runtime::in_guest::tests --all-features
+cargo test -p worktree-core runtime::in_guest::tests::tool_request_ --all-features
+cargo test -p worktree-core runtime::in_guest::tests::trusted_relay_ --all-features
+cargo test -p worktree-core workflows::feature::tests::test_in_guest --all-features
+cargo test -p branchbox-cli --test feature_commands in_guest_ -- --nocapture
+```
+
 ## Release harness matrix (devcontainer)
 
 ```bash
@@ -45,6 +56,9 @@ Run these quick checks before opening/updating the PR when touching bootstrap/au
 
 ```bash
 ./scripts/review-preflight.sh
+
+# A linked owner-only tool socket must never become a coding-container mount or permissive socket.
+rg -n "linked_tool_endpoints|WritableRequestSpool|chmod 0?777|chmod 0?666" core/src/runtime/in_guest.rs
 
 # No world-readable host signing key writes
 rg -n "chmod 64[0-9].*(SIGNING_KEY|git-signing-key)|chmod 66[0-9].*(SIGNING_KEY|git-signing-key)" core/src/bootstrap scripts || true
