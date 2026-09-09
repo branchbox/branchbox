@@ -8160,10 +8160,6 @@ mod tests {
         // created, and the repository must never be removed as cleanup.
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
-        let before: Vec<_> = fs::read_dir(repo_path.parent().unwrap())
-            .unwrap()
-            .filter_map(|entry| entry.ok().map(|value| value.file_name()))
-            .collect();
 
         let git = GitWorktree::new(repo_path).unwrap();
         git.checkout_feature_branch("feature/in-place", None)
@@ -8173,14 +8169,23 @@ mod tests {
             git.branch_exists("feature/in-place").unwrap(),
             "the feature branch exists"
         );
-        let after: Vec<_> = fs::read_dir(repo_path.parent().unwrap())
-            .unwrap()
-            .filter_map(|entry| entry.ok().map(|value| value.file_name()))
-            .collect();
+        // Ask Git what worktrees this repository has rather than counting
+        // entries beside it: the repository is created in the system temporary
+        // directory, which every other test shares, so a directory another test
+        // happened to create between two readings looked like a worktree here.
+        let worktrees = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&worktrees.stdout);
         assert_eq!(
-            before.len(),
-            after.len(),
-            "no worktree was created beside it"
+            listed
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1,
+            "no worktree was created beside it: {listed}"
         );
         assert!(repo_path.join(".git").exists(), "the repository is intact");
     }
