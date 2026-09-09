@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
@@ -729,6 +729,15 @@ enum LeaseScope {
     ToolEndpoint,
     ToolRequest,
     PlatformTunnel,
+    /// One signed credential file placed where its provider reads it.
+    ///
+    /// Every other file target is pinned below the lease root, and every signed
+    /// bind is read-only. That suits a credential a provider only reads, but not
+    /// one whose surrounding directory the provider must also write: an agent
+    /// that keeps state beside its credential cannot start from a read-only
+    /// home. This scope binds the file alone, read-only like the rest, and
+    /// leaves the directory holding it to the container.
+    ProviderCredential,
 }
 
 impl LeaseScope {
@@ -742,6 +751,7 @@ impl LeaseScope {
             Self::ToolEndpoint => "tool-endpoint",
             Self::ToolRequest => "tool-request",
             Self::PlatformTunnel => "platform-tunnel",
+            Self::ProviderCredential => "provider-credential",
         }
     }
 }
@@ -3203,7 +3213,12 @@ impl LoadedAssignment {
                 };
                 if !matches!(
                     mount.scope,
-                    LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+                    LeaseScope::SharedDirectory
+                        | LeaseScope::ToolEndpoint
+                        // A placed credential is inspected like any other signed
+                        // bind: the container must carry it read-only, and the
+                        // run fails closed when it does not.
+                        | LeaseScope::ProviderCredential
                 ) || (mount.scope == LeaseScope::ToolEndpoint
                     && self.linked_tool_endpoints.contains(&mount.lease_id))
                 {
@@ -3445,6 +3460,16 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 ));
             }
         }
+        if lease.scope == LeaseScope::ProviderCredential
+            && (lease.materializations.len() != 1
+                || lease
+                    .expires_at
+                    .is_none_or(|expires_at| expires_at <= Utc::now()))
+        {
+            return Err(Error::validation(
+                "Provider-credential leases require one live materialization",
+            ));
+        }
         if matches!(
             lease.scope,
             LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
@@ -3517,6 +3542,15 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 materialization.target_path.as_ref(),
                 materialization.environment_name.as_ref(),
             ) {
+                (Some(target), None) if lease.scope == LeaseScope::ProviderCredential => {
+                    validate_provider_credential_target(target)?;
+                    if !file_targets.insert(target.clone()) {
+                        return Err(Error::validation(
+                            "Lease materialization source and target paths must be unique",
+                        ));
+                    }
+                    MaterializationTarget::File(target.clone())
+                }
                 (Some(target), None) if lease.scope != LeaseScope::ProviderEnvironment => {
                     validate_lease_target(target)?;
                     if lease.scope == LeaseScope::ProjectEnvironment
@@ -3566,6 +3600,11 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     ));
                 }
             };
+            if lease.scope == LeaseScope::ProviderCredential && materialization.sha256.is_none() {
+                return Err(Error::validation(
+                    "Provider-credential leases must declare a file digest",
+                ));
+            }
             if let Some(expected_sha256) = materialization.sha256.as_deref() {
                 validate_sha256(expected_sha256)?;
                 let actual = file_sha256(&source)?;
@@ -3967,6 +4006,33 @@ fn validate_lease_target(path: &Path) -> Result<()> {
         return Err(Error::validation(format!(
             "Lease target must be an individual path below {LEASE_TARGET_ROOT}"
         )));
+    }
+    Ok(())
+}
+
+/// A provider-credential target is the path its provider reads, so it is not
+/// pinned below the lease root the way every other file target is.
+///
+/// It stays a single absolute path with no traversal, may not sit directly at
+/// the filesystem root, and may not reach the ambient authority or secret
+/// locations any managed mount is refused. Binding the file alone leaves the
+/// directory holding it to the container, which is the point: a provider that
+/// keeps state beside its credential needs to write there, and every signed
+/// bind is read-only.
+fn validate_provider_credential_target(path: &Path) -> Result<()> {
+    let ambient = path.to_string_lossy();
+    if !path.is_absolute()
+        || path.parent().is_none_or(|parent| parent == Path::new("/"))
+        || path.file_name().is_none()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+        || path.starts_with(LEASE_TARGET_ROOT)
+        || contains_ambient_authority_reference(&ambient)
+    {
+        return Err(Error::validation(
+            "Provider-credential target must be an individual file path outside the lease root",
+        ));
     }
     Ok(())
 }
@@ -5493,6 +5559,123 @@ mod tests {
             &serde_json::to_vec_pretty(&manifest).unwrap(),
         );
         (root, manifest_path, provider_secret)
+    }
+
+    /// A provider whose credential is a file it reads, and whose home it must
+    /// also write, cannot take that credential through any other scope: every
+    /// other file target is pinned below the lease root, and every signed bind
+    /// is read-only, so the directory holding it would be read-only too.
+    #[cfg(unix)]
+    fn provider_credential_fixture(target: &str) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("repository");
+        let materializations = root.path().join("materializations");
+        fs::create_dir_all(&repository).unwrap();
+        fs::create_dir_all(&materializations).unwrap();
+        let credential = materializations.join("provider-credential");
+        private_write(&credential, b"{\"tokens\":{\"access_token\":\"opaque\"}}");
+        let manifest = serde_json::json!({
+            "version": "2",
+            "run_id": "run_123",
+            "lease_id": "assignment_123",
+            "outer_runtime_id": "vm_123",
+            "workspace": workspace,
+            "repository": { "path": repository, "revision": "a".repeat(40) },
+            "task_branch": "feature/coding-demo",
+            "tunnel_placement": "outer",
+            "published_ports": [{"host": 3000, "runtime": 3000}],
+            "leases": [{
+                "lease_id": "lease_credential",
+                "scope": "provider-credential",
+                "consumer": "coding-agent",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "materializations": [{
+                    "source_path": credential.clone(),
+                    "target_path": target,
+                    "sha256": file_sha256(&credential).unwrap()
+                }]
+            }]
+        });
+        let manifest_path = root.path().join("branchbox-in-guest.json");
+        private_write(
+            &manifest_path,
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        (root, manifest_path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_credential_places_one_signed_file_at_the_path_its_provider_reads() {
+        let (_root, manifest_path) = provider_credential_fixture("/home/vscode/.codex/auth.json");
+
+        let assignment = load_assignment(&manifest_path).unwrap();
+
+        let mounts = assignment.signed_mounts();
+        assert_eq!(mounts.len(), 1);
+        assert!(
+            mounts
+                .keys()
+                .any(|(_source, target)| target == Path::new("/home/vscode/.codex/auth.json")),
+            "the credential is placed where its provider reads it: {mounts:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_credential_refuses_a_target_that_is_not_an_individual_file_outside_the_lease_root()
+    {
+        for target in [
+            // The lease root is where every other file target belongs, and every
+            // bind below it is read-only.
+            "/run/branchbox/leases/shared/auth.json",
+            // A bare root entry names no directory for the provider to write in.
+            "/auth.json",
+            "relative/auth.json",
+            "/home/vscode/../../etc/shadow",
+            // The ambient authority and secret locations any managed mount refuses.
+            "/home/vscode/.ssh/auth.json",
+            "/run/secrets/auth.json",
+        ] {
+            let (_root, manifest_path) = provider_credential_fixture(target);
+
+            assert!(
+                load_assignment(&manifest_path).is_err(),
+                "target must be refused: {target}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_credential_requires_one_live_digest_bound_materialization() {
+        let (root, manifest_path) = provider_credential_fixture("/home/vscode/.codex/auth.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap()
+        };
+
+        // Without a digest the file's contents are unbound.
+        let mut manifest = read();
+        manifest["leases"][0]["materializations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("sha256");
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(load_assignment(&manifest_path).is_err());
+
+        // An expired lease is not a live one.
+        let mut manifest = read();
+        manifest["leases"][0]["expires_at"] = serde_json::json!("2000-01-01T00:00:00Z");
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(load_assignment(&manifest_path).is_err());
+
+        // And the scope places exactly one file, not none and not several.
+        let mut manifest = read();
+        manifest["leases"][0]["materializations"] = serde_json::json!([]);
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(load_assignment(&manifest_path).is_err());
+        drop(root);
     }
 
     #[cfg(unix)]
