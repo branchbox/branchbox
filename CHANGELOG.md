@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a `provider-credential` lease scope that binds one signed credential file at the path its
+  provider reads, rather than below the lease root every other file target is pinned to. The file
+  stays read-only and digest-bound and is inspected on the running container like any other signed
+  bind; only the directory holding it belongs to the container. This is what a provider needs when
+  it keeps state beside its credential: Codex authenticates from `auth.json` in `CODEX_HOME` and
+  opens a sqlite state database in the same directory, so a credential home delivered as a
+  read-only directory let it read its credential and then fail to start.
 - Add an Agentify-oriented `in-guest` runtime that reconciles a BranchBox worktree and explicit
   devcontainer facade inside an already-owned Firecracker guest, validates opaque lease file paths
   and digests, publishes loopback-only ports, exposes correlated container/runtime identity, and
