@@ -3864,11 +3864,14 @@ fn validate_consumer_readable_regular_file(path: &Path, description: &str) -> Re
             "In-guest {description} must be a regular non-symlink file"
         )));
     }
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode & 0o022 != 0 || mode & 0o444 != 0o444 {
-        return Err(Error::validation(format!(
-            "In-guest {description} must be readable by its consumer and writable only by its owner (0644)"
-        )));
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o022 != 0 || mode & 0o444 != 0o444 {
+            return Err(Error::validation(format!(
+                "In-guest {description} must be readable by its consumer and writable only by its owner (0644)"
+            )));
+        }
     }
     fs::canonicalize(path)
         .map_err(|err| Error::validation(format!("Cannot resolve in-guest {description}: {err}")))
