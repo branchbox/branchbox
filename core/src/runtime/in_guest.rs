@@ -3912,9 +3912,15 @@ fn validate_run_owned_managed_source(
             "Managed mount source must retain exact run ownership",
         ));
     }
-    let source_kind = managed_source_kind(&metadata).ok_or_else(|| {
-        Error::validation("Managed mount source must be a non-symlink directory or Unix socket")
-    })?;
+    // A run-owned managed source is a directory or a Unix socket. A regular
+    // file is a valid source only for a provider-credential lease, which does
+    // not come through here; it stays refused for these scopes even though the
+    // classifier now knows the kind.
+    let source_kind = managed_source_kind(&metadata)
+        .filter(|kind| *kind != ManagedSourceKind::File)
+        .ok_or_else(|| {
+            Error::validation("Managed mount source must be a non-symlink directory or Unix socket")
+        })?;
     if scope == LeaseScope::SharedDirectory && source_kind != ManagedSourceKind::Directory {
         return Err(Error::validation(
             "Shared-directory leases require an owner-only source directory",
