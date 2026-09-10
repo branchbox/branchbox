@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Inspect a `provider-credential` source as the private regular file it was admitted as. The
+  post-start inspection classified only directories and sockets, so an admitted credential file
+  was reported as "source type changed after assignment validation" and the run failed after
+  the devcontainer had started.
+
 ### Added
 
 - Add a `provider-credential` lease scope that binds one signed credential file at the path its

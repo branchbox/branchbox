@@ -3957,6 +3957,11 @@ fn managed_source_kind(metadata: &fs::Metadata) -> Option<ManagedSourceKind> {
     if metadata.file_type().is_dir() {
         return Some(ManagedSourceKind::Directory);
     }
+    // A regular file, not a symlink: the metadata comes from symlink_metadata,
+    // so a link reports its own type here and is refused as unknown.
+    if metadata.file_type().is_file() {
+        return Some(ManagedSourceKind::File);
+    }
     #[cfg(unix)]
     if metadata.file_type().is_socket() {
         return Some(ManagedSourceKind::Socket);
@@ -3983,7 +3988,9 @@ fn validate_managed_source_kind(
             ManagedSourceKind::Directory if scope == LeaseScope::SharedDirectory => mode == 0o755,
             ManagedSourceKind::Directory => mode == 0o700,
             ManagedSourceKind::Socket => mode & 0o077 == 0 && mode & 0o600 == 0o600,
-            ManagedSourceKind::File => false,
+            // A placed credential file is private to its owner, exactly as
+            // validation required when it was admitted.
+            ManagedSourceKind::File => mode & 0o077 == 0 && mode & 0o400 == 0o400,
         };
         if !safe {
             return Err(Error::validation(
@@ -5620,6 +5627,48 @@ mod tests {
                 .any(|(_source, target)| target == Path::new("/home/vscode/.codex/auth.json")),
             "the credential is placed where its provider reads it: {mounts:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_credential_source_is_inspected_as_the_private_file_it_was_admitted_as() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("credential");
+        private_write(&file, b"{}");
+
+        validate_managed_source_kind(
+            &file,
+            ManagedSourceKind::File,
+            LeaseScope::ProviderCredential,
+        )
+        .expect("a private regular file is the kind that was admitted");
+
+        // Loosened permissions no longer match what was admitted.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(validate_managed_source_kind(
+            &file,
+            ManagedSourceKind::File,
+            LeaseScope::ProviderCredential,
+        )
+        .is_err());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // Neither does a link where the file was, nor a directory.
+        let link = root.path().join("credential-link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(validate_managed_source_kind(
+            &link,
+            ManagedSourceKind::File,
+            LeaseScope::ProviderCredential,
+        )
+        .is_err());
+        assert!(validate_managed_source_kind(
+            root.path(),
+            ManagedSourceKind::File,
+            LeaseScope::ProviderCredential,
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
