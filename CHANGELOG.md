@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `provider-credential` source is admitted and inspected as readable by its consumer (0644)
+  rather than private to the runtime: a bind preserves the source's owner and mode, and the
+  provider runs inside the container as a different user, so a 0600 credential was delivered
+  unreadable. The file still lives in the run's owner-only materializations directory.
 - Inspect a `provider-credential` source as the private regular file it was admitted as. The
   post-start inspection classified only directories and sockets, so an admitted credential file
   was reported as "source type changed after assignment validation" and the run failed after

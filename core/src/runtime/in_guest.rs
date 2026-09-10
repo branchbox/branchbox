@@ -3527,10 +3527,17 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     lease.scope,
                 )?
             } else {
-                let source = validate_private_regular_file(
-                    &materialization.source_path,
-                    "lease materialization",
-                )?;
+                let source = if lease.scope == LeaseScope::ProviderCredential {
+                    validate_consumer_readable_regular_file(
+                        &materialization.source_path,
+                        "provider-credential materialization",
+                    )?
+                } else {
+                    validate_private_regular_file(
+                        &materialization.source_path,
+                        "lease materialization",
+                    )?
+                };
                 if !source.starts_with(materialization_root.as_ref().expect("validated above")) {
                     return Err(Error::validation(
                         "Lease materialization source escapes the assignment materializations directory",
@@ -3837,6 +3844,36 @@ fn validate_private_regular_file(path: &Path, description: &str) -> Result<PathB
     fs::canonicalize(path).map_err(Into::into)
 }
 
+/// A provider-credential source must be readable by the provider's user, which
+/// is not the runtime's: a bind preserves the source's ownership and mode, and
+/// the provider runs inside the container as the consumer. So the file is
+/// world-readable and writable by nobody but its owner. It lives inside the
+/// run's owner-only materializations directory, which is what keeps it private
+/// on the guest; the bind alone carries it past that directory.
+fn validate_consumer_readable_regular_file(path: &Path, description: &str) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        return Err(Error::validation(format!(
+            "In-guest {description} must be an absolute path"
+        )));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|err| {
+        Error::validation(format!("Cannot inspect in-guest {description}: {err}"))
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(Error::validation(format!(
+            "In-guest {description} must be a regular non-symlink file"
+        )));
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o022 != 0 || mode & 0o444 != 0o444 {
+        return Err(Error::validation(format!(
+            "In-guest {description} must be readable by its consumer and writable only by its owner (0644)"
+        )));
+    }
+    fs::canonicalize(path)
+        .map_err(|err| Error::validation(format!("Cannot resolve in-guest {description}: {err}")))
+}
+
 fn validate_run_owned_managed_source(
     manifest_path: &Path,
     run_id: &str,
@@ -3994,9 +4031,10 @@ fn validate_managed_source_kind(
             ManagedSourceKind::Directory if scope == LeaseScope::SharedDirectory => mode == 0o755,
             ManagedSourceKind::Directory => mode == 0o700,
             ManagedSourceKind::Socket => mode & 0o077 == 0 && mode & 0o600 == 0o600,
-            // A placed credential file is private to its owner, exactly as
-            // validation required when it was admitted.
-            ManagedSourceKind::File => mode & 0o077 == 0 && mode & 0o400 == 0o400,
+            // A placed credential file is readable by its consumer and writable
+            // only by its owner, exactly as validation required when it was
+            // admitted: the provider runs as a different user than the runtime.
+            ManagedSourceKind::File => mode & 0o022 == 0 && mode & 0o444 == 0o444,
         };
         if !safe {
             return Err(Error::validation(
@@ -5588,6 +5626,8 @@ mod tests {
         fs::create_dir_all(&materializations).unwrap();
         let credential = materializations.join("provider-credential");
         private_write(&credential, b"{\"tokens\":{\"access_token\":\"opaque\"}}");
+        // Readable by the consumer the provider runs as, not only by the runtime.
+        std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o644)).unwrap();
         let manifest = serde_json::json!({
             "version": "2",
             "run_id": "run_123",
@@ -5623,7 +5663,8 @@ mod tests {
     fn provider_credential_places_one_signed_file_at_the_path_its_provider_reads() {
         let (_root, manifest_path) = provider_credential_fixture("/home/vscode/.codex/auth.json");
 
-        let assignment = load_assignment(&manifest_path).unwrap();
+        let assignment = load_assignment(&manifest_path)
+            .unwrap_or_else(|err| panic!("provider credential must load: {err}"));
 
         let mounts = assignment.signed_mounts();
         assert_eq!(mounts.len(), 1);
@@ -5642,23 +5683,30 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("credential");
         private_write(&file, b"{}");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
 
         validate_managed_source_kind(
             &file,
             ManagedSourceKind::File,
             LeaseScope::ProviderCredential,
         )
-        .expect("a private regular file is the kind that was admitted");
+        .expect("a consumer-readable regular file is the kind that was admitted");
 
-        // Loosened permissions no longer match what was admitted.
+        // Neither a file its consumer cannot read nor one others could write
+        // matches what was admitted.
+        for mode in [0o600, 0o664, 0o646] {
+            fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(
+                validate_managed_source_kind(
+                    &file,
+                    ManagedSourceKind::File,
+                    LeaseScope::ProviderCredential,
+                )
+                .is_err(),
+                "mode {mode:o} must be refused"
+            );
+        }
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(validate_managed_source_kind(
-            &file,
-            ManagedSourceKind::File,
-            LeaseScope::ProviderCredential,
-        )
-        .is_err());
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
 
         // Neither does a link where the file was, nor a directory.
         let link = root.path().join("credential-link");
