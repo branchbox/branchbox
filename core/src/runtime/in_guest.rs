@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 #[cfg(unix)]
@@ -2614,16 +2614,20 @@ fn persist_new_owner_only_file(path: &Path, bytes: &[u8]) -> Result<bool> {
 }
 
 fn create_owner_only_directory(path: &Path) -> Result<()> {
-    if path.exists() {
-        validate_private_directory(path, "tool-request replay ledger")?;
-        return Ok(());
+    // Two dispatchers may open the ledger at the same moment. The directory
+    // is created with its owner-only mode in the same call, so a dispatcher
+    // that loses the race and finds it already present never sees it before
+    // its permissions are in place. Whoever created it, both then validate it.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
-    fs::create_dir_all(path)?;
+    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(path)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(path, permissions)?;
+    builder.mode(0o700);
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err.into()),
     }
     validate_private_directory(path, "tool-request replay ledger")?;
     Ok(())

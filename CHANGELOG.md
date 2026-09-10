@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Create the in-guest tool-request replay ledger with its owner-only mode in one step. Two
+  dispatchers opening the ledger at the same moment could have the second find the directory
+  before the first had set its permissions, and refuse it as not owner-only.
 - Build on non-Unix targets again: the consumer-readable check on a `provider-credential`
   source reads Unix file modes and is now gated to Unix like the private-file check beside it.
 
