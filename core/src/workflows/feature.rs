@@ -4469,6 +4469,16 @@ fn sanitize_in_guest_compose_source(
             if sanitization.primary_service == Some(name_string) {
                 service.remove(serde_yaml::Value::String("environment".to_string()));
             }
+            if let Some(environment) = service.get("environment") {
+                reject_in_guest_compose_environment_passthrough(environment)?;
+            }
+            if let Some(args) = service
+                .get("build")
+                .map(untag_in_guest_compose_value)
+                .and_then(|build| build.get("args"))
+            {
+                reject_in_guest_compose_build_arg_passthrough(args)?;
+            }
             if let Some(dependencies) =
                 service.get_mut(serde_yaml::Value::String("depends_on".to_string()))
             {
@@ -4498,7 +4508,7 @@ fn reject_ambient_compose_interpolation(value: &serde_yaml::Value) -> Result<()>
         serde_yaml::Value::String(value) if contains_unescaped_compose_variable(value) => {
             // cause-withheld: the untrusted scalar can contain credential material.
             Err(Error::validation(
-                "In-guest Compose rejects ambient variable interpolation in a retained field; use a fixed value or escape '$' as '$$' for container-side expansion",
+                "In-guest Compose rejects ambient variable interpolation in a Compose field; use a fixed value or escape '$' as '$$' for container-side expansion",
             ))
         }
         serde_yaml::Value::Mapping(mapping) => {
@@ -4517,6 +4527,39 @@ fn reject_ambient_compose_interpolation(value: &serde_yaml::Value) -> Result<()>
         serde_yaml::Value::Tagged(tagged) => reject_ambient_compose_interpolation(&tagged.value),
         _ => Ok(()),
     }
+}
+
+fn untag_in_guest_compose_value(mut value: &serde_yaml::Value) -> &serde_yaml::Value {
+    while let serde_yaml::Value::Tagged(tagged) = value {
+        value = &tagged.value;
+    }
+    value
+}
+
+fn reject_in_guest_compose_environment_passthrough(value: &serde_yaml::Value) -> Result<()> {
+    reject_in_guest_compose_passthrough(value, "environment")
+}
+
+fn reject_in_guest_compose_build_arg_passthrough(value: &serde_yaml::Value) -> Result<()> {
+    reject_in_guest_compose_passthrough(value, "build.args")
+}
+
+fn reject_in_guest_compose_passthrough(value: &serde_yaml::Value, field: &str) -> Result<()> {
+    let passthrough = match untag_in_guest_compose_value(value) {
+        serde_yaml::Value::Mapping(entries) => entries.values().any(serde_yaml::Value::is_null),
+        serde_yaml::Value::Sequence(entries) => entries
+            .iter()
+            .filter_map(serde_yaml::Value::as_str)
+            .any(|entry| !entry.contains('=')),
+        _ => false,
+    };
+    if passthrough {
+        // cause-withheld: an untrusted variable name can identify credential material.
+        return Err(Error::validation(format!(
+            "In-guest Compose rejects valueless {field} entries because Compose can inherit ambient host variables"
+        )));
+    }
+    Ok(())
 }
 
 fn contains_unescaped_compose_variable(value: &str) -> bool {
@@ -4989,6 +5032,12 @@ fn effective_in_guest_workspace_folder(
         .and_then(|name| name.to_str())
         .unwrap_or("workspace");
     let folder = config.effective_workspace_folder(basename);
+    if contains_unescaped_compose_variable(&folder) {
+        // cause-withheld: the untrusted folder can contain credential material.
+        return Err(Error::validation(
+            "In-guest workspaceFolder rejects ambient variable interpolation because Compose expands generated mount targets",
+        ));
+    }
     let path = Path::new(&folder);
     if !path.is_absolute()
         || path == Path::new("/workspaces")
@@ -5300,6 +5349,10 @@ fn prepare_outer_tunnel_compose_override(
             );
         }
     }
+    // Paths and names supplied by the signed assignment or the task checkout
+    // also become Compose values. Refuse interpolation in this generated file,
+    // even when every repository source was sanitized.
+    reject_ambient_compose_interpolation(&document)?;
     let rendered = serde_yaml::to_string(&document)
         .map_err(|err| Error::config(format!("Failed to serialize Compose facade: {err}")))?;
     write_managed_in_guest_generated_text_file(
@@ -10415,6 +10468,126 @@ volumes:
         }
     }
 
+    #[test]
+    fn test_in_guest_rejects_implicit_compose_host_environment_passthrough() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        let compose_path = devcontainer_dir.join("compose.yaml");
+        let plan = InGuestFacadePlan::empty_for_tests();
+
+        for (field, dependency) in [
+            ("environment", "environment: [HOST_SECRET]"),
+            ("environment", "environment: {HOST_SECRET: null}"),
+            ("build.args", "build: {context: ., args: [HOST_SECRET]}"),
+            (
+                "build.args",
+                "build: {context: ., args: {HOST_SECRET: null}}",
+            ),
+        ] {
+            fs::write(
+                &compose_path,
+                format!(
+                    "services:\n  app: {{image: alpine:3.19, depends_on: [database]}}\n  database:\n    image: postgres:16\n    {dependency}\n"
+                ),
+            )
+            .unwrap();
+            let error =
+                prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap_err();
+            assert!(
+                error.to_string().contains(&format!("valueless {field}")),
+                "{error}"
+            );
+            assert!(!error.to_string().contains("HOST_SECRET"));
+            assert!(!devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        }
+
+        fs::write(
+            &compose_path,
+            "services:\n  app: {image: alpine:3.19, depends_on: [database]}\n  database:\n    image: postgres:16\n    environment: [HOST_SECRET=fixed, EMPTY=]\n    build: {context: ., args: [RELEASE_CHANNEL=stable, LITERAL=$$HOST_SECRET]}\n",
+        )
+        .unwrap();
+        prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
+        let generated: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+        )
+        .unwrap();
+        let references = generated["dockerComposeFile"].as_array().unwrap();
+        let sanitized =
+            fs::read_to_string(devcontainer_dir.join(references[0].as_str().unwrap())).unwrap();
+        assert!(sanitized.contains("HOST_SECRET=fixed"));
+        assert!(sanitized.contains("LITERAL=$$HOST_SECRET"));
+
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+            let mut command = Command::new("docker");
+            command.arg("compose");
+            for reference in references {
+                command
+                    .arg("-f")
+                    .arg(devcontainer_dir.join(reference.as_str().unwrap()));
+            }
+            let output = command
+                .args(["config", "--format", "json"])
+                .env("COMPOSE_PROJECT_NAME", "branchbox-implicit-env-test")
+                .env("HOST_SECRET", "synthetic-private-value")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Compose rejected sanitized inputs: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let database = &effective["services"]["database"];
+            assert_eq!(database["environment"]["HOST_SECRET"], "fixed");
+            assert_eq!(database["environment"]["EMPTY"], "");
+            assert_eq!(database["build"]["args"]["RELEASE_CHANNEL"], "stable");
+            assert_eq!(database["build"]["args"]["LITERAL"], "$$HOST_SECRET");
+            assert!(!output
+                .stdout
+                .windows(23)
+                .any(|part| part == b"synthetic-private-value"));
+        }
+    }
+
+    #[test]
+    fn test_in_guest_generated_compose_facade_rejects_path_interpolation() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("${HOST_SECRET}");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let source: serde_yaml::Value =
+            serde_yaml::from_str("services:\n  app: {image: alpine:3.19}\n").unwrap();
+        let error = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            &[source],
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &BTreeMap::new(),
+                workspace_consumer: false,
+                private_stage: None,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("ambient variable interpolation"));
+        assert!(!error.to_string().contains("HOST_SECRET"));
+        assert!(!devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_in_guest_rejects_unsafe_input_paths_before_read_or_write() {
@@ -10825,6 +10998,8 @@ volumes:
             "/etc/task",
             "/run/agentify-runtime/task",
             "/run/branchbox/leases/code",
+            "/workspaces/${HOST_SECRET}",
+            "/workspaces/$HOST_SECRET",
         ] {
             let config = DevcontainerConfig {
                 workspace_folder: Some(folder.to_string()),
