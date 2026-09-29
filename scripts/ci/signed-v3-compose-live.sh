@@ -77,8 +77,12 @@ workspace="$BBX_LIVE_ROOT/workspace"
 repository="$workspace/main"
 worktree="$workspace/live"
 run_root="$BBX_LIVE_ROOT/run"
-mkdir -p "$repository/.devcontainer" "$run_root"
+mkdir -p "$repository/.devcontainer" "$run_root/materializations"
 chmod 0700 "$run_root"
+credential="$run_root/materializations/signed-fixture"
+printf 'signed-fixture\n' > "$credential"
+chmod 0644 "$credential"
+credential_digest="$(sha256sum "$credential" | cut -d' ' -f1)"
 
 git init -q "$repository"
 git -C "$repository" config user.name 'BranchBox live check'
@@ -126,13 +130,20 @@ jq -n \
   --arg repository "$repository" \
   --arg revision "$revision" \
   --arg image "$BBX_IMAGE" \
+  --arg credential "$credential" \
+  --arg credential_digest "$credential_digest" \
   '{
     version:"3",run_id:"signed_v3_live_run",lease_id:"signed_v3_live_assignment",
     outer_runtime_id:"disposable_linux_ci",workspace:$workspace,
     repository:{path:$repository,revision:$revision},
     task_branch:"feature/live",tunnel_placement:"outer",published_ports:[],
     service_images:{app:$image},workspace_consumer:{uid:1000,gid:1000},
-    leases:[{lease_id:"outer_tunnel",scope:"platform-tunnel",consumer:"outer-connector",materializations:[]}]
+    leases:[
+      {lease_id:"outer_tunnel",scope:"platform-tunnel",consumer:"outer-connector",materializations:[]},
+      {lease_id:"bound_fixture",scope:"provider-credential",consumer:"coding-agent",
+       expires_at:"2099-01-01T00:00:00Z",
+       materializations:[{source_path:$credential,target_path:"/tmp/branchbox-signed-fixture",sha256:$credential_digest}]}
+    ]
   }' > "$run_root/assignment.json"
 chmod 0600 "$run_root/assignment.json"
 # Setup is performed by the test supervisor; the actual BranchBox runtime
@@ -219,12 +230,14 @@ container_uid="$(docker exec "$container_id" id -u)"
 container_gid="$(docker exec "$container_id" id -g)"
 test "$container_uid" = 1000
 test "$container_gid" = 1000
+test "$(docker exec "$container_id" cat /tmp/branchbox-signed-fixture)" = signed-fixture
 coding_uid="$(runtime_command env COMPOSE_PROJECT_NAME="$managed_project" devcontainer exec --workspace-folder "$worktree" --config "$stage/.devcontainer.json" id -u)"
 test "$coding_uid" = 1000
-jq -e --arg worktree "$worktree" --arg git "$repository/.git" '
+jq -e --arg worktree "$worktree" --arg git "$repository/.git" --arg credential "$credential" '
   .[0] as $container |
-  ($container.Mounts | length) == 2 and
-  ([$container.Mounts[].Source] | sort) == ([$worktree,$git] | sort) and
+  ($container.Mounts | length) == 3 and
+  ([$container.Mounts[].Source] | sort) == ([$worktree,$git,$credential] | sort) and
+  ([$container.Mounts[] | select(.Source == $credential) | .RW] == [false]) and
   ($container.HostConfig.PortBindings | length) == 0 and
   ($container.Config.Env | map(select(test("HOST_AUTH|TUNNEL_TOKEN"))) | length) == 0
 ' "$BBX_LIVE_ROOT/container-inspect.json"
@@ -235,6 +248,7 @@ cat "$BBX_LIVE_ROOT/teardown.stdout"
 jq -e '.runtime_teardown.verified == true and .runtime_teardown.residue_free == true' "$BBX_LIVE_ROOT/teardown.stdout"
 test ! -e "$worktree"
 test ! -e "$stage"
+test ! -e "$credential"
 test -z "$(docker ps -aq --filter "label=devcontainer.local_folder=$worktree")"
 test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$compose_project")"
 test -z "$(docker network ls -q --filter "label=com.docker.compose.project=$compose_project")"

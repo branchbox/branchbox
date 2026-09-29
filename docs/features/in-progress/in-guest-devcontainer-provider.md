@@ -14,7 +14,7 @@ branchbox feature start coding-demo \
   --json
 ```
 
-The manifest may live at any absolute path. It and every materialization must be an owner-only, regular, non-symlink file. Materializations must be below the manifest's sibling `materializations/` directory; BranchBox never accepts a value, token, URL, or secret on the command line.
+Managed launches require a separate task worktree, a signed version 3 assignment, a non-root workspace consumer UID and GID distinct from the BranchBox runtime, and immutable preloaded image references for every runnable Compose service. `--no-worktree` is rejected because mounting the repository would expose the provider-state parent directory to the coding consumer. The manifest must live in a runtime-owned, non-symlink `0700` run directory outside the shared workspace. BranchBox stages the generated config and Compose inputs there, verifies that the private stage is disjoint from signed container binds and that the run directory is disjoint from the implicit shared-Git bind, then delegates workspace access. Individual signed materialization files may be bound from a sibling directory under the private run root; the coding UID cannot reach or replace the stage through those file binds. The manifest and every materialization must be owner-only, regular, non-symlink files, except a provider-credential file that is explicitly consumer-readable. Materializations must be below the manifest's sibling `materializations/` directory; BranchBox never accepts a value, token, URL, or secret on the command line.
 
 ```json
 {
@@ -29,6 +29,11 @@ The manifest may live at any absolute path. It and every materialization must be
   },
   "task_branch": "feature/coding-demo",
   "workspace_consumer": { "uid": 1000, "gid": 1000 },
+  "service_images": {
+    "rails-app": "registry.example/team/rails-app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "postgres": "registry.example/team/postgres@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "port_proxy_image": "registry.example/runtime/tcp-proxy@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "tunnel_placement": "outer",
   "published_ports": [{ "host": 3000, "runtime": 3000 }],
   "leases": [
@@ -68,8 +73,10 @@ must support POSIX default ACLs; delegation fails closed when it does not.
 
 The outer runtime must start the unprivileged BranchBox process with the signed consumer GID as a
 supplementary group. This is a narrow delegation, not root authority: the process can group-share
-its own task paths but cannot change ownership or access unrelated files. Omitting this integration
-preserves the version 1 or version 2 behavior and performs no workspace permission delegation.
+its own task paths but cannot change ownership or access unrelated files. Version 1 and version 2
+assignments remain parseable for legacy metadata and recovery, but cannot start or resume a managed
+in-guest devcontainer. A preexisting provider state without the exact signed Compose project name
+also cannot be automatically torn down; the outer VM owner must clean it up separately.
 
 Because the worktree stays owned by the runtime UID, Git would refuse every command in the coding
 container with `detected dubious ownership`. Version 3 therefore also gives the primary Compose
@@ -96,7 +103,7 @@ Successful JSON output includes the resolved worktree and this runtime identity:
   "container_id": "docker-container-id",
   "workspace_folder": "/workspaces/coding-demo",
   "container_user": "vscode",
-  "config_path": "/workspace/coding-demo/.devcontainer/.devcontainer.json",
+  "config_path": "/run/agentify-runtime/branchbox-compose-<worktree-hash>/.devcontainer.json",
   "in_guest": {
     "run_id": "run_opaque",
     "assignment_lease_id": "assignment_lease_opaque",
@@ -156,7 +163,7 @@ branchbox feature teardown coding-demo \
   --json
 ```
 
-`runtime_teardown` reports `provider`, `runtime_id`, `verified`, `residue_free`, and typed `residue`. Before startup, BranchBox records lexical/canonical workspace paths, deterministic Compose candidates, proxy names, and assignment identity. Even if `devcontainer up` fails after creating only dependency services, cleanup discovers ownership through exact `devcontainer.local_folder` and Compose project/working-directory/config-file labels. BranchBox removes the exact containers, project networks and volumes, loopback port proxies, individual materialization files, provider state, failed worktree, and failed task branch. A later teardown can recover owner-only provider state without registry metadata and bypasses all repository tunnel/database/Compose/spec modules and adapters. Provider state is retained when residue remains so cleanup can be retried. The generated facade disappears with the worktree. Image/build cache retention is currently outside residue accounting and is a documented execution-plane policy decision.
+`runtime_teardown` reports `provider`, `runtime_id`, `verified`, `residue_free`, and typed `residue`. Before startup, BranchBox records the signed-run-derived Compose project name, workspace paths, proxy names, and assignment identity. Even if `devcontainer up` fails after creating only dependency services, cleanup uses that exact persisted project name and verifies ownership labels. It never treats a repository top-level Compose `name` or basename as a cleanup candidate. BranchBox removes the owned containers, project networks and volumes, loopback port proxies, individual materialization files, provider state, failed worktree, failed task branch, and private Compose stage. A later teardown can recover owner-only provider state without registry metadata and bypasses repository modules and adapters. State without a bound managed project name fails closed and requires outer-VM/operator cleanup. Provider state is retained when residue remains so cleanup can be retried. Image/build cache retention is currently outside residue accounting and is a documented execution-plane policy decision.
 
 ## Agentify canary prerequisites
 

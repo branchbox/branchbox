@@ -8,6 +8,12 @@ BranchBox's `in-guest` runtime accepts an orchestrator-owned, versioned assignme
 describes identities and materializations without teaching BranchBox about a particular platform,
 coding provider, source host, tunnel vendor, or secret manager.
 
+The version 2 fields below remain supported for assignment parsing and legacy recovery. Managed
+Dev Containers launches now require version 3 with a distinct non-root workspace consumer and a
+complete immutable `service_images` map. Version 1/2 and no-consumer launches fail before CLI
+preflight. Legacy provider state without the signed-run-derived Compose project name cannot be
+automatically torn down and requires outer-VM/operator cleanup.
+
 Version 2 separates three identities:
 
 - `consumer` is an arbitrary name used to bind related leases.
@@ -78,16 +84,15 @@ When preloaded service mode publishes one or more ports, `port_proxy_image` is r
 the same immutable-reference rules. BranchBox inspects that exact image locally before startup and
 passes it as an argument to the out-of-Compose loopback proxy launch with Docker `--pull=never`.
 This closes the only image path outside the generated Compose facade. A version 2 assignment may
-also set `port_proxy_image` independently of `service_images`; version 1 and version 2 assignments
-without preloaded service images retain the legacy proxy image when this field is absent.
+also set `port_proxy_image` independently of `service_images` for legacy parsing, but cannot launch
+a managed devcontainer.
 
 BranchBox writes the assigned `image`, resets the repository `build`, and sets `pull_policy: never`
 for each bound service. It also removes devcontainer `build` and `features`, disables remote-user UID
 image rewriting, and verifies every assigned reference with a local Docker image inspection before
 running the Dev Containers CLI. A missing image therefore fails the assignment instead of building
-or pulling during the task. Omitting `service_images` preserves existing Compose startup behavior;
-omitting both preloaded-image fields preserves the complete version 1 and existing version 2
-startup behavior.
+or pulling during the task. Managed launches with omitted or incomplete `service_images` fail
+closed before the CLI can read writable generated files or resolve relative build paths.
 
 ## Shared directory, tool endpoint, and request-spool leases
 

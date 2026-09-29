@@ -3,8 +3,48 @@
 //! Provides functionality for creating, managing, and removing git worktrees.
 
 use crate::{Error, Result};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Resolve the shared Git directory, including repositories that use a linked
+/// worktree or an external `--separate-git-dir` location.
+pub(crate) fn repository_common_git_dir(repo_root: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| {
+            Error::git(format!(
+                "Failed to resolve repository shared Git metadata: {err}"
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(Error::git(format!(
+            "Failed to resolve repository shared Git metadata: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Err(Error::validation(
+            "Repository shared Git metadata path is empty".to_string(),
+        ));
+    }
+    let common_dir = PathBuf::from(raw);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        repo_root.join(common_dir)
+    };
+    fs::canonicalize(&common_dir).map_err(|err| {
+        Error::validation(format!(
+            "Cannot validate repository shared Git metadata at '{}': {err}",
+            common_dir.display()
+        ))
+    })
+}
 
 /// Git worktree manager
 #[derive(Debug)]

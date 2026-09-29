@@ -2,7 +2,7 @@ use crate::{
     adapters,
     config::BranchBoxConfig,
     devcontainer_runtime::DevcontainerConfig,
-    git::GitWorktree,
+    git::{repository_common_git_dir, GitWorktree},
     modules::{self, ModuleHandle, SpecStatus},
     naming,
     runtime::{
@@ -413,8 +413,17 @@ impl FeatureWorkflow {
                 "--keep-runtime-on-failure and --reuse-runtime are only supported with the SBX runtime",
             ));
         }
+        if runtime_kind == RuntimeProviderKind::InGuest
+            && request.workspace_mode == WorkspaceMode::Repository
+        {
+            return Err(Error::validation(
+                "Managed in-guest launch requires a separate task worktree so the coding consumer cannot remove provider state from the mounted repository",
+            ));
+        }
         let runtime_provider = runtime::provider(runtime_kind)?;
-        runtime_provider.validate()?;
+        if runtime_kind != RuntimeProviderKind::InGuest {
+            runtime_provider.validate()?;
+        }
         let branch_prefix = request
             .branch_prefix
             .clone()
@@ -482,12 +491,14 @@ impl FeatureWorkflow {
             },
         )?;
         let in_guest_plan = if runtime_kind == RuntimeProviderKind::InGuest {
+            let manifest_path = request
+                .runtime_manifest
+                .as_deref()
+                .expect("validated in-guest manifest");
+            runtime::require_secure_in_guest_launch_assignment(manifest_path)?;
             validate_untrusted_checkout_attributes(&self.repo_root, &repository_revision)?;
             Some(runtime::load_in_guest_facade_plan(
-                request
-                    .runtime_manifest
-                    .as_deref()
-                    .expect("validated in-guest manifest"),
+                manifest_path,
                 &self.repo_root,
                 workspace_mount_path,
                 &worktree_path,
@@ -552,9 +563,10 @@ impl FeatureWorkflow {
         // This must be the first repository-content processing step in the trusted guest. It
         // strips host lifecycle hooks and ambient mounts before any Dev Containers command runs.
         if let Some(plan) = in_guest_plan.as_ref() {
-            if let Err(err) =
+            let prepared =
                 prepare_in_guest_devcontainer_config(&self.repo_root, &worktree_path, plan)
-            {
+                    .and_then(|()| runtime_provider.validate());
+            if let Err(err) = prepared {
                 self.cleanup_failed_in_guest_worktree(
                     &worktree_path,
                     &branch_name,
@@ -3481,43 +3493,6 @@ impl FeatureWorkflow {
     }
 }
 
-fn repository_common_git_dir(repo_root: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|err| {
-            Error::git(format!(
-                "Failed to resolve repository shared Git metadata: {err}"
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(Error::git(format!(
-            "Failed to resolve repository shared Git metadata: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if raw.is_empty() {
-        return Err(Error::validation(
-            "Repository shared Git metadata path is empty".to_string(),
-        ));
-    }
-    let common_dir = PathBuf::from(raw);
-    let common_dir = if common_dir.is_absolute() {
-        common_dir
-    } else {
-        repo_root.join(common_dir)
-    };
-    fs::canonicalize(&common_dir).map_err(|err| {
-        Error::validation(format!(
-            "Cannot validate repository shared Git metadata at '{}': {err}",
-            common_dir.display()
-        ))
-    })
-}
-
 fn relative_path_between(from: &Path, to: &Path) -> Option<PathBuf> {
     let from_components: Vec<_> = from.components().collect();
     let to_components: Vec<_> = to.components().collect();
@@ -3582,6 +3557,9 @@ fn prepare_in_guest_devcontainer_config(
 ) -> Result<()> {
     let devcontainer_dir = worktree_path.join(".devcontainer");
     let private_stage = plan.private_compose_stage_dir(worktree_path)?;
+    if let Some(stage) = private_stage.as_deref() {
+        runtime::validate_private_compose_stage_git_mount(stage, repo_root)?;
+    }
     let output_dir = private_stage.as_deref().unwrap_or(&devcontainer_dir);
     let directory_metadata = fs::symlink_metadata(&devcontainer_dir).map_err(|err| {
         Error::validation(format!(

@@ -9,7 +9,9 @@ use super::{
     exec_result, RuntimeContext, RuntimeExecResult, RuntimeMetadata, RuntimePort, RuntimeProvider,
     RuntimeProviderKind, RuntimeResidue, RuntimeTeardownReport, RuntimeToolDispatchResult,
 };
-use crate::{devcontainer_runtime::DevcontainerConfig, Error, Result};
+use crate::{
+    devcontainer_runtime::DevcontainerConfig, git::repository_common_git_dir, Error, Result,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -418,7 +420,9 @@ impl InGuestFacadePlan {
                 "Workspace-consumer Compose requires signed preloaded images for every runnable service; relative build paths cannot be staged privately",
             ));
         }
-        private_compose_stage_dir(&self.manifest_path, worktree_path, consumer.uid).map(Some)
+        let stage = private_compose_stage_dir(&self.manifest_path, worktree_path, consumer.uid)?;
+        validate_private_compose_stage_mounts(&stage, &self.mounts, &self.linked_tool_endpoints)?;
+        Ok(Some(stage))
     }
 
     pub(crate) fn remove_private_compose_stage(&self, worktree_path: &Path) -> Result<()> {
@@ -473,6 +477,88 @@ fn hash_path(digest: &mut Sha256, path: &Path) {
     }
     #[cfg(not(any(unix, windows)))]
     digest.update(path.to_string_lossy().as_bytes());
+}
+
+fn validate_private_compose_stage_mounts(
+    stage: &Path,
+    mounts: &[InGuestMount],
+    linked_tool_endpoints: &BTreeSet<String>,
+) -> Result<()> {
+    if mounts
+        .iter()
+        .filter(|mount| {
+            !matches!(
+                mount.scope,
+                LeaseScope::ProjectEnvironment
+                    | LeaseScope::ProviderEnvironment
+                    | LeaseScope::ToolRequest
+            ) && !(mount.scope == LeaseScope::ToolEndpoint
+                && linked_tool_endpoints.contains(&mount.lease_id))
+                && matches!(mount.target, MaterializationTarget::File(_))
+        })
+        .any(|mount| stage.starts_with(&mount.source) || mount.source.starts_with(stage))
+    {
+        return Err(Error::validation(
+            "Private in-guest Compose stage overlaps a signed container mount source",
+        ));
+    }
+    Ok(())
+}
+
+/// The shared Git directory is an implicit writable bind and is recursively
+/// group-shared with the coding consumer. Reject overlap before that delegation.
+pub(crate) fn validate_private_compose_stage_git_mount(
+    stage: &Path,
+    repo_root: &Path,
+) -> Result<()> {
+    let run_root = stage
+        .parent()
+        .ok_or_else(|| Error::validation("Private in-guest Compose stage has no run directory"))?;
+    let common_git = repository_common_git_dir(repo_root)?;
+    if run_root.starts_with(&common_git) || common_git.starts_with(run_root) {
+        return Err(Error::validation(
+            "Private in-guest run directory overlaps the shared Git container mount",
+        ));
+    }
+    Ok(())
+}
+
+fn require_secure_in_guest_launch(assignment: &LoadedAssignment) -> Result<()> {
+    if assignment.manifest.version != WORKSPACE_CONSUMER_MANIFEST_VERSION {
+        return Err(Error::validation(
+            "Managed in-guest launch requires a signed version 3 assignment with a distinct workspace consumer",
+        ));
+    }
+    let consumer = assignment
+        .manifest
+        .workspace_consumer
+        .as_ref()
+        .ok_or_else(|| {
+            Error::validation("Managed in-guest launch requires a workspace consumer")
+        })?;
+    if assignment.manifest.service_images.is_empty() {
+        return Err(Error::validation(
+            "Managed in-guest launch requires signed preloaded images for every runnable service",
+        ));
+    }
+    #[cfg(unix)]
+    if consumer.uid == unsafe { libc::geteuid() } || consumer.gid == unsafe { libc::getegid() } {
+        return Err(Error::validation(
+            "Managed in-guest launch requires workspace consumer UID and GID distinct from the BranchBox runtime",
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(Error::validation(
+        "Managed in-guest launch requires Unix private staging and UID/GID isolation",
+    ));
+    #[cfg(unix)]
+    Ok(())
+}
+
+/// Fail before Dev Containers CLI preflight when the signed assignment cannot
+/// keep generated Compose inputs private from the coding workspace consumer.
+pub fn require_secure_in_guest_launch_assignment(manifest_path: &Path) -> Result<()> {
+    require_secure_in_guest_launch(&load_assignment(manifest_path)?)
 }
 
 /// Compose inputs consumed by the privileged CLI must not live in the group-writable
@@ -1128,20 +1214,60 @@ impl InGuestRuntimeProvider {
         Ok(command)
     }
 
-    fn managed_compose_project_name(&self, metadata: &RuntimeMetadata) -> Result<String> {
+    fn managed_cli_context(
+        &self,
+        metadata: &RuntimeMetadata,
+        worktree_path: &Path,
+    ) -> Result<(String, PathBuf)> {
         let identity = metadata.in_guest.as_ref().ok_or_else(|| {
             Error::validation("In-guest runtime metadata is missing assignment identity")
         })?;
         let state = Self::read_state(&identity.state_path)?;
-        let name = state.managed_compose_project_name.ok_or_else(|| {
-            Error::validation("In-guest provider state is missing its managed Compose project name")
-        })?;
-        if !is_compose_project_name(&name) {
+        let assignment = load_assignment(&state.manifest_path)?;
+        require_secure_in_guest_launch(&assignment)?;
+        if fs::canonicalize(&state.worktree_path)? != fs::canonicalize(worktree_path)?
+            || state.run_id.as_deref() != Some(assignment.manifest.run_id.as_str())
+            || identity.run_id != assignment.manifest.run_id
+        {
             return Err(Error::validation(
-                "In-guest provider state has an invalid managed Compose project name",
+                "In-guest runtime identity does not match the signed run and worktree",
             ));
         }
-        Ok(name)
+        let name = managed_compose_project_name(
+            &assignment.manifest.run_id,
+            &assignment.manifest_path,
+            worktree_path,
+        );
+        if state.managed_compose_project_name.as_deref() != Some(name.as_str()) {
+            return Err(Error::validation(
+                "In-guest provider state has no Compose project bound to its signed run and worktree",
+            ));
+        }
+        let consumer = assignment
+            .manifest
+            .workspace_consumer
+            .as_ref()
+            .ok_or_else(|| {
+                Error::validation("Managed in-guest launch requires a workspace consumer")
+            })?;
+        let stage =
+            private_compose_stage_dir(&assignment.manifest_path, worktree_path, consumer.uid)?;
+        validate_private_compose_stage_git_mount(&stage, &assignment.manifest.repository.path)?;
+        validate_private_compose_stage_mounts(
+            &stage,
+            &assignment.mounts,
+            &assignment.linked_tool_endpoints,
+        )?;
+        let config = validate_private_regular_file(
+            &stage.join(".devcontainer.json"),
+            "staged devcontainer config",
+        )?;
+        if state.config_path != config || metadata.config_path.as_ref() != Some(&config) {
+            return Err(Error::validation(
+                "In-guest CLI config path is not the signed private Compose stage",
+            ));
+        }
+        Ok((name, config))
     }
 
     fn devcontainer_output(
@@ -3013,11 +3139,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
     }
 
     fn environment_ready(&self, metadata: &RuntimeMetadata, worktree_path: &Path) -> Result<bool> {
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(worktree_path)?);
-        let compose_project_name = self.managed_compose_project_name(metadata)?;
+        let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
         self.probe(worktree_path, &config, &compose_project_name)
     }
 
@@ -3033,6 +3155,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             )
         })?;
         let assignment = load_assignment(manifest_path)?;
+        require_secure_in_guest_launch(&assignment)?;
         if context.runtime_name
             != managed_compose_project_name(
                 &assignment.manifest.run_id,
@@ -3059,6 +3182,12 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 &assignment.manifest_path,
                 context.worktree_path,
                 consumer.uid,
+            )?;
+            validate_private_compose_stage_git_mount(&stage, &assignment.manifest.repository.path)?;
+            validate_private_compose_stage_mounts(
+                &stage,
+                &assignment.mounts,
+                &assignment.linked_tool_endpoints,
             )?;
             validate_private_regular_file(
                 &stage.join(".devcontainer.json"),
@@ -3154,43 +3283,33 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         context: &RuntimeContext<'_>,
         metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(context.worktree_path)?);
         let result = (|| {
+            let (compose_project_name, config) =
+                self.managed_cli_context(metadata, context.worktree_path)?;
             let identity = metadata.in_guest.as_ref().ok_or_else(|| {
                 Error::validation("In-guest runtime metadata is missing assignment identity")
             })?;
             let state = Self::read_state(&identity.state_path)?;
-            let compose_project_name =
-                state
-                    .managed_compose_project_name
-                    .as_deref()
-                    .ok_or_else(|| {
-                        Error::validation(
-                            "In-guest provider state is missing its managed Compose project name",
-                        )
-                    })?;
             if compose_project_name != context.runtime_name {
                 return Err(Error::validation(
                     "In-guest managed Compose project name changed after runtime preparation",
                 ));
             }
             let assignment = load_assignment(&state.manifest_path)?;
+            require_secure_in_guest_launch(&assignment)?;
             self.verify_preloaded_images(
                 &assignment.manifest.service_images,
                 assignment.manifest.port_proxy_image.as_deref(),
             )?;
             let container_id =
-                self.start_devcontainer(context.worktree_path, &config, compose_project_name)?;
+                self.start_devcontainer(context.worktree_path, &config, &compose_project_name)?;
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
             self.record_partial_start_identity(metadata)?;
             self.bind_tool_request_consumer_identity(&container_id, metadata)?;
             self.initialize_tool_request_spools(&container_id, metadata)?;
             self.verify_untrusted_boundary(&container_id, metadata)?;
-            if !self.probe(context.worktree_path, &config, compose_project_name)? {
+            if !self.probe(context.worktree_path, &config, &compose_project_name)? {
                 return Err(Error::validation(
                     "In-guest devcontainer did not remain ready after startup. Repository primary commands and container-side lifecycle hooks must succeed without host SSH/1Password state; supply project configuration through an explicit project-environment materialization or fix the source devcontainer convention",
                 ));
@@ -3231,11 +3350,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         if command.is_empty() {
             return Err(Error::validation("Runtime command cannot be empty"));
         }
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(worktree_path)?);
-        let compose_project_name = self.managed_compose_project_name(metadata)?;
+        let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
         let container_id =
             self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
@@ -3280,11 +3395,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         if command.is_empty() {
             return Err(Error::validation("Runtime command cannot be empty"));
         }
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(worktree_path)?);
-        let compose_project_name = self.managed_compose_project_name(metadata)?;
+        let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
         let container_id =
             self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
@@ -5924,6 +6035,92 @@ mod tests {
         manifest["version"] = serde_json::json!("2");
         private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
         assert!(load_assignment(&manifest_path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_launch_rejects_legacy_or_unisolated_assignments() {
+        let (_root, manifest_path, _revision) = assignment_fixture(false);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        for version in ["1", "2"] {
+            manifest["version"] = serde_json::json!(version);
+            private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+            assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+                .unwrap_err()
+                .to_string()
+                .contains("signed version 3"));
+        }
+
+        manifest["version"] = serde_json::json!("3");
+        manifest["published_ports"] = serde_json::json!([]);
+        let runtime_uid = unsafe { libc::geteuid() };
+        let runtime_gid = unsafe { libc::getegid() };
+        let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
+        let consumer_gid = if runtime_gid == 1000 { 1001 } else { 1000 };
+        manifest["workspace_consumer"] = serde_json::json!({"uid":consumer_uid,"gid":consumer_gid});
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+            .unwrap_err()
+            .to_string()
+            .contains("preloaded images"));
+
+        manifest["service_images"] = serde_json::json!({
+            "app": format!("registry.example/app@sha256:{}", "a".repeat(64))
+        });
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        require_secure_in_guest_launch_assignment(&manifest_path).unwrap();
+
+        for (uid, gid) in [(runtime_uid, consumer_gid), (consumer_uid, runtime_gid)] {
+            manifest["workspace_consumer"] = serde_json::json!({"uid":uid,"gid":gid});
+            private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+            assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+                .unwrap_err()
+                .to_string()
+                .contains("distinct from the BranchBox runtime"));
+        }
+    }
+
+    #[test]
+    fn private_stage_cannot_overlap_a_signed_mount_source() {
+        let mut mounts = vec![InGuestMount {
+            lease_id: "signed_mount".to_string(),
+            source: PathBuf::from("/run/private/materializations/lease"),
+            target: MaterializationTarget::File(PathBuf::from("/run/branchbox/leases/lease")),
+            sha256: None,
+            source_kind: ManagedSourceKind::File,
+            scope: LeaseScope::ProviderCredential,
+            consumer: "coding-agent".to_string(),
+        }];
+        validate_private_compose_stage_mounts(
+            Path::new("/run/private/branchbox-compose-task"),
+            &mounts,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        for source in [
+            "/run/private",
+            "/run/private/branchbox-compose-task/config.json",
+        ] {
+            mounts[0].source = PathBuf::from(source);
+            assert!(validate_private_compose_stage_mounts(
+                Path::new("/run/private/branchbox-compose-task"),
+                &mounts,
+                &BTreeSet::new(),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("overlaps a signed container mount"));
+        }
+        // A project environment is read as a Compose env_file on the host,
+        // even if its path is inside the private stage.
+        mounts[0].scope = LeaseScope::ProjectEnvironment;
+        validate_private_compose_stage_mounts(
+            Path::new("/run/private/branchbox-compose-task"),
+            &mounts,
+            &BTreeSet::new(),
+        )
+        .unwrap();
     }
 
     #[test]
