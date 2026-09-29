@@ -23,6 +23,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Print the managed-runtime capabilities implemented by this exact binary.
+    RuntimeCapabilities,
+
     /// Initialize project with devcontainer and BranchBox registry
     #[command(alias = "bootstrap")]
     Init(InitArgs),
@@ -86,6 +89,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::RuntimeCapabilities => {
+            println!("{{\"managed_workspace_contract_v1\":true,\"preloaded_compose_sanitization_v1\":true}}");
+        }
         Commands::Init(args) => {
             init::execute(args)?;
         }
