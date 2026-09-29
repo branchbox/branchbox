@@ -5546,6 +5546,14 @@ fn validate_container_inspection(
 /// repository's devcontainer.json. A literal path is required so the worktree
 /// bind, provider cwd, and caller's prompt refer to the same directory.
 pub(crate) fn validate_managed_workspace_folder(folder: &str) -> Result<()> {
+    // The generated facade mounts the common Git directory at this path's
+    // .git child. A task worktree bound here already has a .git file, so the
+    // nested directory bind would mask it or prevent the container from booting.
+    if folder == "/workspaces/main" {
+        return Err(Error::validation(
+            "Managed workspace folder overlaps the reserved main Git mount",
+        ));
+    }
     let segments = folder
         .strip_prefix("/workspaces/")
         .ok_or_else(|| Error::validation("Managed workspace folder must be below /workspaces"))?;
@@ -8566,6 +8574,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
         for folder in [
             "/workspaces",
             "/workspaces/",
+            "/workspaces/main",
             "/workspaces/../run",
             "/workspaces/a/./b",
             "/workspaces//project",
