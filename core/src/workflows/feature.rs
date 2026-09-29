@@ -3612,6 +3612,11 @@ fn prepare_in_guest_devcontainer_config(
         .map(|path| (*path).to_string())
         .collect(),
     };
+    if config.docker_compose_file.is_some() && compose_references.is_empty() {
+        return Err(Error::validation(
+            "In-guest dockerComposeFile must name at least one file; an empty list lets the Dev Containers CLI load COMPOSE_FILE from the worktree .env",
+        ));
+    }
     let compose_files: Vec<PathBuf> = compose_references
         .iter()
         .map(|path| devcontainer_dir.join(path))
@@ -10558,6 +10563,43 @@ volumes:
                 .windows(23)
                 .any(|part| part == b"synthetic-private-value"));
         }
+    }
+
+    #[test]
+    fn test_in_guest_rejects_empty_compose_list_before_cli_dotenv_fallback() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":[],"service":"app"}"#,
+        )
+        .unwrap();
+        let outside = repo_path.join("outside.yaml");
+        fs::write(
+            &outside,
+            "services:\n  app:\n    provider: {type: unsafe}\n",
+        )
+        .unwrap();
+        fs::write(
+            worktree_path.join(".env"),
+            format!("COMPOSE_FILE={}\n", outside.display()),
+        )
+        .unwrap();
+
+        let error = prepare_in_guest_devcontainer_config(
+            repo_path,
+            &worktree_path,
+            &InGuestFacadePlan::empty_for_tests(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("empty list lets the Dev Containers CLI load COMPOSE_FILE"));
+        assert!(!devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(!devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
     }
 
     #[test]

@@ -1023,6 +1023,8 @@ struct ProviderState {
     #[serde(default)]
     compose_projects: Vec<String>,
     #[serde(default)]
+    managed_compose_project_name: Option<String>,
+    #[serde(default)]
     container_id: Option<String>,
 }
 
@@ -1075,8 +1077,45 @@ impl InGuestRuntimeProvider {
         command
     }
 
-    fn devcontainer_output(&self, args: &[&str], worktree: Option<&Path>) -> Result<Output> {
+    fn devcontainer_command(&self, compose_project_name: Option<&str>) -> Result<Command> {
         let mut command = self.command(&self.devcontainer);
+        if let Some(name) = compose_project_name {
+            if !is_compose_project_name(name) {
+                return Err(Error::validation(
+                    "Managed in-guest Compose project name must use Compose-safe characters",
+                ));
+            }
+            // The Dev Containers CLI reads COMPOSE_PROJECT_NAME from the worktree .env
+            // even when Compose's automatic .env loading is disabled. Bind the
+            // runtime-selected identity explicitly so that file cannot rename the project.
+            command.env("COMPOSE_PROJECT_NAME", name);
+        }
+        Ok(command)
+    }
+
+    fn managed_compose_project_name(&self, metadata: &RuntimeMetadata) -> Result<String> {
+        let identity = metadata.in_guest.as_ref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing assignment identity")
+        })?;
+        let state = Self::read_state(&identity.state_path)?;
+        let name = state.managed_compose_project_name.ok_or_else(|| {
+            Error::validation("In-guest provider state is missing its managed Compose project name")
+        })?;
+        if !is_compose_project_name(&name) {
+            return Err(Error::validation(
+                "In-guest provider state has an invalid managed Compose project name",
+            ));
+        }
+        Ok(name)
+    }
+
+    fn devcontainer_output(
+        &self,
+        args: &[&str],
+        worktree: Option<&Path>,
+        compose_project_name: Option<&str>,
+    ) -> Result<Output> {
+        let mut command = self.devcontainer_command(compose_project_name)?;
         command.args(args);
         if let Some(worktree) = worktree {
             command.current_dir(worktree);
@@ -1208,8 +1247,9 @@ impl InGuestRuntimeProvider {
         operation: &str,
         args: &[&str],
         worktree: Option<&Path>,
+        compose_project_name: Option<&str>,
     ) -> Result<Output> {
-        let output = self.devcontainer_output(args, worktree)?;
+        let output = self.devcontainer_output(args, worktree, compose_project_name)?;
         if output.status.success() {
             return Ok(output);
         }
@@ -1243,8 +1283,13 @@ impl InGuestRuntimeProvider {
         Ok(source)
     }
 
-    fn start_devcontainer(&self, worktree_path: &Path, config_path: &Path) -> Result<String> {
-        self.verify_resolved_configuration(worktree_path, config_path)?;
+    fn start_devcontainer(
+        &self,
+        worktree_path: &Path,
+        config_path: &Path,
+        compose_project_name: &str,
+    ) -> Result<String> {
+        self.verify_resolved_configuration(worktree_path, config_path, compose_project_name)?;
         let worktree = worktree_path.to_string_lossy();
         let config = config_path.to_string_lossy();
         let output = self.devcontainer_output(
@@ -1258,6 +1303,7 @@ impl InGuestRuntimeProvider {
                 "json",
             ],
             Some(worktree_path),
+            Some(compose_project_name),
         )?;
         if !output.status.success() {
             return Err(Error::validation(format!(
@@ -1297,6 +1343,7 @@ impl InGuestRuntimeProvider {
         &self,
         worktree_path: &Path,
         config_path: &Path,
+        compose_project_name: &str,
     ) -> Result<()> {
         let output = self.checked_devcontainer(
             "resolved configuration inspection",
@@ -1311,11 +1358,17 @@ impl InGuestRuntimeProvider {
                 "json",
             ],
             Some(worktree_path),
+            Some(compose_project_name),
         )?;
         validate_resolved_configuration(&output.stdout)
     }
 
-    fn probe(&self, worktree_path: &Path, config_path: &Path) -> Result<bool> {
+    fn probe(
+        &self,
+        worktree_path: &Path,
+        config_path: &Path,
+        compose_project_name: &str,
+    ) -> Result<bool> {
         let output = self.devcontainer_output(
             &[
                 "exec",
@@ -1326,6 +1379,7 @@ impl InGuestRuntimeProvider {
                 "true",
             ],
             Some(worktree_path),
+            Some(compose_project_name),
         )?;
         Ok(output.status.success())
     }
@@ -2939,7 +2993,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
     }
 
     fn validate(&self) -> Result<()> {
-        self.checked_devcontainer("preflight", &["--version"], None)?;
+        self.checked_devcontainer("preflight", &["--version"], None, None)?;
         self.checked_docker("preflight", &["info"])?;
         let compose =
             self.checked_docker("Compose preflight", &["compose", "version", "--short"])?;
@@ -2961,10 +3015,16 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             .config_path
             .clone()
             .unwrap_or(Self::config_path(worktree_path)?);
-        self.probe(worktree_path, &config)
+        let compose_project_name = self.managed_compose_project_name(metadata)?;
+        self.probe(worktree_path, &config, &compose_project_name)
     }
 
     fn prepare(&self, context: &RuntimeContext<'_>) -> Result<RuntimeMetadata> {
+        if !is_compose_project_name(context.runtime_name) {
+            return Err(Error::validation(
+                "Managed in-guest Compose project name must use Compose-safe characters",
+            ));
+        }
         let manifest_path = context.runtime_manifest_path.ok_or_else(|| {
             Error::validation(
                 "Runtime 'in-guest' requires --runtime-manifest with an orchestrator-owned assignment path",
@@ -3053,6 +3113,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 .map(|port| Self::proxy_name(&assignment.manifest.run_id, port.runtime))
                 .collect(),
             compose_projects: compose_projects.into_iter().collect(),
+            managed_compose_project_name: Some(context.runtime_name.to_string()),
             container_id: None,
         };
         Self::write_state(&state_path, &state)?;
@@ -3094,19 +3155,34 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 Error::validation("In-guest runtime metadata is missing assignment identity")
             })?;
             let state = Self::read_state(&identity.state_path)?;
+            let compose_project_name =
+                state
+                    .managed_compose_project_name
+                    .as_deref()
+                    .ok_or_else(|| {
+                        Error::validation(
+                            "In-guest provider state is missing its managed Compose project name",
+                        )
+                    })?;
+            if compose_project_name != context.runtime_name {
+                return Err(Error::validation(
+                    "In-guest managed Compose project name changed after runtime preparation",
+                ));
+            }
             let assignment = load_assignment(&state.manifest_path)?;
             self.verify_preloaded_images(
                 &assignment.manifest.service_images,
                 assignment.manifest.port_proxy_image.as_deref(),
             )?;
-            let container_id = self.start_devcontainer(context.worktree_path, &config)?;
+            let container_id =
+                self.start_devcontainer(context.worktree_path, &config, compose_project_name)?;
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
             self.record_partial_start_identity(metadata, context.worktree_path)?;
             self.bind_tool_request_consumer_identity(&container_id, metadata)?;
             self.initialize_tool_request_spools(&container_id, metadata)?;
             self.verify_untrusted_boundary(&container_id, metadata)?;
-            if !self.probe(context.worktree_path, &config)? {
+            if !self.probe(context.worktree_path, &config, compose_project_name)? {
                 return Err(Error::validation(
                     "In-guest devcontainer did not remain ready after startup. Repository primary commands and container-side lifecycle hooks must succeed without host SSH/1Password state; supply project configuration through an explicit project-environment materialization or fix the source devcontainer convention",
                 ));
@@ -3154,7 +3230,9 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             .config_path
             .clone()
             .unwrap_or(Self::config_path(worktree_path)?);
-        let container_id = self.start_devcontainer(worktree_path, &config)?;
+        let compose_project_name = self.managed_compose_project_name(metadata)?;
+        let container_id =
+            self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
         if let Some(identity) = metadata.in_guest.as_ref() {
             let state = Self::read_state(&identity.state_path)?;
@@ -3168,7 +3246,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 )?;
             }
         }
-        let mut process = self.command(&self.devcontainer);
+        let mut process = self.devcontainer_command(Some(&compose_project_name))?;
         process.args([
             "exec",
             "--workspace-folder",
@@ -3201,9 +3279,11 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             .config_path
             .clone()
             .unwrap_or(Self::config_path(worktree_path)?);
-        let container_id = self.start_devcontainer(worktree_path, &config)?;
+        let compose_project_name = self.managed_compose_project_name(metadata)?;
+        let container_id =
+            self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
-        let mut process = self.command(&self.devcontainer);
+        let mut process = self.devcontainer_command(Some(&compose_project_name))?;
         process.args([
             "exec",
             "--workspace-folder",
@@ -5606,6 +5686,10 @@ mod tests {
                     OsString::from("COMPOSE_PROFILES"),
                     OsString::from("repository-controlled"),
                 ),
+                (
+                    OsString::from("COMPOSE_PROJECT_NAME"),
+                    OsString::from("hostile-project"),
+                ),
             ],
         );
         let output = command.output().unwrap();
@@ -5621,6 +5705,29 @@ mod tests {
         assert!(!environment.contains("BRANCHBOX_BROKER_SECRET"));
         assert!(!environment.contains("synthetic-private-value"));
         assert!(!environment.contains("COMPOSE_PROFILES"));
+        assert!(!environment.contains("COMPOSE_PROJECT_NAME"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_devcontainer_command_binds_the_exact_project_name() {
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("/usr/bin/env"),
+            docker: PathBuf::from("docker"),
+            timeout: PathBuf::from("timeout"),
+        };
+        let output = provider
+            .devcontainer_command(Some("managed-project"))
+            .unwrap()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        assert!(environment.contains("COMPOSE_PROJECT_NAME=managed-project\n"));
+        assert!(environment.contains("COMPOSE_DISABLE_ENV_FILE=1\n"));
+        assert!(provider
+            .devcontainer_command(Some("invalid.project"))
+            .is_err());
     }
 
     #[test]
@@ -5902,6 +6009,7 @@ mod tests {
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         assert_eq!(
@@ -7018,6 +7126,7 @@ mod tests {
             tool_request_ledger_path: Some(root.path().join("ledger")),
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: Some("container_123".to_string()),
         };
         let state_bytes = serde_json::to_vec(&state).unwrap();
@@ -7092,6 +7201,7 @@ mod tests {
             tool_request_ledger_path: Some(ledger),
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let provider = InGuestRuntimeProvider {
@@ -7230,6 +7340,7 @@ mod tests {
             tool_request_ledger_path: Some(ledger.clone()),
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let volume_name = state.tool_request_spools[0].volume_name.clone();
@@ -8292,6 +8403,7 @@ printf '%s\n' "$*" > '{}'
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let provider = InGuestRuntimeProvider {
@@ -8334,6 +8446,7 @@ printf '%s\n' "$*" > '{}'
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
             compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let provider = InGuestRuntimeProvider {

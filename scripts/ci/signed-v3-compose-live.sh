@@ -97,6 +97,7 @@ cat > "$repository/.devcontainer/devcontainer.json" <<'JSON'
 }
 JSON
 cat > "$repository/.devcontainer/compose.yaml" <<'YAML'
+name: hostile-compose-name
 services:
   app:
     image: "${REPO_IMAGE:?discarded-source-image}"
@@ -118,6 +119,7 @@ YAML
 git -C "$repository" add .devcontainer
 git -C "$repository" commit -qm 'Add hostile Compose fixture'
 revision="$(git -C "$repository" rev-parse HEAD)"
+printf '%s\n' 'COMPOSE_PROJECT_NAME=hostile-dotenv-name' 'COMPOSE_FILE=/does/not/exist.yaml' > "$repository/.env"
 
 jq -n \
   --arg workspace "$workspace" \
@@ -204,6 +206,9 @@ container_id="$container_ids"
 docker inspect "$container_id" > "$BBX_LIVE_ROOT/container-inspect.json"
 compose_project="$(jq -r '.[0].Config.Labels["com.docker.compose.project"] // empty' "$BBX_LIVE_ROOT/container-inspect.json")"
 test -n "$compose_project"
+managed_project="$(jq -r '.compose_project_name // empty' "$BBX_LIVE_ROOT/start.stdout")"
+test -n "$managed_project"
+test "$compose_project" = "$managed_project"
 image_id="$(docker image inspect "$BBX_IMAGE" --format '{{.Id}}')"
 test "$(docker inspect "$container_id" --format '{{.Image}}')" = "$image_id"
 configured_user="$(docker inspect "$container_id" --format '{{.Config.User}}')"
@@ -214,7 +219,7 @@ container_uid="$(docker exec "$container_id" id -u)"
 container_gid="$(docker exec "$container_id" id -g)"
 test "$container_uid" = 1000
 test "$container_gid" = 1000
-coding_uid="$(runtime_command devcontainer exec --workspace-folder "$worktree" --config "$stage/.devcontainer.json" id -u)"
+coding_uid="$(runtime_command env COMPOSE_PROJECT_NAME="$managed_project" devcontainer exec --workspace-folder "$worktree" --config "$stage/.devcontainer.json" id -u)"
 test "$coding_uid" = 1000
 jq -e --arg worktree "$worktree" --arg git "$repository/.git" '
   .[0] as $container |
