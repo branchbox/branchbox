@@ -113,7 +113,7 @@ Successful JSON output includes the resolved worktree and this runtime identity:
     "tunnel_placement": "outer",
     "project_docker": "disabled",
     "leases": [],
-    "state_path": "/workspace/agentify/.branchbox/runtime/in-guest/run_opaque.json"
+    "state_path": "/workspace/agentify/.branchbox/runtime/in-guest/branchbox-<project-hash>.json"
   }
 }
 ```
@@ -163,7 +163,7 @@ branchbox feature teardown coding-demo \
   --json
 ```
 
-`runtime_teardown` reports `provider`, `runtime_id`, `verified`, `residue_free`, and typed `residue`. Before startup, BranchBox records the signed-run-derived Compose project name, workspace paths, proxy names, and assignment identity. Even if `devcontainer up` fails after creating only dependency services, cleanup uses that exact persisted project name and verifies ownership labels. It never treats a repository top-level Compose `name` or basename as a cleanup candidate. BranchBox removes the owned containers, project networks and volumes, loopback port proxies, individual materialization files, provider state, failed worktree, failed task branch, and private Compose stage. A later teardown can recover owner-only provider state without registry metadata and bypasses repository modules and adapters. State without a bound managed project name fails closed and requires outer-VM/operator cleanup. Provider state is retained when residue remains so cleanup can be retried. Image/build cache retention is currently outside residue accounting and is a documented execution-plane policy decision.
+`runtime_teardown` reports `provider`, `runtime_id`, `verified`, `residue_free`, and typed `residue`. Before startup, BranchBox records the signed-run-derived Compose project name, workspace paths, proxy names, and assignment identity. The provider-state filename and each loopback proxy name use that worktree-bound project identity; a proxy is removed only when its Docker ownership label matches. Even if `devcontainer up` fails after creating only dependency services, cleanup uses that exact persisted project name and verifies ownership labels. It never treats a repository top-level Compose `name` or basename as a cleanup candidate. BranchBox removes the owned containers, project networks and volumes, loopback port proxies, individual materialization files, provider state, failed worktree, failed task branch, and private Compose stage. A later teardown can recover owner-only provider state without registry metadata and bypasses repository modules and adapters. State without a bound managed project name fails closed and requires outer-VM/operator cleanup. Provider state is retained when residue remains so cleanup can be retried. Image/build cache retention is currently outside residue accounting and is a documented execution-plane policy decision.
 
 ## Agentify canary prerequisites
 

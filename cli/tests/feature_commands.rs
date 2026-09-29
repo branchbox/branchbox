@@ -1519,6 +1519,53 @@ fn in_guest_start_requires_absolute_runtime_manifest_before_worktree_creation() 
     assert!(!worktree.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn in_guest_reuse_is_rejected_before_branch_or_cli_access() {
+    let test_repo = init_test_repo();
+    let fake = create_fake_in_guest_runtime();
+    let work_feature = "in-guest-reuse-rejected";
+    let worktree = test_repo.worktree_parent().join(work_feature);
+    branchbox_cmd!(
+        test_repo.path(),
+        "BRANCHBOX_DEVCONTAINER_PATH" => &fake.devcontainer,
+        "BRANCHBOX_DOCKER_PATH" => &fake.docker,
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--reuse",
+        "--runtime",
+        "in-guest",
+        "--runtime-manifest",
+        "/run/branchbox/managed/unread-assignment.json",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+        "cannot reuse a branch after the coding consumer had write access",
+    ));
+    assert!(!worktree.exists());
+    assert!(!fake.log.exists(), "rejection invoked Docker");
+    assert!(
+        !fake
+            .devcontainer
+            .parent()
+            .unwrap()
+            .join("devcontainer.log")
+            .exists(),
+        "rejection invoked Dev Containers"
+    );
+    let branch = StdCommand::new("git")
+        .args(["branch", "--list", &format!("feature/{work_feature}")])
+        .current_dir(test_repo.path())
+        .output()
+        .unwrap();
+    assert!(branch.status.success());
+    assert!(branch.stdout.is_empty(), "rejection created a Git branch");
+}
+
 #[test]
 fn runtime_manifest_is_rejected_for_non_in_guest_runtime() {
     let test_repo = init_test_repo();

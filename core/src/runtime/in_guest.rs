@@ -74,14 +74,22 @@ host_port="$4"
 runtime_port="$5"
 proxy_image="$6"
 pull_policy="$7"
+compose_project="$8"
 network_id=$("$docker_bin" inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id" | head -n 1)
 target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
 target_host=${target_host#/}
-"$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
-if test "$pull_policy" = never; then
-  exec "$docker_bin" run -d --pull=never --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}"
+if "$docker_bin" inspect "$proxy_name" >/dev/null 2>&1; then
+  existing_project=$("$docker_bin" inspect -f '{{index .Config.Labels "io.branchbox.compose_project"}}' "$proxy_name")
+  if test "$existing_project" != "$compose_project"; then
+    echo "Port proxy name is occupied by a different managed project" >&2
+    exit 75
+  fi
+  "$docker_bin" rm -f "$proxy_name" >/dev/null
 fi
-exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
+if test "$pull_policy" = never; then
+  exec "$docker_bin" run -d --pull=never --name "$proxy_name" --label "io.branchbox.compose_project=$compose_project" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}"
+fi
+exec "$docker_bin" run -d --name "$proxy_name" --label "io.branchbox.compose_project=$compose_project" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 const INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT: &str = r#"set -eu
 root="$1"
 uid="$2"
@@ -857,9 +865,9 @@ fn grant_workspace_consumer_access(
 /// consumer-created directory's contents needs write access to that directory. A POSIX default
 /// ACL makes every path created below a delegated directory inherit the same group-shared access
 /// the delegation itself grants, independent of the consumer's umask. Setting it requires only
-/// ownership of the directory, and it mirrors the delegated mode exactly: owner and group gain
-/// read/write/traverse, other gains nothing beyond the read/traverse the delegation already
-/// preserves, and world write is never granted.
+/// ownership of the directory. Existing paths retain their original other permissions, but new
+/// descendants are private to the owner and delegated group: POSIX default ACLs take precedence
+/// over umask, so inheriting other read/traverse would expose newly created workspace secrets.
 #[cfg(target_os = "linux")]
 fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     const ACL_EA_VERSION: u32 = 2;
@@ -868,7 +876,6 @@ fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     const ACL_OTHER: u16 = 0x20;
     const ACL_UNDEFINED_ID: u32 = u32::MAX;
     const ACL_READ_WRITE_EXECUTE: u16 = 0b111;
-    const ACL_READ_EXECUTE: u16 = 0b101;
 
     // Entries must stay in the kernel's canonical tag order.
     let mut attribute = Vec::with_capacity(4 + 3 * 8);
@@ -876,7 +883,7 @@ fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     for (tag, permissions) in [
         (ACL_USER_OBJ, ACL_READ_WRITE_EXECUTE),
         (ACL_GROUP_OBJ, ACL_READ_WRITE_EXECUTE),
-        (ACL_OTHER, ACL_READ_EXECUTE),
+        (ACL_OTHER, 0),
     ] {
         attribute.extend_from_slice(&tag.to_le_bytes());
         attribute.extend_from_slice(&permissions.to_le_bytes());
@@ -1647,23 +1654,18 @@ impl InGuestRuntimeProvider {
         validate_container_inspection(&output.stdout, &signed_mounts, &forbidden_environment)
     }
 
-    fn proxy_name(run_id: &str, runtime_port: u16) -> String {
-        let identity: String = run_id
-            .chars()
-            .filter(|character| character.is_ascii_alphanumeric())
-            .take(24)
-            .collect();
-        format!("branchbox-in-guest-{identity}-port-{runtime_port}")
+    fn proxy_name(compose_project_name: &str, runtime_port: u16) -> String {
+        format!("branchbox-in-guest-{compose_project_name}-port-{runtime_port}")
     }
 
     fn reconcile_port_proxy(
         &self,
-        run_id: &str,
+        compose_project_name: &str,
         container_id: &str,
         port: RuntimePort,
         port_proxy_image: Option<&str>,
     ) -> Result<String> {
-        let proxy_name = Self::proxy_name(run_id, port.runtime);
+        let proxy_name = Self::proxy_name(compose_project_name, port.runtime);
         let proxy_image = port_proxy_image.unwrap_or(LEGACY_PORT_PROXY_IMAGE);
         let pull_policy = if port_proxy_image.is_some() {
             "never"
@@ -1681,6 +1683,7 @@ impl InGuestRuntimeProvider {
                 &port.runtime.to_string(),
                 proxy_image,
                 pull_policy,
+                compose_project_name,
             ])
             .output()
             .map_err(|err| {
@@ -1821,10 +1824,14 @@ impl InGuestRuntimeProvider {
     }
 
     fn remove_owned_docker_resources(&self, state: &ProviderState) -> Result<Vec<RuntimeResidue>> {
-        for proxy in &state.proxy_names {
-            let _ = self.docker_output(&["rm", "-f", proxy]);
-        }
         let identity = self.discover_owned_docker_identity(state)?;
+        let managed_project = state
+            .managed_compose_project_name
+            .as_deref()
+            .ok_or_else(|| {
+                Error::validation("In-guest provider state has no managed Compose project")
+            })?;
+        self.remove_owned_port_proxies(&state.proxy_names, managed_project)?;
         for container in identity.container_ids {
             let _ = self.docker_output(&["rm", "-f", &container]);
         }
@@ -1864,6 +1871,39 @@ impl InGuestRuntimeProvider {
         self.inspect_residue(state, &identity.compose_projects)
     }
 
+    fn remove_owned_port_proxies(
+        &self,
+        proxy_names: &[String],
+        managed_project: &str,
+    ) -> Result<()> {
+        let expected_prefix = format!("branchbox-in-guest-{managed_project}-port-");
+        if proxy_names
+            .iter()
+            .any(|proxy| !proxy.starts_with(&expected_prefix))
+        {
+            return Err(Error::validation(
+                "In-guest provider state contains a proxy outside its managed project",
+            ));
+        }
+        for proxy in proxy_names {
+            if self.owned_port_proxy_exists(proxy, managed_project)? {
+                let _ = self.docker_output(&["rm", "-f", proxy]);
+            }
+        }
+        Ok(())
+    }
+
+    fn owned_port_proxy_exists(&self, proxy: &str, managed_project: &str) -> Result<bool> {
+        let inspected = self.docker_output(&[
+            "inspect",
+            "--format",
+            "{{index .Config.Labels \"io.branchbox.compose_project\"}}",
+            proxy,
+        ])?;
+        Ok(inspected.status.success()
+            && String::from_utf8_lossy(&inspected.stdout).trim() == managed_project)
+    }
+
     fn remove_tool_request_volumes(&self, spools: &[ToolRequestSpool]) {
         for spool in spools {
             let _ = self.bounded_docker_output(&["volume", "rm", &spool.volume_name]);
@@ -1901,19 +1941,36 @@ impl InGuestRuntimeProvider {
                 });
             }
         }
+        let managed_project = state
+            .managed_compose_project_name
+            .as_deref()
+            .ok_or_else(|| {
+                Error::validation("In-guest provider state has no managed Compose project")
+            })?;
         let mut workspace_containers = BTreeSet::new();
         let mut workspace_paths: BTreeSet<String> = state.workspace_paths.iter().cloned().collect();
         workspace_paths.extend(workspace_candidates(&state.worktree_path));
         for workspace in workspace_paths {
             let filter = format!("label=devcontainer.local_folder={workspace}");
-            workspace_containers.extend(output_lines(
-                &self
-                    .checked_docker(
-                        "devcontainer residue inspection",
-                        &["ps", "-a", "--filter", &filter, "--format", "{{.Names}}"],
-                    )?
-                    .stdout,
-            ));
+            let output = self.checked_docker(
+                "devcontainer residue inspection",
+                &[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &filter,
+                    "--format",
+                    "{{.Names}}\t{{.Label \"com.docker.compose.project\"}}",
+                ],
+            )?;
+            for line in output_lines(&output.stdout) {
+                let mut fields = line.splitn(2, '\t');
+                let name = fields.next().unwrap_or_default();
+                let project = fields.next().unwrap_or_default();
+                if !name.is_empty() && project == managed_project {
+                    workspace_containers.insert(name.to_string());
+                }
+            }
         }
         if !workspace_containers.is_empty() {
             residue.push(RuntimeResidue {
@@ -1921,15 +1978,12 @@ impl InGuestRuntimeProvider {
                 identifiers: workspace_containers.into_iter().collect(),
             });
         }
-        let proxies: Vec<_> = state
-            .proxy_names
-            .iter()
-            .filter(|name| {
-                self.docker_output(&["inspect", name])
-                    .is_ok_and(|output| output.status.success())
-            })
-            .cloned()
-            .collect();
+        let mut proxies = Vec::new();
+        for name in &state.proxy_names {
+            if self.owned_port_proxy_exists(name, managed_project)? {
+                proxies.push(name.clone());
+            }
+        }
         if !proxies.is_empty() {
             residue.push(RuntimeResidue {
                 kind: "port-proxy".to_string(),
@@ -3218,10 +3272,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             .repository
             .path
             .join(".branchbox/runtime/in-guest")
-            .join(format!(
-                "{}.json",
-                safe_identity(&assignment.manifest.run_id)?
-            ));
+            .join(format!("{}.json", context.runtime_name));
         let tool_request_ledger_path = (!assignment.tool_request_spools.is_empty())
             .then(|| state_path.with_extension("tool-request-ledger"));
         let state = ProviderState {
@@ -3246,7 +3297,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             proxy_names: context
                 .published_ports
                 .iter()
-                .map(|port| Self::proxy_name(&assignment.manifest.run_id, port.runtime))
+                .map(|port| Self::proxy_name(context.runtime_name, port.runtime))
                 .collect(),
             // Cleanup binds exclusively to the project name passed to the CLI.
             // Repository `name:` and worktree basenames are never identities.
@@ -3314,15 +3365,10 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                     "In-guest devcontainer did not remain ready after startup. Repository primary commands and container-side lifecycle hooks must succeed without host SSH/1Password state; supply project configuration through an explicit project-environment materialization or fix the source devcontainer convention",
                 ));
             }
-            let run_id = metadata
-                .in_guest
-                .as_ref()
-                .map(|identity| identity.run_id.clone())
-                .ok_or_else(|| Error::validation("In-guest assignment identity is missing"))?;
             let mut proxies = Vec::new();
             for port in &metadata.published_ports {
                 proxies.push(self.reconcile_port_proxy(
-                    &run_id,
+                    &compose_project_name,
                     &container_id,
                     *port,
                     assignment.manifest.port_proxy_image.as_deref(),
@@ -3359,7 +3405,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             let assignment = load_assignment(&state.manifest_path)?;
             for port in &metadata.published_ports {
                 self.reconcile_port_proxy(
-                    &identity.run_id,
+                    &compose_project_name,
                     &container_id,
                     *port,
                     assignment.manifest.port_proxy_image.as_deref(),
@@ -6138,10 +6184,26 @@ mod tests {
             first,
             plan.managed_compose_project_name(Path::new("/workspace/second"))
         );
+        assert_ne!(
+            InGuestRuntimeProvider::proxy_name(&first, 3000),
+            InGuestRuntimeProvider::proxy_name(
+                &plan.managed_compose_project_name(Path::new("/workspace/second")),
+                3000,
+            )
+        );
         plan.run_id = "signed-run-two".to_string();
         assert_ne!(
             first,
             plan.managed_compose_project_name(Path::new("/workspace/first"))
+        );
+        plan.run_id = "run.a".to_string();
+        let punctuation_first = plan.managed_compose_project_name(Path::new("/workspace/first"));
+        plan.run_id = "run-a".to_string();
+        let punctuation_second = plan.managed_compose_project_name(Path::new("/workspace/first"));
+        assert_ne!(punctuation_first, punctuation_second);
+        assert_ne!(
+            InGuestRuntimeProvider::proxy_name(&punctuation_first, 3000),
+            InGuestRuntimeProvider::proxy_name(&punctuation_second, 3000)
         );
     }
 
@@ -6228,7 +6290,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn workspace_consumer_receives_group_scoped_write_access_without_world_write() {
+    fn workspace_consumer_inherits_group_access_without_world_access() {
         let effective_uid = unsafe { libc::geteuid() };
         let effective_gid = unsafe { libc::getegid() };
         if effective_uid == 0 || effective_gid == 0 {
@@ -6251,10 +6313,12 @@ mod tests {
         let worktree = root.path().join("worktree");
         let common_git = root.path().join("git");
         fs::create_dir_all(worktree.join("nested")).unwrap();
+        fs::create_dir(worktree.join("private")).unwrap();
         fs::create_dir_all(common_git.join("objects")).unwrap();
         fs::write(worktree.join("nested/source.rb"), b"source").unwrap();
         fs::write(common_git.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
         let nested = worktree.join("nested");
+        let private = worktree.join("private");
         let objects = common_git.join("objects");
         for path in [
             worktree.as_path(),
@@ -6269,6 +6333,7 @@ mod tests {
             fs::Permissions::from_mode(0o644),
         )
         .unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
 
         grant_workspace_consumer_access(
             &worktree,
@@ -6286,25 +6351,38 @@ mod tests {
         assert_eq!(directory.mode() & 0o2070, 0o2070);
         assert_eq!(directory.mode() & 0o007, 0o005);
         assert_eq!(directory.mode() & 0o002, 0);
+        let private_directory = fs::metadata(&private).unwrap();
+        assert_eq!(private_directory.mode() & 0o007, 0);
         assert_eq!(source.gid(), consumer_gid);
         assert_eq!(source.mode() & 0o070, 0o060);
         assert_eq!(source.mode() & 0o007, 0o004);
         assert_eq!(source.mode() & 0o002, 0);
 
-        // A consumer creates new paths with its own umask, so without an inherited default ACL
-        // the runtime could no longer reclaim its own worktree at teardown.
-        let inherited_file = worktree.join("nested/created_after_delegation.rb");
-        fs::write(&inherited_file, b"created by the consumer").unwrap();
-        let inherited_file = fs::metadata(&inherited_file).unwrap();
-        assert_eq!(inherited_file.gid(), consumer_gid);
-        assert_eq!(inherited_file.mode() & 0o060, 0o060);
-        assert_eq!(inherited_file.mode() & 0o002, 0);
-        let inherited_directory = worktree.join("nested/created_after_delegation");
-        fs::create_dir(&inherited_directory).unwrap();
-        let inherited_directory = fs::metadata(&inherited_directory).unwrap();
-        assert_eq!(inherited_directory.gid(), consumer_gid);
-        assert_eq!(inherited_directory.mode() & 0o070, 0o070);
-        assert_eq!(inherited_directory.mode() & 0o002, 0);
+        // A consumer's umask cannot prevent inheritance from a POSIX default ACL. Check both a
+        // private and a world-traversable parent: newly created descendants must retain the
+        // runtime's delegated group access without inheriting the parent's world access.
+        for parent in [&private, &nested] {
+            let status = Command::new("sh")
+                .args([
+                    "-c",
+                    "umask 077; : > \"$1/created-file\"; mkdir \"$1/created-dir\"; : > \"$1/created-dir/grandchild\"",
+                    "sh",
+                ])
+                .arg(parent)
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let inherited_file = fs::metadata(parent.join("created-file")).unwrap();
+            assert_eq!(inherited_file.gid(), consumer_gid);
+            assert_eq!(inherited_file.mode() & 0o777, 0o660);
+            let inherited_directory = fs::metadata(parent.join("created-dir")).unwrap();
+            assert_eq!(inherited_directory.gid(), consumer_gid);
+            assert_eq!(inherited_directory.mode() & 0o777, 0o770);
+            let grandchild = fs::metadata(parent.join("created-dir/grandchild")).unwrap();
+            assert_eq!(grandchild.gid(), consumer_gid);
+            assert_eq!(grandchild.mode() & 0o777, 0o660);
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -8345,6 +8423,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
             format!(
                 r#"#!/bin/sh
 if test "$1" = inspect; then
+  test "$2" = -f || exit 1
   case "$3" in
     *NetworkID*) printf '%s\n' network_123 ;;
     *Name*) printf '%s\n' /primary ;;
@@ -8375,20 +8454,130 @@ printf '%s\n' "$*" > '{}'
         let image = format!("registry.example/runtime/proxy@sha256:{}", "f".repeat(64));
 
         provider
-            .reconcile_port_proxy("run_123", "container_123", port, Some(&image))
+            .reconcile_port_proxy("branchbox-123abc", "container_123", port, Some(&image))
             .unwrap();
         let managed = fs::read_to_string(&invocation).unwrap();
         assert!(managed.starts_with("run -d --pull=never --name "));
         assert!(managed.contains("--network network_123"));
+        assert!(managed.contains("--name branchbox-in-guest-branchbox-123abc-port-3000"));
+        assert!(managed.contains("--label io.branchbox.compose_project=branchbox-123abc"));
         assert!(managed.contains(&format!(" {image} -dd ")));
 
         provider
-            .reconcile_port_proxy("run_123", "container_123", port, None)
+            .reconcile_port_proxy("branchbox-123abc", "container_123", port, None)
             .unwrap();
         let legacy = fs::read_to_string(invocation).unwrap();
         assert!(legacy.starts_with("run -d --name "));
         assert!(!legacy.contains("--pull=never"));
         assert!(legacy.contains(&format!(" {LEGACY_PORT_PROXY_IMAGE} -dd ")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_port_proxy_never_replaces_a_different_project() {
+        let root = tempfile::tempdir().unwrap();
+        let docker = root.path().join("docker");
+        let owner = root.path().join("existing-owner");
+        let invocations = root.path().join("mutations");
+        fs::write(&owner, "branchbox-other\n").unwrap();
+        fs::write(
+            &docker,
+            format!(
+                r#"#!/bin/sh
+if test "$1" = inspect; then
+  if test "$2" != -f && test "$2" != --format; then exit 0; fi
+  case "$3" in
+    *NetworkID*) printf '%s\n' network_123 ;;
+    *Name*) printf '%s\n' /primary ;;
+    *compose_project*) cat '{}' ;;
+  esac
+  exit 0
+fi
+if test "$1" = ps; then
+  case "$*" in
+    *devcontainer.local_folder*) printf 'foreign-container\tbranchbox-other\n' ;;
+  esac
+fi
+if test "$1" = rm || test "$1" = run; then
+  printf '%s\n' "$*" >> '{}'
+fi
+"#,
+                owner.display(),
+                invocations.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&docker, permissions).unwrap();
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker,
+            timeout: PathBuf::from("timeout"),
+        };
+        let project = "branchbox-owned";
+        let proxy = InGuestRuntimeProvider::proxy_name(project, 3000);
+        let port = RuntimePort {
+            host: 43000,
+            runtime: 3000,
+        };
+        let image = format!("registry.example/runtime/proxy@sha256:{}", "f".repeat(64));
+        assert!(provider
+            .reconcile_port_proxy(project, "container_123", port, Some(&image))
+            .unwrap_err()
+            .to_string()
+            .contains("different managed project"));
+        provider
+            .remove_owned_port_proxies(std::slice::from_ref(&proxy), project)
+            .unwrap();
+        assert!(
+            !invocations.exists(),
+            "foreign proxy was replaced or removed"
+        );
+        assert!(provider
+            .remove_owned_port_proxies(
+                &["branchbox-in-guest-foreign-port-3000".to_string()],
+                project
+            )
+            .is_err());
+        assert!(!invocations.exists(), "foreign proxy was removed");
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: root.path().join("assignment.json"),
+            worktree_path: root.path().join("worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("runtime_123".to_string()),
+            materializations: Vec::new(),
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: None,
+            proxy_names: vec![proxy.clone()],
+            managed_compose_project_name: Some(project.to_string()),
+            container_id: None,
+        };
+        assert!(provider
+            .inspect_residue(&state, &BTreeSet::new())
+            .unwrap()
+            .is_empty());
+        assert!(
+            !invocations.exists(),
+            "foreign proxy was touched by rollback"
+        );
+
+        fs::write(&owner, format!("{project}\n")).unwrap();
+        let residue = provider.inspect_residue(&state, &BTreeSet::new()).unwrap();
+        assert_eq!(residue.len(), 1);
+        assert_eq!(residue[0].kind, "port-proxy");
+        provider
+            .reconcile_port_proxy(project, "container_123", port, Some(&image))
+            .unwrap();
+        provider
+            .remove_owned_port_proxies(&[proxy], project)
+            .unwrap();
+        let mutations = fs::read_to_string(invocations).unwrap();
+        assert!(mutations.contains("rm -f branchbox-in-guest-branchbox-owned-port-3000"));
+        assert!(mutations.contains("run -d --pull=never"));
     }
 
     #[cfg(unix)]

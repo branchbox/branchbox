@@ -14,6 +14,17 @@ complete immutable `service_images` map. Version 1/2 and no-consumer launches fa
 preflight. Legacy provider state without the signed-run-derived Compose project name cannot be
 automatically torn down and requires outer-VM/operator cleanup.
 
+Version 3 workspace delegation preserves existing file and directory modes, while new worktree
+descendants inherit owner and consumer-group access with no `other` access, even below a previously
+world-readable directory. After delegation the consumer can also edit shared Git metadata, so
+managed in-guest teardown requires `--force`. BranchBox does not run a dirty-worktree status check
+on that metadata; callers must commit changes they want to retain before teardown. Managed launches
+also refuse `--reuse` and implicit stale-branch reuse: a later launch must use a fresh repository
+snapshot because a prior consumer could have changed Git remotes or executable config. Before any
+managed checkout, BranchBox rejects shared Git metadata that is not runtime-owned or has
+group/other-writable paths, including a tree delegated by a previous run. It also rejects an
+ancestor that another UID could replace, apart from sticky directories such as `/tmp`.
+
 Version 2 separates three identities:
 
 - `consumer` is an arbitrary name used to bind related leases.
@@ -283,5 +294,5 @@ status.
   reported as residue and prevents a residue-free teardown receipt.
 
 Version 1 remains accepted for existing integrations and retains its original fixed provider
-allowlist. New orchestrators should emit version 2 and place managed files below a run-specific
-directory such as `/run/branchbox/managed/<run-id>/`.
+allowlist. Orchestrators launching managed Dev Containers must emit version 3 and place managed
+files below a run-specific directory such as `/run/branchbox/managed/<run-id>/`.

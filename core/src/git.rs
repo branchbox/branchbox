@@ -4,6 +4,8 @@
 
 use crate::{Error, Result};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,7 +13,16 @@ use std::process::Command;
 /// worktree or an external `--separate-git-dir` location.
 pub(crate) fn repository_common_git_dir(repo_root: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "rev-parse",
+            "--git-common-dir",
+        ])
         .current_dir(repo_root)
         .output()
         .map_err(|err| {
@@ -46,6 +57,78 @@ pub(crate) fn repository_common_git_dir(repo_root: &Path) -> Result<PathBuf> {
     })
 }
 
+/// A managed checkout runs as the trusted runtime UID. Reject common Git metadata already
+/// writable by another UID before checkout can consult config or info/attributes. A prior coding
+/// consumer receives recursive group write access to this tree, so each managed launch requires a
+/// fresh private Git directory supplied by the outer runtime.
+#[cfg(unix)]
+pub(crate) fn require_private_common_git_metadata(repo_root: &Path) -> Result<()> {
+    let common = repository_common_git_dir(repo_root)?;
+    let runtime_uid = unsafe { libc::geteuid() };
+    let canonical_repo = fs::canonicalize(repo_root)?;
+    if canonical_repo != repo_root {
+        return Err(Error::validation(
+            "Managed in-guest repository path must be canonical before Git metadata validation",
+        ));
+    }
+    // A linked worktree or --separate-git-dir repository uses a .git *file* as the pointer to
+    // its administrative tree. Validating only the resolved common directory would miss an old
+    // consumer's ability to retarget that pointer before checkout.
+    let git_entry = fs::symlink_metadata(canonical_repo.join(".git"))?;
+    if git_entry.uid() != runtime_uid
+        || !(git_entry.is_dir() || git_entry.is_file())
+        || git_entry.mode() & 0o022 != 0
+    {
+        return Err(Error::validation(
+            "Managed in-guest launch requires a private runtime-owned .git entry",
+        ));
+    }
+    for root in [canonical_repo.as_path(), common.parent().unwrap_or(&common)] {
+        for ancestor in root.ancestors() {
+            let metadata = fs::symlink_metadata(ancestor)?;
+            let mode = metadata.mode();
+            // A sticky parent such as /tmp protects its runtime-owned child. Every other parent
+            // must be private against a different UID replacing a checked Git path.
+            if !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+                || (metadata.uid() != runtime_uid && metadata.uid() != 0)
+                || (mode & 0o022 != 0 && mode & 0o1000 == 0)
+            {
+                return Err(Error::validation(format!(
+                    "Managed in-guest Git metadata ancestor '{}' may be replaceable by the workspace consumer",
+                    ancestor.display()
+                )));
+            }
+        }
+    }
+    for entry in walkdir::WalkDir::new(&common).follow_links(false) {
+        let entry = entry.map_err(|err| {
+            Error::validation(format!(
+                "Cannot inspect managed Git metadata below '{}': {err}",
+                common.display()
+            ))
+        })?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.uid() != runtime_uid
+            || !(metadata.is_file() || metadata.is_dir())
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(Error::validation(format!(
+                "Managed in-guest launch requires fresh runtime-owned Git metadata without consumer-writable paths; '{}' is unsafe",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn require_private_common_git_metadata(_repo_root: &Path) -> Result<()> {
+    Err(Error::validation(
+        "Managed Git metadata isolation requires a Unix in-guest runtime",
+    ))
+}
+
 /// Git worktree manager
 #[derive(Debug)]
 pub struct GitWorktree {
@@ -53,6 +136,26 @@ pub struct GitWorktree {
 }
 
 impl GitWorktree {
+    /// Administrative Git commands after a managed consumer has write access to the common Git
+    /// directory must not execute hooks or filesystem monitors from consumer-edited config.
+    /// Callers must also avoid status-like commands that can execute configured clean filters.
+    fn metadata_command(&self, consumer_writable: bool) -> Command {
+        let mut command = Command::new("git");
+        command.current_dir(&self.repo_path);
+        if consumer_writable {
+            command.arg("--no-pager");
+            command.args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.attributesFile=/dev/null",
+            ]);
+        }
+        command
+    }
+
     /// Create a new GitWorktree instance
     pub fn new(repo_path: impl Into<PathBuf>) -> Result<Self> {
         let repo_path = repo_path.into();
@@ -222,7 +325,7 @@ impl GitWorktree {
         }
 
         // Ensure any stale worktree registrations are removed before attempting to attach.
-        if let Err(err) = self.prune() {
+        if let Err(err) = self.prune_with_metadata_policy(!allow_hooks) {
             tracing::debug!("Skipping worktree prune before attach: {}", err);
         }
 
@@ -268,8 +371,22 @@ impl GitWorktree {
     /// * `path` - Path to the worktree to remove
     /// * `force` - Force removal even if worktree has uncommitted changes
     pub fn remove(&self, path: &Path, force: bool) -> Result<()> {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(&self.repo_path);
+        self.remove_with_metadata_policy(path, force, false)
+    }
+
+    /// Forced removal avoids Git's dirty-worktree scan, which can execute a consumer-configured
+    /// clean filter. Used only after managed in-guest access delegation.
+    pub fn remove_consumer_writable(&self, path: &Path) -> Result<()> {
+        self.remove_with_metadata_policy(path, true, true)
+    }
+
+    fn remove_with_metadata_policy(
+        &self,
+        path: &Path,
+        force: bool,
+        consumer_writable: bool,
+    ) -> Result<()> {
+        let mut cmd = self.metadata_command(consumer_writable);
         cmd.arg("worktree").arg("remove");
 
         if force {
@@ -298,8 +415,15 @@ impl GitWorktree {
 
     /// Prune stale worktree registrations.
     pub fn prune(&self) -> Result<()> {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(&self.repo_path);
+        self.prune_with_metadata_policy(false)
+    }
+
+    pub fn prune_consumer_writable(&self) -> Result<()> {
+        self.prune_with_metadata_policy(true)
+    }
+
+    fn prune_with_metadata_policy(&self, consumer_writable: bool) -> Result<()> {
+        let mut cmd = self.metadata_command(consumer_writable);
         cmd.arg("worktree").arg("prune");
 
         tracing::debug!("Running: {:?}", cmd);
@@ -341,8 +465,20 @@ impl GitWorktree {
 
     /// Check if a branch exists
     pub fn branch_exists(&self, branch: &str) -> Result<bool> {
-        let output = Command::new("git")
-            .current_dir(&self.repo_path)
+        self.branch_exists_with_metadata_policy(branch, false)
+    }
+
+    pub fn branch_exists_consumer_writable(&self, branch: &str) -> Result<bool> {
+        self.branch_exists_with_metadata_policy(branch, true)
+    }
+
+    fn branch_exists_with_metadata_policy(
+        &self,
+        branch: &str,
+        consumer_writable: bool,
+    ) -> Result<bool> {
+        let output = self
+            .metadata_command(consumer_writable)
             .args(["branch", "--list", branch])
             .output()
             .map_err(|e| Error::git(format!("Failed to check branch: {}", e)))?;
@@ -424,8 +560,20 @@ impl GitWorktree {
 
     /// Delete a branch
     pub fn delete_branch(&self, branch: &str, force: bool) -> Result<()> {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(&self.repo_path);
+        self.delete_branch_with_metadata_policy(branch, force, false)
+    }
+
+    pub fn delete_branch_consumer_writable(&self, branch: &str, force: bool) -> Result<()> {
+        self.delete_branch_with_metadata_policy(branch, force, true)
+    }
+
+    fn delete_branch_with_metadata_policy(
+        &self,
+        branch: &str,
+        force: bool,
+        consumer_writable: bool,
+    ) -> Result<()> {
+        let mut cmd = self.metadata_command(consumer_writable);
         cmd.arg("branch");
 
         if force {
@@ -510,6 +658,8 @@ pub struct WorktreeInfo {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -578,6 +728,42 @@ mod tests {
             .contains("Not a git repository"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn managed_checkout_rejects_previously_delegated_common_git_metadata() {
+        let repo = setup_test_repo();
+        let repo_path = fs::canonicalize(repo.path()).unwrap();
+        require_private_common_git_metadata(&repo_path).unwrap();
+        let common = repo_path.join(".git");
+        fs::set_permissions(&common, fs::Permissions::from_mode(0o775)).unwrap();
+        let error = require_private_common_git_metadata(&repo_path).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("private runtime-owned .git entry"));
+        fs::set_permissions(&common, fs::Permissions::from_mode(0o755)).unwrap();
+
+        fs::set_permissions(&repo_path, fs::Permissions::from_mode(0o770)).unwrap();
+        let error = require_private_common_git_metadata(&repo_path).unwrap_err();
+        assert!(error.to_string().contains("ancestor"));
+        fs::set_permissions(&repo_path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let attributes = common.join("info/attributes");
+        fs::write(&attributes, "*.txt filter=attacker\n").unwrap();
+        fs::set_permissions(&attributes, fs::Permissions::from_mode(0o664)).unwrap();
+        let error = require_private_common_git_metadata(&repo_path).unwrap_err();
+        assert!(error.to_string().contains("consumer-writable paths"));
+
+        let linked = repo_path.parent().unwrap().join("linked");
+        fs::set_permissions(&attributes, fs::Permissions::from_mode(0o644)).unwrap();
+        let git = GitWorktree::new(&repo_path).unwrap();
+        git.create(&linked, "feature/linked", Some("main")).unwrap();
+        fs::set_permissions(linked.join(".git"), fs::Permissions::from_mode(0o664)).unwrap();
+        let error = require_private_common_git_metadata(&linked).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("private runtime-owned .git entry"));
+    }
+
     #[test]
     fn test_create_worktree() {
         let temp_dir = setup_test_repo();
@@ -639,6 +825,76 @@ mod tests {
         git.remove(&worktree_path, false).unwrap();
 
         assert!(!worktree_path.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn consumer_writable_metadata_cleanup_never_executes_repository_commands() {
+        let repo = setup_test_repo();
+        let git = GitWorktree::new(repo.path()).unwrap();
+        let worktree = repo.path().join("consumer-worktree");
+        git.create(&worktree, "feature/consumer", Some("main"))
+            .unwrap();
+
+        // The consumer can edit both the task worktree and shared Git config after delegation.
+        // A same-size tracked edit makes ordinary `git status` run the configured clean filter.
+        fs::write(worktree.join(".gitattributes"), "*.md filter=attacker\n").unwrap();
+        let added = Command::new("git")
+            .args(["add", ".gitattributes"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        assert!(added.success());
+        fs::write(worktree.join("README.md"), "# Test RepO").unwrap();
+
+        let trap = repo.path().join("git-trap.sh");
+        let hook = repo.path().join("reference-transaction");
+        let marker = repo.path().join("git-command-executed");
+        let script =
+            "#!/bin/sh\nprintf invoked >> \"$(dirname \"$0\")/git-command-executed\"\ncat\n";
+        for path in [&trap, &hook] {
+            fs::write(path, script).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for (key, value) in [
+            ("core.fsmonitor", trap.as_os_str()),
+            ("core.hooksPath", repo.path().as_os_str()),
+            ("filter.attacker.clean", trap.as_os_str()),
+        ] {
+            let configured = Command::new("git")
+                .arg("config")
+                .arg(key)
+                .arg(value)
+                .current_dir(repo.path())
+                .status()
+                .unwrap();
+            assert!(configured.success());
+        }
+
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            marker.exists(),
+            "the adversarial Git fixture did not trigger"
+        );
+        fs::remove_file(&marker).unwrap();
+
+        git.remove_consumer_writable(&worktree).unwrap();
+        git.prune_consumer_writable().unwrap();
+        assert!(git
+            .branch_exists_consumer_writable("feature/consumer")
+            .unwrap());
+        git.delete_branch_consumer_writable("feature/consumer", true)
+            .unwrap();
+        assert!(!worktree.exists());
+        assert!(
+            !marker.exists(),
+            "managed cleanup executed attacker Git config"
+        );
     }
 
     #[test]

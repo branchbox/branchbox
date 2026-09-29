@@ -207,10 +207,24 @@ fi
 printf 'consumer-created\n' |
   setpriv --reuid 1000 --regid 1000 --clear-groups tee "$worktree/consumer-created.txt" >/dev/null
 test "$(stat -c %u "$worktree/consumer-created.txt")" = 1000
+test "$(stat -c %a "$worktree/consumer-created.txt")" = 660
 setpriv --reuid 1000 --regid 1000 --clear-groups sh -c \
   'umask 077; mkdir -p "$1/inner"; printf "nested consumer file\n" > "$1/inner/file"' \
   sh "$worktree/consumer-private"
 test "$(stat -c %u "$worktree/consumer-private/inner/file")" = 1000
+private_mode="$(stat -c %a "$worktree/consumer-private")"
+inner_mode="$(stat -c %a "$worktree/consumer-private/inner")"
+test "${private_mode: -3}" = 770
+test "${inner_mode: -3}" = 770
+test "$(stat -c %a "$worktree/consumer-private/inner/file")" = 660
+public_mode="$(stat -c %a "$worktree/.devcontainer")"
+test "${public_mode: -3}" = 775
+setpriv --reuid 1000 --regid 1000 --clear-groups sh -c \
+  'umask 077; printf "public-parent file\n" > "$1/consumer-file"; mkdir "$1/consumer-dir"' \
+  sh "$worktree/.devcontainer"
+test "$(stat -c %a "$worktree/.devcontainer/consumer-file")" = 660
+public_child_mode="$(stat -c %a "$worktree/.devcontainer/consumer-dir")"
+test "${public_child_mode: -3}" = 770
 container_ids="$(docker ps -q --filter "label=devcontainer.local_folder=$worktree")"
 test "$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l)" = 1
 container_id="$container_ids"
@@ -243,8 +257,46 @@ jq -e --arg worktree "$worktree" --arg git "$repository/.git" --arg credential "
 ' "$BBX_LIVE_ROOT/container-inspect.json"
 echo "live-start-boundary=verified"
 
+# The coding UID can change the shared Git config and worktree attributes. An unguarded status,
+# hook, or clean-filter invocation during teardown would execute this script as the runtime UID.
+git_attack_script="$worktree/git-attack.sh"
+cat > "$git_attack_script" <<EOF
+#!/bin/sh
+printf invoked >> "$BBX_LIVE_ROOT/git-attack-marker"
+cat
+EOF
+chown 1000:1000 "$git_attack_script"
+chmod 0750 "$git_attack_script"
+mkdir "$worktree/git-hooks"
+cp "$git_attack_script" "$worktree/git-hooks/reference-transaction"
+chmod 0750 "$worktree/git-hooks/reference-transaction"
+chown -R 1000:1000 "$worktree/git-hooks"
+setpriv --reuid 1000 --regid 1000 --clear-groups test -w "$repository/.git/config"
+setpriv --reuid 1000 --regid 1000 --clear-groups git config --file "$repository/.git/config" core.fsmonitor "$git_attack_script"
+setpriv --reuid 1000 --regid 1000 --clear-groups git config --file "$repository/.git/config" core.hooksPath "$worktree/git-hooks"
+setpriv --reuid 1000 --regid 1000 --clear-groups git config --file "$repository/.git/config" filter.attack.clean "$git_attack_script"
+printf '.env filter=attack\n' |
+  setpriv --reuid 1000 --regid 1000 --clear-groups tee "$worktree/.gitattributes" >/dev/null
+setpriv --reuid 1000 --regid 1000 --clear-groups sh -c \
+  'sed "s/hostile-dotenv-name/hostile-dotenv-namE/" "$1/.env" > "$1/.env.tmp"; mv "$1/.env.tmp" "$1/.env"' \
+  sh "$worktree"
+runtime_command "$git_attack_script" </dev/null
+test -e "$BBX_LIVE_ROOT/git-attack-marker"
+rm "$BBX_LIVE_ROOT/git-attack-marker"
+test ! -e "$BBX_LIVE_ROOT/git-attack-marker"
+set +e
+runtime_command "$BBX_BINARY" feature teardown live --repo "$repository" --delete-branch --allow-container --json > "$BBX_LIVE_ROOT/refused-teardown.stdout" 2> "$BBX_LIVE_ROOT/refused-teardown.stderr"
+refused_status="$?"
+set -e
+test "$refused_status" != 0
+grep -Fq 'requires --force' "$BBX_LIVE_ROOT/refused-teardown.stderr"
+test -d "$worktree"
+test ! -e "$BBX_LIVE_ROOT/git-attack-marker"
+
 runtime_command timeout 180s "$BBX_BINARY" feature teardown live --repo "$repository" --force --delete-branch --force-delete-branch --allow-container --json > "$BBX_LIVE_ROOT/teardown.stdout" 2> "$BBX_LIVE_ROOT/teardown.stderr"
 cat "$BBX_LIVE_ROOT/teardown.stdout"
+jq -e '.worktree_removed == true and .branch_deleted == true' "$BBX_LIVE_ROOT/teardown.stdout"
+test ! -e "$BBX_LIVE_ROOT/git-attack-marker"
 jq -e '.runtime_teardown.verified == true and .runtime_teardown.residue_free == true' "$BBX_LIVE_ROOT/teardown.stdout"
 test ! -e "$worktree"
 test ! -e "$stage"

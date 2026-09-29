@@ -2,7 +2,7 @@ use crate::{
     adapters,
     config::BranchBoxConfig,
     devcontainer_runtime::DevcontainerConfig,
-    git::{repository_common_git_dir, GitWorktree},
+    git::{repository_common_git_dir, require_private_common_git_metadata, GitWorktree},
     modules::{self, ModuleHandle, SpecStatus},
     naming,
     runtime::{
@@ -420,6 +420,14 @@ impl FeatureWorkflow {
                 "Managed in-guest launch requires a separate task worktree so the coding consumer cannot remove provider state from the mounted repository",
             ));
         }
+        if runtime_kind == RuntimeProviderKind::InGuest && request.reuse_existing {
+            return Err(Error::validation(
+                "Managed in-guest launch cannot reuse a branch after the coding consumer had write access to shared Git metadata",
+            ));
+        }
+        if runtime_kind == RuntimeProviderKind::InGuest {
+            require_private_common_git_metadata(&self.repo_root)?;
+        }
         let runtime_provider = runtime::provider(runtime_kind)?;
         if runtime_kind != RuntimeProviderKind::InGuest {
             runtime_provider.validate()?;
@@ -435,7 +443,11 @@ impl FeatureWorkflow {
         } else {
             self.worktree_path(&work_feature)?
         };
-        let mut branch_exists = self.git.branch_exists(&branch_name)?;
+        let mut branch_exists = if runtime_kind == RuntimeProviderKind::InGuest {
+            self.git.branch_exists_consumer_writable(&branch_name)?
+        } else {
+            self.git.branch_exists(&branch_name)?
+        };
         // In repository mode the checkout already exists -- it is the repository
         // -- so its presence says nothing about whether this feature was started
         // before, and must not be read as a collision.
@@ -444,7 +456,11 @@ impl FeatureWorkflow {
         let mut warnings = Vec::new();
         let mut reuse_existing = request.reuse_existing;
 
-        if !reuse_existing && branch_exists && !worktree_exists {
+        if runtime_kind != RuntimeProviderKind::InGuest
+            && !reuse_existing
+            && branch_exists
+            && !worktree_exists
+        {
             if let Ok(Some(metadata)) = self.state.get_feature(&work_feature) {
                 if metadata.status == FeatureStatus::Removed || !metadata.worktree_path.exists() {
                     reuse_existing = true;
@@ -1124,21 +1140,14 @@ impl FeatureWorkflow {
                 .unwrap_or_default(),
         };
         let in_guest_teardown = runtime_metadata.provider == RuntimeProviderKind::InGuest;
+        if in_guest_teardown && !force_remove {
+            return Err(Error::validation(
+                "Managed in-guest teardown requires --force: checking consumer-writable Git worktree changes could execute a repository-configured filter as the BranchBox runtime",
+            ));
+        }
         let worktree_exists = worktree_path.exists();
         if !worktree_exists && !force_remove {
             return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
-        }
-
-        // Repository lifecycle hooks can leave an in-guest worktree pointing at the container's
-        // view of the shared Git metadata. Repair that pointer before status/dirty checks use it.
-        // Forced teardown retains the existing best-effort filesystem fallback for irreparable
-        // or already-partially-removed worktrees.
-        if worktree_exists && in_guest_teardown && !force_remove {
-            self.fix_git_worktree_path(&worktree_path).map_err(|err| {
-                Error::validation(format!(
-                    "Cannot restore in-guest Git worktree metadata before teardown: {err}"
-                ))
-            })?;
         }
 
         let skip_dirty_validation = force_remove || force_remove_modules;
@@ -1249,7 +1258,12 @@ impl FeatureWorkflow {
 
         let mut worktree_removed = false;
         if worktree_exists {
-            match self.git.remove(&worktree_path, force_remove) {
+            let removal = if in_guest_teardown {
+                self.git.remove_consumer_writable(&worktree_path)
+            } else {
+                self.git.remove(&worktree_path, force_remove)
+            };
+            match removal {
                 Ok(_) => {
                     worktree_removed = true;
                 }
@@ -1282,7 +1296,12 @@ impl FeatureWorkflow {
         }
 
         if worktree_removed || !worktree_exists {
-            if let Err(err) = self.git.prune() {
+            let pruning = if in_guest_teardown {
+                self.git.prune_consumer_writable()
+            } else {
+                self.git.prune()
+            };
+            if let Err(err) = pruning {
                 tracing::warn!("Failed to prune stale worktrees: {}", err);
                 warnings.push(format!("Failed to prune stale git worktrees: {}", err));
             }
@@ -1290,10 +1309,13 @@ impl FeatureWorkflow {
 
         let mut branch_deleted = false;
         if delete_branch {
-            match self
-                .git
-                .delete_branch(&branch_name, force_remove || force_delete_branch)
-            {
+            let deletion = if in_guest_teardown {
+                self.git.delete_branch_consumer_writable(&branch_name, true)
+            } else {
+                self.git
+                    .delete_branch(&branch_name, force_remove || force_delete_branch)
+            };
+            match deletion {
                 Ok(_) => {
                     branch_deleted = true;
                 }
@@ -1952,7 +1974,7 @@ impl FeatureWorkflow {
                     err
                 );
             }
-            if let Err(err) = self.git.remove(worktree_path, true) {
+            if let Err(err) = self.git.remove_consumer_writable(worktree_path) {
                 tracing::warn!(
                     "Failed to remove in-guest worktree after startup failure: {}",
                     err
@@ -1965,14 +1987,18 @@ impl FeatureWorkflow {
                 }
             }
         }
-        if let Err(err) = self.git.prune() {
+        if let Err(err) = self.git.prune_consumer_writable() {
             tracing::warn!(
                 "Failed to prune in-guest worktree metadata after startup failure: {}",
                 err
             );
         }
-        if self.git.branch_exists(branch_name).unwrap_or(false) {
-            if let Err(err) = self.git.delete_branch(branch_name, true) {
+        if self
+            .git
+            .branch_exists_consumer_writable(branch_name)
+            .unwrap_or(false)
+        {
+            if let Err(err) = self.git.delete_branch_consumer_writable(branch_name, true) {
                 tracing::warn!(
                     "Failed to delete in-guest task branch '{}' after startup failure: {}",
                     branch_name,
@@ -4033,6 +4059,14 @@ fn validate_in_guest_generated_path(worktree_path: &Path, path: &Path) -> Result
         )));
     }
     let tracked = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+        ])
         .arg("--literal-pathspecs")
         .arg("-C")
         .arg(worktree_path)
@@ -6048,7 +6082,17 @@ fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
 
 fn resolve_git_object(repo_root: &Path, revision: &str) -> Result<String> {
     let output = Command::new("git")
-        .args(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "rev-parse",
+            "--verify",
+            &format!("{revision}^{{commit}}"),
+        ])
         .current_dir(repo_root)
         .output()
         .map_err(|err| {
@@ -6156,8 +6200,16 @@ fn resolve_repo_root(path: &Path) -> Result<PathBuf> {
     };
 
     if let Ok(output) = Command::new("git")
-        .arg("rev-parse")
-        .arg("--show-toplevel")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "rev-parse",
+            "--show-toplevel",
+        ])
         .current_dir(cwd)
         .output()
     {
@@ -6811,7 +6863,16 @@ fn format_rgb((r, g, b): (u8, u8, u8)) -> String {
 fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
     let output = Command::new("git")
         .current_dir(repo_root)
-        .args(["rev-parse", branch])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "rev-parse",
+            branch,
+        ])
         .output()
         .ok()?;
 
