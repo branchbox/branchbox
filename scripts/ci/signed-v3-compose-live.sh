@@ -2,16 +2,32 @@
 set -Eeuo pipefail
 
 : "${BBX_BINARY:?exact-head binary required}"
+: "${BBX_RUNTIME_UID:?distinct runtime UID required}"
+: "${BBX_RUNTIME_GID:?distinct runtime GID required}"
+: "${BBX_DOCKER_GID:?Docker socket GID required}"
+: "${BBX_RUNTIME_HOME:?runtime home required}"
 test "$(id -u)" = 0
-id -G | tr ' ' '\n' | grep -qx 1000
+test "$BBX_RUNTIME_UID" != 0
+test "$BBX_RUNTIME_UID" != 1000
+test -d "$BBX_RUNTIME_HOME"
 command -v devcontainer >/dev/null
 docker compose version
 BBX_LIVE_ROOT="$(mktemp -d /tmp/branchbox-live-compose.XXXXXXXX)"
+# The coding UID must be able to traverse the shared workspace parent. The
+# signed run directory below remains 0700 and cannot be read by that UID.
+chmod 0755 "$BBX_LIVE_ROOT"
 BBX_IMAGE="$(docker image inspect node:24-slim --format '{{index .RepoDigests 0}}')"
 test -n "$BBX_IMAGE"
 export BBX_LIVE_ROOT BBX_IMAGE
 
+runtime_command() {
+  setpriv --reuid "$BBX_RUNTIME_UID" --regid "$BBX_RUNTIME_GID" \
+    --groups "$BBX_RUNTIME_GID,1000,$BBX_DOCKER_GID" \
+    env HOME="$BBX_RUNTIME_HOME" "$@"
+}
+
 mutator_pid=""
+compose_project=""
 cleanup() {
   status="$?"
   trap - EXIT
@@ -31,6 +47,20 @@ cleanup() {
     docker ps -aq --filter "label=devcontainer.local_folder=$worktree" |
       while IFS= read -r container; do
         test -z "$container" || docker rm -f "$container" >/dev/null
+      done || true
+  fi
+  if test -n "$compose_project"; then
+    docker ps -aq --filter "label=com.docker.compose.project=$compose_project" |
+      while IFS= read -r container; do
+        test -z "$container" || docker rm -f "$container" >/dev/null
+      done || true
+    docker network ls -q --filter "label=com.docker.compose.project=$compose_project" |
+      while IFS= read -r network; do
+        test -z "$network" || docker network rm "$network" >/dev/null
+      done || true
+    docker volume ls -q --filter "label=com.docker.compose.project=$compose_project" |
+      while IFS= read -r volume; do
+        test -z "$volume" || docker volume rm "$volume" >/dev/null
       done || true
   fi
   rm -rf -- "$BBX_LIVE_ROOT" || true
@@ -98,10 +128,13 @@ jq -n \
     leases:[{lease_id:"outer_tunnel",scope:"platform-tunnel",consumer:"outer-connector",materializations:[]}]
   }' > "$run_root/assignment.json"
 chmod 0600 "$run_root/assignment.json"
+# Setup is performed by the test supervisor; the actual BranchBox runtime
+# owns the repository and assignment before it reads or writes either one.
+chown -R "$BBX_RUNTIME_UID:$BBX_RUNTIME_GID" "$BBX_LIVE_ROOT"
 
 echo "fixture worktree: $worktree"
 echo "preloaded image: $BBX_IMAGE"
-test "$(stat -c '%u:%a' "$run_root")" = "0:700"
+test "$(stat -c '%u:%a' "$run_root")" = "$BBX_RUNTIME_UID:700"
 unset REPO_IMAGE HOST_AUTH TUNNEL_TOKEN
 
 (
@@ -115,7 +148,8 @@ unset REPO_IMAGE HOST_AUTH TUNNEL_TOKEN
   done
   while ! test -e "$BBX_LIVE_ROOT/stop-mutation"; do
     if test -f "$worktree/.devcontainer/compose.yaml"; then
-      if printf '%s\n' 'services:' '  app:' '    image: node:24-slim' '    volumes: ["/etc:/host-etc"]' '    ports: ["32345:3000"]' '    environment: {HOST_AUTH: "${HOST_AUTH:?late-source}"}' > "$worktree/.devcontainer/compose.yaml"; then
+      if printf '%s\n' 'services:' '  app:' '    image: node:24-slim' '    volumes: ["/etc:/host-etc"]' '    ports: ["32345:3000"]' '    environment: {HOST_AUTH: "${HOST_AUTH:?late-source}"}' |
+        setpriv --reuid 1000 --regid 1000 --clear-groups tee "$worktree/.devcontainer/compose.yaml" >/dev/null 2>&1; then
         count=$((count + 1))
       fi
     fi
@@ -126,7 +160,7 @@ unset REPO_IMAGE HOST_AUTH TUNNEL_TOKEN
 mutator_pid="$!"
 
 set +e
-timeout 180s "$BBX_BINARY" feature start live --repo "$repository" --runtime in-guest --runtime-manifest "$run_root/assignment.json" --allow-container --minimal --json > "$BBX_LIVE_ROOT/start.stdout" 2> "$BBX_LIVE_ROOT/start.stderr"
+runtime_command timeout 180s "$BBX_BINARY" feature start live --repo "$repository" --runtime in-guest --runtime-manifest "$run_root/assignment.json" --allow-container --minimal --json > "$BBX_LIVE_ROOT/start.stdout" 2> "$BBX_LIVE_ROOT/start.stderr"
 start_status="$?"
 set -e
 touch "$BBX_LIVE_ROOT/stop-mutation"
@@ -139,9 +173,10 @@ cat "$BBX_LIVE_ROOT/start.stdout"
 
 stage="$(find "$run_root" -maxdepth 1 -type d -name 'branchbox-compose-*' -print -quit)"
 test -n "$stage"
-test "$(stat -c '%u:%a' "$stage")" = "0:700"
+test "$(stat -c '%u:%a' "$stage")" = "$BBX_RUNTIME_UID:700"
 test "$stage" != "$worktree"
 test "$(cat "$BBX_LIVE_ROOT/mutation-count")" -gt 0
+grep -Fq '/etc:/host-etc' "$worktree/.devcontainer/compose.yaml"
 if grep -R -F '${' "$stage"; then
   echo "Repository interpolation survived in private CLI inputs" >&2
   exit 1
@@ -151,14 +186,27 @@ if setpriv --reuid 1000 --regid 1000 --clear-groups test -r "$stage/.devcontaine
   echo "Workspace consumer can read private CLI inputs" >&2
   exit 1
 fi
+printf 'consumer-created\n' |
+  setpriv --reuid 1000 --regid 1000 --clear-groups tee "$worktree/consumer-created.txt" >/dev/null
+test "$(stat -c %u "$worktree/consumer-created.txt")" = 1000
 container_ids="$(docker ps -q --filter "label=devcontainer.local_folder=$worktree")"
 test "$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l)" = 1
 container_id="$container_ids"
 docker inspect "$container_id" > "$BBX_LIVE_ROOT/container-inspect.json"
+compose_project="$(jq -r '.[0].Config.Labels["com.docker.compose.project"] // empty' "$BBX_LIVE_ROOT/container-inspect.json")"
+test -n "$compose_project"
 image_id="$(docker image inspect "$BBX_IMAGE" --format '{{.Id}}')"
 test "$(docker inspect "$container_id" --format '{{.Image}}')" = "$image_id"
-test "$(docker exec --user node "$container_id" id -u)" = 1000
-test "$(docker exec --user node "$container_id" id -g)" = 1000
+configured_user="$(docker inspect "$container_id" --format '{{.Config.User}}')"
+test -n "$configured_user"
+test "$configured_user" != root
+test "$configured_user" != 0
+container_uid="$(docker exec "$container_id" id -u)"
+container_gid="$(docker exec "$container_id" id -g)"
+test "$container_uid" = 1000
+test "$container_gid" = 1000
+coding_uid="$(runtime_command devcontainer exec --workspace-folder "$worktree" --config "$stage/.devcontainer.json" id -u)"
+test "$coding_uid" = 1000
 jq -e --arg worktree "$worktree" --arg git "$repository/.git" '
   .[0] as $container |
   ($container.Mounts | length) == 2 and
@@ -168,11 +216,14 @@ jq -e --arg worktree "$worktree" --arg git "$repository/.git" '
 ' "$BBX_LIVE_ROOT/container-inspect.json"
 echo "live-start-boundary=verified"
 
-timeout 180s "$BBX_BINARY" feature teardown live --repo "$repository" --force --delete-branch --force-delete-branch --allow-container --json > "$BBX_LIVE_ROOT/teardown.stdout" 2> "$BBX_LIVE_ROOT/teardown.stderr"
+runtime_command timeout 180s "$BBX_BINARY" feature teardown live --repo "$repository" --force --delete-branch --force-delete-branch --allow-container --json > "$BBX_LIVE_ROOT/teardown.stdout" 2> "$BBX_LIVE_ROOT/teardown.stderr"
 cat "$BBX_LIVE_ROOT/teardown.stdout"
 jq -e '.runtime_teardown.verified == true and .runtime_teardown.residue_free == true' "$BBX_LIVE_ROOT/teardown.stdout"
 test ! -e "$worktree"
 test ! -e "$stage"
 test -z "$(docker ps -aq --filter "label=devcontainer.local_folder=$worktree")"
-test -z "$(git -C "$repository" branch --list feature/live)"
+test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$compose_project")"
+test -z "$(docker network ls -q --filter "label=com.docker.compose.project=$compose_project")"
+test -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$compose_project")"
+test -z "$(runtime_command git -C "$repository" branch --list feature/live)"
 echo "provider-teardown=verified"

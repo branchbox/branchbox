@@ -291,12 +291,16 @@ jobs:
           test "$(sha256sum branchbox | cut -d' ' -f1)" = "$(jq -r .binary.sha256 branchbox.manifest.json)"
       - name: Start and tear down signed v3 devcontainer under distinct UID
         run: |
+          sudo useradd --create-home --uid 2000 --user-group branchbox-live-runtime
           sudo env \
             "PATH=$PATH" \
             "BBX_BINARY=$PWD/dist/signed-v3-live/branchbox" \
+            "BBX_RUNTIME_UID=$(id -u branchbox-live-runtime)" \
+            "BBX_RUNTIME_GID=$(id -g branchbox-live-runtime)" \
+            "BBX_RUNTIME_HOME=/home/branchbox-live-runtime" \
+            "BBX_DOCKER_GID=$(stat -c %g /var/run/docker.sock)" \
             "BRANCHBOX_DEVCONTAINER_PATH=$(command -v devcontainer)" \
             "BRANCHBOX_DOCKER_PATH=$(command -v docker)" \
-            setpriv --groups 1000 --reuid 0 --regid 0 \
             bash scripts/ci/signed-v3-compose-live.sh
 
   docs:
