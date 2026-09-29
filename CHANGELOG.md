@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reject Compose `provider` services in managed in-guest projects before staging CLI inputs;
   Compose would otherwise run the repository-selected provider binary on the guest host.
+- Reject ambient variable interpolation left in sanitized in-guest Compose inputs, including
+  dependency environments and service labels. Static dependency environment values and
+  Compose-escaped `$$` remain available without leaking runtime-process variables.
 - Filter disabled tunnel connectors from each sanitized in-guest Compose file's
   dependencies before Compose merges the ordered files. Later service overrides
   that only add a command no longer retain an undefined connector dependency,

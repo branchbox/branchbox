@@ -4486,7 +4486,58 @@ fn sanitize_in_guest_compose_source(
         }
     }
     remove_compose_extensions(document);
+    // Compose interpolates each source before merging the signed facade. Even
+    // when mount-related fields are gone, a retained dependency environment,
+    // label, or command could still copy a runtime-process secret into Docker.
+    reject_ambient_compose_interpolation(document)?;
     Ok(())
+}
+
+fn reject_ambient_compose_interpolation(value: &serde_yaml::Value) -> Result<()> {
+    match value {
+        serde_yaml::Value::String(value) if contains_unescaped_compose_variable(value) => {
+            // cause-withheld: the untrusted scalar can contain credential material.
+            Err(Error::validation(
+                "In-guest Compose rejects ambient variable interpolation in a retained field; use a fixed value or escape '$' as '$$' for container-side expansion",
+            ))
+        }
+        serde_yaml::Value::Mapping(mapping) => {
+            for (key, value) in mapping {
+                reject_ambient_compose_interpolation(key)?;
+                reject_ambient_compose_interpolation(value)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Sequence(values) => {
+            for value in values {
+                reject_ambient_compose_interpolation(value)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Tagged(tagged) => reject_ambient_compose_interpolation(&tagged.value),
+        _ => Ok(()),
+    }
+}
+
+fn contains_unescaped_compose_variable(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'$' {
+            if bytes.get(index + 1) == Some(&b'$') {
+                index += 2;
+                continue;
+            }
+            if bytes
+                .get(index + 1)
+                .is_some_and(|next| *next == b'{' || next.is_ascii_alphabetic() || *next == b'_')
+            {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
 }
 
 fn filter_in_guest_omitted_dependencies(
@@ -10271,6 +10322,96 @@ volumes:
                 effective["services"]["database"]["environment"]["POSTGRES_USER"],
                 "kept-for-dependency"
             );
+        }
+    }
+
+    #[test]
+    fn test_in_guest_rejects_retained_compose_interpolation_without_losing_static_dependency_env() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        let compose_path = devcontainer_dir.join("compose.yaml");
+        let images = BTreeMap::from([
+            ("app".to_string(), "alpine:3.19".to_string()),
+            ("database".to_string(), "postgres:16".to_string()),
+        ]);
+        let plan = InGuestFacadePlan::empty_for_tests().with_service_images_for_tests(images);
+
+        for unsafe_source in [
+            "services:\n  app: {image: alpine:3.19, depends_on: [database]}\n  database:\n    image: postgres:16\n    environment: {EXPOSED_FROM_GUEST: '${HOST_SECRET:?ambient-secret}'}\n",
+            "services:\n  app:\n    image: alpine:3.19\n    labels: {exposed.from.guest: '${HOST_SECRET:?ambient-secret}'}\n  database: {image: postgres:16}\n",
+        ] {
+            fs::write(&compose_path, unsafe_source).unwrap();
+            let error = prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("ambient variable interpolation"),
+                "{error}"
+            );
+            assert!(!error.to_string().contains("HOST_SECRET"));
+            assert!(!devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        }
+
+        fs::write(
+            &compose_path,
+            "services:\n  app: {image: alpine:3.19, depends_on: [database]}\n  database:\n    image: postgres:16\n    environment: {POSTGRES_USER: kept-for-dependency}\n    command: ['sh', '-c', 'echo $$POSTGRES_USER']\n",
+        )
+        .unwrap();
+        prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
+        let generated: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+        )
+        .unwrap();
+        let sanitized = fs::read_to_string(
+            devcontainer_dir.join(generated["dockerComposeFile"][0].as_str().unwrap()),
+        )
+        .unwrap();
+        let document: serde_yaml::Value = serde_yaml::from_str(&sanitized).unwrap();
+        assert_eq!(
+            document["services"]["database"]["environment"]["POSTGRES_USER"].as_str(),
+            Some("kept-for-dependency")
+        );
+        assert!(sanitized.contains("$$POSTGRES_USER"));
+
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+            let references = generated["dockerComposeFile"].as_array().unwrap();
+            let mut command = Command::new("docker");
+            command.arg("compose");
+            for reference in references {
+                command
+                    .arg("-f")
+                    .arg(devcontainer_dir.join(reference.as_str().unwrap()));
+            }
+            let output = command
+                .args(["config", "--format", "json"])
+                .env(
+                    "COMPOSE_PROJECT_NAME",
+                    "branchbox-ambient-interpolation-test",
+                )
+                .env("HOST_SECRET", "synthetic-private-value")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Compose rejected sanitized inputs: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                effective["services"]["database"]["environment"]["POSTGRES_USER"],
+                "kept-for-dependency"
+            );
+            assert!(!output
+                .stdout
+                .windows(23)
+                .any(|part| part == b"synthetic-private-value"));
         }
     }
 
