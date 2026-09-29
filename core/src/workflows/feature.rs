@@ -17,15 +17,25 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_map::DefaultHasher, BTreeMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, OpenOptionsExt},
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Instant;
+#[cfg(unix)]
+use std::{
+    ffi::CString,
+    os::fd::{AsRawFd, FromRawFd},
+};
 
 /// Feature start execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -545,24 +555,40 @@ impl FeatureWorkflow {
             if let Err(err) =
                 prepare_in_guest_devcontainer_config(&self.repo_root, &worktree_path, plan)
             {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                self.cleanup_failed_in_guest_worktree(
+                    &worktree_path,
+                    &branch_name,
+                    in_guest_plan.as_ref(),
+                );
                 return Err(err);
             }
             if !repository_workspace {
                 if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
-                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    self.cleanup_failed_in_guest_worktree(
+                        &worktree_path,
+                        &branch_name,
+                        in_guest_plan.as_ref(),
+                    );
                     return Err(err);
                 }
             }
             let common_git = match repository_common_git_dir(&self.repo_root) {
                 Ok(path) => path,
                 Err(err) => {
-                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    self.cleanup_failed_in_guest_worktree(
+                        &worktree_path,
+                        &branch_name,
+                        in_guest_plan.as_ref(),
+                    );
                     return Err(err);
                 }
             };
             if let Err(err) = plan.grant_workspace_consumer_access(&worktree_path, &common_git) {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                self.cleanup_failed_in_guest_worktree(
+                    &worktree_path,
+                    &branch_name,
+                    in_guest_plan.as_ref(),
+                );
                 return Err(err);
             }
         }
@@ -859,7 +885,11 @@ impl FeatureWorkflow {
             Err(err) => {
                 self.rollback_prepared_tunnel(tunnel_state.as_ref());
                 if runtime_kind == RuntimeProviderKind::InGuest {
-                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    self.cleanup_failed_in_guest_worktree(
+                        &worktree_path,
+                        &branch_name,
+                        in_guest_plan.as_ref(),
+                    );
                 }
                 return Err(err);
             }
@@ -939,7 +969,11 @@ impl FeatureWorkflow {
             }
             self.rollback_prepared_tunnel(tunnel_state.as_ref());
             if runtime_kind == RuntimeProviderKind::InGuest {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                self.cleanup_failed_in_guest_worktree(
+                    &worktree_path,
+                    &branch_name,
+                    in_guest_plan.as_ref(),
+                );
             }
             return Err(err);
         }
@@ -1876,7 +1910,19 @@ impl FeatureWorkflow {
         }
     }
 
-    fn cleanup_failed_in_guest_worktree(&self, worktree_path: &Path, branch_name: &str) {
+    fn cleanup_failed_in_guest_worktree(
+        &self,
+        worktree_path: &Path,
+        branch_name: &str,
+        plan: Option<&InGuestFacadePlan>,
+    ) {
+        if let Some(plan) = plan {
+            if let Err(err) = plan.remove_private_compose_stage(worktree_path) {
+                tracing::warn!(
+                    "Failed to remove private Compose inputs after startup failure: {err}"
+                );
+            }
+        }
         // A repository workspace is the repository. Removing it is never the
         // right cleanup for a failed start, and the branch is left in place for
         // the same reason a failed run leaves its clone: the caller owns it.
@@ -3532,6 +3578,8 @@ fn prepare_in_guest_devcontainer_config(
     plan: &InGuestFacadePlan,
 ) -> Result<()> {
     let devcontainer_dir = worktree_path.join(".devcontainer");
+    let private_stage = plan.private_compose_stage_dir(worktree_path)?;
+    let output_dir = private_stage.as_deref().unwrap_or(&devcontainer_dir);
     let directory_metadata = fs::symlink_metadata(&devcontainer_dir).map_err(|err| {
         Error::validation(format!(
             "Could not inspect in-guest devcontainer directory '{}': {err}",
@@ -3606,14 +3654,19 @@ fn prepare_in_guest_devcontainer_config(
         compose_documents.push(document);
     }
 
-    validate_in_guest_generated_path(worktree_path, &devcontainer_dir.join(SBX_COMPOSE_OVERRIDE))?;
+    if let Some(stage) = private_stage.as_deref() {
+        validate_private_in_guest_generated_path(stage, &stage.join(SBX_COMPOSE_OVERRIDE))?;
+    } else {
+        validate_in_guest_generated_path(worktree_path, &output_dir.join(SBX_COMPOSE_OVERRIDE))?;
+    }
     prepare_sbx_compose_override(
         repo_root,
-        &devcontainer_dir,
+        output_dir,
         config.service.as_deref(),
         &compose_files,
         Some(&compose_documents),
         Some(worktree_path),
+        private_stage.as_deref(),
     )?;
     let project_environment = plan.project_environment();
     if let Some((_, consumer)) = project_environment {
@@ -3636,16 +3689,17 @@ fn prepare_in_guest_devcontainer_config(
         project_environment: project_environment.map(|(source, _)| source),
         service_images: plan.service_images(),
         workspace_consumer: plan.workspace_consumer().is_some(),
+        private_stage: private_stage.as_deref(),
         lease_mounts: &lease_mounts,
         spool_volumes: &spool_volumes,
     };
     let omitted_services = prepare_outer_tunnel_compose_override(
         repo_root,
         worktree_path,
-        &devcontainer_dir,
+        output_dir,
         config.service.as_deref(),
         &workspace_folder,
-        &compose_files,
+        &compose_documents,
         &assignment,
     )?;
 
@@ -3682,23 +3736,33 @@ fn prepare_in_guest_devcontainer_config(
         object.insert("runServices".to_string(), serde_json::json!([primary]));
     }
 
-    let previous_inputs = previous_in_guest_compose_inputs(worktree_path, &devcontainer_dir)?;
+    let previous_inputs =
+        previous_in_guest_compose_inputs(worktree_path, output_dir, private_stage.as_deref())?;
     let mut current_inputs = HashSet::new();
-    if devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).is_file() {
+    if output_dir.join(SBX_COMPOSE_OVERRIDE).is_file() {
         // Compose interpolates each input before it merges the final !override facade.
         // It must never read repository mount/publication entries, even when they will
         // eventually be overridden (or contain required ${VAR:?} expressions).
+        // Connector identity is collected across all inputs: one file may supply
+        // its image while another supplies a tokenized command or entrypoint.
         let mut references = prepare_in_guest_compose_inputs(
             worktree_path,
-            &devcontainer_dir,
             &compose_references,
             &compose_files,
             compose_documents,
-            config.service.as_deref(),
-            plan.service_images(),
+            &InGuestComposeSanitization {
+                primary_service: config.service.as_deref(),
+                service_images: plan.service_images(),
+                omitted_services: &omitted_services,
+            },
+            private_stage.as_deref(),
         )?;
         for reference in &references {
-            let path = devcontainer_dir.join(reference);
+            let path = output_dir.join(reference);
+            if private_stage.is_some() {
+                current_inputs.insert(path);
+                continue;
+            }
             let parent = canonical_in_guest_compose_parent(
                 worktree_path,
                 path.parent()
@@ -3719,25 +3783,35 @@ fn prepare_in_guest_devcontainer_config(
         );
     }
 
-    let generated = devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG);
+    let generated = output_dir.join(SBX_DEVCONTAINER_CONFIG);
     if generated == config_path {
         return Err(Error::validation(
             "In-guest runtime overlays for a top-level .devcontainer.json are not supported; move the source config to .devcontainer/devcontainer.json",
         ));
     }
-    validate_in_guest_generated_path(worktree_path, &generated)?;
-    write_in_guest_generated_text_file(
+    write_managed_in_guest_generated_text_file(
         worktree_path,
+        private_stage.as_deref(),
         &generated,
         &format!("{}\n", serde_json::to_string_pretty(&value)?),
     )?;
     for stale in previous_inputs {
-        validate_in_guest_generated_path(worktree_path, &stale)?;
+        if let Some(stage) = private_stage.as_deref() {
+            validate_private_in_guest_generated_path(stage, &stale)?;
+        } else {
+            validate_in_guest_generated_path(worktree_path, &stale)?;
+        }
         if !current_inputs.contains(&stale)
-            && read_in_guest_worktree_file(worktree_path, &stale)?
-                .starts_with(SBX_COMPOSE_INPUT_MARKER)
+            && read_in_guest_worktree_file(
+                private_stage.as_deref().unwrap_or(worktree_path),
+                &stale,
+            )?
+            .starts_with(SBX_COMPOSE_INPUT_MARKER)
         {
-            fs::remove_file(stale)?;
+            remove_in_guest_generated_file(
+                private_stage.as_deref().unwrap_or(worktree_path),
+                &stale,
+            )?;
         }
     }
     Ok(())
@@ -3745,15 +3819,22 @@ fn prepare_in_guest_devcontainer_config(
 
 fn previous_in_guest_compose_inputs(
     worktree_path: &Path,
-    devcontainer_dir: &Path,
+    output_dir: &Path,
+    private_stage: Option<&Path>,
 ) -> Result<Vec<PathBuf>> {
-    let generated = devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG);
+    let generated = output_dir.join(SBX_DEVCONTAINER_CONFIG);
     match fs::symlink_metadata(&generated) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err.into()),
-        Ok(_) => validate_in_guest_generated_path(worktree_path, &generated)?,
+        Ok(_) => {
+            if let Some(stage) = private_stage {
+                validate_private_in_guest_generated_path(stage, &generated)?;
+            } else {
+                validate_in_guest_generated_path(worktree_path, &generated)?;
+            }
+        }
     }
-    let source = read_in_guest_worktree_file(worktree_path, &generated)?;
+    let source = read_in_guest_worktree_file(private_stage.unwrap_or(worktree_path), &generated)?;
     let Ok(previous) = serde_json::from_str::<serde_json::Value>(&source) else {
         return Ok(Vec::new());
     };
@@ -3770,8 +3851,15 @@ fn previous_in_guest_compose_inputs(
                 .is_some_and(|name| name.starts_with(SBX_COMPOSE_INPUT_PREFIX))
         })
     {
-        let path = devcontainer_dir.join(reference);
+        if private_stage.is_some() && Path::new(reference).components().count() != 1 {
+            continue;
+        }
+        let path = output_dir.join(reference);
         if !path.exists() {
+            continue;
+        }
+        if private_stage.is_some() {
+            paths.push(path);
             continue;
         }
         let parent = canonical_in_guest_compose_parent(
@@ -3889,8 +3977,8 @@ fn read_in_guest_worktree_file(worktree_path: &Path, path: &Path) -> Result<Stri
 /// Generated Compose inputs are referenced through their source directory.
 /// Keep every parent component real so that reference cannot be redirected
 /// through a repository-controlled directory symlink after it is generated.
-/// This validates static paths; concurrent directory renames still require a
-/// dirfd-based write path to be fully race-free.
+/// The generated-file operations also pin this parent through directory file
+/// descriptors so a concurrent rename cannot redirect a later write or delete.
 fn canonical_in_guest_compose_parent(worktree_path: &Path, parent: &Path) -> Result<PathBuf> {
     let worktree = fs::canonicalize(worktree_path)?;
     let relative = parent
@@ -4004,14 +4092,197 @@ fn write_in_guest_generated_text_file(
             .ok_or_else(|| Error::validation("In-guest generated path has no filename"))?,
     );
     validate_in_guest_generated_path(worktree_path, &canonical_path)?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(SBX_COMPOSE_INPUT_PREFIX)
-        .tempfile_in(&parent)?;
-    temporary.write_all(contents.as_bytes())?;
-    temporary
-        .persist(&canonical_path)
-        .map_err(|err| err.error)?;
-    Ok(())
+    #[cfg(unix)]
+    {
+        let directory = pin_in_guest_compose_parent(worktree_path, &parent)?;
+        return write_in_guest_generated_text_file_at(
+            &directory,
+            canonical_path
+                .file_name()
+                .ok_or_else(|| Error::validation("In-guest generated path has no filename"))?,
+            contents,
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let mut temporary = tempfile::Builder::new()
+            .prefix(SBX_COMPOSE_INPUT_PREFIX)
+            .tempfile_in(&parent)?;
+        temporary.write_all(contents.as_bytes())?;
+        temporary
+            .persist(&canonical_path)
+            .map_err(|err| err.error)?;
+        Ok(())
+    }
+}
+
+fn validate_private_in_guest_generated_path(stage: &Path, path: &Path) -> Result<()> {
+    if path.parent() != Some(stage) {
+        return Err(Error::validation(
+            "Private in-guest generated file must be directly inside its signed stage",
+        ));
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() => Err(Error::validation(format!(
+            "Private in-guest generated path '{}' is not a regular file",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn write_private_in_guest_generated_text_file(
+    stage: &Path,
+    path: &Path,
+    contents: &str,
+) -> Result<()> {
+    validate_private_in_guest_generated_path(stage, path)?;
+    #[cfg(unix)]
+    {
+        let directory = pin_in_guest_compose_parent(stage, stage)?;
+        return write_in_guest_generated_text_file_at(
+            &directory,
+            path.file_name()
+                .ok_or_else(|| Error::validation("Private generated path has no filename"))?,
+            contents,
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (stage, path, contents);
+        Err(Error::validation(
+            "Private in-guest Compose staging requires Unix directory handles",
+        ))
+    }
+}
+
+fn write_managed_in_guest_generated_text_file(
+    worktree_path: &Path,
+    private_stage: Option<&Path>,
+    path: &Path,
+    contents: &str,
+) -> Result<()> {
+    if let Some(stage) = private_stage {
+        write_private_in_guest_generated_text_file(stage, path, contents)
+    } else {
+        write_in_guest_generated_text_file(worktree_path, path, contents)
+    }
+}
+
+#[cfg(unix)]
+fn pin_in_guest_compose_parent(worktree_path: &Path, parent: &Path) -> Result<File> {
+    let worktree = fs::canonicalize(worktree_path)?;
+    let canonical_parent = canonical_in_guest_compose_parent(worktree_path, parent)?;
+    let expected = fs::metadata(&canonical_parent)?;
+    let relative = canonical_parent.strip_prefix(&worktree).map_err(|_| {
+        Error::validation("In-guest Compose parent must stay inside the task worktree")
+    })?;
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let mut directory = options.open(&worktree)?;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(Error::validation(
+                "In-guest Compose parent has an unsafe component",
+            ));
+        };
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| Error::validation("In-guest Compose parent contains a NUL byte"))?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        directory = unsafe { File::from_raw_fd(fd) };
+    }
+    let actual = directory.metadata()?;
+    if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
+        return Err(Error::validation(format!(
+            "In-guest Compose parent '{}' changed while it was opened",
+            parent.display()
+        )));
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn write_in_guest_generated_text_file_at(
+    directory: &File,
+    filename: &std::ffi::OsStr,
+    contents: &str,
+) -> Result<()> {
+    let target = CString::new(filename.as_bytes())
+        .map_err(|_| Error::validation("In-guest generated filename contains a NUL byte"))?;
+    let temporary = CString::new(format!(
+        "{SBX_COMPOSE_INPUT_PREFIX}{}-tmp",
+        uuid::Uuid::new_v4()
+    ))
+    .expect("generated temporary filename has no NUL bytes");
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            temporary.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let result = (|| {
+        file.write_all(contents.as_bytes())?;
+        let moved = unsafe {
+            libc::renameat(
+                directory.as_raw_fd(),
+                temporary.as_ptr(),
+                directory.as_raw_fd(),
+                target.as_ptr(),
+            )
+        };
+        if moved < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
+    }
+    result
+}
+
+fn remove_in_guest_generated_file(worktree_path: &Path, path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| Error::validation("In-guest generated path has no parent"))?;
+        let directory = pin_in_guest_compose_parent(worktree_path, parent)?;
+        let filename = path
+            .file_name()
+            .ok_or_else(|| Error::validation("In-guest generated path has no filename"))?;
+        let filename = CString::new(filename.as_bytes())
+            .map_err(|_| Error::validation("In-guest generated filename contains a NUL byte"))?;
+        if unsafe { libc::unlinkat(directory.as_raw_fd(), filename.as_ptr(), 0) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = worktree_path;
+        fs::remove_file(path)?;
+        Ok(())
+    }
 }
 
 fn reject_unsupported_in_guest_compose_tags(value: &serde_yaml::Value) -> Result<()> {
@@ -4041,14 +4312,19 @@ fn reject_unsupported_in_guest_compose_tags(value: &serde_yaml::Value) -> Result
     Ok(())
 }
 
+struct InGuestComposeSanitization<'a> {
+    primary_service: Option<&'a str>,
+    service_images: &'a BTreeMap<String, String>,
+    omitted_services: &'a BTreeSet<String>,
+}
+
 fn prepare_in_guest_compose_inputs(
     worktree_path: &Path,
-    devcontainer_dir: &Path,
     references: &[String],
     compose_files: &[PathBuf],
     documents: Vec<serde_yaml::Value>,
-    primary_service: Option<&str>,
-    service_images: &BTreeMap<String, String>,
+    sanitization: &InGuestComposeSanitization<'_>,
+    private_stage: Option<&Path>,
 ) -> Result<Vec<String>> {
     if references.len() != compose_files.len() || references.len() != documents.len() {
         return Err(Error::config(
@@ -4093,13 +4369,26 @@ fn prepare_in_guest_compose_inputs(
                 compose_file.display()
             )));
         }
-        sanitize_in_guest_compose_source(&mut document, primary_service, service_images)?;
+        sanitize_in_guest_compose_source(&mut document, sanitization)?;
         let generated_name = format!("{SBX_COMPOSE_INPUT_PREFIX}{index}.yaml");
-        let generated_path = canonical_parent.join(&generated_name);
-        let generated_reference = Path::new(reference).with_file_name(&generated_name);
-        validate_in_guest_generated_path(worktree_path, &generated_path)?;
+        let generated_path = private_stage
+            .unwrap_or(&canonical_parent)
+            .join(&generated_name);
+        let generated_reference = if private_stage.is_some() {
+            PathBuf::from(&generated_name)
+        } else {
+            Path::new(reference).with_file_name(&generated_name)
+        };
+        if let Some(stage) = private_stage {
+            validate_private_in_guest_generated_path(stage, &generated_path)?;
+        } else {
+            validate_in_guest_generated_path(worktree_path, &generated_path)?;
+        }
         if generated_path.exists() {
-            let previous = read_in_guest_worktree_file(worktree_path, &generated_path)?;
+            let previous = read_in_guest_worktree_file(
+                private_stage.unwrap_or(worktree_path),
+                &generated_path,
+            )?;
             if !previous.starts_with(SBX_COMPOSE_INPUT_MARKER) {
                 return Err(Error::validation(format!(
                     "In-guest Compose facade path '{}' contains a non-BranchBox file",
@@ -4112,16 +4401,14 @@ fn prepare_in_guest_compose_inputs(
                 "Could not serialize sanitized in-guest Compose input: {err}"
             ))
         })?;
-        // Create the copy owner-only, then replace the previous generated copy
-        // atomically. The source may contain ordinary service environment values.
-        let mut temporary = tempfile::Builder::new()
-            .prefix(SBX_COMPOSE_INPUT_PREFIX)
-            .tempfile_in(generated_path.parent().unwrap_or(devcontainer_dir))?;
-        temporary.write_all(SBX_COMPOSE_INPUT_MARKER.as_bytes())?;
-        temporary.write_all(rendered.as_bytes())?;
-        temporary
-            .persist(&generated_path)
-            .map_err(|err| err.error)?;
+        // The pinned directory keeps the copy inside the validated worktree
+        // even if a workspace consumer swaps this path concurrently.
+        write_managed_in_guest_generated_text_file(
+            worktree_path,
+            private_stage,
+            &generated_path,
+            &format!("{SBX_COMPOSE_INPUT_MARKER}{rendered}"),
+        )?;
         sanitized_references.push(generated_reference.to_string_lossy().into_owned());
     }
     Ok(sanitized_references)
@@ -4129,8 +4416,7 @@ fn prepare_in_guest_compose_inputs(
 
 fn sanitize_in_guest_compose_source(
     document: &mut serde_yaml::Value,
-    primary_service: Option<&str>,
-    service_images: &BTreeMap<String, String>,
+    sanitization: &InGuestComposeSanitization<'_>,
 ) -> Result<()> {
     let root = document
         .as_mapping_mut()
@@ -4144,8 +4430,7 @@ fn sanitize_in_guest_compose_source(
             .ok_or_else(|| Error::validation("In-guest Compose services must be a YAML mapping"))?;
         for (name, service) in services {
             let name_string = name.as_str().unwrap_or("<invalid name>");
-            let connector = is_platform_connector(name_string, service);
-            if connector {
+            if sanitization.omitted_services.contains(name_string) {
                 // The connector is disabled by the final facade. Keep only a
                 // harmless image so Compose accepts its profiled-out service;
                 // none of its repository command, entrypoint, image, or other
@@ -4168,14 +4453,23 @@ fn sanitize_in_guest_compose_source(
             // env file, or publish a port is removed before Compose interpolates
             // this file. The generated final facade supplies only signed mounts.
             for key in [
-                "volumes", "ports", "expose", "env_file", "devices", "secrets", "configs",
+                "volumes",
+                "ports",
+                "expose",
+                "env_file",
+                "label_file",
+                "develop",
+                "credential_spec",
+                "devices",
+                "secrets",
+                "configs",
             ] {
                 service.remove(serde_yaml::Value::String(key.to_string()));
             }
-            if primary_service == Some(name_string) {
+            if sanitization.primary_service == Some(name_string) {
                 service.remove(serde_yaml::Value::String("environment".to_string()));
             }
-            if service_images.contains_key(name_string) {
+            if sanitization.service_images.contains_key(name_string) {
                 for key in ["image", "build", "pull_policy"] {
                     service.remove(serde_yaml::Value::String(key.to_string()));
                 }
@@ -4648,23 +4942,26 @@ struct InGuestComposeAssignment<'a> {
     /// A signed version 3 assignment group-shares the task worktree with a consumer that does
     /// not own it, so the primary service needs the matching Git ownership exceptions.
     workspace_consumer: bool,
+    private_stage: Option<&'a Path>,
 }
 
 fn prepare_outer_tunnel_compose_override(
     repo_root: &Path,
     worktree_path: &Path,
-    devcontainer_dir: &Path,
+    output_dir: &Path,
     primary_service: Option<&str>,
     workspace_folder: &str,
-    compose_files: &[PathBuf],
+    compose_documents: &[serde_yaml::Value],
     assignment: &InGuestComposeAssignment<'_>,
 ) -> Result<std::collections::BTreeSet<String>> {
     use serde_yaml::value::{Tag, TaggedValue};
 
     let mut definitions = BTreeMap::new();
     let mut omitted = std::collections::BTreeSet::new();
-    for compose_file in compose_files {
-        let document = read_in_guest_compose_document(worktree_path, compose_file)?;
+    // This must use the same validated snapshot that is later sanitized into CLI inputs.
+    // A running workspace consumer can rewrite source files during preparation; rereading
+    // here could approve a different service set than the one staged for Compose.
+    for document in compose_documents {
         if !assignment.service_images.is_empty() && document.get("include").is_some() {
             return Err(Error::validation(
                 "Preloaded service image assignments reject Compose include because indirect services cannot be bound exactly",
@@ -4692,10 +4989,10 @@ fn prepare_outer_tunnel_compose_override(
         primary_service,
         assignment.service_images,
     )?;
-    let override_path = devcontainer_dir.join(SBX_COMPOSE_OVERRIDE);
+    let override_path = output_dir.join(SBX_COMPOSE_OVERRIDE);
     let mut document = if override_path.is_file() {
         serde_yaml::from_str::<serde_yaml::Value>(&read_in_guest_worktree_file(
-            worktree_path,
+            assignment.private_stage.unwrap_or(worktree_path),
             &override_path,
         )?)
         .map_err(|err| Error::config(format!("Invalid generated Compose facade: {err}")))?
@@ -4959,7 +5256,12 @@ fn prepare_outer_tunnel_compose_override(
     }
     let rendered = serde_yaml::to_string(&document)
         .map_err(|err| Error::config(format!("Failed to serialize Compose facade: {err}")))?;
-    write_in_guest_generated_text_file(worktree_path, &override_path, &rendered)?;
+    write_managed_in_guest_generated_text_file(
+        worktree_path,
+        assignment.private_stage,
+        &override_path,
+        &rendered,
+    )?;
     Ok(omitted)
 }
 
@@ -5210,6 +5512,7 @@ fn prepare_sbx_devcontainer_config(
         &compose_files,
         None,
         None,
+        None,
     )?;
     let generated = devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG);
     if run_services.is_empty() && compose_override.is_none() {
@@ -5256,6 +5559,7 @@ fn prepare_sbx_compose_override(
     compose_files: &[PathBuf],
     validated_documents: Option<&[serde_yaml::Value]>,
     in_guest_worktree: Option<&Path>,
+    private_stage: Option<&Path>,
 ) -> Result<Option<String>> {
     let override_path = devcontainer_dir.join(SBX_COMPOSE_OVERRIDE);
     let Some(primary_service) = primary_service else {
@@ -5337,7 +5641,12 @@ fn prepare_sbx_compose_override(
         Error::config(format!("Failed to serialize the SBX Compose facade: {err}"))
     })?;
     if let Some(worktree_path) = in_guest_worktree {
-        write_in_guest_generated_text_file(worktree_path, &override_path, &rendered)?;
+        write_managed_in_guest_generated_text_file(
+            worktree_path,
+            private_stage,
+            &override_path,
+            &rendered,
+        )?;
     } else {
         write_text_file(&override_path, &rendered)?;
     }
@@ -8792,11 +9101,12 @@ mod tests {
             &devcontainer_dir,
             Some("app"),
             "/workspaces/coding-demo",
-            std::slice::from_ref(&compose),
+            &[read_in_guest_compose_document(&worktree_path, &compose).unwrap()],
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &images,
                 workspace_consumer: false,
+                private_stage: None,
                 lease_mounts: &[],
                 spool_volumes: &spool_volumes,
             },
@@ -8864,11 +9174,12 @@ mod tests {
             &devcontainer_dir,
             Some("app"),
             "/workspaces/coding-demo",
-            std::slice::from_ref(&compose),
+            &[read_in_guest_compose_document(&worktree_path, &compose).unwrap()],
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &images,
                 workspace_consumer: false,
+                private_stage: None,
                 lease_mounts: &[],
                 spool_volumes: &[],
             },
@@ -8907,11 +9218,12 @@ mod tests {
             &devcontainer_dir,
             Some("app"),
             "/workspaces/coding-demo",
-            std::slice::from_ref(&compose),
+            &[read_in_guest_compose_document(&worktree_path, &compose).unwrap()],
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &incomplete,
                 workspace_consumer: false,
+                private_stage: None,
                 lease_mounts: &[],
                 spool_volumes: &[],
             },
@@ -8931,11 +9243,12 @@ mod tests {
             &devcontainer_dir,
             Some("app"),
             "/workspaces/coding-demo",
-            std::slice::from_ref(&compose),
+            &[read_in_guest_compose_document(&worktree_path, &compose).unwrap()],
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &BTreeMap::from([("app".to_string(), images["app"].clone())]),
                 workspace_consumer: false,
+                private_stage: None,
                 lease_mounts: &[],
                 spool_volumes: &[],
             },
@@ -8943,6 +9256,45 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("reject Compose include"));
+    }
+
+    #[test]
+    fn test_in_guest_preloaded_coverage_uses_the_sanitized_source_snapshot() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let compose = devcontainer_dir.join("compose.yaml");
+        fs::write(
+            &compose,
+            "services:\n  app:\n    image: app:mutable\n    depends_on: [worker]\n  worker:\n    image: worker:mutable\n",
+        )
+        .unwrap();
+        let parsed = read_in_guest_compose_document(&worktree_path, &compose).unwrap();
+        // A prior coding process can rewrite its source after BranchBox parses it.
+        // Image coverage must be checked against the bytes that become CLI inputs.
+        fs::write(&compose, "services:\n  app:\n    image: app:mutable\n").unwrap();
+        let images =
+            BTreeMap::from([("app".to_string(), format!("app@sha256:{}", "a".repeat(64)))]);
+        let error = prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/coding-demo",
+            &[parsed],
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &images,
+                workspace_consumer: false,
+                private_stage: None,
+                lease_mounts: &[],
+                spool_volumes: &[],
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("missing: worker"));
     }
 
     #[test]
@@ -9016,6 +9368,7 @@ volumes:
             std::slice::from_ref(&compose),
             None,
             None,
+            None,
         )
         .unwrap();
         let project_environment = repo_path.join("project-environment.env");
@@ -9030,11 +9383,12 @@ volumes:
             &devcontainer_dir,
             Some("rails-app"),
             "/workspaces/coding-demo",
-            std::slice::from_ref(&compose),
+            &[read_in_guest_compose_document(&worktree_path, &compose).unwrap()],
             &InGuestComposeAssignment {
                 project_environment: Some(&project_environment),
                 service_images: &BTreeMap::new(),
                 workspace_consumer: false,
+                private_stage: None,
                 lease_mounts: &[],
                 spool_volumes: &[],
             },
@@ -9365,6 +9719,260 @@ volumes:
     }
 
     #[test]
+    fn test_in_guest_split_connector_is_inert_in_every_compose_input() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":["compose.yaml","compose.extra.yaml"],"service":"app"}"#,
+        )
+        .unwrap();
+        let first = r#"services:
+  app: {image: alpine:3.19}
+  proxy:
+    image: cloudflare/cloudflared:latest
+    environment: {TOKEN: "${FIRST_TOKEN:?discarded-connector-environment}"}
+"#;
+        let second = r#"services:
+  proxy:
+    command: ["tunnel", "--token", "${TUNNEL_TOKEN:?discarded-connector-command}"]
+    entrypoint: ["${TUNNEL_ENTRYPOINT:?discarded-connector-entrypoint}"]
+"#;
+        fs::write(devcontainer_dir.join("compose.yaml"), first).unwrap();
+        fs::write(devcontainer_dir.join("compose.extra.yaml"), second).unwrap();
+
+        prepare_in_guest_devcontainer_config(
+            repo_path,
+            &worktree_path,
+            &InGuestFacadePlan::empty_for_tests(),
+        )
+        .unwrap();
+        let generated: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+        )
+        .unwrap();
+        let references = generated["dockerComposeFile"].as_array().unwrap();
+        assert_eq!(references.len(), 3);
+        for reference in &references[..2] {
+            let source =
+                fs::read_to_string(devcontainer_dir.join(reference.as_str().unwrap())).unwrap();
+            assert!(!source.contains("${"), "{source}");
+            let document: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
+            let proxy = document["services"]["proxy"].as_mapping().unwrap();
+            assert_eq!(proxy.len(), 1, "discarded proxy field survived: {source}");
+            assert_eq!(
+                document["services"]["proxy"]["image"].as_str(),
+                Some(IN_GUEST_OMITTED_CONNECTOR_IMAGE)
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap(),
+            first
+        );
+        assert_eq!(
+            fs::read_to_string(devcontainer_dir.join("compose.extra.yaml")).unwrap(),
+            second
+        );
+
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+            let mut command = Command::new("docker");
+            command.arg("compose");
+            for reference in references {
+                command
+                    .arg("-f")
+                    .arg(devcontainer_dir.join(reference.as_str().unwrap()));
+            }
+            let output = command
+                .args(["config", "--format", "json"])
+                .env("COMPOSE_PROJECT_NAME", "branchbox-split-connector-test")
+                .env_remove("FIRST_TOKEN")
+                .env_remove("TUNNEL_TOKEN")
+                .env_remove("TUNNEL_ENTRYPOINT")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Compose rejected sanitized inputs: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let proxy = &effective["services"]["proxy"];
+            assert!(proxy.get("command").is_none());
+            assert!(proxy.get("entrypoint").is_none());
+            assert!(proxy.get("environment").is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_in_guest_workspace_consumer_uses_private_cli_inputs() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":["compose.yaml","compose.extra.yaml"],"service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: '${REPO_IMAGE:?discarded}'\n    build: {context: .}\n    label_file: '${HOST_LABEL_FILE:?discarded}'\n    develop: {watch: [{path: /etc, action: sync, target: /tmp/host}] }\n  proxy:\n    image: cloudflare/cloudflared:latest\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.extra.yaml"),
+            "services:\n  proxy:\n    command: ['tunnel', '--token', '${TUNNEL_TOKEN:?discarded}']\n",
+        )
+        .unwrap();
+        let private_run = tempfile::tempdir().unwrap();
+        fs::set_permissions(private_run.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let manifest = private_run.path().join("assignment.json");
+        fs::write(&manifest, "{}").unwrap();
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).unwrap();
+        let runtime_uid = unsafe { libc::geteuid() };
+        let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
+        let plan = InGuestFacadePlan::empty_for_tests()
+            .with_service_images_for_tests(BTreeMap::from([(
+                "app".to_string(),
+                format!("app@sha256:{}", "a".repeat(64)),
+            )]))
+            .with_private_compose_stage_for_tests(manifest, consumer_uid);
+
+        prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
+        let stage = plan
+            .private_compose_stage_dir(&worktree_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&stage).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(!devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(!devcontainer_dir.join(SBX_COMPOSE_OVERRIDE).exists());
+        let generated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(stage.join(SBX_DEVCONTAINER_CONFIG)).unwrap())
+                .unwrap();
+        let references = generated["dockerComposeFile"].as_array().unwrap();
+        assert_eq!(references.len(), 3);
+        for reference in references {
+            let reference = reference.as_str().unwrap();
+            assert_eq!(Path::new(reference).components().count(), 1);
+            let input = stage.join(reference);
+            assert!(input.is_file());
+            assert_eq!(
+                fs::metadata(&input).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(!fs::read_to_string(&input).unwrap().contains("${"));
+        }
+        // An existing coding process can replace repository paths, but the
+        // Dev Containers CLI references only immutable runner-owned inputs.
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    volumes: ['/etc:/host']\n",
+        )
+        .unwrap();
+        assert!(
+            !fs::read_to_string(stage.join(references[0].as_str().unwrap()))
+                .unwrap()
+                .contains("/etc:/host")
+        );
+        let held_source = worktree_path.join("held-devcontainer");
+        let attacker_dir = tempfile::tempdir().unwrap();
+        fs::rename(&devcontainer_dir, &held_source).unwrap();
+        symlink(attacker_dir.path(), &devcontainer_dir).unwrap();
+        assert!(!attacker_dir.path().join(SBX_DEVCONTAINER_CONFIG).exists());
+
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+            let mut command = Command::new("docker");
+            command.arg("compose");
+            for reference in references {
+                command
+                    .arg("-f")
+                    .arg(stage.join(reference.as_str().unwrap()));
+            }
+            let output = command
+                .args(["config", "--format", "json"])
+                .env_remove("REPO_IMAGE")
+                .env_remove("TUNNEL_TOKEN")
+                .env_remove("HOST_LABEL_FILE")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Compose rejected private inputs: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(effective["services"]["app"].get("build").is_none());
+            let volumes = effective["services"]["app"]["volumes"].as_array().unwrap();
+            assert_eq!(volumes.len(), 2, "only signed primary binds may survive");
+            assert_eq!(
+                volumes[0]["source"].as_str(),
+                fs::canonicalize(&worktree_path).unwrap().to_str()
+            );
+            assert_eq!(
+                volumes[1]["source"].as_str(),
+                fs::canonicalize(repo_path.join(".git")).unwrap().to_str()
+            );
+            assert!(effective["services"]["app"].get("secrets").is_none());
+            assert!(effective["services"]["proxy"].get("command").is_none());
+        }
+
+        let no_images = InGuestFacadePlan::empty_for_tests().with_private_compose_stage_for_tests(
+            private_run.path().join("assignment.json"),
+            consumer_uid,
+        );
+        let error = no_images
+            .private_compose_stage_dir(&worktree_path)
+            .unwrap_err();
+        assert!(error.to_string().contains("signed preloaded images"));
+        let same_uid = InGuestFacadePlan::empty_for_tests()
+            .with_service_images_for_tests(BTreeMap::from([(
+                "app".to_string(),
+                format!("app@sha256:{}", "a".repeat(64)),
+            )]))
+            .with_private_compose_stage_for_tests(
+                private_run.path().join("assignment.json"),
+                runtime_uid,
+            );
+        let error = same_uid
+            .private_compose_stage_dir(&worktree_path)
+            .unwrap_err();
+        assert!(error.to_string().contains("must differ"));
+
+        fs::remove_file(&devcontainer_dir).unwrap();
+        fs::rename(&held_source, &devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":["compose.yaml"],"service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app: {image: alpine:3.19}\n",
+        )
+        .unwrap();
+        prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
+        assert!(!stage
+            .join(format!("{SBX_COMPOSE_INPUT_PREFIX}1.yaml"))
+            .exists());
+        plan.remove_private_compose_stage(&worktree_path).unwrap();
+        assert!(
+            !stage.exists(),
+            "failed starts must release private run inputs"
+        );
+    }
+
+    #[test]
     fn test_in_guest_preloaded_images_strip_replaced_interpolation() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
@@ -9620,6 +10228,37 @@ volumes:
         assert!(!outside_dir.join(SBX_COMPOSE_OVERRIDE).exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_in_guest_generated_write_stays_in_pinned_directory_after_path_swap() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = setup_test_repo();
+        let worktree_path = temp_dir.path().join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        let held_dir = worktree_path.join("held-devcontainer");
+        let outside_dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+
+        // The workspace consumer can rename a writable directory after the
+        // canonical-path check. Pin its inode before simulating that swap.
+        let pinned = pin_in_guest_compose_parent(&worktree_path, &devcontainer_dir).unwrap();
+        fs::rename(&devcontainer_dir, &held_dir).unwrap();
+        symlink(outside_dir.path(), &devcontainer_dir).unwrap();
+        write_in_guest_generated_text_file_at(
+            &pinned,
+            std::ffi::OsStr::new(SBX_COMPOSE_OVERRIDE),
+            "safe generated contents",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(held_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap(),
+            "safe generated contents"
+        );
+        assert!(!outside_dir.path().join(SBX_COMPOSE_OVERRIDE).exists());
+        assert!(pin_in_guest_compose_parent(&worktree_path, &devcontainer_dir).is_err());
+    }
+
     #[test]
     fn test_in_guest_does_not_replace_tracked_generated_facade() {
         let temp_dir = setup_test_repo();
@@ -9719,11 +10358,12 @@ volumes:
             &devcontainer_dir,
             Some("rails-app"),
             "/workspaces/coding-demo",
-            std::slice::from_ref(&compose),
+            &[read_in_guest_compose_document(&worktree_path, &compose).unwrap()],
             &InGuestComposeAssignment {
                 project_environment: None,
                 service_images: &BTreeMap::new(),
                 workspace_consumer: true,
+                private_stage: None,
                 lease_mounts: &[],
                 spool_volumes: &[],
             },

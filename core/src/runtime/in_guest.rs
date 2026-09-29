@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -293,6 +295,20 @@ impl InGuestFacadePlan {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_private_compose_stage_for_tests(
+        mut self,
+        manifest_path: PathBuf,
+        consumer_uid: u32,
+    ) -> Self {
+        self.manifest_path = manifest_path;
+        self.workspace_consumer = Some(WorkspaceConsumer {
+            uid: consumer_uid,
+            gid: consumer_uid,
+        });
+        self
+    }
+
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
     }
@@ -354,6 +370,32 @@ impl InGuestFacadePlan {
             .map(|consumer| (consumer.uid, consumer.gid))
     }
 
+    pub(crate) fn private_compose_stage_dir(
+        &self,
+        worktree_path: &Path,
+    ) -> Result<Option<PathBuf>> {
+        let Some(consumer) = self.workspace_consumer.as_ref() else {
+            return Ok(None);
+        };
+        if self.service_images.is_empty() {
+            return Err(Error::validation(
+                "Workspace-consumer Compose requires signed preloaded images for every runnable service; relative build paths cannot be staged privately",
+            ));
+        }
+        private_compose_stage_dir(&self.manifest_path, worktree_path, consumer.uid).map(Some)
+    }
+
+    pub(crate) fn remove_private_compose_stage(&self, worktree_path: &Path) -> Result<()> {
+        let Some(stage) = self.private_compose_stage_dir(worktree_path)? else {
+            return Ok(());
+        };
+        match fs::remove_dir_all(stage) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub fn grant_workspace_consumer_access(
         &self,
         worktree_path: &Path,
@@ -364,6 +406,129 @@ impl InGuestFacadePlan {
         };
         grant_workspace_consumer_access(worktree_path, common_git_path, consumer)
     }
+}
+
+/// Compose inputs consumed by the privileged CLI must not live in the group-writable
+/// task worktree. The signed run directory is owner-only and outside that tree.
+#[cfg(unix)]
+fn private_compose_stage_dir(
+    manifest_path: &Path,
+    worktree_path: &Path,
+    consumer_uid: u32,
+) -> Result<PathBuf> {
+    let runtime_uid = unsafe { libc::geteuid() };
+    if consumer_uid == runtime_uid {
+        return Err(Error::validation(
+            "Workspace consumer UID must differ from the BranchBox runtime UID to keep staged Compose inputs private",
+        ));
+    }
+    let run_root = manifest_path
+        .parent()
+        .ok_or_else(|| Error::validation("In-guest assignment manifest has no run directory"))?;
+    let metadata = fs::symlink_metadata(run_root)?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != runtime_uid
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(Error::validation(format!(
+            "In-guest assignment run directory '{}' must be a runtime-owned, non-symlink 0700 directory",
+            run_root.display()
+        )));
+    }
+    let run_root = fs::canonicalize(run_root)?;
+    let resolved = fs::metadata(&run_root)?;
+    if resolved.dev() != metadata.dev() || resolved.ino() != metadata.ino() {
+        return Err(Error::validation(
+            "In-guest assignment run directory changed while it was validated",
+        ));
+    }
+    let worktree = fs::canonicalize(worktree_path)?;
+    let workspace = fs::canonicalize(
+        worktree
+            .parent()
+            .ok_or_else(|| Error::validation("Task worktree has no workspace parent"))?,
+    )?;
+    if run_root.starts_with(&workspace) || workspace.starts_with(&run_root) {
+        return Err(Error::validation(
+            "Private Compose stage must be outside the shared task workspace",
+        ));
+    }
+    // A 0700 run directory can still be renamed by a consumer that can write
+    // one of its parent directories. Refuse that parent chain before publishing
+    // paths to the Dev Containers CLI. Sticky directories such as /tmp protect
+    // a runtime-owned child from a different UID.
+    for ancestor in run_root.ancestors().skip(1) {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        let mode = metadata.permissions().mode();
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || (metadata.uid() == consumer_uid && mode & 0o200 != 0)
+            || (mode & 0o022 != 0 && mode & 0o1000 == 0)
+        {
+            return Err(Error::validation(format!(
+                "Private Compose stage parent '{}' may be writable or replaceable by the workspace consumer",
+                ancestor.display()
+            )));
+        }
+    }
+    let digest = format!("{:x}", Sha256::digest(worktree.as_os_str().as_bytes()));
+    let directory = run_root.join(format!("branchbox-compose-{}", &digest[..16]));
+    match fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err.into()),
+    }
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != runtime_uid
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(Error::validation(format!(
+            "Private Compose stage '{}' must be a runtime-owned, non-symlink 0700 directory",
+            directory.display()
+        )));
+    }
+    Ok(directory)
+}
+
+fn private_compose_stage_from_state(state: &ProviderState) -> Result<Option<PathBuf>> {
+    if state.config_path.starts_with(&state.worktree_path) {
+        return Ok(None);
+    }
+    let assignment = load_assignment(&state.manifest_path)?;
+    let consumer = assignment
+        .manifest
+        .workspace_consumer
+        .as_ref()
+        .ok_or_else(|| {
+            Error::validation(
+                "External in-guest devcontainer config has no signed workspace consumer",
+            )
+        })?;
+    let stage = private_compose_stage_dir(
+        &assignment.manifest_path,
+        &state.worktree_path,
+        consumer.uid,
+    )?;
+    if state.config_path != stage.join(".devcontainer.json") {
+        return Err(Error::validation(
+            "Provider state config path does not match the signed private Compose stage",
+        ));
+    }
+    Ok(Some(stage))
+}
+
+#[cfg(not(unix))]
+fn private_compose_stage_dir(
+    _manifest_path: &Path,
+    _worktree_path: &Path,
+    _consumer_uid: u32,
+) -> Result<PathBuf> {
+    Err(Error::validation(
+        "Workspace-consumer Compose staging requires Unix directory ownership checks",
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -2768,7 +2933,24 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 "In-guest published ports changed after assignment validation",
             ));
         }
-        let config_path = Self::config_path(context.worktree_path)?;
+        let config_path = if let Some(consumer) = assignment.manifest.workspace_consumer.as_ref() {
+            if assignment.manifest.service_images.is_empty() {
+                return Err(Error::validation(
+                    "Workspace-consumer Compose requires signed preloaded images for private CLI inputs",
+                ));
+            }
+            let stage = private_compose_stage_dir(
+                &assignment.manifest_path,
+                context.worktree_path,
+                consumer.uid,
+            )?;
+            validate_private_regular_file(
+                &stage.join(".devcontainer.json"),
+                "staged devcontainer config",
+            )?
+        } else {
+            Self::config_path(context.worktree_path)?
+        };
         let (config, _) = DevcontainerConfig::load_from_path(&config_path).map_err(|err| {
             Error::validation(format!("Could not read in-guest runtime config: {err}"))
         })?;
@@ -2780,9 +2962,18 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             &config,
             &config_path,
         );
-        let workspace_paths = workspace_candidates(context.worktree_path)
+        let mut workspace_paths = workspace_candidates(context.worktree_path)
             .into_iter()
-            .collect();
+            .collect::<BTreeSet<_>>();
+        if assignment.manifest.workspace_consumer.is_some() {
+            workspace_paths.insert(
+                config_path
+                    .parent()
+                    .ok_or_else(|| Error::validation("Staged devcontainer config has no parent"))?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
         let state_path = assignment
             .manifest
             .repository
@@ -2798,7 +2989,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             version: PROVIDER_STATE_VERSION.to_string(),
             manifest_path: assignment.manifest_path.clone(),
             worktree_path: context.worktree_path.to_path_buf(),
-            workspace_paths,
+            workspace_paths: workspace_paths.into_iter().collect(),
             config_path: config_path.clone(),
             run_id: Some(assignment.manifest.run_id.clone()),
             outer_runtime_id: Some(assignment.manifest.outer_runtime_id.clone()),
@@ -3034,8 +3225,32 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             }
             Err(err) => return Err(err),
         };
+        let private_stage = private_compose_stage_from_state(&state);
         let mut residue = self.remove_owned_docker_resources(&state)?;
         self.erase_materializations(&state, &mut residue);
+        if residue.is_empty() {
+            match private_stage {
+                Ok(Some(stage)) => {
+                    if let Err(err) = fs::remove_dir_all(&stage) {
+                        if err.kind() != std::io::ErrorKind::NotFound {
+                            tracing::warn!("Could not remove private Compose stage: {err}");
+                            residue.push(RuntimeResidue {
+                                kind: "compose-inputs".to_string(),
+                                identifiers: vec![stage.display().to_string()],
+                            });
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!("Could not validate private Compose stage for teardown: {err}");
+                    residue.push(RuntimeResidue {
+                        kind: "compose-inputs".to_string(),
+                        identifiers: vec![state.config_path.display().to_string()],
+                    });
+                }
+            }
+        }
         if residue.is_empty() {
             if let Err(err) = fs::remove_file(&identity.state_path) {
                 if err.kind() != std::io::ErrorKind::NotFound {
@@ -5476,6 +5691,65 @@ mod tests {
         manifest["version"] = serde_json::json!("2");
         private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
         assert!(load_assignment(&manifest_path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_compose_stage_is_bound_to_signed_config_and_unshared_parent() {
+        let (workspace_root, source_manifest, _) = assignment_fixture(false);
+        let worktree = workspace_root.path().join("workspace/coding-demo");
+        fs::create_dir_all(&worktree).unwrap();
+        let run = tempfile::tempdir().unwrap();
+        fs::set_permissions(run.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime_uid = unsafe { libc::geteuid() };
+        let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(source_manifest).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!("3");
+        manifest["workspace_consumer"] =
+            serde_json::json!({"uid": consumer_uid, "gid": consumer_uid});
+        manifest["service_images"] = serde_json::json!({
+            "app": format!("app@sha256:{}", "a".repeat(64))
+        });
+        manifest["published_ports"] = serde_json::json!([]);
+        let manifest_path = run.path().join("assignment.json");
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        let stage = private_compose_stage_dir(&manifest_path, &worktree, consumer_uid).unwrap();
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path,
+            worktree_path: worktree,
+            workspace_paths: Vec::new(),
+            config_path: stage.join(".devcontainer.json"),
+            run_id: None,
+            outer_runtime_id: None,
+            materializations: Vec::new(),
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: None,
+            proxy_names: Vec::new(),
+            compose_projects: Vec::new(),
+            container_id: None,
+        };
+        assert_eq!(
+            private_compose_stage_from_state(&state).unwrap(),
+            Some(stage)
+        );
+        let mut altered = state.clone();
+        altered.config_path = run.path().join("attacker.json");
+        assert!(private_compose_stage_from_state(&altered).is_err());
+
+        let shared_parent = tempfile::tempdir().unwrap();
+        fs::set_permissions(shared_parent.path(), fs::Permissions::from_mode(0o770)).unwrap();
+        let unsafe_run = shared_parent.path().join("run");
+        fs::create_dir(&unsafe_run).unwrap();
+        fs::set_permissions(&unsafe_run, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = private_compose_stage_dir(
+            &unsafe_run.join("assignment.json"),
+            &state.worktree_path,
+            consumer_uid,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("writable or replaceable"));
     }
 
     #[cfg(target_os = "linux")]
