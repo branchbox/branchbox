@@ -23,6 +23,7 @@ mod in_guest;
 mod local_vm;
 pub(crate) use in_guest::recover_runtime_metadata as recover_in_guest_runtime_metadata;
 pub(crate) use in_guest::validate_private_compose_stage_git_mount;
+pub(crate) use in_guest::validate_managed_workspace_folder;
 use in_guest::InGuestRuntimeProvider;
 pub use in_guest::{
     load_in_guest_facade_plan, require_secure_in_guest_launch_assignment, InGuestFacadePlan,
