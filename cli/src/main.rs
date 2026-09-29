@@ -33,6 +33,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Print the managed-runtime capabilities implemented by this exact binary.
+    RuntimeCapabilities,
+
     /// Initialize project with devcontainer and BranchBox registry
     #[command(alias = "bootstrap")]
     Init(InitArgs),
@@ -79,6 +82,7 @@ impl Commands {
     /// for its own flags, so adding one never touches this file.
     fn wants_json(&self) -> bool {
         match self {
+            Commands::RuntimeCapabilities => true,
             Commands::Init(args) => args.wants_json(),
             Commands::Devcontainer(command) => command.wants_json(),
             Commands::Agent(command) => command.wants_json(),
@@ -140,6 +144,10 @@ fn main() -> ExitCode {
 
 fn run(command: Commands) -> Result<()> {
     match command {
+        Commands::RuntimeCapabilities => output::emit_json(&serde_json::json!({
+            "managed_workspace_contract_v1": true,
+            "preloaded_compose_sanitization_v1": true,
+        })).map_err(Into::into),
         Commands::Init(args) => init::execute(args),
         Commands::Devcontainer(devcontainer_cmd) => devcontainer::execute(devcontainer_cmd),
         Commands::Agent(agent_cmd) => agent_commands::execute(agent_cmd),

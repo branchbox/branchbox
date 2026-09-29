@@ -4470,7 +4470,12 @@ fn prepare_in_guest_devcontainer_config(
             )));
         }
     }
-    let workspace_folder = effective_in_guest_workspace_folder(&config, worktree_path)?;
+    let workspace_folder = if let Some(approved) = plan.workspace_folder() {
+        runtime::validate_managed_workspace_folder(approved)?;
+        approved.to_owned()
+    } else {
+        effective_in_guest_workspace_folder(&config, worktree_path)?
+    };
     let lease_mounts: Vec<(PathBuf, PathBuf)> = plan
         .mounts()
         .map(|(source, target)| (source.to_path_buf(), target.to_path_buf()))
@@ -4496,6 +4501,13 @@ fn prepare_in_guest_devcontainer_config(
         &compose_documents,
         &assignment,
     )?;
+    if let Some(approved) = plan.omitted_services() {
+        if &omitted_services != approved {
+            return Err(Error::validation(format!(
+                "Managed topology omitted-service set differs from BranchBox's resolved connector set: approved {approved:?}, observed {omitted_services:?}"
+            )));
+        }
+    }
 
     let object = value
         .as_object_mut()
@@ -11627,7 +11639,7 @@ volumes:
         fs::create_dir_all(&devcontainer_dir).unwrap();
         fs::write(
             devcontainer_dir.join("devcontainer.json"),
-            r#"{"dockerComposeFile":["compose.yaml","compose.extra.yaml"],"service":"app"}"#,
+            r#"{"dockerComposeFile":["compose.yaml","compose.extra.yaml"],"service":"app","workspaceFolder":"/workspaces/${localWorkspaceFolderBasename}"}"#,
         )
         .unwrap();
         let first = r#"services:
@@ -11864,6 +11876,8 @@ volumes:
             "lease_id": "assignment_private_compose",
             "outer_runtime_id": "outer_private_compose",
             "workspace": repo_path,
+            "workspace_folder": "/workspaces/reviewed-project",
+            "omitted_services": ["proxy"],
             "repository": {"path": repo_path, "revision": revision},
             "task_branch": "feature/coding-demo",
             "tunnel_placement": "outer",
@@ -11892,6 +11906,37 @@ volumes:
             plan.workspace_consumer(),
             Some((consumer_uid, consumer_uid))
         );
+        assert_eq!(
+            plan.workspace_folder(),
+            Some("/workspaces/reviewed-project")
+        );
+        assert_eq!(
+            plan.omitted_services().unwrap(),
+            &BTreeSet::from(["proxy".to_string()])
+        );
+
+        let mut wrong_assignment = assignment.clone();
+        wrong_assignment["omitted_services"] = serde_json::json!([]);
+        fs::write(&manifest, serde_json::to_vec(&wrong_assignment).unwrap()).unwrap();
+        let wrong_plan = runtime::load_in_guest_facade_plan(
+            &manifest,
+            repo_path,
+            repo_path,
+            &worktree_path,
+            "feature/coding-demo",
+            revision,
+        )
+        .unwrap();
+        assert!(
+            prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &wrong_plan)
+                .unwrap_err()
+                .to_string()
+                .contains("omitted-service set differs")
+        );
+        wrong_plan
+            .remove_private_compose_stage(&worktree_path)
+            .unwrap();
+        fs::write(&manifest, serde_json::to_vec(&assignment).unwrap()).unwrap();
 
         prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
         let stage = plan
@@ -11908,6 +11953,7 @@ volumes:
         let generated: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(stage.join(SBX_DEVCONTAINER_CONFIG)).unwrap())
                 .unwrap();
+        assert_eq!(generated["workspaceFolder"], "/workspaces/reviewed-project");
         let references = generated["dockerComposeFile"].as_array().unwrap();
         assert_eq!(references.len(), 3);
         for reference in references {
@@ -12027,6 +12073,7 @@ volumes:
                 volumes[0]["source"].as_str(),
                 fs::canonicalize(&worktree_path).unwrap().to_str()
             );
+            assert_eq!(volumes[0]["target"], "/workspaces/reviewed-project");
             assert_eq!(
                 volumes[1]["source"].as_str(),
                 fs::canonicalize(repo_path.join(".git")).unwrap().to_str()
@@ -12070,7 +12117,7 @@ volumes:
         .unwrap();
         fs::write(
             devcontainer_dir.join("compose.yaml"),
-            "services:\n  app: {image: alpine:3.19}\n",
+            "services:\n  app: {image: alpine:3.19}\n  proxy: {image: cloudflare/cloudflared:latest}\n",
         )
         .unwrap();
         prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
@@ -12171,6 +12218,32 @@ volumes:
                 effective["services"]["database"]["environment"]["POSTGRES_USER"],
                 "kept-for-dependency"
             );
+
+            let source = fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+            fs::write(
+                devcontainer_dir.join("compose.yaml"),
+                source.replace(
+                    "kept-for-dependency",
+                    "'${UNSAFE_REQUIRED:?retained-field}'",
+                ),
+            )
+            .unwrap();
+            prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
+            let mut command = Command::new("docker");
+            command.arg("compose");
+            for reference in references {
+                command
+                    .arg("-f")
+                    .arg(devcontainer_dir.join(reference.as_str().unwrap()));
+            }
+            let rejected = command
+                .args(["config", "--format", "json"])
+                .env("COMPOSE_PROJECT_NAME", "branchbox-retained-field-test")
+                .env_remove("UNSAFE_REQUIRED")
+                .output()
+                .unwrap();
+            assert!(!rejected.status.success());
+            assert!(String::from_utf8_lossy(&rejected.stderr).contains("UNSAFE_REQUIRED"));
         }
     }
 
