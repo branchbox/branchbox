@@ -4768,6 +4768,11 @@ fn validate_in_guest_compose_security(
     for (name, service) in services {
         let name = name.as_str().unwrap_or_default();
         let connector = is_platform_connector(name, service);
+        if service.get("provider").is_some() {
+            return Err(Error::validation(format!(
+                "In-guest Compose rejects service '{name}' provider because Compose runs its binary on the guest host"
+            )));
+        }
         if service.get("extends").is_some() {
             return Err(Error::validation(format!(
                 "In-guest Compose rejects service '{name}' extends because inherited host mounts cannot be proven safe"
@@ -10514,6 +10519,7 @@ volumes:
             "include: [sidecar.yaml]\nservices:\n  app: {image: alpine}\n",
             "services:\n  app: {image: alpine, extends: {file: sidecar.yaml, service: app}}\n",
             "services:\n  app: {image: alpine, volumes_from: [host-service]}\n",
+            "services:\n  app: {image: alpine, provider: {type: /bin/sh}}\n",
         ] {
             let document: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
             let temp = tempfile::tempdir().unwrap();
@@ -10538,6 +10544,48 @@ volumes:
             .unwrap_err()
             .to_string()
             .contains("unsupported YAML tag"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_in_guest_rejects_compose_host_provider_before_private_staging() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("coding-demo");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine\n    provider: {type: /bin/sh}\n",
+        )
+        .unwrap();
+        let run = tempfile::tempdir().unwrap();
+        fs::set_permissions(run.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime_uid = unsafe { libc::geteuid() };
+        let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
+        let plan = InGuestFacadePlan::empty_for_tests()
+            .with_service_images_for_tests(BTreeMap::from([(
+                "app".to_string(),
+                format!("app@sha256:{}", "a".repeat(64)),
+            )]))
+            .with_private_compose_stage_for_tests(run.path().join("assignment.json"), consumer_uid);
+
+        let error =
+            prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap_err();
+        assert!(error.to_string().contains("provider"));
+        let stage = plan
+            .private_compose_stage_dir(&worktree_path)
+            .unwrap()
+            .unwrap();
+        assert!(!stage.join(SBX_DEVCONTAINER_CONFIG).exists());
+        assert!(!stage.join(SBX_COMPOSE_OVERRIDE).exists());
     }
 
     #[test]
