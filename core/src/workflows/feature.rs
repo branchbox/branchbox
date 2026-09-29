@@ -796,7 +796,10 @@ impl FeatureWorkflow {
 
         let env_path = env_outcome.env_path.clone();
         let feature_url = env_outcome.feature_url.clone();
-        let compose_project_name = env_outcome.compose_project_name.clone();
+        let compose_project_name = in_guest_plan
+            .as_ref()
+            .map(|plan| plan.managed_compose_project_name(&worktree_path))
+            .or_else(|| env_outcome.compose_project_name.clone());
         let project_name = self
             .repo_root
             .parent()

@@ -362,6 +362,8 @@ case "${1:-}" in
     printf '%s\n' '{"configuration":{"privileged":false}}'
     ;;
   up)
+    : "${COMPOSE_PROJECT_NAME:?managed Compose project is required}"
+    printf '%s\n' "$COMPOSE_PROJECT_NAME" > "$fixture_dir/managed-project"
     override="$workspace/.devcontainer/.branchbox-sbx-compose.yaml"
     config="$workspace/.devcontainer/.devcontainer.json"
     project_environment=$(cat "$fixture_dir/project-environment")
@@ -397,7 +399,7 @@ fixture_dir=$(dirname "$0")
 printf '%s\n' "$*" >> "$fixture_dir/docker.log"
 resources="$fixture_dir/resources"
 workspace=$(cat "$fixture_dir/workspace")
-project=agentify_runtime_generated
+project=$(cat "$fixture_dir/managed-project" 2>/dev/null || printf '%s' agentify_runtime_generated)
 
 case "${1:-}" in
   info) exit 0 ;;
@@ -418,6 +420,9 @@ case "${1:-}" in
         [ ! -f "$resources/partial-main" ] || printf '%s\n' 'partial-main'
         [ ! -f "$resources/partial-db" ] || printf '%s\n' 'partial-db'
         ;;
+      *"label=com.docker.compose.project=agentify"*)
+        [ ! -f "$resources/unrelated-main" ] || printf '%s\n' 'unrelated-main'
+        ;;
       *"label=com.docker.compose.project"*)
         [ ! -f "$resources/partial-main" ] || printf 'partial-main\t%s\t%s/.devcontainer\t%s/.devcontainer/compose.yaml\n' "$project" "$workspace" "$workspace"
         [ ! -f "$resources/partial-db" ] || printf 'partial-db\t%s\t%s/.devcontainer\t%s/.devcontainer/compose.yaml\n' "$project" "$workspace" "$workspace"
@@ -426,13 +431,31 @@ case "${1:-}" in
     ;;
   network)
     case "${2:-}" in
-      ls) [ ! -f "$resources/partial-network" ] || printf '%s\n' 'partial-network' ;;
+      ls)
+        case "$*" in
+          *"label=com.docker.compose.project=$project"*)
+            [ ! -f "$resources/partial-network" ] || printf '%s\n' 'partial-network'
+            ;;
+          *"label=com.docker.compose.project=agentify"*)
+            [ ! -f "$resources/unrelated-network" ] || printf '%s\n' 'unrelated-network'
+            ;;
+        esac
+        ;;
       rm) rm -f "$resources/${3:-}" ;;
     esac
     ;;
   volume)
     case "${2:-}" in
-      ls) [ ! -f "$resources/partial-volume" ] || printf '%s\n' 'partial-volume' ;;
+      ls)
+        case "$*" in
+          *"label=com.docker.compose.project=$project"*)
+            [ ! -f "$resources/partial-volume" ] || printf '%s\n' 'partial-volume'
+            ;;
+          *"label=com.docker.compose.project=agentify"*)
+            [ ! -f "$resources/unrelated-volume" ] || printf '%s\n' 'unrelated-volume'
+            ;;
+        esac
+        ;;
       rm) rm -f "$resources/${3:-}" ;;
     esac
     ;;
@@ -1565,6 +1588,9 @@ fn in_guest_partial_start_failure_removes_compose_residue_worktree_and_branch() 
                 .join("materializations/project-environment.env"),
         ),
     );
+    for unrelated in ["unrelated-main", "unrelated-network", "unrelated-volume"] {
+        fs::write(fake.resources.join(unrelated), b"other Compose project").unwrap();
+    }
 
     branchbox_cmd!(
         test_repo.path(),
@@ -1598,12 +1624,37 @@ fn in_guest_partial_start_failure_removes_compose_residue_worktree_and_branch() 
         .status()
         .unwrap();
     assert!(!branch.success(), "failed in-guest task branch leaked");
-    assert_eq!(
-        fs::read_dir(&fake.resources).unwrap().count(),
-        0,
-        "partial Compose resources leaked; Docker calls:\n{}",
-        fs::read_to_string(&fake.log).unwrap_or_default()
-    );
+    for partial in [
+        "partial-main",
+        "partial-db",
+        "partial-network",
+        "partial-volume",
+    ] {
+        assert!(
+            !fake.resources.join(partial).exists(),
+            "partial Compose resource '{partial}' leaked"
+        );
+    }
+    for unrelated in ["unrelated-main", "unrelated-network", "unrelated-volume"] {
+        assert!(
+            fake.resources.join(unrelated).exists(),
+            "cleanup deleted unrelated Compose resource '{unrelated}'"
+        );
+    }
+    let docker_calls = fs::read_to_string(&fake.log).unwrap();
+    for unowned in [
+        "agentify".to_string(),
+        work_feature.to_string(),
+        format!("{work_feature}_devcontainer"),
+    ] {
+        assert!(
+            !docker_calls.lines().any(|line| {
+                line.split_whitespace()
+                    .any(|arg| arg == format!("label=com.docker.compose.project={unowned}"))
+            }),
+            "cleanup queried unrelated project '{unowned}':\n{docker_calls}"
+        );
+    }
     assert!(
         !assignment
             .path()
@@ -1622,11 +1673,13 @@ fn in_guest_partial_start_failure_removes_compose_residue_worktree_and_branch() 
 #[test]
 fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
     let test_repo = init_test_repo();
-    commit_in_guest_devcontainer(&test_repo);
+    let revision = commit_in_guest_devcontainer(&test_repo);
     let fake = create_fake_in_guest_runtime();
+    let assignment = TempDir::new().expect("create assignment directory");
     let work_feature = "in-guest-orphaned-start";
     let branch_name = format!("feature/{work_feature}");
     let worktree = test_repo.worktree_parent().join(work_feature);
+    let manifest = write_in_guest_manifest(assignment.path(), &test_repo, work_feature, &revision);
     let status = StdCommand::new("git")
         .args(["worktree", "add", "-b", &branch_name])
         .arg(&worktree)
@@ -1635,6 +1688,21 @@ fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
         .unwrap();
     assert!(status.success());
     configure_fake_in_guest_runtime(&fake, &worktree, None);
+    let plan = worktree_core::runtime::load_in_guest_facade_plan(
+        &manifest,
+        test_repo.path(),
+        test_repo.worktree_parent(),
+        &worktree,
+        &branch_name,
+        &revision,
+    )
+    .unwrap();
+    let managed_project = plan.managed_compose_project_name(&worktree);
+    fs::write(
+        fake.docker.parent().unwrap().join("managed-project"),
+        &managed_project,
+    )
+    .unwrap();
     for resource in [
         "partial-main",
         "partial-db",
@@ -1648,15 +1716,15 @@ fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
     let state_path = state_dir.join("orphaned-run.json");
     let state = serde_json::json!({
         "version": "1",
-        "manifest_path": "/run/agentify-runtime/branchbox-in-guest.json",
+        "manifest_path": plan.manifest_path(),
         "worktree_path": worktree.clone(),
         "workspace_paths": [worktree.clone()],
         "config_path": worktree.join(".devcontainer/.devcontainer.json"),
-        "run_id": "orphaned-run",
+        "run_id": format!("run-{work_feature}"),
         "outer_runtime_id": "outer-vm",
         "materializations": [],
         "proxy_names": [],
-        "compose_projects": ["agentify"],
+        "managed_compose_project_name": managed_project,
         "container_id": null
     });
     fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();

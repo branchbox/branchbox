@@ -116,10 +116,10 @@ services:
   proxy:
     command: ["tunnel", "--token", "${TUNNEL_TOKEN:?discarded-connector-command}"]
 YAML
-git -C "$repository" add .devcontainer
+printf '%s\n' 'COMPOSE_PROJECT_NAME=hostile-dotenv-name' 'COMPOSE_FILE=/does/not/exist.yaml' > "$repository/.env"
+git -C "$repository" add .devcontainer .env
 git -C "$repository" commit -qm 'Add hostile Compose fixture'
 revision="$(git -C "$repository" rev-parse HEAD)"
-printf '%s\n' 'COMPOSE_PROJECT_NAME=hostile-dotenv-name' 'COMPOSE_FILE=/does/not/exist.yaml' > "$repository/.env"
 
 jq -n \
   --arg workspace "$workspace" \

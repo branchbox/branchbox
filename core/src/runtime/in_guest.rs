@@ -292,6 +292,7 @@ pub struct InGuestRuntimeMetadata {
 #[derive(Debug, Clone)]
 pub struct InGuestFacadePlan {
     manifest_path: PathBuf,
+    run_id: String,
     tunnel_placement: InGuestTunnelPlacement,
     published_ports: Vec<RuntimePort>,
     service_images: BTreeMap<String, String>,
@@ -306,6 +307,7 @@ impl InGuestFacadePlan {
     pub(crate) fn empty_for_tests() -> Self {
         Self {
             manifest_path: PathBuf::new(),
+            run_id: String::new(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: BTreeMap::new(),
@@ -353,6 +355,10 @@ impl InGuestFacadePlan {
 
     pub fn service_images(&self) -> &BTreeMap<String, String> {
         &self.service_images
+    }
+
+    pub fn managed_compose_project_name(&self, worktree_path: &Path) -> String {
+        managed_compose_project_name(&self.run_id, &self.manifest_path, worktree_path)
     }
 
     pub fn mounts(&self) -> impl Iterator<Item = (&Path, &Path)> {
@@ -436,6 +442,37 @@ impl InGuestFacadePlan {
         };
         grant_workspace_consumer_access(worktree_path, common_git_path, consumer)
     }
+}
+
+fn managed_compose_project_name(
+    run_id: &str,
+    manifest_path: &Path,
+    worktree_path: &Path,
+) -> String {
+    // The private assignment path identifies the signed run; the worktree
+    // distinguishes tasks if a run creates more than one. Hash both so a
+    // repository name cannot choose another task's Compose project.
+    let mut digest = Sha256::new();
+    digest.update(run_id.as_bytes());
+    digest.update([0]);
+    hash_path(&mut digest, manifest_path);
+    digest.update([0]);
+    hash_path(&mut digest, worktree_path);
+    format!("branchbox-{:x}", digest.finalize())[..34].to_string()
+}
+
+fn hash_path(digest: &mut Sha256, path: &Path) {
+    #[cfg(unix)]
+    digest.update(path.as_os_str().as_bytes());
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        for unit in path.as_os_str().encode_wide() {
+            digest.update(unit.to_le_bytes());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    digest.update(path.to_string_lossy().as_bytes());
 }
 
 /// Compose inputs consumed by the privileged CLI must not live in the group-writable
@@ -1021,8 +1058,6 @@ struct ProviderState {
     #[serde(default)]
     proxy_names: Vec<String>,
     #[serde(default)]
-    compose_projects: Vec<String>,
-    #[serde(default)]
     managed_compose_project_name: Option<String>,
     #[serde(default)]
     container_id: Option<String>,
@@ -1384,38 +1419,20 @@ impl InGuestRuntimeProvider {
         Ok(output.status.success())
     }
 
-    fn discover_compose_projects(&self, worktree_path: &Path) -> Result<Vec<String>> {
-        let mut paths = BTreeSet::from([worktree_path.to_string_lossy().into_owned()]);
-        if let Ok(canonical) = fs::canonicalize(worktree_path) {
-            paths.insert(canonical.to_string_lossy().into_owned());
-        }
-        let mut projects = BTreeSet::new();
-        for workspace in paths {
-            let filter = format!("label=devcontainer.local_folder={workspace}");
-            let output = self.checked_docker(
-                "Compose project discovery",
-                &[
-                    "ps",
-                    "-a",
-                    "--filter",
-                    &filter,
-                    "--format",
-                    "{{.Label \"com.docker.compose.project\"}}",
-                ],
-            )?;
-            projects.extend(
-                output_lines(&output.stdout)
-                    .into_iter()
-                    .filter(|project| is_compose_project_name(project)),
-            );
-        }
-        Ok(projects.into_iter().collect())
-    }
-
     fn discover_owned_docker_identity(&self, state: &ProviderState) -> Result<OwnedDockerIdentity> {
+        let run_id = state.run_id.as_deref().ok_or_else(|| {
+            Error::validation("In-guest provider state has no signed run identity for cleanup")
+        })?;
+        let managed_project =
+            managed_compose_project_name(run_id, &state.manifest_path, &state.worktree_path);
+        if state.managed_compose_project_name.as_deref() != Some(managed_project.as_str()) {
+            return Err(Error::validation(
+                "In-guest provider state has no Compose project bound to its signed run and worktree",
+            ));
+        }
         let mut identity = OwnedDockerIdentity {
             container_ids: BTreeSet::new(),
-            compose_projects: state.compose_projects.iter().cloned().collect(),
+            compose_projects: BTreeSet::from([managed_project.clone()]),
         };
         let mut workspace_paths: BTreeSet<String> = state.workspace_paths.iter().cloned().collect();
         workspace_paths.extend(workspace_candidates(&state.worktree_path));
@@ -1435,12 +1452,10 @@ impl InGuestRuntimeProvider {
             )?;
             for line in output_lines(&output.stdout) {
                 let mut fields = line.split('\t');
-                if let Some(container) = fields.next().filter(|value| !value.is_empty()) {
+                let container = fields.next().unwrap_or_default();
+                let project = fields.next().unwrap_or_default();
+                if !container.is_empty() && project == managed_project {
                     identity.container_ids.insert(container.to_string());
-                }
-                if let Some(project) = fields.next().filter(|value| is_compose_project_name(value))
-                {
-                    identity.compose_projects.insert(project.to_string());
                 }
             }
         }
@@ -1449,13 +1464,14 @@ impl InGuestRuntimeProvider {
         // devcontainer.local_folder label. Compose records the exact working directory and config
         // files on every service, so use those labels to recover the project without guessing from
         // container names.
+        let project_filter = format!("label=com.docker.compose.project={managed_project}");
         let output = self.checked_docker(
             "partial Compose identity discovery",
             &[
                 "ps",
                 "-a",
                 "--filter",
-                "label=com.docker.compose.project",
+                &project_filter,
                 "--format",
                 "{{.ID}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t{{.Label \"com.docker.compose.project.config_files\"}}",
             ],
@@ -1466,7 +1482,7 @@ impl InGuestRuntimeProvider {
             let project = fields.next().unwrap_or_default();
             let working_dir = fields.next().unwrap_or_default();
             let config_files = fields.next().unwrap_or_default();
-            if !is_compose_project_name(project)
+            if project != managed_project
                 || !compose_labels_belong_to_workspace(working_dir, config_files, &workspace_paths)
             {
                 continue;
@@ -1474,7 +1490,6 @@ impl InGuestRuntimeProvider {
             if !container.is_empty() {
                 identity.container_ids.insert(container.to_string());
             }
-            identity.compose_projects.insert(project.to_string());
         }
 
         if let Some(container_id) = state.container_id.as_ref() {
@@ -1588,7 +1603,6 @@ impl InGuestRuntimeProvider {
         metadata: &RuntimeMetadata,
         container_id: &str,
         proxy_names: Vec<String>,
-        compose_projects: Vec<String>,
     ) -> Result<()> {
         let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
             Error::validation("In-guest runtime metadata is missing assignment identity")
@@ -1598,9 +1612,6 @@ impl InGuestRuntimeProvider {
         state.proxy_names.extend(proxy_names);
         state.proxy_names.sort();
         state.proxy_names.dedup();
-        state.compose_projects.extend(compose_projects);
-        state.compose_projects.sort();
-        state.compose_projects.dedup();
         Self::write_state(&in_guest.state_path, &state)
     }
 
@@ -1672,11 +1683,7 @@ impl InGuestRuntimeProvider {
         Ok(())
     }
 
-    fn record_partial_start_identity(
-        &self,
-        metadata: &RuntimeMetadata,
-        worktree_path: &Path,
-    ) -> Result<()> {
+    fn record_partial_start_identity(&self, metadata: &RuntimeMetadata) -> Result<()> {
         let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
             Error::validation("In-guest runtime metadata is missing assignment identity")
         })?;
@@ -1684,11 +1691,6 @@ impl InGuestRuntimeProvider {
         if state.container_id.is_none() {
             state.container_id = metadata.container_id.clone();
         }
-        state
-            .compose_projects
-            .extend(self.discover_compose_projects(worktree_path)?);
-        state.compose_projects.sort();
-        state.compose_projects.dedup();
         Self::write_state(&in_guest.state_path, &state)
     }
 
@@ -3031,6 +3033,17 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             )
         })?;
         let assignment = load_assignment(manifest_path)?;
+        if context.runtime_name
+            != managed_compose_project_name(
+                &assignment.manifest.run_id,
+                &assignment.manifest_path,
+                context.worktree_path,
+            )
+        {
+            return Err(Error::validation(
+                "Managed in-guest Compose project name does not match its signed run and worktree",
+            ));
+        }
         if assignment.manifest.published_ports != context.published_ports {
             return Err(Error::validation(
                 "In-guest published ports changed after assignment validation",
@@ -3059,12 +3072,6 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         })?;
         let workspace_folder = effective_workspace_folder(&config, context.worktree_path);
         let container_user = configured_container_user(&config);
-        let compose_projects = deterministic_compose_projects(
-            context.runtime_name,
-            context.worktree_path,
-            &config,
-            &config_path,
-        );
         let mut workspace_paths = workspace_candidates(context.worktree_path)
             .into_iter()
             .collect::<BTreeSet<_>>();
@@ -3112,7 +3119,8 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 .iter()
                 .map(|port| Self::proxy_name(&assignment.manifest.run_id, port.runtime))
                 .collect(),
-            compose_projects: compose_projects.into_iter().collect(),
+            // Cleanup binds exclusively to the project name passed to the CLI.
+            // Repository `name:` and worktree basenames are never identities.
             managed_compose_project_name: Some(context.runtime_name.to_string()),
             container_id: None,
         };
@@ -3178,7 +3186,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 self.start_devcontainer(context.worktree_path, &config, compose_project_name)?;
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
-            self.record_partial_start_identity(metadata, context.worktree_path)?;
+            self.record_partial_start_identity(metadata)?;
             self.bind_tool_request_consumer_identity(&container_id, metadata)?;
             self.initialize_tool_request_spools(&container_id, metadata)?;
             self.verify_untrusted_boundary(&container_id, metadata)?;
@@ -3201,13 +3209,10 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                     assignment.manifest.port_proxy_image.as_deref(),
                 )?);
             }
-            let projects = self.discover_compose_projects(context.worktree_path)?;
-            self.update_state_after_start(metadata, &container_id, proxies, projects)
+            self.update_state_after_start(metadata, &container_id, proxies)
         })();
         if result.is_err() {
-            if let Err(discovery_err) =
-                self.record_partial_start_identity(metadata, context.worktree_path)
-            {
+            if let Err(discovery_err) = self.record_partial_start_identity(metadata) {
                 tracing::warn!(
                     "Failed to persist partial in-guest startup identity: {}",
                     discovery_err
@@ -3641,6 +3646,7 @@ pub fn load_in_guest_facade_plan(
     )?;
     Ok(InGuestFacadePlan {
         manifest_path: assignment.manifest_path,
+        run_id: assignment.manifest.run_id,
         tunnel_placement: assignment.manifest.tunnel_placement,
         published_ports: assignment.manifest.published_ports,
         service_images: assignment.manifest.service_images,
@@ -5512,60 +5518,6 @@ fn compose_labels_belong_to_workspace(
             .any(|path| !path.is_empty() && belongs(path))
 }
 
-fn deterministic_compose_projects(
-    runtime_name: &str,
-    worktree_path: &Path,
-    config: &DevcontainerConfig,
-    config_path: &Path,
-) -> BTreeSet<String> {
-    let mut projects = BTreeSet::new();
-    if is_compose_project_name(runtime_name) {
-        projects.insert(runtime_name.to_string());
-    }
-    if let Some(basename) = worktree_path.file_name().and_then(|name| name.to_str()) {
-        if is_compose_project_name(basename) {
-            projects.insert(basename.to_string());
-            let devcontainer_project = format!("{basename}_devcontainer");
-            if is_compose_project_name(&devcontainer_project) {
-                projects.insert(devcontainer_project);
-            }
-        }
-    }
-
-    let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
-    let compose_references: Vec<String> = match config.docker_compose_file.as_ref() {
-        Some(reference) => reference.to_vec(),
-        None => [
-            "compose.yaml",
-            "compose.yml",
-            "docker-compose.yaml",
-            "docker-compose.yml",
-        ]
-        .iter()
-        .filter(|name| devcontainer_dir.join(name).is_file())
-        .map(|name| (*name).to_string())
-        .collect(),
-    };
-    let compose_files: Vec<PathBuf> = compose_references
-        .into_iter()
-        .map(|path| devcontainer_dir.join(path))
-        .collect();
-    for compose_file in compose_files {
-        let Ok(source) = fs::read_to_string(compose_file) else {
-            continue;
-        };
-        let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&source) else {
-            continue;
-        };
-        if let Some(name) = document.get("name").and_then(serde_yaml::Value::as_str) {
-            if is_compose_project_name(name) {
-                projects.insert(name.to_string());
-            }
-        }
-    }
-    projects
-}
-
 fn output_lines(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -5974,6 +5926,28 @@ mod tests {
         assert!(load_assignment(&manifest_path).is_err());
     }
 
+    #[test]
+    fn managed_compose_project_name_is_bound_to_run_and_worktree() {
+        let mut plan = InGuestFacadePlan::empty_for_tests();
+        plan.run_id = "signed-run-one".to_string();
+        plan.manifest_path = PathBuf::from("/private/run-one/assignment.json");
+        let first = plan.managed_compose_project_name(Path::new("/workspace/first"));
+        assert!(is_compose_project_name(&first));
+        assert_eq!(
+            first,
+            plan.managed_compose_project_name(Path::new("/workspace/first"))
+        );
+        assert_ne!(
+            first,
+            plan.managed_compose_project_name(Path::new("/workspace/second"))
+        );
+        plan.run_id = "signed-run-two".to_string();
+        assert_ne!(
+            first,
+            plan.managed_compose_project_name(Path::new("/workspace/first"))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn private_compose_stage_is_bound_to_signed_config_and_unshared_parent() {
@@ -6008,7 +5982,6 @@ mod tests {
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
             managed_compose_project_name: None,
             container_id: None,
         };
@@ -6741,6 +6714,7 @@ mod tests {
         let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
+            run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
@@ -6798,6 +6772,7 @@ mod tests {
         let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
+            run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
@@ -7125,7 +7100,6 @@ mod tests {
             tool_request_spools: assignment.tool_request_spools.clone(),
             tool_request_ledger_path: Some(root.path().join("ledger")),
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
             managed_compose_project_name: None,
             container_id: Some("container_123".to_string()),
         };
@@ -7200,7 +7174,6 @@ mod tests {
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: Some(ledger),
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
             managed_compose_project_name: None,
             container_id: None,
         };
@@ -7339,7 +7312,6 @@ mod tests {
             tool_request_spools: assignment.tool_request_spools,
             tool_request_ledger_path: Some(ledger.clone()),
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
             managed_compose_project_name: None,
             container_id: None,
         };
@@ -8259,6 +8231,7 @@ printf '%s\n' "$*" > '{}'
 
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
+            run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
@@ -8402,7 +8375,6 @@ printf '%s\n' "$*" > '{}'
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
             managed_compose_project_name: None,
             container_id: None,
         };
@@ -8445,7 +8417,6 @@ printf '%s\n' "$*" > '{}'
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
             managed_compose_project_name: None,
             container_id: None,
         };
