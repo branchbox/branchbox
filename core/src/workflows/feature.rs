@@ -4469,6 +4469,15 @@ fn sanitize_in_guest_compose_source(
             if sanitization.primary_service == Some(name_string) {
                 service.remove(serde_yaml::Value::String("environment".to_string()));
             }
+            if let Some(dependencies) =
+                service.get_mut(serde_yaml::Value::String("depends_on".to_string()))
+            {
+                // Compose merges dependencies across the ordered input files. Filter
+                // disabled connectors in each copy instead of deriving a final
+                // replacement from one service definition (which may only add a
+                // command in a later file).
+                filter_in_guest_omitted_dependencies(dependencies, sanitization.omitted_services);
+            }
             if sanitization.service_images.contains_key(name_string) {
                 for key in ["image", "build", "pull_policy"] {
                     service.remove(serde_yaml::Value::String(key.to_string()));
@@ -4478,6 +4487,24 @@ fn sanitize_in_guest_compose_source(
     }
     remove_compose_extensions(document);
     Ok(())
+}
+
+fn filter_in_guest_omitted_dependencies(
+    dependencies: &mut serde_yaml::Value,
+    omitted: &BTreeSet<String>,
+) {
+    match dependencies {
+        serde_yaml::Value::Sequence(values) => {
+            values.retain(|value| value.as_str().is_none_or(|name| !omitted.contains(name)));
+        }
+        serde_yaml::Value::Mapping(values) => {
+            values.retain(|name, _| name.as_str().is_none_or(|name| !omitted.contains(name)));
+        }
+        serde_yaml::Value::Tagged(tagged) => {
+            filter_in_guest_omitted_dependencies(&mut tagged.value, omitted);
+        }
+        _ => {}
+    }
 }
 
 fn remove_compose_extensions(value: &mut serde_yaml::Value) {
@@ -5193,43 +5220,6 @@ fn prepare_outer_tunnel_compose_override(
         );
     }
 
-    for (name, definition) in definitions {
-        if omitted.contains(&name) {
-            continue;
-        }
-        let Some(depends_on) = definition.get("depends_on") else {
-            continue;
-        };
-        let filtered = match depends_on {
-            serde_yaml::Value::Sequence(values) => serde_yaml::Value::Sequence(
-                values
-                    .iter()
-                    .filter(|value| value.as_str().is_none_or(|name| !omitted.contains(name)))
-                    .cloned()
-                    .collect(),
-            ),
-            serde_yaml::Value::Mapping(values) => serde_yaml::Value::Mapping(
-                values
-                    .iter()
-                    .filter(|(name, _)| name.as_str().is_none_or(|name| !omitted.contains(name)))
-                    .map(|(name, value)| (name.clone(), value.clone()))
-                    .collect(),
-            ),
-            _ => continue,
-        };
-        let service = services
-            .entry(serde_yaml::Value::String(name))
-            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
-            .as_mapping_mut()
-            .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
-        service.insert(
-            serde_yaml::Value::String("depends_on".to_string()),
-            serde_yaml::Value::Tagged(Box::new(TaggedValue {
-                tag: Tag::new("!override"),
-                value: filtered,
-            })),
-        );
-    }
     if !assignment.spool_volumes.is_empty() {
         // A top-level volume carrying an explicit `name` is created under exactly
         // that name; without it Compose prefixes the project name and the signed
@@ -9450,12 +9440,9 @@ volumes:
             Some(CONTAINER_MAIN_GIT_TARGET)
         );
         assert!(matches!(rails["env_file"], serde_yaml::Value::Tagged(_)));
-        assert!(matches!(rails["depends_on"], serde_yaml::Value::Tagged(_)));
-        let depends_on = match &rails["depends_on"] {
-            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
-            other => panic!("expected overridden rails dependencies, got {other:?}"),
-        };
-        assert_eq!(depends_on, &[serde_yaml::Value::String("postgres".into())]);
+        // Dependencies are filtered in each sanitized source before Compose
+        // merges the ordered inputs; the facade must not replace that merge.
+        assert!(rails.get("depends_on").is_none());
         assert_eq!(rails["shm_size"].as_str(), Some(IN_GUEST_SHM_SIZE));
         let security_options = match &rails["security_opt"] {
             serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
@@ -9812,6 +9799,116 @@ volumes:
             assert!(proxy.get("command").is_none());
             assert!(proxy.get("entrypoint").is_none());
             assert!(proxy.get("environment").is_none());
+        }
+    }
+
+    #[test]
+    fn test_in_guest_split_compose_dependencies_exclude_disabled_connector() {
+        for (name, first_dependencies, second_dependencies, expected) in [
+            (
+                "short-command-only",
+                "[database, cloudflared]",
+                "",
+                vec!["database"],
+            ),
+            (
+                "short-later-dependency",
+                "[database, cloudflared]",
+                "    depends_on: [cache]\n",
+                vec!["database", "cache"],
+            ),
+            (
+                "short-later-override",
+                "[database, cloudflared]",
+                "    depends_on: !override [cache, cloudflared]\n",
+                vec!["cache"],
+            ),
+            (
+                "long-command-only",
+                "{database: {condition: service_started}, cloudflared: {condition: service_started}}",
+                "",
+                vec!["database"],
+            ),
+        ] {
+            let temp_dir = setup_test_repo();
+            let repo_path = temp_dir.path();
+            let worktree_path = repo_path.join("coding-demo");
+            let devcontainer_dir = worktree_path.join(".devcontainer");
+            fs::create_dir_all(&devcontainer_dir).unwrap();
+            fs::write(
+                devcontainer_dir.join("devcontainer.json"),
+                r#"{"dockerComposeFile":["compose.yaml","compose.extra.yaml"],"service":"app"}"#,
+            )
+            .unwrap();
+            let first = format!(
+                "services:\n  app:\n    image: alpine:3.19\n    depends_on: {first_dependencies}\n  database:\n    image: alpine:3.19\n  cache:\n    image: alpine:3.19\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n"
+            );
+            let second = format!(
+                "services:\n  app:\n    command: [sleep, infinity]\n{second_dependencies}"
+            );
+            fs::write(devcontainer_dir.join("compose.yaml"), &first).unwrap();
+            fs::write(devcontainer_dir.join("compose.extra.yaml"), &second).unwrap();
+
+            prepare_in_guest_devcontainer_config(
+                repo_path,
+                &worktree_path,
+                &InGuestFacadePlan::empty_for_tests(),
+            )
+            .unwrap();
+            let generated: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+            )
+            .unwrap();
+            let references = generated["dockerComposeFile"].as_array().unwrap();
+            assert_eq!(references.len(), 3, "{name}");
+            let sanitized_first: serde_yaml::Value = serde_yaml::from_str(
+                &fs::read_to_string(devcontainer_dir.join(references[0].as_str().unwrap()))
+                    .unwrap(),
+            )
+            .unwrap();
+            let dependencies = &sanitized_first["services"]["app"]["depends_on"];
+            match dependencies {
+                serde_yaml::Value::Sequence(values) => {
+                    assert_eq!(values, &[serde_yaml::Value::String("database".into())], "{name}");
+                }
+                serde_yaml::Value::Mapping(values) => {
+                    assert_eq!(values.len(), 1, "{name}");
+                    assert!(values.contains_key("database"), "{name}");
+                }
+                other => panic!("{name}: unexpected dependencies {other:?}"),
+            }
+            assert_eq!(fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap(), first);
+            assert_eq!(
+                fs::read_to_string(devcontainer_dir.join("compose.extra.yaml")).unwrap(),
+                second
+            );
+
+            if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+                let mut command = Command::new("docker");
+                command.arg("compose");
+                for reference in references {
+                    command.arg("-f").arg(devcontainer_dir.join(reference.as_str().unwrap()));
+                }
+                let output = command
+                    .args(["config", "--format", "json"])
+                    .env("COMPOSE_PROJECT_NAME", format!("branchbox-dependencies-{name}"))
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{name}: Compose rejected sanitized inputs: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                let dependencies = effective["services"]["app"]["depends_on"]
+                    .as_object()
+                    .unwrap();
+                assert_eq!(dependencies.len(), expected.len(), "{name}");
+                for dependency in expected {
+                    assert!(dependencies.contains_key(dependency), "{name}: missing {dependency}");
+                }
+                assert!(effective["services"]["cloudflared"].is_null(), "{name}");
+            }
         }
     }
 

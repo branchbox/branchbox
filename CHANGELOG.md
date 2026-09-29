@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Filter disabled tunnel connectors from each sanitized in-guest Compose file's
+  dependencies before Compose merges the ordered files. Later service overrides
+  that only add a command no longer retain an undefined connector dependency,
+  and dependencies on runnable services from earlier files remain intact.
 - Allow managed in-guest Compose projects to use interpolated volume sources on secondary
   services. BranchBox now passes sanitized copies of repository Compose files to the Dev
   Containers CLI, removing repository mounts, env files, publications, discarded primary
