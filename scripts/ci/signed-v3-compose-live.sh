@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 : "${BBX_BINARY:?exact-head binary required}"
+: "${BBX_BINARY_SHA256:?verified artifact digest required}"
 : "${BBX_RUNTIME_UID:?distinct runtime UID required}"
 : "${BBX_RUNTIME_GID:?distinct runtime GID required}"
 : "${BBX_DOCKER_GID:?Docker socket GID required}"
@@ -13,9 +14,13 @@ test -d "$BBX_RUNTIME_HOME"
 command -v devcontainer >/dev/null
 docker compose version
 BBX_LIVE_ROOT="$(mktemp -d /tmp/branchbox-live-compose.XXXXXXXX)"
+trap 'rm -rf -- "$BBX_LIVE_ROOT"' EXIT
 # The coding UID must be able to traverse the shared workspace parent. The
 # signed run directory below remains 0700 and cannot be read by that UID.
 chmod 0755 "$BBX_LIVE_ROOT"
+install -m 0755 "$BBX_BINARY" "$BBX_LIVE_ROOT/branchbox"
+test "$(sha256sum "$BBX_LIVE_ROOT/branchbox" | cut -d' ' -f1)" = "$BBX_BINARY_SHA256"
+BBX_BINARY="$BBX_LIVE_ROOT/branchbox"
 BBX_IMAGE="$(docker image inspect node:24-slim --format '{{index .RepoDigests 0}}')"
 test -n "$BBX_IMAGE"
 export BBX_LIVE_ROOT BBX_IMAGE
@@ -189,6 +194,10 @@ fi
 printf 'consumer-created\n' |
   setpriv --reuid 1000 --regid 1000 --clear-groups tee "$worktree/consumer-created.txt" >/dev/null
 test "$(stat -c %u "$worktree/consumer-created.txt")" = 1000
+setpriv --reuid 1000 --regid 1000 --clear-groups sh -c \
+  'umask 077; mkdir -p "$1/inner"; printf "nested consumer file\n" > "$1/inner/file"' \
+  sh "$worktree/consumer-private"
+test "$(stat -c %u "$worktree/consumer-private/inner/file")" = 1000
 container_ids="$(docker ps -q --filter "label=devcontainer.local_folder=$worktree")"
 test "$(printf '%s\n' "$container_ids" | sed '/^$/d' | wc -l)" = 1
 container_id="$container_ids"
