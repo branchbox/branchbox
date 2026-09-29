@@ -417,9 +417,9 @@ fn private_compose_stage_dir(
     consumer_uid: u32,
 ) -> Result<PathBuf> {
     let runtime_uid = unsafe { libc::geteuid() };
-    if consumer_uid == runtime_uid {
+    if consumer_uid == 0 || consumer_uid == runtime_uid {
         return Err(Error::validation(
-            "Workspace consumer UID must differ from the BranchBox runtime UID to keep staged Compose inputs private",
+            "Workspace consumer UID must differ from the BranchBox runtime UID and must be non-root to keep staged Compose inputs private",
         ));
     }
     let run_root = manifest_path
@@ -459,18 +459,7 @@ fn private_compose_stage_dir(
     // paths to the Dev Containers CLI. Sticky directories such as /tmp protect
     // a runtime-owned child from a different UID.
     for ancestor in run_root.ancestors().skip(1) {
-        let metadata = fs::symlink_metadata(ancestor)?;
-        let mode = metadata.permissions().mode();
-        if !metadata.is_dir()
-            || metadata.file_type().is_symlink()
-            || (metadata.uid() == consumer_uid && mode & 0o200 != 0)
-            || (mode & 0o022 != 0 && mode & 0o1000 == 0)
-        {
-            return Err(Error::validation(format!(
-                "Private Compose stage parent '{}' may be writable or replaceable by the workspace consumer",
-                ancestor.display()
-            )));
-        }
+        validate_private_compose_stage_ancestor(ancestor, runtime_uid, consumer_uid)?;
     }
     let digest = format!("{:x}", Sha256::digest(worktree.as_os_str().as_bytes()));
     let directory = run_root.join(format!("branchbox-compose-{}", &digest[..16]));
@@ -491,6 +480,32 @@ fn private_compose_stage_dir(
         )));
     }
     Ok(directory)
+}
+
+#[cfg(unix)]
+fn validate_private_compose_stage_ancestor(
+    ancestor: &Path,
+    runtime_uid: u32,
+    consumer_uid: u32,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(ancestor)?;
+    let mode = metadata.permissions().mode();
+    let owner = metadata.uid();
+    // An owner may chmod a currently read-only directory and then replace a
+    // descendant. Only the runtime and root may own the parent chain, and a
+    // sticky writable parent must not itself belong to the consumer.
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || owner == consumer_uid
+        || (owner != runtime_uid && owner != 0)
+        || (mode & 0o022 != 0 && mode & 0o1000 == 0)
+    {
+        return Err(Error::validation(format!(
+            "Private Compose stage parent '{}' may be writable or replaceable by the workspace consumer",
+            ancestor.display()
+        )));
+    }
+    Ok(())
 }
 
 fn private_compose_stage_from_state(state: &ProviderState) -> Result<Option<PathBuf>> {
@@ -5750,6 +5765,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("writable or replaceable"));
+
+        let locked_parent = tempfile::tempdir().unwrap();
+        fs::set_permissions(locked_parent.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        // Current mode does not make a consumer-owned ancestor safe: its owner
+        // can chmod it writable later and replace the run directory.
+        let error = validate_private_compose_stage_ancestor(
+            locked_parent.path(),
+            if runtime_uid == 1000 { 1001 } else { 1000 },
+            runtime_uid,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("writable or replaceable"));
+        if runtime_uid != 0 {
+            let error = validate_private_compose_stage_ancestor(
+                locked_parent.path(),
+                runtime_uid.wrapping_add(1),
+                runtime_uid.wrapping_add(2),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("writable or replaceable"));
+        }
+        fs::set_permissions(locked_parent.path(), fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[cfg(target_os = "linux")]

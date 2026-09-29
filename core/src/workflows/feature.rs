@@ -8483,20 +8483,29 @@ mod tests {
     fn test_fix_git_worktree_path_converts_absolute() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
-
-        // Create a mock worktree directory
-        let worktree_path = repo_path.join("feature-test");
-        fs::create_dir_all(&worktree_path).unwrap();
-
-        // Create the workflow before the intentionally minimal fake worktree metadata. Git may
-        // prune incomplete metadata while opening the repository.
         let workflow = FeatureWorkflow::new(repo_path).unwrap();
 
-        // Write a .git file with absolute path
+        // Use complete Git metadata. Git may prune a fabricated worktree entry
+        // between fixture setup and the canonical target check below.
+        let worktree_path = repo_path.join("feature-test");
+        let added = Command::new("git")
+            .current_dir(repo_path)
+            .args(["worktree", "add", "--detach"])
+            .arg(&worktree_path)
+            .arg("HEAD")
+            .output()
+            .unwrap();
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stderr)
+        );
         let git_file = worktree_path.join(".git");
         let metadata_path = repo_path.join(".git/worktrees/feature-test");
-        fs::create_dir_all(&metadata_path).unwrap();
-        fs::write(&git_file, format!("gitdir: {}\n", metadata_path.display())).unwrap();
+        assert!(metadata_path.is_dir());
+        assert!(fs::read_to_string(&git_file)
+            .unwrap()
+            .starts_with("gitdir: /"));
 
         workflow.fix_git_worktree_path(&worktree_path).unwrap();
 
