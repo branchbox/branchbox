@@ -1702,6 +1702,7 @@ fn in_guest_v3_partial_start_removes_only_its_compose_residue() {
     let revision = commit_in_guest_devcontainer(&test_repo);
     let fake = create_fake_in_guest_runtime();
     let assignment = TempDir::new().expect("create assignment directory");
+    set_mode(assignment.path(), 0o700);
     let work_feature = "in-guest-v3-partial-start";
     let manifest = write_in_guest_manifest(assignment.path(), &test_repo, work_feature, &revision);
     let (uid, _) = distinct_in_guest_consumer_ids();
