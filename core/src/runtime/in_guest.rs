@@ -9,13 +9,18 @@ use super::{
     exec_result, RuntimeContext, RuntimeExecResult, RuntimeMetadata, RuntimePort, RuntimeProvider,
     RuntimeProviderKind, RuntimeResidue, RuntimeTeardownReport, RuntimeToolDispatchResult,
 };
-use crate::{devcontainer_runtime::DevcontainerConfig, Error, Result};
+use crate::{
+    devcontainer_runtime::DevcontainerConfig, git::repository_common_git_dir, Error, Result,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
@@ -69,14 +74,22 @@ host_port="$4"
 runtime_port="$5"
 proxy_image="$6"
 pull_policy="$7"
+compose_project="$8"
 network_id=$("$docker_bin" inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id" | head -n 1)
 target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
 target_host=${target_host#/}
-"$docker_bin" rm -f "$proxy_name" >/dev/null 2>&1 || true
-if test "$pull_policy" = never; then
-  exec "$docker_bin" run -d --pull=never --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}"
+if "$docker_bin" inspect "$proxy_name" >/dev/null 2>&1; then
+  existing_project=$("$docker_bin" inspect -f '{{index .Config.Labels "io.branchbox.compose_project"}}' "$proxy_name")
+  if test "$existing_project" != "$compose_project"; then
+    echo "Port proxy name is occupied by a different managed project" >&2
+    exit 75
+  fi
+  "$docker_bin" rm -f "$proxy_name" >/dev/null
 fi
-exec "$docker_bin" run -d --name "$proxy_name" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
+if test "$pull_policy" = never; then
+  exec "$docker_bin" run -d --pull=never --name "$proxy_name" --label "io.branchbox.compose_project=$compose_project" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}"
+fi
+exec "$docker_bin" run -d --name "$proxy_name" --label "io.branchbox.compose_project=$compose_project" --restart unless-stopped --network "$network_id" -p "127.0.0.1:${host_port}:${runtime_port}" "$proxy_image" -dd "TCP-LISTEN:${runtime_port},fork,reuseaddr" "TCP:${target_host}:${runtime_port}""#;
 const INITIALIZE_TOOL_REQUEST_SPOOL_SCRIPT: &str = r#"set -eu
 root="$1"
 uid="$2"
@@ -224,6 +237,35 @@ trap - EXIT HUP INT TERM
 test "$(stat -c '%u:%a' "$final")" = "$uid:400""#;
 const PROVIDER_STATE_VERSION: &str = "1";
 const LEGACY_REDACTED_ENVIRONMENT: [&str; 1] = [LEGACY_PROVIDER_ENVIRONMENT];
+const IN_GUEST_CHILD_ENVIRONMENT: &[&str] = &[
+    "PATH",
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS",
+    "DOCKER_TLS_VERIFY",
+];
+
+fn set_in_guest_child_environment(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+) {
+    command.env_clear();
+    for (name, value) in inherited {
+        if name
+            .to_str()
+            .is_some_and(|name| IN_GUEST_CHILD_ENVIRONMENT.contains(&name))
+        {
+            command.env(name, value);
+        }
+    }
+    // Compose otherwise reads a repository .env from the working/project
+    // directory, even when no variables are inherited from this process.
+    command.env("COMPOSE_DISABLE_ENV_FILE", "1");
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -260,6 +302,7 @@ pub struct InGuestRuntimeMetadata {
 #[derive(Debug, Clone)]
 pub struct InGuestFacadePlan {
     manifest_path: PathBuf,
+    run_id: String,
     tunnel_placement: InGuestTunnelPlacement,
     published_ports: Vec<RuntimePort>,
     service_images: BTreeMap<String, String>,
@@ -270,6 +313,44 @@ pub struct InGuestFacadePlan {
 }
 
 impl InGuestFacadePlan {
+    #[cfg(test)]
+    pub(crate) fn empty_for_tests() -> Self {
+        Self {
+            manifest_path: PathBuf::new(),
+            run_id: String::new(),
+            tunnel_placement: InGuestTunnelPlacement::Outer,
+            published_ports: Vec::new(),
+            service_images: BTreeMap::new(),
+            mounts: Vec::new(),
+            tool_request_spools: Vec::new(),
+            linked_tool_endpoints: BTreeSet::new(),
+            workspace_consumer: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_service_images_for_tests(
+        mut self,
+        images: BTreeMap<String, String>,
+    ) -> Self {
+        self.service_images = images;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_private_compose_stage_for_tests(
+        mut self,
+        manifest_path: PathBuf,
+        consumer_uid: u32,
+    ) -> Self {
+        self.manifest_path = manifest_path;
+        self.workspace_consumer = Some(WorkspaceConsumer {
+            uid: consumer_uid,
+            gid: consumer_uid,
+        });
+        self
+    }
+
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
     }
@@ -284,6 +365,10 @@ impl InGuestFacadePlan {
 
     pub fn service_images(&self) -> &BTreeMap<String, String> {
         &self.service_images
+    }
+
+    pub fn managed_compose_project_name(&self, worktree_path: &Path) -> String {
+        managed_compose_project_name(&self.run_id, &self.manifest_path, worktree_path)
     }
 
     pub fn mounts(&self) -> impl Iterator<Item = (&Path, &Path)> {
@@ -331,6 +416,34 @@ impl InGuestFacadePlan {
             .map(|consumer| (consumer.uid, consumer.gid))
     }
 
+    pub(crate) fn private_compose_stage_dir(
+        &self,
+        worktree_path: &Path,
+    ) -> Result<Option<PathBuf>> {
+        let Some(consumer) = self.workspace_consumer.as_ref() else {
+            return Ok(None);
+        };
+        if self.service_images.is_empty() {
+            return Err(Error::validation(
+                "Workspace-consumer Compose requires signed preloaded images for every runnable service; relative build paths cannot be staged privately",
+            ));
+        }
+        let stage = private_compose_stage_dir(&self.manifest_path, worktree_path, consumer.uid)?;
+        validate_private_compose_stage_mounts(&stage, &self.mounts, &self.linked_tool_endpoints)?;
+        Ok(Some(stage))
+    }
+
+    pub(crate) fn remove_private_compose_stage(&self, worktree_path: &Path) -> Result<()> {
+        let Some(stage) = self.private_compose_stage_dir(worktree_path)? else {
+            return Ok(());
+        };
+        match fs::remove_dir_all(stage) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub fn grant_workspace_consumer_access(
         &self,
         worktree_path: &Path,
@@ -341,6 +454,257 @@ impl InGuestFacadePlan {
         };
         grant_workspace_consumer_access(worktree_path, common_git_path, consumer)
     }
+}
+
+fn managed_compose_project_name(
+    run_id: &str,
+    manifest_path: &Path,
+    worktree_path: &Path,
+) -> String {
+    // The private assignment path identifies the signed run; the worktree
+    // distinguishes tasks if a run creates more than one. Hash both so a
+    // repository name cannot choose another task's Compose project.
+    let mut digest = Sha256::new();
+    digest.update(run_id.as_bytes());
+    digest.update([0]);
+    hash_path(&mut digest, manifest_path);
+    digest.update([0]);
+    hash_path(&mut digest, worktree_path);
+    format!("branchbox-{:x}", digest.finalize())[..34].to_string()
+}
+
+fn hash_path(digest: &mut Sha256, path: &Path) {
+    #[cfg(unix)]
+    digest.update(path.as_os_str().as_bytes());
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        for unit in path.as_os_str().encode_wide() {
+            digest.update(unit.to_le_bytes());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    digest.update(path.to_string_lossy().as_bytes());
+}
+
+fn validate_private_compose_stage_mounts(
+    stage: &Path,
+    mounts: &[InGuestMount],
+    linked_tool_endpoints: &BTreeSet<String>,
+) -> Result<()> {
+    if mounts
+        .iter()
+        .filter(|mount| {
+            !matches!(
+                mount.scope,
+                LeaseScope::ProjectEnvironment
+                    | LeaseScope::ProviderEnvironment
+                    | LeaseScope::ToolRequest
+            ) && !(mount.scope == LeaseScope::ToolEndpoint
+                && linked_tool_endpoints.contains(&mount.lease_id))
+                && matches!(mount.target, MaterializationTarget::File(_))
+        })
+        .any(|mount| stage.starts_with(&mount.source) || mount.source.starts_with(stage))
+    {
+        return Err(Error::validation(
+            "Private in-guest Compose stage overlaps a signed container mount source",
+        ));
+    }
+    Ok(())
+}
+
+/// The shared Git directory is an implicit writable bind and is recursively
+/// group-shared with the coding consumer. Reject overlap before that delegation.
+pub(crate) fn validate_private_compose_stage_git_mount(
+    stage: &Path,
+    repo_root: &Path,
+) -> Result<()> {
+    let run_root = stage
+        .parent()
+        .ok_or_else(|| Error::validation("Private in-guest Compose stage has no run directory"))?;
+    let common_git = repository_common_git_dir(repo_root)?;
+    if run_root.starts_with(&common_git) || common_git.starts_with(run_root) {
+        return Err(Error::validation(
+            "Private in-guest run directory overlaps the shared Git container mount",
+        ));
+    }
+    Ok(())
+}
+
+fn require_secure_in_guest_launch(assignment: &LoadedAssignment) -> Result<()> {
+    if assignment.manifest.version != WORKSPACE_CONSUMER_MANIFEST_VERSION {
+        return Err(Error::validation(
+            "Managed in-guest launch requires a signed version 3 assignment with a distinct workspace consumer",
+        ));
+    }
+    let consumer = assignment
+        .manifest
+        .workspace_consumer
+        .as_ref()
+        .ok_or_else(|| {
+            Error::validation("Managed in-guest launch requires a workspace consumer")
+        })?;
+    if assignment.manifest.service_images.is_empty() {
+        return Err(Error::validation(
+            "Managed in-guest launch requires signed preloaded images for every runnable service",
+        ));
+    }
+    #[cfg(unix)]
+    if consumer.uid == unsafe { libc::geteuid() } || consumer.gid == unsafe { libc::getegid() } {
+        return Err(Error::validation(
+            "Managed in-guest launch requires workspace consumer UID and GID distinct from the BranchBox runtime",
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(Error::validation(
+        "Managed in-guest launch requires Unix private staging and UID/GID isolation",
+    ));
+    #[cfg(unix)]
+    Ok(())
+}
+
+/// Fail before Dev Containers CLI preflight when the signed assignment cannot
+/// keep generated Compose inputs private from the coding workspace consumer.
+pub fn require_secure_in_guest_launch_assignment(manifest_path: &Path) -> Result<()> {
+    require_secure_in_guest_launch(&load_assignment(manifest_path)?)
+}
+
+/// Compose inputs consumed by the privileged CLI must not live in the group-writable
+/// task worktree. The signed run directory is owner-only and outside that tree.
+#[cfg(unix)]
+fn private_compose_stage_dir(
+    manifest_path: &Path,
+    worktree_path: &Path,
+    consumer_uid: u32,
+) -> Result<PathBuf> {
+    let runtime_uid = unsafe { libc::geteuid() };
+    if consumer_uid == 0 || consumer_uid == runtime_uid {
+        return Err(Error::validation(
+            "Workspace consumer UID must differ from the BranchBox runtime UID and must be non-root to keep staged Compose inputs private",
+        ));
+    }
+    let run_root = manifest_path
+        .parent()
+        .ok_or_else(|| Error::validation("In-guest assignment manifest has no run directory"))?;
+    let metadata = fs::symlink_metadata(run_root)?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != runtime_uid
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(Error::validation(format!(
+            "In-guest assignment run directory '{}' must be a runtime-owned, non-symlink 0700 directory",
+            run_root.display()
+        )));
+    }
+    let run_root = fs::canonicalize(run_root)?;
+    let resolved = fs::metadata(&run_root)?;
+    if resolved.dev() != metadata.dev() || resolved.ino() != metadata.ino() {
+        return Err(Error::validation(
+            "In-guest assignment run directory changed while it was validated",
+        ));
+    }
+    let worktree = fs::canonicalize(worktree_path)?;
+    let workspace = fs::canonicalize(
+        worktree
+            .parent()
+            .ok_or_else(|| Error::validation("Task worktree has no workspace parent"))?,
+    )?;
+    if run_root.starts_with(&workspace) || workspace.starts_with(&run_root) {
+        return Err(Error::validation(
+            "Private Compose stage must be outside the shared task workspace",
+        ));
+    }
+    // A 0700 run directory can still be renamed by a consumer that can write
+    // one of its parent directories. Refuse that parent chain before publishing
+    // paths to the Dev Containers CLI. Sticky directories such as /tmp protect
+    // a runtime-owned child from a different UID.
+    for ancestor in run_root.ancestors().skip(1) {
+        validate_private_compose_stage_ancestor(ancestor, runtime_uid, consumer_uid)?;
+    }
+    let digest = format!("{:x}", Sha256::digest(worktree.as_os_str().as_bytes()));
+    let directory = run_root.join(format!("branchbox-compose-{}", &digest[..16]));
+    match fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err.into()),
+    }
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != runtime_uid
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(Error::validation(format!(
+            "Private Compose stage '{}' must be a runtime-owned, non-symlink 0700 directory",
+            directory.display()
+        )));
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn validate_private_compose_stage_ancestor(
+    ancestor: &Path,
+    runtime_uid: u32,
+    consumer_uid: u32,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(ancestor)?;
+    let mode = metadata.permissions().mode();
+    let owner = metadata.uid();
+    // An owner may chmod a currently read-only directory and then replace a
+    // descendant. Only the runtime and root may own the parent chain, and a
+    // sticky writable parent must not itself belong to the consumer.
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || owner == consumer_uid
+        || (owner != runtime_uid && owner != 0)
+        || (mode & 0o022 != 0 && mode & 0o1000 == 0)
+    {
+        return Err(Error::validation(format!(
+            "Private Compose stage parent '{}' may be writable or replaceable by the workspace consumer",
+            ancestor.display()
+        )));
+    }
+    Ok(())
+}
+
+fn private_compose_stage_from_state(state: &ProviderState) -> Result<Option<PathBuf>> {
+    if state.config_path.starts_with(&state.worktree_path) {
+        return Ok(None);
+    }
+    let assignment = load_assignment(&state.manifest_path)?;
+    let consumer = assignment
+        .manifest
+        .workspace_consumer
+        .as_ref()
+        .ok_or_else(|| {
+            Error::validation(
+                "External in-guest devcontainer config has no signed workspace consumer",
+            )
+        })?;
+    let stage = private_compose_stage_dir(
+        &assignment.manifest_path,
+        &state.worktree_path,
+        consumer.uid,
+    )?;
+    if state.config_path != stage.join(".devcontainer.json") {
+        return Err(Error::validation(
+            "Provider state config path does not match the signed private Compose stage",
+        ));
+    }
+    Ok(Some(stage))
+}
+
+#[cfg(not(unix))]
+fn private_compose_stage_dir(
+    _manifest_path: &Path,
+    _worktree_path: &Path,
+    _consumer_uid: u32,
+) -> Result<PathBuf> {
+    Err(Error::validation(
+        "Workspace-consumer Compose staging requires Unix directory ownership checks",
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -501,9 +865,9 @@ fn grant_workspace_consumer_access(
 /// consumer-created directory's contents needs write access to that directory. A POSIX default
 /// ACL makes every path created below a delegated directory inherit the same group-shared access
 /// the delegation itself grants, independent of the consumer's umask. Setting it requires only
-/// ownership of the directory, and it mirrors the delegated mode exactly: owner and group gain
-/// read/write/traverse, other gains nothing beyond the read/traverse the delegation already
-/// preserves, and world write is never granted.
+/// ownership of the directory. Existing paths retain their original other permissions, but new
+/// descendants are private to the owner and delegated group: POSIX default ACLs take precedence
+/// over umask, so inheriting other read/traverse would expose newly created workspace secrets.
 #[cfg(target_os = "linux")]
 fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     const ACL_EA_VERSION: u32 = 2;
@@ -512,7 +876,6 @@ fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     const ACL_OTHER: u16 = 0x20;
     const ACL_UNDEFINED_ID: u32 = u32::MAX;
     const ACL_READ_WRITE_EXECUTE: u16 = 0b111;
-    const ACL_READ_EXECUTE: u16 = 0b101;
 
     // Entries must stay in the kernel's canonical tag order.
     let mut attribute = Vec::with_capacity(4 + 3 * 8);
@@ -520,7 +883,7 @@ fn set_shared_default_acl(directory: &fs::File, path: &Path) -> Result<()> {
     for (tag, permissions) in [
         (ACL_USER_OBJ, ACL_READ_WRITE_EXECUTE),
         (ACL_GROUP_OBJ, ACL_READ_WRITE_EXECUTE),
-        (ACL_OTHER, ACL_READ_EXECUTE),
+        (ACL_OTHER, 0),
     ] {
         attribute.extend_from_slice(&tag.to_le_bytes());
         attribute.extend_from_slice(&permissions.to_le_bytes());
@@ -788,7 +1151,7 @@ struct ProviderState {
     #[serde(default)]
     proxy_names: Vec<String>,
     #[serde(default)]
-    compose_projects: Vec<String>,
+    managed_compose_project_name: Option<String>,
     #[serde(default)]
     container_id: Option<String>,
 }
@@ -838,14 +1201,89 @@ impl InGuestRuntimeProvider {
 
     fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
-        for name in LEGACY_REDACTED_ENVIRONMENT {
-            command.env_remove(name);
-        }
+        set_in_guest_child_environment(&mut command, std::env::vars_os());
         command
     }
 
-    fn devcontainer_output(&self, args: &[&str], worktree: Option<&Path>) -> Result<Output> {
+    fn devcontainer_command(&self, compose_project_name: Option<&str>) -> Result<Command> {
         let mut command = self.command(&self.devcontainer);
+        if let Some(name) = compose_project_name {
+            if !is_compose_project_name(name) {
+                return Err(Error::validation(
+                    "Managed in-guest Compose project name must use Compose-safe characters",
+                ));
+            }
+            // The Dev Containers CLI reads COMPOSE_PROJECT_NAME from the worktree .env
+            // even when Compose's automatic .env loading is disabled. Bind the
+            // runtime-selected identity explicitly so that file cannot rename the project.
+            command.env("COMPOSE_PROJECT_NAME", name);
+        }
+        Ok(command)
+    }
+
+    fn managed_cli_context(
+        &self,
+        metadata: &RuntimeMetadata,
+        worktree_path: &Path,
+    ) -> Result<(String, PathBuf)> {
+        let identity = metadata.in_guest.as_ref().ok_or_else(|| {
+            Error::validation("In-guest runtime metadata is missing assignment identity")
+        })?;
+        let state = Self::read_state(&identity.state_path)?;
+        let assignment = load_assignment(&state.manifest_path)?;
+        require_secure_in_guest_launch(&assignment)?;
+        if fs::canonicalize(&state.worktree_path)? != fs::canonicalize(worktree_path)?
+            || state.run_id.as_deref() != Some(assignment.manifest.run_id.as_str())
+            || identity.run_id != assignment.manifest.run_id
+        {
+            return Err(Error::validation(
+                "In-guest runtime identity does not match the signed run and worktree",
+            ));
+        }
+        let name = managed_compose_project_name(
+            &assignment.manifest.run_id,
+            &assignment.manifest_path,
+            worktree_path,
+        );
+        if state.managed_compose_project_name.as_deref() != Some(name.as_str()) {
+            return Err(Error::validation(
+                "In-guest provider state has no Compose project bound to its signed run and worktree",
+            ));
+        }
+        let consumer = assignment
+            .manifest
+            .workspace_consumer
+            .as_ref()
+            .ok_or_else(|| {
+                Error::validation("Managed in-guest launch requires a workspace consumer")
+            })?;
+        let stage =
+            private_compose_stage_dir(&assignment.manifest_path, worktree_path, consumer.uid)?;
+        validate_private_compose_stage_git_mount(&stage, &assignment.manifest.repository.path)?;
+        validate_private_compose_stage_mounts(
+            &stage,
+            &assignment.mounts,
+            &assignment.linked_tool_endpoints,
+        )?;
+        let config = validate_private_regular_file(
+            &stage.join(".devcontainer.json"),
+            "staged devcontainer config",
+        )?;
+        if state.config_path != config || metadata.config_path.as_ref() != Some(&config) {
+            return Err(Error::validation(
+                "In-guest CLI config path is not the signed private Compose stage",
+            ));
+        }
+        Ok((name, config))
+    }
+
+    fn devcontainer_output(
+        &self,
+        args: &[&str],
+        worktree: Option<&Path>,
+        compose_project_name: Option<&str>,
+    ) -> Result<Output> {
+        let mut command = self.devcontainer_command(compose_project_name)?;
         command.args(args);
         if let Some(worktree) = worktree {
             command.current_dir(worktree);
@@ -977,8 +1415,9 @@ impl InGuestRuntimeProvider {
         operation: &str,
         args: &[&str],
         worktree: Option<&Path>,
+        compose_project_name: Option<&str>,
     ) -> Result<Output> {
-        let output = self.devcontainer_output(args, worktree)?;
+        let output = self.devcontainer_output(args, worktree, compose_project_name)?;
         if output.status.success() {
             return Ok(output);
         }
@@ -1012,8 +1451,13 @@ impl InGuestRuntimeProvider {
         Ok(source)
     }
 
-    fn start_devcontainer(&self, worktree_path: &Path, config_path: &Path) -> Result<String> {
-        self.verify_resolved_configuration(worktree_path, config_path)?;
+    fn start_devcontainer(
+        &self,
+        worktree_path: &Path,
+        config_path: &Path,
+        compose_project_name: &str,
+    ) -> Result<String> {
+        self.verify_resolved_configuration(worktree_path, config_path, compose_project_name)?;
         let worktree = worktree_path.to_string_lossy();
         let config = config_path.to_string_lossy();
         let output = self.devcontainer_output(
@@ -1027,6 +1471,7 @@ impl InGuestRuntimeProvider {
                 "json",
             ],
             Some(worktree_path),
+            Some(compose_project_name),
         )?;
         if !output.status.success() {
             return Err(Error::validation(format!(
@@ -1066,6 +1511,7 @@ impl InGuestRuntimeProvider {
         &self,
         worktree_path: &Path,
         config_path: &Path,
+        compose_project_name: &str,
     ) -> Result<()> {
         let output = self.checked_devcontainer(
             "resolved configuration inspection",
@@ -1080,11 +1526,17 @@ impl InGuestRuntimeProvider {
                 "json",
             ],
             Some(worktree_path),
+            Some(compose_project_name),
         )?;
         validate_resolved_configuration(&output.stdout)
     }
 
-    fn probe(&self, worktree_path: &Path, config_path: &Path) -> Result<bool> {
+    fn probe(
+        &self,
+        worktree_path: &Path,
+        config_path: &Path,
+        compose_project_name: &str,
+    ) -> Result<bool> {
         let output = self.devcontainer_output(
             &[
                 "exec",
@@ -1095,42 +1547,25 @@ impl InGuestRuntimeProvider {
                 "true",
             ],
             Some(worktree_path),
+            Some(compose_project_name),
         )?;
         Ok(output.status.success())
     }
 
-    fn discover_compose_projects(&self, worktree_path: &Path) -> Result<Vec<String>> {
-        let mut paths = BTreeSet::from([worktree_path.to_string_lossy().into_owned()]);
-        if let Ok(canonical) = fs::canonicalize(worktree_path) {
-            paths.insert(canonical.to_string_lossy().into_owned());
-        }
-        let mut projects = BTreeSet::new();
-        for workspace in paths {
-            let filter = format!("label=devcontainer.local_folder={workspace}");
-            let output = self.checked_docker(
-                "Compose project discovery",
-                &[
-                    "ps",
-                    "-a",
-                    "--filter",
-                    &filter,
-                    "--format",
-                    "{{.Label \"com.docker.compose.project\"}}",
-                ],
-            )?;
-            projects.extend(
-                output_lines(&output.stdout)
-                    .into_iter()
-                    .filter(|project| is_compose_project_name(project)),
-            );
-        }
-        Ok(projects.into_iter().collect())
-    }
-
     fn discover_owned_docker_identity(&self, state: &ProviderState) -> Result<OwnedDockerIdentity> {
+        let run_id = state.run_id.as_deref().ok_or_else(|| {
+            Error::validation("In-guest provider state has no signed run identity for cleanup")
+        })?;
+        let managed_project =
+            managed_compose_project_name(run_id, &state.manifest_path, &state.worktree_path);
+        if state.managed_compose_project_name.as_deref() != Some(managed_project.as_str()) {
+            return Err(Error::validation(
+                "In-guest provider state has no Compose project bound to its signed run and worktree",
+            ));
+        }
         let mut identity = OwnedDockerIdentity {
             container_ids: BTreeSet::new(),
-            compose_projects: state.compose_projects.iter().cloned().collect(),
+            compose_projects: BTreeSet::from([managed_project.clone()]),
         };
         let mut workspace_paths: BTreeSet<String> = state.workspace_paths.iter().cloned().collect();
         workspace_paths.extend(workspace_candidates(&state.worktree_path));
@@ -1150,12 +1585,10 @@ impl InGuestRuntimeProvider {
             )?;
             for line in output_lines(&output.stdout) {
                 let mut fields = line.split('\t');
-                if let Some(container) = fields.next().filter(|value| !value.is_empty()) {
+                let container = fields.next().unwrap_or_default();
+                let project = fields.next().unwrap_or_default();
+                if !container.is_empty() && project == managed_project {
                     identity.container_ids.insert(container.to_string());
-                }
-                if let Some(project) = fields.next().filter(|value| is_compose_project_name(value))
-                {
-                    identity.compose_projects.insert(project.to_string());
                 }
             }
         }
@@ -1164,13 +1597,14 @@ impl InGuestRuntimeProvider {
         // devcontainer.local_folder label. Compose records the exact working directory and config
         // files on every service, so use those labels to recover the project without guessing from
         // container names.
+        let project_filter = format!("label=com.docker.compose.project={managed_project}");
         let output = self.checked_docker(
             "partial Compose identity discovery",
             &[
                 "ps",
                 "-a",
                 "--filter",
-                "label=com.docker.compose.project",
+                &project_filter,
                 "--format",
                 "{{.ID}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t{{.Label \"com.docker.compose.project.config_files\"}}",
             ],
@@ -1181,7 +1615,7 @@ impl InGuestRuntimeProvider {
             let project = fields.next().unwrap_or_default();
             let working_dir = fields.next().unwrap_or_default();
             let config_files = fields.next().unwrap_or_default();
-            if !is_compose_project_name(project)
+            if project != managed_project
                 || !compose_labels_belong_to_workspace(working_dir, config_files, &workspace_paths)
             {
                 continue;
@@ -1189,7 +1623,6 @@ impl InGuestRuntimeProvider {
             if !container.is_empty() {
                 identity.container_ids.insert(container.to_string());
             }
-            identity.compose_projects.insert(project.to_string());
         }
 
         if let Some(container_id) = state.container_id.as_ref() {
@@ -1221,23 +1654,18 @@ impl InGuestRuntimeProvider {
         validate_container_inspection(&output.stdout, &signed_mounts, &forbidden_environment)
     }
 
-    fn proxy_name(run_id: &str, runtime_port: u16) -> String {
-        let identity: String = run_id
-            .chars()
-            .filter(|character| character.is_ascii_alphanumeric())
-            .take(24)
-            .collect();
-        format!("branchbox-in-guest-{identity}-port-{runtime_port}")
+    fn proxy_name(compose_project_name: &str, runtime_port: u16) -> String {
+        format!("branchbox-in-guest-{compose_project_name}-port-{runtime_port}")
     }
 
     fn reconcile_port_proxy(
         &self,
-        run_id: &str,
+        compose_project_name: &str,
         container_id: &str,
         port: RuntimePort,
         port_proxy_image: Option<&str>,
     ) -> Result<String> {
-        let proxy_name = Self::proxy_name(run_id, port.runtime);
+        let proxy_name = Self::proxy_name(compose_project_name, port.runtime);
         let proxy_image = port_proxy_image.unwrap_or(LEGACY_PORT_PROXY_IMAGE);
         let pull_policy = if port_proxy_image.is_some() {
             "never"
@@ -1255,6 +1683,7 @@ impl InGuestRuntimeProvider {
                 &port.runtime.to_string(),
                 proxy_image,
                 pull_policy,
+                compose_project_name,
             ])
             .output()
             .map_err(|err| {
@@ -1303,7 +1732,6 @@ impl InGuestRuntimeProvider {
         metadata: &RuntimeMetadata,
         container_id: &str,
         proxy_names: Vec<String>,
-        compose_projects: Vec<String>,
     ) -> Result<()> {
         let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
             Error::validation("In-guest runtime metadata is missing assignment identity")
@@ -1313,9 +1741,6 @@ impl InGuestRuntimeProvider {
         state.proxy_names.extend(proxy_names);
         state.proxy_names.sort();
         state.proxy_names.dedup();
-        state.compose_projects.extend(compose_projects);
-        state.compose_projects.sort();
-        state.compose_projects.dedup();
         Self::write_state(&in_guest.state_path, &state)
     }
 
@@ -1387,11 +1812,7 @@ impl InGuestRuntimeProvider {
         Ok(())
     }
 
-    fn record_partial_start_identity(
-        &self,
-        metadata: &RuntimeMetadata,
-        worktree_path: &Path,
-    ) -> Result<()> {
+    fn record_partial_start_identity(&self, metadata: &RuntimeMetadata) -> Result<()> {
         let in_guest = metadata.in_guest.as_ref().ok_or_else(|| {
             Error::validation("In-guest runtime metadata is missing assignment identity")
         })?;
@@ -1399,19 +1820,18 @@ impl InGuestRuntimeProvider {
         if state.container_id.is_none() {
             state.container_id = metadata.container_id.clone();
         }
-        state
-            .compose_projects
-            .extend(self.discover_compose_projects(worktree_path)?);
-        state.compose_projects.sort();
-        state.compose_projects.dedup();
         Self::write_state(&in_guest.state_path, &state)
     }
 
     fn remove_owned_docker_resources(&self, state: &ProviderState) -> Result<Vec<RuntimeResidue>> {
-        for proxy in &state.proxy_names {
-            let _ = self.docker_output(&["rm", "-f", proxy]);
-        }
         let identity = self.discover_owned_docker_identity(state)?;
+        let managed_project = state
+            .managed_compose_project_name
+            .as_deref()
+            .ok_or_else(|| {
+                Error::validation("In-guest provider state has no managed Compose project")
+            })?;
+        self.remove_owned_port_proxies(&state.proxy_names, managed_project)?;
         for container in identity.container_ids {
             let _ = self.docker_output(&["rm", "-f", &container]);
         }
@@ -1451,6 +1871,39 @@ impl InGuestRuntimeProvider {
         self.inspect_residue(state, &identity.compose_projects)
     }
 
+    fn remove_owned_port_proxies(
+        &self,
+        proxy_names: &[String],
+        managed_project: &str,
+    ) -> Result<()> {
+        let expected_prefix = format!("branchbox-in-guest-{managed_project}-port-");
+        if proxy_names
+            .iter()
+            .any(|proxy| !proxy.starts_with(&expected_prefix))
+        {
+            return Err(Error::validation(
+                "In-guest provider state contains a proxy outside its managed project",
+            ));
+        }
+        for proxy in proxy_names {
+            if self.owned_port_proxy_exists(proxy, managed_project)? {
+                let _ = self.docker_output(&["rm", "-f", proxy]);
+            }
+        }
+        Ok(())
+    }
+
+    fn owned_port_proxy_exists(&self, proxy: &str, managed_project: &str) -> Result<bool> {
+        let inspected = self.docker_output(&[
+            "inspect",
+            "--format",
+            "{{index .Config.Labels \"io.branchbox.compose_project\"}}",
+            proxy,
+        ])?;
+        Ok(inspected.status.success()
+            && String::from_utf8_lossy(&inspected.stdout).trim() == managed_project)
+    }
+
     fn remove_tool_request_volumes(&self, spools: &[ToolRequestSpool]) {
         for spool in spools {
             let _ = self.bounded_docker_output(&["volume", "rm", &spool.volume_name]);
@@ -1488,19 +1941,36 @@ impl InGuestRuntimeProvider {
                 });
             }
         }
+        let managed_project = state
+            .managed_compose_project_name
+            .as_deref()
+            .ok_or_else(|| {
+                Error::validation("In-guest provider state has no managed Compose project")
+            })?;
         let mut workspace_containers = BTreeSet::new();
         let mut workspace_paths: BTreeSet<String> = state.workspace_paths.iter().cloned().collect();
         workspace_paths.extend(workspace_candidates(&state.worktree_path));
         for workspace in workspace_paths {
             let filter = format!("label=devcontainer.local_folder={workspace}");
-            workspace_containers.extend(output_lines(
-                &self
-                    .checked_docker(
-                        "devcontainer residue inspection",
-                        &["ps", "-a", "--filter", &filter, "--format", "{{.Names}}"],
-                    )?
-                    .stdout,
-            ));
+            let output = self.checked_docker(
+                "devcontainer residue inspection",
+                &[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &filter,
+                    "--format",
+                    "{{.Names}}\t{{.Label \"com.docker.compose.project\"}}",
+                ],
+            )?;
+            for line in output_lines(&output.stdout) {
+                let mut fields = line.splitn(2, '\t');
+                let name = fields.next().unwrap_or_default();
+                let project = fields.next().unwrap_or_default();
+                if !name.is_empty() && project == managed_project {
+                    workspace_containers.insert(name.to_string());
+                }
+            }
         }
         if !workspace_containers.is_empty() {
             residue.push(RuntimeResidue {
@@ -1508,15 +1978,12 @@ impl InGuestRuntimeProvider {
                 identifiers: workspace_containers.into_iter().collect(),
             });
         }
-        let proxies: Vec<_> = state
-            .proxy_names
-            .iter()
-            .filter(|name| {
-                self.docker_output(&["inspect", name])
-                    .is_ok_and(|output| output.status.success())
-            })
-            .cloned()
-            .collect();
+        let mut proxies = Vec::new();
+        for name in &state.proxy_names {
+            if self.owned_port_proxy_exists(name, managed_project)? {
+                proxies.push(name.clone());
+            }
+        }
         if !proxies.is_empty() {
             residue.push(RuntimeResidue {
                 kind: "port-proxy".to_string(),
@@ -2708,7 +3175,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
     }
 
     fn validate(&self) -> Result<()> {
-        self.checked_devcontainer("preflight", &["--version"], None)?;
+        self.checked_devcontainer("preflight", &["--version"], None, None)?;
         self.checked_docker("preflight", &["info"])?;
         let compose =
             self.checked_docker("Compose preflight", &["compose", "version", "--short"])?;
@@ -2726,56 +3193,93 @@ impl RuntimeProvider for InGuestRuntimeProvider {
     }
 
     fn environment_ready(&self, metadata: &RuntimeMetadata, worktree_path: &Path) -> Result<bool> {
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(worktree_path)?);
-        self.probe(worktree_path, &config)
+        let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
+        self.probe(worktree_path, &config, &compose_project_name)
     }
 
     fn prepare(&self, context: &RuntimeContext<'_>) -> Result<RuntimeMetadata> {
+        if !is_compose_project_name(context.runtime_name) {
+            return Err(Error::validation(
+                "Managed in-guest Compose project name must use Compose-safe characters",
+            ));
+        }
         let manifest_path = context.runtime_manifest_path.ok_or_else(|| {
             Error::validation(
                 "Runtime 'in-guest' requires --runtime-manifest with an orchestrator-owned assignment path",
             )
         })?;
         let assignment = load_assignment(manifest_path)?;
+        require_secure_in_guest_launch(&assignment)?;
+        if context.runtime_name
+            != managed_compose_project_name(
+                &assignment.manifest.run_id,
+                &assignment.manifest_path,
+                context.worktree_path,
+            )
+        {
+            return Err(Error::validation(
+                "Managed in-guest Compose project name does not match its signed run and worktree",
+            ));
+        }
         if assignment.manifest.published_ports != context.published_ports {
             return Err(Error::validation(
                 "In-guest published ports changed after assignment validation",
             ));
         }
-        let config_path = Self::config_path(context.worktree_path)?;
+        let config_path = if let Some(consumer) = assignment.manifest.workspace_consumer.as_ref() {
+            if assignment.manifest.service_images.is_empty() {
+                return Err(Error::validation(
+                    "Workspace-consumer Compose requires signed preloaded images for private CLI inputs",
+                ));
+            }
+            let stage = private_compose_stage_dir(
+                &assignment.manifest_path,
+                context.worktree_path,
+                consumer.uid,
+            )?;
+            validate_private_compose_stage_git_mount(&stage, &assignment.manifest.repository.path)?;
+            validate_private_compose_stage_mounts(
+                &stage,
+                &assignment.mounts,
+                &assignment.linked_tool_endpoints,
+            )?;
+            validate_private_regular_file(
+                &stage.join(".devcontainer.json"),
+                "staged devcontainer config",
+            )?
+        } else {
+            Self::config_path(context.worktree_path)?
+        };
         let (config, _) = DevcontainerConfig::load_from_path(&config_path).map_err(|err| {
             Error::validation(format!("Could not read in-guest runtime config: {err}"))
         })?;
         let workspace_folder = effective_workspace_folder(&config, context.worktree_path);
         let container_user = configured_container_user(&config);
-        let compose_projects = deterministic_compose_projects(
-            context.runtime_name,
-            context.worktree_path,
-            &config,
-            &config_path,
-        );
-        let workspace_paths = workspace_candidates(context.worktree_path)
+        let mut workspace_paths = workspace_candidates(context.worktree_path)
             .into_iter()
-            .collect();
+            .collect::<BTreeSet<_>>();
+        if assignment.manifest.workspace_consumer.is_some() {
+            workspace_paths.insert(
+                config_path
+                    .parent()
+                    .ok_or_else(|| Error::validation("Staged devcontainer config has no parent"))?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
         let state_path = assignment
             .manifest
             .repository
             .path
             .join(".branchbox/runtime/in-guest")
-            .join(format!(
-                "{}.json",
-                safe_identity(&assignment.manifest.run_id)?
-            ));
+            .join(format!("{}.json", context.runtime_name));
         let tool_request_ledger_path = (!assignment.tool_request_spools.is_empty())
             .then(|| state_path.with_extension("tool-request-ledger"));
         let state = ProviderState {
             version: PROVIDER_STATE_VERSION.to_string(),
             manifest_path: assignment.manifest_path.clone(),
             worktree_path: context.worktree_path.to_path_buf(),
-            workspace_paths,
+            workspace_paths: workspace_paths.into_iter().collect(),
             config_path: config_path.clone(),
             run_id: Some(assignment.manifest.run_id.clone()),
             outer_runtime_id: Some(assignment.manifest.outer_runtime_id.clone()),
@@ -2793,9 +3297,11 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             proxy_names: context
                 .published_ports
                 .iter()
-                .map(|port| Self::proxy_name(&assignment.manifest.run_id, port.runtime))
+                .map(|port| Self::proxy_name(context.runtime_name, port.runtime))
                 .collect(),
-            compose_projects: compose_projects.into_iter().collect(),
+            // Cleanup binds exclusively to the project name passed to the CLI.
+            // Repository `name:` and worktree basenames are never identities.
+            managed_compose_project_name: Some(context.runtime_name.to_string()),
             container_id: None,
         };
         Self::write_state(&state_path, &state)?;
@@ -2828,53 +3334,50 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         context: &RuntimeContext<'_>,
         metadata: &mut RuntimeMetadata,
     ) -> Result<()> {
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(context.worktree_path)?);
         let result = (|| {
+            let (compose_project_name, config) =
+                self.managed_cli_context(metadata, context.worktree_path)?;
             let identity = metadata.in_guest.as_ref().ok_or_else(|| {
                 Error::validation("In-guest runtime metadata is missing assignment identity")
             })?;
             let state = Self::read_state(&identity.state_path)?;
+            if compose_project_name != context.runtime_name {
+                return Err(Error::validation(
+                    "In-guest managed Compose project name changed after runtime preparation",
+                ));
+            }
             let assignment = load_assignment(&state.manifest_path)?;
+            require_secure_in_guest_launch(&assignment)?;
             self.verify_preloaded_images(
                 &assignment.manifest.service_images,
                 assignment.manifest.port_proxy_image.as_deref(),
             )?;
-            let container_id = self.start_devcontainer(context.worktree_path, &config)?;
+            let container_id =
+                self.start_devcontainer(context.worktree_path, &config, &compose_project_name)?;
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
-            self.record_partial_start_identity(metadata, context.worktree_path)?;
+            self.record_partial_start_identity(metadata)?;
             self.bind_tool_request_consumer_identity(&container_id, metadata)?;
             self.initialize_tool_request_spools(&container_id, metadata)?;
             self.verify_untrusted_boundary(&container_id, metadata)?;
-            if !self.probe(context.worktree_path, &config)? {
+            if !self.probe(context.worktree_path, &config, &compose_project_name)? {
                 return Err(Error::validation(
                     "In-guest devcontainer did not remain ready after startup. Repository primary commands and container-side lifecycle hooks must succeed without host SSH/1Password state; supply project configuration through an explicit project-environment materialization or fix the source devcontainer convention",
                 ));
             }
-            let run_id = metadata
-                .in_guest
-                .as_ref()
-                .map(|identity| identity.run_id.clone())
-                .ok_or_else(|| Error::validation("In-guest assignment identity is missing"))?;
             let mut proxies = Vec::new();
             for port in &metadata.published_ports {
                 proxies.push(self.reconcile_port_proxy(
-                    &run_id,
+                    &compose_project_name,
                     &container_id,
                     *port,
                     assignment.manifest.port_proxy_image.as_deref(),
                 )?);
             }
-            let projects = self.discover_compose_projects(context.worktree_path)?;
-            self.update_state_after_start(metadata, &container_id, proxies, projects)
+            self.update_state_after_start(metadata, &container_id, proxies)
         })();
         if result.is_err() {
-            if let Err(discovery_err) =
-                self.record_partial_start_identity(metadata, context.worktree_path)
-            {
+            if let Err(discovery_err) = self.record_partial_start_identity(metadata) {
                 tracing::warn!(
                     "Failed to persist partial in-guest startup identity: {}",
                     discovery_err
@@ -2893,25 +3396,23 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         if command.is_empty() {
             return Err(Error::validation("Runtime command cannot be empty"));
         }
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(worktree_path)?);
-        let container_id = self.start_devcontainer(worktree_path, &config)?;
+        let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
+        let container_id =
+            self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
         if let Some(identity) = metadata.in_guest.as_ref() {
             let state = Self::read_state(&identity.state_path)?;
             let assignment = load_assignment(&state.manifest_path)?;
             for port in &metadata.published_ports {
                 self.reconcile_port_proxy(
-                    &identity.run_id,
+                    &compose_project_name,
                     &container_id,
                     *port,
                     assignment.manifest.port_proxy_image.as_deref(),
                 )?;
             }
         }
-        let mut process = self.command(&self.devcontainer);
+        let mut process = self.devcontainer_command(Some(&compose_project_name))?;
         process.args([
             "exec",
             "--workspace-folder",
@@ -2940,13 +3441,11 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         if command.is_empty() {
             return Err(Error::validation("Runtime command cannot be empty"));
         }
-        let config = metadata
-            .config_path
-            .clone()
-            .unwrap_or(Self::config_path(worktree_path)?);
-        let container_id = self.start_devcontainer(worktree_path, &config)?;
+        let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
+        let container_id =
+            self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
-        let mut process = self.command(&self.devcontainer);
+        let mut process = self.devcontainer_command(Some(&compose_project_name))?;
         process.args([
             "exec",
             "--workspace-folder",
@@ -3011,8 +3510,32 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             }
             Err(err) => return Err(err),
         };
+        let private_stage = private_compose_stage_from_state(&state);
         let mut residue = self.remove_owned_docker_resources(&state)?;
         self.erase_materializations(&state, &mut residue);
+        if residue.is_empty() {
+            match private_stage {
+                Ok(Some(stage)) => {
+                    if let Err(err) = fs::remove_dir_all(&stage) {
+                        if err.kind() != std::io::ErrorKind::NotFound {
+                            tracing::warn!("Could not remove private Compose stage: {err}");
+                            residue.push(RuntimeResidue {
+                                kind: "compose-inputs".to_string(),
+                                identifiers: vec![stage.display().to_string()],
+                            });
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!("Could not validate private Compose stage for teardown: {err}");
+                    residue.push(RuntimeResidue {
+                        kind: "compose-inputs".to_string(),
+                        identifiers: vec![state.config_path.display().to_string()],
+                    });
+                }
+            }
+        }
         if residue.is_empty() {
             if let Err(err) = fs::remove_file(&identity.state_path) {
                 if err.kind() != std::io::ErrorKind::NotFound {
@@ -3280,6 +3803,7 @@ pub fn load_in_guest_facade_plan(
     )?;
     Ok(InGuestFacadePlan {
         manifest_path: assignment.manifest_path,
+        run_id: assignment.manifest.run_id,
         tunnel_placement: assignment.manifest.tunnel_placement,
         published_ports: assignment.manifest.published_ports,
         service_images: assignment.manifest.service_images,
@@ -5151,60 +5675,6 @@ fn compose_labels_belong_to_workspace(
             .any(|path| !path.is_empty() && belongs(path))
 }
 
-fn deterministic_compose_projects(
-    runtime_name: &str,
-    worktree_path: &Path,
-    config: &DevcontainerConfig,
-    config_path: &Path,
-) -> BTreeSet<String> {
-    let mut projects = BTreeSet::new();
-    if is_compose_project_name(runtime_name) {
-        projects.insert(runtime_name.to_string());
-    }
-    if let Some(basename) = worktree_path.file_name().and_then(|name| name.to_str()) {
-        if is_compose_project_name(basename) {
-            projects.insert(basename.to_string());
-            let devcontainer_project = format!("{basename}_devcontainer");
-            if is_compose_project_name(&devcontainer_project) {
-                projects.insert(devcontainer_project);
-            }
-        }
-    }
-
-    let devcontainer_dir = config_path.parent().unwrap_or(worktree_path);
-    let compose_references: Vec<String> = match config.docker_compose_file.as_ref() {
-        Some(reference) => reference.to_vec(),
-        None => [
-            "compose.yaml",
-            "compose.yml",
-            "docker-compose.yaml",
-            "docker-compose.yml",
-        ]
-        .iter()
-        .filter(|name| devcontainer_dir.join(name).is_file())
-        .map(|name| (*name).to_string())
-        .collect(),
-    };
-    let compose_files: Vec<PathBuf> = compose_references
-        .into_iter()
-        .map(|path| devcontainer_dir.join(path))
-        .collect();
-    for compose_file in compose_files {
-        let Ok(source) = fs::read_to_string(compose_file) else {
-            continue;
-        };
-        let Ok(document) = serde_yaml::from_str::<serde_yaml::Value>(&source) else {
-            continue;
-        };
-        if let Some(name) = document.get("name").and_then(serde_yaml::Value::as_str) {
-            if is_compose_project_name(name) {
-                projects.insert(name.to_string());
-            }
-        }
-    }
-    projects
-}
-
 fn output_lines(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -5287,6 +5757,164 @@ fn devcontainer_start_failure_code(stderr: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_child_environment_keeps_docker_context_without_broker_secrets() {
+        let mut command = Command::new("/usr/bin/env");
+        set_in_guest_child_environment(
+            &mut command,
+            [
+                (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                (
+                    OsString::from("HOME"),
+                    OsString::from("/tmp/branchbox-home"),
+                ),
+                (
+                    OsString::from("DOCKER_CONTEXT"),
+                    OsString::from("branchbox-inner"),
+                ),
+                (
+                    OsString::from("DOCKER_HOST"),
+                    OsString::from("unix:///run/branchbox/docker.sock"),
+                ),
+                (
+                    OsString::from("DOCKER_CONFIG"),
+                    OsString::from("/tmp/branchbox-docker-config"),
+                ),
+                (OsString::from("DOCKER_TLS_VERIFY"), OsString::from("1")),
+                (
+                    OsString::from("BRANCHBOX_BROKER_SECRET"),
+                    OsString::from("synthetic-private-value"),
+                ),
+                (
+                    OsString::from("COMPOSE_DISABLE_ENV_FILE"),
+                    OsString::from("0"),
+                ),
+                (
+                    OsString::from("COMPOSE_PROFILES"),
+                    OsString::from("repository-controlled"),
+                ),
+                (
+                    OsString::from("COMPOSE_PROJECT_NAME"),
+                    OsString::from("hostile-project"),
+                ),
+            ],
+        );
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        assert!(environment.contains("PATH=/usr/bin:/bin\n"));
+        assert!(environment.contains("HOME=/tmp/branchbox-home\n"));
+        assert!(environment.contains("DOCKER_CONTEXT=branchbox-inner\n"));
+        assert!(environment.contains("DOCKER_HOST=unix:///run/branchbox/docker.sock\n"));
+        assert!(environment.contains("DOCKER_CONFIG=/tmp/branchbox-docker-config\n"));
+        assert!(environment.contains("DOCKER_TLS_VERIFY=1\n"));
+        assert!(environment.contains("COMPOSE_DISABLE_ENV_FILE=1\n"));
+        assert!(!environment.contains("BRANCHBOX_BROKER_SECRET"));
+        assert!(!environment.contains("synthetic-private-value"));
+        assert!(!environment.contains("COMPOSE_PROFILES"));
+        assert!(!environment.contains("COMPOSE_PROJECT_NAME"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_devcontainer_command_binds_the_exact_project_name() {
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("/usr/bin/env"),
+            docker: PathBuf::from("docker"),
+            timeout: PathBuf::from("timeout"),
+        };
+        let output = provider
+            .devcontainer_command(Some("managed-project"))
+            .unwrap()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        assert!(environment.contains("COMPOSE_PROJECT_NAME=managed-project\n"));
+        assert!(environment.contains("COMPOSE_DISABLE_ENV_FILE=1\n"));
+        assert!(provider
+            .devcontainer_command(Some("invalid.project"))
+            .is_err());
+    }
+
+    #[test]
+    fn managed_compose_config_ignores_ambient_and_default_dotenv() {
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_none() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(".env"),
+            "HOST_SECRET=dot-env-secret\nCOMPOSE_PROJECT_NAME=hostile-project\n",
+        )
+        .unwrap();
+        let project_environment = root.path().join("signed-project.env");
+        fs::write(
+            &project_environment,
+            "PROJECT_LITERAL=${HOST_SECRET}\nPROJECT_SETTING=signed-value\n",
+        )
+        .unwrap();
+        let compose = root.path().join("compose.yaml");
+        fs::write(
+            &compose,
+            format!(
+                "services:\n  app:\n    image: alpine:3.19\n    environment: {{STATIC_SETTING: fixed, HOST_SECRET: null}}\n    env_file:\n      - path: {}\n        required: true\n        format: raw\n",
+                serde_json::to_string(&project_environment.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let mut command = Command::new("docker");
+        command
+            .args(["compose", "-f"])
+            .arg(&compose)
+            .args(["config", "--format", "json"])
+            .current_dir(root.path());
+        set_in_guest_child_environment(
+            &mut command,
+            [
+                (
+                    OsString::from("PATH"),
+                    std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin")),
+                ),
+                (
+                    OsString::from("HOME"),
+                    std::env::var_os("HOME").unwrap_or_else(|| OsString::from("/tmp")),
+                ),
+                (
+                    OsString::from("BRANCHBOX_BROKER_SECRET"),
+                    OsString::from("synthetic-private-value"),
+                ),
+                (
+                    OsString::from("HOST_SECRET"),
+                    OsString::from("synthetic-private-value"),
+                ),
+            ],
+        );
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "Compose rejected managed inputs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let environment = &effective["services"]["app"]["environment"];
+        assert_eq!(environment["STATIC_SETTING"], "fixed");
+        assert_eq!(environment["PROJECT_SETTING"], "signed-value");
+        // Compose config serializes a raw dollar as an escaped dollar.
+        assert_eq!(environment["PROJECT_LITERAL"], "$${HOST_SECRET}");
+        assert!(environment["HOST_SECRET"].is_null());
+        assert_ne!(effective["name"], "hostile-project");
+        assert!(!output
+            .stdout
+            .windows(23)
+            .any(|part| part == b"synthetic-private-value"));
+        assert!(!output
+            .stdout
+            .windows(14)
+            .any(|part| part == b"dot-env-secret"));
+    }
 
     #[cfg(unix)]
     fn private_write(path: &Path, content: &[u8]) {
@@ -5455,9 +6083,214 @@ mod tests {
         assert!(load_assignment(&manifest_path).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn managed_launch_rejects_legacy_or_unisolated_assignments() {
+        let (_root, manifest_path, _revision) = assignment_fixture(false);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        for version in ["1", "2"] {
+            manifest["version"] = serde_json::json!(version);
+            private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+            assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+                .unwrap_err()
+                .to_string()
+                .contains("signed version 3"));
+        }
+
+        manifest["version"] = serde_json::json!("3");
+        manifest["published_ports"] = serde_json::json!([]);
+        let runtime_uid = unsafe { libc::geteuid() };
+        let runtime_gid = unsafe { libc::getegid() };
+        let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
+        let consumer_gid = if runtime_gid == 1000 { 1001 } else { 1000 };
+        manifest["workspace_consumer"] = serde_json::json!({"uid":consumer_uid,"gid":consumer_gid});
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+            .unwrap_err()
+            .to_string()
+            .contains("preloaded images"));
+
+        manifest["service_images"] = serde_json::json!({
+            "app": format!("registry.example/app@sha256:{}", "a".repeat(64))
+        });
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        require_secure_in_guest_launch_assignment(&manifest_path).unwrap();
+
+        for (uid, gid) in [(runtime_uid, consumer_gid), (consumer_uid, runtime_gid)] {
+            manifest["workspace_consumer"] = serde_json::json!({"uid":uid,"gid":gid});
+            private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+            assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+                .unwrap_err()
+                .to_string()
+                .contains("distinct from the BranchBox runtime"));
+        }
+    }
+
+    #[test]
+    fn private_stage_cannot_overlap_a_signed_mount_source() {
+        let mut mounts = vec![InGuestMount {
+            lease_id: "signed_mount".to_string(),
+            source: PathBuf::from("/run/private/materializations/lease"),
+            target: MaterializationTarget::File(PathBuf::from("/run/branchbox/leases/lease")),
+            sha256: None,
+            source_kind: ManagedSourceKind::File,
+            scope: LeaseScope::ProviderCredential,
+            consumer: "coding-agent".to_string(),
+        }];
+        validate_private_compose_stage_mounts(
+            Path::new("/run/private/branchbox-compose-task"),
+            &mounts,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        for source in [
+            "/run/private",
+            "/run/private/branchbox-compose-task/config.json",
+        ] {
+            mounts[0].source = PathBuf::from(source);
+            assert!(validate_private_compose_stage_mounts(
+                Path::new("/run/private/branchbox-compose-task"),
+                &mounts,
+                &BTreeSet::new(),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("overlaps a signed container mount"));
+        }
+        // A project environment is read as a Compose env_file on the host,
+        // even if its path is inside the private stage.
+        mounts[0].scope = LeaseScope::ProjectEnvironment;
+        validate_private_compose_stage_mounts(
+            Path::new("/run/private/branchbox-compose-task"),
+            &mounts,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn managed_compose_project_name_is_bound_to_run_and_worktree() {
+        let mut plan = InGuestFacadePlan::empty_for_tests();
+        plan.run_id = "signed-run-one".to_string();
+        plan.manifest_path = PathBuf::from("/private/run-one/assignment.json");
+        let first = plan.managed_compose_project_name(Path::new("/workspace/first"));
+        assert!(is_compose_project_name(&first));
+        assert_eq!(
+            first,
+            plan.managed_compose_project_name(Path::new("/workspace/first"))
+        );
+        assert_ne!(
+            first,
+            plan.managed_compose_project_name(Path::new("/workspace/second"))
+        );
+        assert_ne!(
+            InGuestRuntimeProvider::proxy_name(&first, 3000),
+            InGuestRuntimeProvider::proxy_name(
+                &plan.managed_compose_project_name(Path::new("/workspace/second")),
+                3000,
+            )
+        );
+        plan.run_id = "signed-run-two".to_string();
+        assert_ne!(
+            first,
+            plan.managed_compose_project_name(Path::new("/workspace/first"))
+        );
+        plan.run_id = "run.a".to_string();
+        let punctuation_first = plan.managed_compose_project_name(Path::new("/workspace/first"));
+        plan.run_id = "run-a".to_string();
+        let punctuation_second = plan.managed_compose_project_name(Path::new("/workspace/first"));
+        assert_ne!(punctuation_first, punctuation_second);
+        assert_ne!(
+            InGuestRuntimeProvider::proxy_name(&punctuation_first, 3000),
+            InGuestRuntimeProvider::proxy_name(&punctuation_second, 3000)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_compose_stage_is_bound_to_signed_config_and_unshared_parent() {
+        let (workspace_root, source_manifest, _) = assignment_fixture(false);
+        let worktree = workspace_root.path().join("workspace/coding-demo");
+        fs::create_dir_all(&worktree).unwrap();
+        let run = tempfile::tempdir().unwrap();
+        fs::set_permissions(run.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime_uid = unsafe { libc::geteuid() };
+        let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(source_manifest).unwrap()).unwrap();
+        manifest["version"] = serde_json::json!("3");
+        manifest["workspace_consumer"] =
+            serde_json::json!({"uid": consumer_uid, "gid": consumer_uid});
+        manifest["service_images"] = serde_json::json!({
+            "app": format!("app@sha256:{}", "a".repeat(64))
+        });
+        manifest["published_ports"] = serde_json::json!([]);
+        let manifest_path = run.path().join("assignment.json");
+        private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
+        let stage = private_compose_stage_dir(&manifest_path, &worktree, consumer_uid).unwrap();
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path,
+            worktree_path: worktree,
+            workspace_paths: Vec::new(),
+            config_path: stage.join(".devcontainer.json"),
+            run_id: None,
+            outer_runtime_id: None,
+            materializations: Vec::new(),
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: None,
+            proxy_names: Vec::new(),
+            managed_compose_project_name: None,
+            container_id: None,
+        };
+        assert_eq!(
+            private_compose_stage_from_state(&state).unwrap(),
+            Some(stage)
+        );
+        let mut altered = state.clone();
+        altered.config_path = run.path().join("attacker.json");
+        assert!(private_compose_stage_from_state(&altered).is_err());
+
+        let shared_parent = tempfile::tempdir().unwrap();
+        fs::set_permissions(shared_parent.path(), fs::Permissions::from_mode(0o770)).unwrap();
+        let unsafe_run = shared_parent.path().join("run");
+        fs::create_dir(&unsafe_run).unwrap();
+        fs::set_permissions(&unsafe_run, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = private_compose_stage_dir(
+            &unsafe_run.join("assignment.json"),
+            &state.worktree_path,
+            consumer_uid,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("writable or replaceable"));
+
+        let locked_parent = tempfile::tempdir().unwrap();
+        fs::set_permissions(locked_parent.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        // Current mode does not make a consumer-owned ancestor safe: its owner
+        // can chmod it writable later and replace the run directory.
+        let error = validate_private_compose_stage_ancestor(
+            locked_parent.path(),
+            if runtime_uid == 1000 { 1001 } else { 1000 },
+            runtime_uid,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("writable or replaceable"));
+        if runtime_uid != 0 {
+            let error = validate_private_compose_stage_ancestor(
+                locked_parent.path(),
+                runtime_uid.wrapping_add(1),
+                runtime_uid.wrapping_add(2),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("writable or replaceable"));
+        }
+        fs::set_permissions(locked_parent.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
-    fn workspace_consumer_receives_group_scoped_write_access_without_world_write() {
+    fn workspace_consumer_inherits_group_access_without_world_access() {
         let effective_uid = unsafe { libc::geteuid() };
         let effective_gid = unsafe { libc::getegid() };
         if effective_uid == 0 || effective_gid == 0 {
@@ -5480,10 +6313,12 @@ mod tests {
         let worktree = root.path().join("worktree");
         let common_git = root.path().join("git");
         fs::create_dir_all(worktree.join("nested")).unwrap();
+        fs::create_dir(worktree.join("private")).unwrap();
         fs::create_dir_all(common_git.join("objects")).unwrap();
         fs::write(worktree.join("nested/source.rb"), b"source").unwrap();
         fs::write(common_git.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
         let nested = worktree.join("nested");
+        let private = worktree.join("private");
         let objects = common_git.join("objects");
         for path in [
             worktree.as_path(),
@@ -5498,6 +6333,7 @@ mod tests {
             fs::Permissions::from_mode(0o644),
         )
         .unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
 
         grant_workspace_consumer_access(
             &worktree,
@@ -5515,25 +6351,38 @@ mod tests {
         assert_eq!(directory.mode() & 0o2070, 0o2070);
         assert_eq!(directory.mode() & 0o007, 0o005);
         assert_eq!(directory.mode() & 0o002, 0);
+        let private_directory = fs::metadata(&private).unwrap();
+        assert_eq!(private_directory.mode() & 0o007, 0);
         assert_eq!(source.gid(), consumer_gid);
         assert_eq!(source.mode() & 0o070, 0o060);
         assert_eq!(source.mode() & 0o007, 0o004);
         assert_eq!(source.mode() & 0o002, 0);
 
-        // A consumer creates new paths with its own umask, so without an inherited default ACL
-        // the runtime could no longer reclaim its own worktree at teardown.
-        let inherited_file = worktree.join("nested/created_after_delegation.rb");
-        fs::write(&inherited_file, b"created by the consumer").unwrap();
-        let inherited_file = fs::metadata(&inherited_file).unwrap();
-        assert_eq!(inherited_file.gid(), consumer_gid);
-        assert_eq!(inherited_file.mode() & 0o060, 0o060);
-        assert_eq!(inherited_file.mode() & 0o002, 0);
-        let inherited_directory = worktree.join("nested/created_after_delegation");
-        fs::create_dir(&inherited_directory).unwrap();
-        let inherited_directory = fs::metadata(&inherited_directory).unwrap();
-        assert_eq!(inherited_directory.gid(), consumer_gid);
-        assert_eq!(inherited_directory.mode() & 0o070, 0o070);
-        assert_eq!(inherited_directory.mode() & 0o002, 0);
+        // A consumer's umask cannot prevent inheritance from a POSIX default ACL. Check both a
+        // private and a world-traversable parent: newly created descendants must retain the
+        // runtime's delegated group access without inheriting the parent's world access.
+        for parent in [&private, &nested] {
+            let status = Command::new("sh")
+                .args([
+                    "-c",
+                    "umask 077; : > \"$1/created-file\"; mkdir \"$1/created-dir\"; : > \"$1/created-dir/grandchild\"",
+                    "sh",
+                ])
+                .arg(parent)
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let inherited_file = fs::metadata(parent.join("created-file")).unwrap();
+            assert_eq!(inherited_file.gid(), consumer_gid);
+            assert_eq!(inherited_file.mode() & 0o777, 0o660);
+            let inherited_directory = fs::metadata(parent.join("created-dir")).unwrap();
+            assert_eq!(inherited_directory.gid(), consumer_gid);
+            assert_eq!(inherited_directory.mode() & 0o777, 0o770);
+            let grandchild = fs::metadata(parent.join("created-dir/grandchild")).unwrap();
+            assert_eq!(grandchild.gid(), consumer_gid);
+            assert_eq!(grandchild.mode() & 0o777, 0o660);
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -6140,6 +6989,7 @@ mod tests {
         let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
+            run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
@@ -6197,6 +7047,7 @@ mod tests {
         let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
+            run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
@@ -6524,7 +7375,7 @@ mod tests {
             tool_request_spools: assignment.tool_request_spools.clone(),
             tool_request_ledger_path: Some(root.path().join("ledger")),
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: Some("container_123".to_string()),
         };
         let state_bytes = serde_json::to_vec(&state).unwrap();
@@ -6598,7 +7449,7 @@ mod tests {
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: Some(ledger),
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let provider = InGuestRuntimeProvider {
@@ -6736,7 +7587,7 @@ mod tests {
             tool_request_spools: assignment.tool_request_spools,
             tool_request_ledger_path: Some(ledger.clone()),
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let volume_name = state.tool_request_spools[0].volume_name.clone();
@@ -7572,6 +8423,7 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
             format!(
                 r#"#!/bin/sh
 if test "$1" = inspect; then
+  test "$2" = -f || exit 1
   case "$3" in
     *NetworkID*) printf '%s\n' network_123 ;;
     *Name*) printf '%s\n' /primary ;;
@@ -7602,20 +8454,130 @@ printf '%s\n' "$*" > '{}'
         let image = format!("registry.example/runtime/proxy@sha256:{}", "f".repeat(64));
 
         provider
-            .reconcile_port_proxy("run_123", "container_123", port, Some(&image))
+            .reconcile_port_proxy("branchbox-123abc", "container_123", port, Some(&image))
             .unwrap();
         let managed = fs::read_to_string(&invocation).unwrap();
         assert!(managed.starts_with("run -d --pull=never --name "));
         assert!(managed.contains("--network network_123"));
+        assert!(managed.contains("--name branchbox-in-guest-branchbox-123abc-port-3000"));
+        assert!(managed.contains("--label io.branchbox.compose_project=branchbox-123abc"));
         assert!(managed.contains(&format!(" {image} -dd ")));
 
         provider
-            .reconcile_port_proxy("run_123", "container_123", port, None)
+            .reconcile_port_proxy("branchbox-123abc", "container_123", port, None)
             .unwrap();
         let legacy = fs::read_to_string(invocation).unwrap();
         assert!(legacy.starts_with("run -d --name "));
         assert!(!legacy.contains("--pull=never"));
         assert!(legacy.contains(&format!(" {LEGACY_PORT_PROXY_IMAGE} -dd ")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_port_proxy_never_replaces_a_different_project() {
+        let root = tempfile::tempdir().unwrap();
+        let docker = root.path().join("docker");
+        let owner = root.path().join("existing-owner");
+        let invocations = root.path().join("mutations");
+        fs::write(&owner, "branchbox-other\n").unwrap();
+        fs::write(
+            &docker,
+            format!(
+                r#"#!/bin/sh
+if test "$1" = inspect; then
+  if test "$2" != -f && test "$2" != --format; then exit 0; fi
+  case "$3" in
+    *NetworkID*) printf '%s\n' network_123 ;;
+    *Name*) printf '%s\n' /primary ;;
+    *compose_project*) cat '{}' ;;
+  esac
+  exit 0
+fi
+if test "$1" = ps; then
+  case "$*" in
+    *devcontainer.local_folder*) printf 'foreign-container\tbranchbox-other\n' ;;
+  esac
+fi
+if test "$1" = rm || test "$1" = run; then
+  printf '%s\n' "$*" >> '{}'
+fi
+"#,
+                owner.display(),
+                invocations.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&docker, permissions).unwrap();
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker,
+            timeout: PathBuf::from("timeout"),
+        };
+        let project = "branchbox-owned";
+        let proxy = InGuestRuntimeProvider::proxy_name(project, 3000);
+        let port = RuntimePort {
+            host: 43000,
+            runtime: 3000,
+        };
+        let image = format!("registry.example/runtime/proxy@sha256:{}", "f".repeat(64));
+        assert!(provider
+            .reconcile_port_proxy(project, "container_123", port, Some(&image))
+            .unwrap_err()
+            .to_string()
+            .contains("different managed project"));
+        provider
+            .remove_owned_port_proxies(std::slice::from_ref(&proxy), project)
+            .unwrap();
+        assert!(
+            !invocations.exists(),
+            "foreign proxy was replaced or removed"
+        );
+        assert!(provider
+            .remove_owned_port_proxies(
+                &["branchbox-in-guest-foreign-port-3000".to_string()],
+                project
+            )
+            .is_err());
+        assert!(!invocations.exists(), "foreign proxy was removed");
+        let state = ProviderState {
+            version: PROVIDER_STATE_VERSION.to_string(),
+            manifest_path: root.path().join("assignment.json"),
+            worktree_path: root.path().join("worktree"),
+            workspace_paths: Vec::new(),
+            config_path: root.path().join("devcontainer.json"),
+            run_id: Some("run_123".to_string()),
+            outer_runtime_id: Some("runtime_123".to_string()),
+            materializations: Vec::new(),
+            tool_request_spools: Vec::new(),
+            tool_request_ledger_path: None,
+            proxy_names: vec![proxy.clone()],
+            managed_compose_project_name: Some(project.to_string()),
+            container_id: None,
+        };
+        assert!(provider
+            .inspect_residue(&state, &BTreeSet::new())
+            .unwrap()
+            .is_empty());
+        assert!(
+            !invocations.exists(),
+            "foreign proxy was touched by rollback"
+        );
+
+        fs::write(&owner, format!("{project}\n")).unwrap();
+        let residue = provider.inspect_residue(&state, &BTreeSet::new()).unwrap();
+        assert_eq!(residue.len(), 1);
+        assert_eq!(residue[0].kind, "port-proxy");
+        provider
+            .reconcile_port_proxy(project, "container_123", port, Some(&image))
+            .unwrap();
+        provider
+            .remove_owned_port_proxies(&[proxy], project)
+            .unwrap();
+        let mutations = fs::read_to_string(invocations).unwrap();
+        assert!(mutations.contains("rm -f branchbox-in-guest-branchbox-owned-port-3000"));
+        assert!(mutations.contains("run -d --pull=never"));
     }
 
     #[cfg(unix)]
@@ -7655,6 +8617,7 @@ printf '%s\n' "$*" > '{}'
 
         let plan = InGuestFacadePlan {
             manifest_path: manifest,
+            run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
@@ -7798,7 +8761,7 @@ printf '%s\n' "$*" > '{}'
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let provider = InGuestRuntimeProvider {
@@ -7840,7 +8803,7 @@ printf '%s\n' "$*" > '{}'
             tool_request_spools: Vec::new(),
             tool_request_ledger_path: None,
             proxy_names: Vec::new(),
-            compose_projects: Vec::new(),
+            managed_compose_project_name: None,
             container_id: None,
         };
         let provider = InGuestRuntimeProvider {
