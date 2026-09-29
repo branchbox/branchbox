@@ -257,6 +257,48 @@ jobs:
           BRANCHBOX_VERIFY_COMPOSE_CONFIG: 1
         run: cargo test -p worktree-core test_in_guest_workspace_consumer_uses_private_cli_inputs --all-features --locked
 
+  signed_v3_compose_live:
+    name: Signed v3 Compose live lifecycle
+    runs-on: ubuntu-24.04
+    needs: agentify_runtime_artifact
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify exact source checkout
+        run: test "$(git rev-parse HEAD)" = "${SOURCE_COMMIT}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pinned Dev Containers CLI
+        run: npm install --global @devcontainers/cli@0.80.3
+      - name: Preload assigned image and verify Docker Compose
+        run: |
+          docker compose version
+          docker pull node:24-slim
+      - uses: actions/download-artifact@v4
+        with:
+          name: branchbox-agentify-runtime-${{ env.SOURCE_COMMIT }}
+          path: dist/signed-v3-live
+      - name: Verify and unpack exact-head runtime
+        run: |
+          cd dist/signed-v3-live
+          sha256sum --check "branchbox-agentify-runtime-${SOURCE_COMMIT}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+          tar -xzf "branchbox-agentify-runtime-${SOURCE_COMMIT}-x86_64-unknown-linux-gnu.tar.gz"
+          test "$(jq -r .source_commit branchbox.manifest.json)" = "${SOURCE_COMMIT}"
+          test "$(sha256sum branchbox | cut -d' ' -f1)" = "$(jq -r .binary.sha256 branchbox.manifest.json)"
+      - name: Start and tear down signed v3 devcontainer under distinct UID
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            "BBX_BINARY=$PWD/dist/signed-v3-live/branchbox" \
+            "BRANCHBOX_DEVCONTAINER_PATH=$(command -v devcontainer)" \
+            "BRANCHBOX_DOCKER_PATH=$(command -v docker)" \
+            setpriv --groups 1000 --reuid 0 --regid 0 \
+            bash scripts/ci/signed-v3-compose-live.sh
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest
