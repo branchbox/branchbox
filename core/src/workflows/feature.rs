@@ -9844,22 +9844,60 @@ volumes:
         let private_run = tempfile::tempdir().unwrap();
         fs::set_permissions(private_run.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let manifest = private_run.path().join("assignment.json");
-        fs::write(&manifest, "{}").unwrap();
-        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).unwrap();
         let runtime_uid = unsafe { libc::geteuid() };
         let consumer_uid = if runtime_uid == 1000 { 1001 } else { 1000 };
-        let plan = InGuestFacadePlan::empty_for_tests()
-            .with_service_images_for_tests(BTreeMap::from([(
-                "app".to_string(),
-                format!("app@sha256:{}", "a".repeat(64)),
-            )]))
-            .with_private_compose_stage_for_tests(manifest, consumer_uid);
+        let revision = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let revision = revision.trim();
+        let assigned_image = format!("app@sha256:{}", "a".repeat(64));
+        let assignment = serde_json::json!({
+            "version": "3",
+            "run_id": "run_private_compose",
+            "lease_id": "assignment_private_compose",
+            "outer_runtime_id": "outer_private_compose",
+            "workspace": repo_path,
+            "repository": {"path": repo_path, "revision": revision},
+            "task_branch": "feature/coding-demo",
+            "tunnel_placement": "outer",
+            "published_ports": [],
+            "service_images": {"app": assigned_image.clone()},
+            "workspace_consumer": {"uid": consumer_uid, "gid": consumer_uid},
+            "leases": [{
+                "lease_id": "outer_tunnel",
+                "scope": "platform-tunnel",
+                "consumer": "outer-connector",
+                "materializations": []
+            }]
+        });
+        fs::write(&manifest, serde_json::to_vec(&assignment).unwrap()).unwrap();
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).unwrap();
+        let plan = runtime::load_in_guest_facade_plan(
+            &manifest,
+            repo_path,
+            repo_path,
+            &worktree_path,
+            "feature/coding-demo",
+            revision,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.workspace_consumer(),
+            Some((consumer_uid, consumer_uid))
+        );
 
         prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
         let stage = plan
             .private_compose_stage_dir(&worktree_path)
             .unwrap()
             .unwrap();
+        assert!(!stage.starts_with(&worktree_path));
         assert_eq!(
             fs::metadata(&stage).unwrap().permissions().mode() & 0o777,
             0o700
@@ -9900,7 +9938,42 @@ volumes:
         symlink(attacker_dir.path(), &devcontainer_dir).unwrap();
         assert!(!attacker_dir.path().join(SBX_DEVCONTAINER_CONFIG).exists());
 
-        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+        let verify_devcontainer = std::env::var_os("BRANCHBOX_VERIFY_DEVCONTAINER_CLI").is_some();
+        let verify_compose = std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some();
+        let keep_mutating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mutator = (verify_devcontainer || verify_compose).then(|| {
+            let keep_mutating = std::sync::Arc::clone(&keep_mutating);
+            let original = held_source.join("compose.yaml");
+            let redirected = attacker_dir.path().join("compose.yaml");
+            let (ready, started) = std::sync::mpsc::channel();
+            let handle = thread::spawn(move || {
+                let mut first_write = true;
+                while keep_mutating.load(std::sync::atomic::Ordering::Relaxed) {
+                    let hostile = "services:\n  app:\n    volumes: ['/etc:/host']\n    environment: {HOST_AUTH: '${HOST_AUTH:?unsafe}'}\n";
+                    fs::write(&original, hostile).unwrap();
+                    fs::write(&redirected, hostile).unwrap();
+                    if first_write {
+                        ready.send(()).unwrap();
+                        first_write = false;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            started.recv_timeout(Duration::from_secs(5)).unwrap();
+            handle
+        });
+        let devcontainer_output = verify_devcontainer.then(|| {
+            Command::new("devcontainer")
+                .args(["read-configuration", "--workspace-folder"])
+                .arg(&worktree_path)
+                .arg("--config")
+                .arg(stage.join(SBX_DEVCONTAINER_CONFIG))
+                .env_remove("REPO_IMAGE")
+                .env_remove("TUNNEL_TOKEN")
+                .env_remove("HOST_LABEL_FILE")
+                .output()
+        });
+        let compose_output = verify_compose.then(|| {
             let mut command = Command::new("docker");
             command.arg("compose");
             for reference in references {
@@ -9908,13 +9981,36 @@ volumes:
                     .arg("-f")
                     .arg(stage.join(reference.as_str().unwrap()));
             }
-            let output = command
+            command
                 .args(["config", "--format", "json"])
                 .env_remove("REPO_IMAGE")
                 .env_remove("TUNNEL_TOKEN")
                 .env_remove("HOST_LABEL_FILE")
                 .output()
-                .unwrap();
+        });
+        keep_mutating.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(mutator) = mutator {
+            mutator.join().unwrap();
+        }
+
+        if let Some(output) = devcontainer_output {
+            let output = output.unwrap();
+            assert!(
+                output.status.success(),
+                "Dev Containers rejected private inputs: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let inspected: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let configuration = &inspected["configuration"];
+            assert_eq!(configuration["service"].as_str(), Some("app"));
+            assert_eq!(
+                configuration["dockerComposeFile"],
+                generated["dockerComposeFile"]
+            );
+        }
+
+        if let Some(output) = compose_output {
+            let output = output.unwrap();
             assert!(
                 output.status.success(),
                 "Compose rejected private inputs: {}",
@@ -9922,6 +10018,8 @@ volumes:
             );
             let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert!(effective["services"]["app"].get("build").is_none());
+            assert_eq!(effective["services"]["app"]["image"], assigned_image);
+            assert!(effective["services"]["app"].get("ports").is_none());
             let volumes = effective["services"]["app"]["volumes"].as_array().unwrap();
             assert_eq!(volumes.len(), 2, "only signed primary binds may survive");
             assert_eq!(
@@ -9934,6 +10032,10 @@ volumes:
             );
             assert!(effective["services"]["app"].get("secrets").is_none());
             assert!(effective["services"]["proxy"].get("command").is_none());
+            let rendered = effective.to_string();
+            assert!(!rendered.contains("HOST_AUTH"));
+            assert!(!rendered.contains("TUNNEL_TOKEN"));
+            assert!(!rendered.contains("/etc:/host"));
         }
 
         let no_images = InGuestFacadePlan::empty_for_tests().with_private_compose_stage_for_tests(
