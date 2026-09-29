@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -352,15 +354,18 @@ fn create_fake_in_guest_runtime() -> FakeInGuestRuntime {
         &devcontainer,
         r#"#!/bin/sh
 set -eu
+fixture_dir=$(dirname "$0")
+workspace=$(cat "$fixture_dir/workspace")
 case "${1:-}" in
   --version) printf '%s\n' '0.80.0' ;;
   read-configuration)
     printf '%s\n' '{"configuration":{"privileged":false}}'
     ;;
   up)
-    override="$FAKE_IN_GUEST_WORKSPACE/.devcontainer/.branchbox-sbx-compose.yaml"
-    config="$FAKE_IN_GUEST_WORKSPACE/.devcontainer/.devcontainer.json"
-    if ! grep -q 'format: raw' "$override" || ! grep -Fq "$FAKE_IN_GUEST_PROJECT_ENVIRONMENT" "$override" || grep -q 'password with spaces' "$override"; then
+    override="$workspace/.devcontainer/.branchbox-sbx-compose.yaml"
+    config="$workspace/.devcontainer/.devcontainer.json"
+    project_environment=$(cat "$fixture_dir/project-environment")
+    if ! grep -q 'format: raw' "$override" || ! grep -Fq "$project_environment" "$override" || grep -q 'password with spaces' "$override"; then
       printf '%s\n' 'project-environment env-file facade was not isolated correctly' >&2
       exit 41
     fi
@@ -372,10 +377,10 @@ case "${1:-}" in
       printf '%s\n' 'repository port publication was not removed' >&2
       exit 44
     fi
-    touch "$FAKE_IN_GUEST_RESOURCES/partial-main"
-    touch "$FAKE_IN_GUEST_RESOURCES/partial-db"
-    touch "$FAKE_IN_GUEST_RESOURCES/partial-network"
-    touch "$FAKE_IN_GUEST_RESOURCES/partial-volume"
+    touch "$fixture_dir/resources/partial-main"
+    touch "$fixture_dir/resources/partial-db"
+    touch "$fixture_dir/resources/partial-network"
+    touch "$fixture_dir/resources/partial-volume"
     printf '%s\n' 'postCreateCommand failed after Compose dependencies started' >&2
     exit 42
     ;;
@@ -388,9 +393,10 @@ esac
         &docker,
         r#"#!/bin/sh
 set -eu
-printf '%s\n' "$*" >> "$FAKE_IN_GUEST_DOCKER_LOG"
-resources="$FAKE_IN_GUEST_RESOURCES"
-workspace="$FAKE_IN_GUEST_WORKSPACE"
+fixture_dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$fixture_dir/docker.log"
+resources="$fixture_dir/resources"
+workspace=$(cat "$fixture_dir/workspace")
 project=agentify_runtime_generated
 
 case "${1:-}" in
@@ -455,13 +461,33 @@ esac
 }
 
 #[cfg(unix)]
+fn configure_fake_in_guest_runtime(
+    fake: &FakeInGuestRuntime,
+    workspace: &Path,
+    project_environment: Option<&Path>,
+) {
+    let fixture_dir = fake.docker.parent().expect("fake runtime directory");
+    fs::write(
+        fixture_dir.join("workspace"),
+        workspace.as_os_str().as_bytes(),
+    )
+    .expect("write fake workspace path");
+    if let Some(project_environment) = project_environment {
+        fs::write(
+            fixture_dir.join("project-environment"),
+            project_environment.as_os_str().as_bytes(),
+        )
+        .expect("write fake project-environment path");
+    }
+}
+
+#[cfg(unix)]
 struct ToolDispatchCliFixture {
     _assignment: TempDir,
     _fake_runtime: TempDir,
     devcontainer: PathBuf,
     docker: PathBuf,
     timeout: PathBuf,
-    inspection: PathBuf,
     spool: PathBuf,
     endpoint: PathBuf,
     ledger: PathBuf,
@@ -631,10 +657,11 @@ fn create_tool_dispatch_cli_fixture(
         &docker,
         r#"#!/bin/sh
 set -eu
-printf '%s\n' "$*" >>"$FAKE_TOOL_DOCKER_LOG"
+fixture_dir=$(dirname "$0")
+printf '%s\n' "$*" >>"$fixture_dir/docker.log"
 case "${1:-}" in
   inspect)
-    cat "$FAKE_TOOL_INSPECTION"
+    cat "$fixture_dir/inspection.json"
     ;;
   exec)
     if test "${5:-}" = "id" && test "${6:-}" = "-u"; then
@@ -655,7 +682,7 @@ case "${1:-}" in
       esac
       shift
     done
-    root="$FAKE_TOOL_SPOOL"
+    root="$fixture_dir/spool"
     case "${operation:-}" in
       branchbox-read-tool-request)
         request_id="${3:-}"
@@ -674,8 +701,8 @@ case "${1:-}" in
         final="$root/responses/$request_id.json"
         trap 'rm -f "$temporary"' EXIT HUP INT TERM
         cat >"$temporary"
-        if test -e "$FAKE_TOOL_RESPONSE_FAULT"; then
-          rm -f "$FAKE_TOOL_RESPONSE_FAULT"
+        if test -e "$fixture_dir/fail-response-write-once"; then
+          rm -f "$fixture_dir/fail-response-write-once"
           exit 76
         fi
         if test -e "$final"; then
@@ -791,7 +818,6 @@ esac
         devcontainer,
         docker,
         timeout,
-        inspection,
         spool,
         endpoint,
         ledger,
@@ -845,10 +871,6 @@ fn tool_dispatch_command(
         .env("BRANCHBOX_DEVCONTAINER_PATH", &fixture.devcontainer)
         .env("BRANCHBOX_DOCKER_PATH", &fixture.docker)
         .env("BRANCHBOX_TIMEOUT_PATH", &fixture.timeout)
-        .env("FAKE_TOOL_INSPECTION", &fixture.inspection)
-        .env("FAKE_TOOL_SPOOL", &fixture.spool)
-        .env("FAKE_TOOL_DOCKER_LOG", &fixture.docker_log)
-        .env("FAKE_TOOL_RESPONSE_FAULT", &fixture.response_fault)
         .args([
             "feature",
             "dispatch-tool",
@@ -1534,15 +1556,20 @@ fn in_guest_partial_start_failure_removes_compose_residue_worktree_and_branch() 
     let work_feature = "in-guest-partial-start";
     let manifest = write_in_guest_manifest(assignment.path(), &test_repo, work_feature, &revision);
     let worktree = test_repo.worktree_parent().join(work_feature);
+    configure_fake_in_guest_runtime(
+        &fake,
+        &worktree,
+        Some(
+            &assignment
+                .path()
+                .join("materializations/project-environment.env"),
+        ),
+    );
 
     branchbox_cmd!(
         test_repo.path(),
         "BRANCHBOX_DEVCONTAINER_PATH" => &fake.devcontainer,
         "BRANCHBOX_DOCKER_PATH" => &fake.docker,
-        "FAKE_IN_GUEST_RESOURCES" => &fake.resources,
-        "FAKE_IN_GUEST_DOCKER_LOG" => &fake.log,
-        "FAKE_IN_GUEST_WORKSPACE" => &worktree,
-        "FAKE_IN_GUEST_PROJECT_ENVIRONMENT" => assignment.path().join("materializations/project-environment.env"),
     )
     .args([
         "feature",
@@ -1607,6 +1634,7 @@ fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
         .status()
         .unwrap();
     assert!(status.success());
+    configure_fake_in_guest_runtime(&fake, &worktree, None);
     for resource in [
         "partial-main",
         "partial-db",
@@ -1640,9 +1668,6 @@ fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
         test_repo.path(),
         "BRANCHBOX_DEVCONTAINER_PATH" => &fake.devcontainer,
         "BRANCHBOX_DOCKER_PATH" => &fake.docker,
-        "FAKE_IN_GUEST_RESOURCES" => &fake.resources,
-        "FAKE_IN_GUEST_DOCKER_LOG" => &fake.log,
-        "FAKE_IN_GUEST_WORKSPACE" => &worktree,
     )
     .args([
         "feature",

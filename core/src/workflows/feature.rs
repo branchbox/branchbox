@@ -4472,12 +4472,14 @@ fn sanitize_in_guest_compose_source(
             if let Some(environment) = service.get("environment") {
                 reject_in_guest_compose_environment_passthrough(environment)?;
             }
-            if let Some(args) = service
-                .get("build")
-                .map(untag_in_guest_compose_value)
-                .and_then(|build| build.get("args"))
-            {
-                reject_in_guest_compose_build_arg_passthrough(args)?;
+            if !sanitization.service_images.contains_key(name_string) {
+                if let Some(args) = service
+                    .get("build")
+                    .map(untag_in_guest_compose_value)
+                    .and_then(|build| build.get("args"))
+                {
+                    reject_in_guest_compose_build_arg_passthrough(args)?;
+                }
             }
             if let Some(dependencies) =
                 service.get_mut(serde_yaml::Value::String("depends_on".to_string()))
@@ -10306,7 +10308,7 @@ volumes:
             r#"services:
   app:
     image: "${REPO_IMAGE:?signed-image-replaces-this}"
-    build: {context: "${REPO_BUILD_CONTEXT:?signed-image-replaces-this}", dockerfile: "${REPO_DOCKERFILE:?signed-image-replaces-this}"}
+    build: {context: "${REPO_BUILD_CONTEXT:?signed-image-replaces-this}", dockerfile: "${REPO_DOCKERFILE:?signed-image-replaces-this}", args: [HOST_SECRET]}
     pull_policy: "${REPO_PULL_POLICY:?signed-image-replaces-this}"
     environment: {HOST_AUTH: "${HOST_AUTH:?signed-environment-replaces-this}"}
     depends_on: [database]
@@ -10331,6 +10333,7 @@ volumes:
         let sanitized =
             fs::read_to_string(devcontainer_dir.join(references[0].as_str().unwrap())).unwrap();
         assert!(!sanitized.contains("${"), "{sanitized}");
+        assert!(!sanitized.contains("HOST_SECRET"), "{sanitized}");
         let document: serde_yaml::Value = serde_yaml::from_str(&sanitized).unwrap();
         for name in ["app", "database"] {
             for key in ["image", "build", "pull_policy"] {
