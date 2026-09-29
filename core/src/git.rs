@@ -753,7 +753,7 @@ mod tests {
         let error = require_private_common_git_metadata(&repo_path).unwrap_err();
         assert!(error.to_string().contains("consumer-writable paths"));
 
-        let linked = repo_path.parent().unwrap().join("linked");
+        let linked = repo_path.join("linked");
         fs::set_permissions(&attributes, fs::Permissions::from_mode(0o644)).unwrap();
         let git = GitWorktree::new(&repo_path).unwrap();
         git.create(&linked, "feature/linked", Some("main")).unwrap();
