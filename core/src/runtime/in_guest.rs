@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
@@ -226,6 +227,35 @@ trap - EXIT HUP INT TERM
 test "$(stat -c '%u:%a' "$final")" = "$uid:400""#;
 const PROVIDER_STATE_VERSION: &str = "1";
 const LEGACY_REDACTED_ENVIRONMENT: [&str; 1] = [LEGACY_PROVIDER_ENVIRONMENT];
+const IN_GUEST_CHILD_ENVIRONMENT: &[&str] = &[
+    "PATH",
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS",
+    "DOCKER_TLS_VERIFY",
+];
+
+fn set_in_guest_child_environment(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+) {
+    command.env_clear();
+    for (name, value) in inherited {
+        if name
+            .to_str()
+            .is_some_and(|name| IN_GUEST_CHILD_ENVIRONMENT.contains(&name))
+        {
+            command.env(name, value);
+        }
+    }
+    // Compose otherwise reads a repository .env from the working/project
+    // directory, even when no variables are inherited from this process.
+    command.env("COMPOSE_DISABLE_ENV_FILE", "1");
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1041,9 +1071,7 @@ impl InGuestRuntimeProvider {
 
     fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
-        for name in LEGACY_REDACTED_ENVIRONMENT {
-            command.env_remove(name);
-        }
+        set_in_guest_child_environment(&mut command, std::env::vars_os());
         command
     }
 
@@ -5540,6 +5568,137 @@ fn devcontainer_start_failure_code(stderr: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_child_environment_keeps_docker_context_without_broker_secrets() {
+        let mut command = Command::new("/usr/bin/env");
+        set_in_guest_child_environment(
+            &mut command,
+            [
+                (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                (
+                    OsString::from("HOME"),
+                    OsString::from("/tmp/branchbox-home"),
+                ),
+                (
+                    OsString::from("DOCKER_CONTEXT"),
+                    OsString::from("branchbox-inner"),
+                ),
+                (
+                    OsString::from("DOCKER_HOST"),
+                    OsString::from("unix:///run/branchbox/docker.sock"),
+                ),
+                (
+                    OsString::from("DOCKER_CONFIG"),
+                    OsString::from("/tmp/branchbox-docker-config"),
+                ),
+                (OsString::from("DOCKER_TLS_VERIFY"), OsString::from("1")),
+                (
+                    OsString::from("BRANCHBOX_BROKER_SECRET"),
+                    OsString::from("synthetic-private-value"),
+                ),
+                (
+                    OsString::from("COMPOSE_DISABLE_ENV_FILE"),
+                    OsString::from("0"),
+                ),
+                (
+                    OsString::from("COMPOSE_PROFILES"),
+                    OsString::from("repository-controlled"),
+                ),
+            ],
+        );
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        assert!(environment.contains("PATH=/usr/bin:/bin\n"));
+        assert!(environment.contains("HOME=/tmp/branchbox-home\n"));
+        assert!(environment.contains("DOCKER_CONTEXT=branchbox-inner\n"));
+        assert!(environment.contains("DOCKER_HOST=unix:///run/branchbox/docker.sock\n"));
+        assert!(environment.contains("DOCKER_CONFIG=/tmp/branchbox-docker-config\n"));
+        assert!(environment.contains("DOCKER_TLS_VERIFY=1\n"));
+        assert!(environment.contains("COMPOSE_DISABLE_ENV_FILE=1\n"));
+        assert!(!environment.contains("BRANCHBOX_BROKER_SECRET"));
+        assert!(!environment.contains("synthetic-private-value"));
+        assert!(!environment.contains("COMPOSE_PROFILES"));
+    }
+
+    #[test]
+    fn managed_compose_config_ignores_ambient_and_default_dotenv() {
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_none() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(".env"),
+            "HOST_SECRET=dot-env-secret\nCOMPOSE_PROJECT_NAME=hostile-project\n",
+        )
+        .unwrap();
+        let project_environment = root.path().join("signed-project.env");
+        fs::write(
+            &project_environment,
+            "PROJECT_LITERAL=${HOST_SECRET}\nPROJECT_SETTING=signed-value\n",
+        )
+        .unwrap();
+        let compose = root.path().join("compose.yaml");
+        fs::write(
+            &compose,
+            format!(
+                "services:\n  app:\n    image: alpine:3.19\n    environment: {{STATIC_SETTING: fixed, HOST_SECRET: null}}\n    env_file:\n      - path: {}\n        required: true\n        format: raw\n",
+                serde_json::to_string(&project_environment.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let mut command = Command::new("docker");
+        command
+            .args(["compose", "-f"])
+            .arg(&compose)
+            .args(["config", "--format", "json"])
+            .current_dir(root.path());
+        set_in_guest_child_environment(
+            &mut command,
+            [
+                (
+                    OsString::from("PATH"),
+                    std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin")),
+                ),
+                (
+                    OsString::from("HOME"),
+                    std::env::var_os("HOME").unwrap_or_else(|| OsString::from("/tmp")),
+                ),
+                (
+                    OsString::from("BRANCHBOX_BROKER_SECRET"),
+                    OsString::from("synthetic-private-value"),
+                ),
+                (
+                    OsString::from("HOST_SECRET"),
+                    OsString::from("synthetic-private-value"),
+                ),
+            ],
+        );
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "Compose rejected managed inputs: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let environment = &effective["services"]["app"]["environment"];
+        assert_eq!(environment["STATIC_SETTING"], "fixed");
+        assert_eq!(environment["PROJECT_SETTING"], "signed-value");
+        // Compose config serializes a raw dollar as an escaped dollar.
+        assert_eq!(environment["PROJECT_LITERAL"], "$${HOST_SECRET}");
+        assert!(environment["HOST_SECRET"].is_null());
+        assert_ne!(effective["name"], "hostile-project");
+        assert!(!output
+            .stdout
+            .windows(23)
+            .any(|part| part == b"synthetic-private-value"));
+        assert!(!output
+            .stdout
+            .windows(14)
+            .any(|part| part == b"dot-env-secret"));
+    }
 
     #[cfg(unix)]
     fn private_write(path: &Path, content: &[u8]) {
