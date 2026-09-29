@@ -11,8 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Allow managed in-guest Compose projects to use interpolated volume sources on secondary
   services. BranchBox now passes sanitized copies of repository Compose files to the Dev
-  Containers CLI, removing repository mounts, env files, and publications before Compose's
-  per-file interpolation while retaining the signed mount facade.
+  Containers CLI, removing repository mounts, env files, publications, discarded primary and
+  connector environment values, and manifest-replaced image/build fields before Compose's
+  per-file interpolation while retaining the signed mount facade. Inputs are bounded regular
+  files inside the task worktree, and stale generated copies are removed when the source list
+  shrinks.
 - Create the in-guest tool-request replay ledger with its owner-only mode in one step. Two
   dispatchers opening the ledger at the same moment could have the second find the directory
   before the first had set its permissions, and refuse it as not owner-only.

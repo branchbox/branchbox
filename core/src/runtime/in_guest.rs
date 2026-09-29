@@ -284,6 +284,15 @@ impl InGuestFacadePlan {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_service_images_for_tests(
+        mut self,
+        images: BTreeMap<String, String>,
+    ) -> Self {
+        self.service_images = images;
+        self
+    }
+
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
     }

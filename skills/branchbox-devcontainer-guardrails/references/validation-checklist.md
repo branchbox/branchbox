@@ -31,7 +31,7 @@ For managed in-guest Compose input changes, verify the generated file list throu
 Compose parser with deliberately unset repository mount variables (requires `docker compose`):
 
 ```bash
-BRANCHBOX_VERIFY_COMPOSE_CONFIG=1 cargo test -p worktree-core workflows::feature::tests::test_in_guest_compose_interpolation_is_removed_from_cli_inputs_before_merge --all-features
+BRANCHBOX_VERIFY_COMPOSE_CONFIG=1 cargo test -p worktree-core workflows::feature::tests::test_in_guest --all-features
 ```
 
 ## Release harness matrix (devcontainer)
