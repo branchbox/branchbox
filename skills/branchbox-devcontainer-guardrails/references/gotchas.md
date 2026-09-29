@@ -21,6 +21,7 @@
 |---|---|---|
 | Container name collisions across worktrees | Compose templates set fixed `name`/`container_name` | Do not pin project/container names in templates |
 | Compose command works on one host but fails on another | Plugin-style compose unavailable | Support `docker compose` with `docker-compose` fallback |
+| Managed in-guest startup fails on a secondary volume `${VAR:?}` even though a facade clears the volume | Compose interpolates each source file before merging `!override` | Give the Dev Containers CLI private sanitized copies of every Compose input, with repository mounts and publications removed before interpolation; keep signed mounts only in the final facade |
 
 ## Feature workflow + harness reliability
 

@@ -88,3 +88,4 @@ build/
 .devcontainer/.github-token.env
 .devcontainer/.git-signing-key
 .devcontainer/.gitconfig.env
+**/.branchbox-sbx-compose-input-*.yaml

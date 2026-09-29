@@ -1995,6 +1995,7 @@ impl InitWorkflow {
             ".devcontainer/.branchbox.env",
             ".devcontainer/.cloudflared.env",
             ".devcontainer/.branchbox-sbx-compose.yaml",
+            "**/.branchbox-sbx-compose-input-*.yaml",
             ".devcontainer/.devcontainer.json",
             ".devcontainer/.github-token.env",
             ".devcontainer/.git-signing-key",
@@ -2567,6 +2568,7 @@ mod tests {
         assert!(gitignore.contains(".branchbox/runtime/"));
         assert!(gitignore.contains(".devcontainer/.branchbox.env"));
         assert!(gitignore.contains(".devcontainer/.cloudflared.env"));
+        assert!(gitignore.contains("**/.branchbox-sbx-compose-input-*.yaml"));
         assert!(gitignore.contains(".devcontainer/.github-token.env"));
         assert!(gitignore.contains(".devcontainer/.git-signing-key"));
         assert!(gitignore.contains(".devcontainer/.gitconfig.env"));

@@ -27,6 +27,13 @@ cargo test -p worktree-core workflows::feature::tests::test_in_guest --all-featu
 cargo test -p branchbox-cli --test feature_commands in_guest_ -- --nocapture
 ```
 
+For managed in-guest Compose input changes, verify the generated file list through the local
+Compose parser with deliberately unset repository mount variables (requires `docker compose`):
+
+```bash
+BRANCHBOX_VERIFY_COMPOSE_CONFIG=1 cargo test -p worktree-core workflows::feature::tests::test_in_guest_compose_interpolation_is_removed_from_cli_inputs_before_merge --all-features
+```
+
 ## Release harness matrix (devcontainer)
 
 ```bash

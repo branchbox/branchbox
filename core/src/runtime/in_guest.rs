@@ -270,6 +270,20 @@ pub struct InGuestFacadePlan {
 }
 
 impl InGuestFacadePlan {
+    #[cfg(test)]
+    pub(crate) fn empty_for_tests() -> Self {
+        Self {
+            manifest_path: PathBuf::new(),
+            tunnel_placement: InGuestTunnelPlacement::Outer,
+            published_ports: Vec::new(),
+            service_images: BTreeMap::new(),
+            mounts: Vec::new(),
+            tool_request_spools: Vec::new(),
+            linked_tool_endpoints: BTreeSet::new(),
+            workspace_consumer: None,
+        }
+    }
+
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
     }
