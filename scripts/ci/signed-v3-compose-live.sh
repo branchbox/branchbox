@@ -272,9 +272,9 @@ cp "$git_attack_script" "$worktree/git-hooks/reference-transaction"
 chmod 0750 "$worktree/git-hooks/reference-transaction"
 chown -R 1000:1000 "$worktree/git-hooks"
 setpriv --reuid 1000 --regid 1000 --clear-groups test -w "$repository/.git/config"
-setpriv --reuid 1000 --regid 1000 --clear-groups git -C "$worktree" config --file "$repository/.git/config" core.fsmonitor "$git_attack_script"
-setpriv --reuid 1000 --regid 1000 --clear-groups git -C "$worktree" config --file "$repository/.git/config" core.hooksPath "$worktree/git-hooks"
-setpriv --reuid 1000 --regid 1000 --clear-groups git -C "$worktree" config --file "$repository/.git/config" filter.attack.clean "$git_attack_script"
+setpriv --reuid 1000 --regid 1000 --clear-groups git -C "$BBX_LIVE_ROOT" config --file "$repository/.git/config" core.fsmonitor "$git_attack_script"
+setpriv --reuid 1000 --regid 1000 --clear-groups git -C "$BBX_LIVE_ROOT" config --file "$repository/.git/config" core.hooksPath "$worktree/git-hooks"
+setpriv --reuid 1000 --regid 1000 --clear-groups git -C "$BBX_LIVE_ROOT" config --file "$repository/.git/config" filter.attack.clean "$git_attack_script"
 printf '.env filter=attack\n' |
   setpriv --reuid 1000 --regid 1000 --clear-groups tee "$worktree/.gitattributes" >/dev/null
 setpriv --reuid 1000 --regid 1000 --clear-groups sh -c \
