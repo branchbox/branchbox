@@ -27,31 +27,20 @@ concurrency:
 permissions:
   contents: read
 
-# Runner images: `test` keeps a macos-14 + Xcode 16.2 leg as the Swift 6.0 compile gate. If GitHub retires the
-# macos-14 image, move that leg to macos-15 with xcode-version '16.2' (still installed there) instead of
-# dropping it. The other jobs use macos-15 (Apple silicon) with the latest stable Xcode.
+# Runner images: every job uses macos-15 (Apple silicon) with the latest stable Xcode, the same toolchain
+# developers build with. The app still deploys to macOS 14 (LSMinimumSystemVersion); only building needs it.
 
 jobs:
   test:
-    name: Swift build + test (${{ matrix.runner }}, Xcode ${{ matrix.xcode }})
-    runs-on: ${{ matrix.runner }}
+    name: Swift build + test
+    runs-on: macos-15
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Swift 6.0 compile gate: the oldest toolchain the package must build with.
-          # If the macos-14 image is retired, use macos-15 with xcode '16.2' instead.
-          - runner: macos-14
-            xcode: '16.2'
-          - runner: macos-15
-            xcode: latest-stable
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: ${{ matrix.xcode }}
+          xcode-version: latest-stable
       - name: Print Swift version
         run: swift --version
       - name: Build (warnings are errors)

@@ -88,7 +88,7 @@ Point `BRANCHBOX_IT_CLI` at a 0.13.4 binary to exercise legacy mode. Set `BRANCH
 
 `.github/workflows/macos-app.yml` runs on changes to `macos/`, `cli/`, `core/` and the mac scripts:
 
-- `test`: builds with warnings as errors and runs the tests on macOS 14 with Xcode 16.2 (the Swift 6.0 gate) and on macOS 15 with the latest Xcode. It also fails if gRPC, SwiftProtobuf or NIO imports come back, or if the menu bar presents a sheet or an alert.
+- `test`: builds with warnings as errors and runs the tests on macOS 15 with the latest stable Xcode. It also fails if gRPC, SwiftProtobuf or NIO imports come back, or if the menu bar presents a sheet or an alert.
 - `integration`: builds the CLI from the same commit and runs the integration suites against it, then captures live fixtures and decodes them.
 - `integration-floor`: runs the integration suites against the released 0.13.4 CLI (legacy mode).
 - `package`: builds the universal app and uploads it as an artifact.
