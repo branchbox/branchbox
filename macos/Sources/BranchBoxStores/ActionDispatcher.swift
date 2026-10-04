@@ -381,7 +381,7 @@ public enum DispatchResult { case started(OperationRecord), queued(OperationReco
         warnings += summary.moduleReports.filter { !$0.teardownOk }.map { report in
             report.errors.isEmpty ? "\(report.name) cleanup failed" : "\(report.name) cleanup failed: \(report.errors.joined(separator: "; "))"
         }
-        if let runtime = summary.runtimeTeardown, !runtime.residueFree {
+        if let runtime = summary.runtimeTeardown, !(runtime.verified && runtime.residueFree) {
             let items = runtime.residue.flatMap(\.identifiers)
             warnings.append(items.isEmpty ? "The runtime cleanup could not be verified"
                                           : "The runtime cleanup left \(items.joined(separator: ", "))")

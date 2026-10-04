@@ -93,6 +93,16 @@ private func record(_ name: String, runtime: RuntimeProvider, status: FeatureSta
 
 extension FeatureSurfaceTests {
     @MainActor @Suite struct Availability {
+        @Test func volumeDeletionConfirmationCarriesExplicitConsentAndExplainsItsScope() {
+            let feature = FeatureRef(project: project, name: "scope")
+            let confirmation = FeatureConfirmations.stopDeletingVolumes(feature)
+            #expect(confirmation.request == .devcontainer(.down(removeVolumes: true), feature))
+            #expect(confirmation.message.contains("anonymous volumes are deleted"))
+            #expect(confirmation.message.contains("named and shared volumes are kept"))
+            #expect(confirmation.message.contains("volumes owned by the feature's project"))
+            #expect(confirmation.message.contains("cannot be recovered"))
+        }
+
         @Test(arguments: [RuntimeProvider.container, .sbx, .localVM], [true, false])
         func availabilityMatrix(runtime: RuntimeProvider, folderExists: Bool) {
             let feature = record("matrix", runtime: runtime, runtimeID: runtime == .sbx ? "branchbox-matrix" : nil)

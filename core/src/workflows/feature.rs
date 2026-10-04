@@ -172,6 +172,8 @@ fn load_policy_enforced_modules() -> HashSet<String> {
 #[derive(Debug)]
 pub struct FeatureWorkflow {
     repo_root: PathBuf,
+    /// Preserve a caller-supplied lexical repository path for exact Docker workspace-label cleanup.
+    repo_root_alias: Option<PathBuf>,
     git: GitWorktree,
     state: FeatureStateStore,
     /// Test hook: runs on the worktree right before teardown checks it again and removes it,
@@ -410,12 +412,32 @@ impl FeatureWorkflow {
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let candidate = path.into();
         let repo_root = resolve_repo_root(&candidate)?;
+        let candidate = if candidate.is_absolute() {
+            candidate
+        } else {
+            std::env::current_dir()?.join(candidate)
+        };
+        let canonical_root = repo_root.canonicalize()?;
+        let canonical_parent = canonical_root.parent();
+        let repo_root_alias = candidate
+            .ancestors()
+            .find(|path| {
+                path.canonicalize().ok().as_ref() == Some(&canonical_root)
+                    && path
+                        .parent()
+                        .and_then(|parent| parent.canonicalize().ok())
+                        .as_deref()
+                        == canonical_parent
+            })
+            .filter(|path| *path != repo_root)
+            .map(Path::to_path_buf);
         validation::validate_git_worktree(&repo_root)?;
 
         let git = GitWorktree::new(&repo_root)?;
         let state = FeatureStateStore::new(&repo_root);
         Ok(Self {
             repo_root,
+            repo_root_alias,
             git,
             state,
             #[cfg(test)]
@@ -1087,7 +1109,10 @@ impl FeatureWorkflow {
                     work_feature
                 )));
             }
-            match runtime_provider.destroy(&runtime_metadata) {
+            match runtime_provider.destroy_worktree(
+                &runtime_metadata,
+                &self.runtime_ownership_path(runtime_kind, &worktree_path),
+            ) {
                 Ok(report) if !report.residue_free => tracing::warn!(
                     "Runtime cleanup after startup failure left residue: {:?}",
                     report.residue
@@ -1400,7 +1425,10 @@ impl FeatureWorkflow {
             modules::detect_modules(&self.repo_root, &skip_modules)
         };
         let (module_reports, module_warnings) = if worktree_exists {
-            self.run_module_teardown(handles, &worktree_path)
+            self.run_module_teardown(
+                handles,
+                &self.runtime_ownership_path(runtime_metadata.provider, &worktree_path),
+            )
         } else {
             (Vec::new(), Vec::new())
         };
@@ -1469,23 +1497,86 @@ impl FeatureWorkflow {
             }
         }
 
-        let runtime_teardown = match runtime::provider(runtime_metadata.provider)
-            .and_then(|provider| provider.destroy(&runtime_metadata))
-        {
-            Ok(report) => report,
-            Err(err) => {
-                warnings.push(format!(
-                    "Runtime '{}' teardown failed: {}",
-                    runtime_metadata.provider, err
-                ));
-                runtime::RuntimeTeardownReport::unverified(
-                    runtime_metadata.provider,
-                    runtime_metadata.runtime_id.clone(),
-                    err.to_string(),
+        let mut runtime_teardown =
+            match runtime::provider(runtime_metadata.provider).and_then(|provider| {
+                provider.destroy_worktree(
+                    &runtime_metadata,
+                    &self.runtime_ownership_path(runtime_metadata.provider, &worktree_path),
                 )
+            }) {
+                Ok(report) => report,
+                Err(err) => {
+                    warnings.push(format!(
+                        "Runtime '{}' teardown failed: {}",
+                        runtime_metadata.provider, err
+                    ));
+                    runtime::RuntimeTeardownReport::unverified(
+                        runtime_metadata.provider,
+                        runtime_metadata.runtime_id.clone(),
+                        err.to_string(),
+                    )
+                }
+            };
+        // Module failures also invalidate the runtime receipt: e.g. Compose volumes may remain even
+        // after a successful empty devcontainer-container probe.
+        for report in module_reports.iter().filter(|report| !report.teardown_ok) {
+            runtime_teardown.verified = false;
+            runtime_teardown.residue_free = false;
+            runtime_teardown.residue.push(runtime::RuntimeResidue {
+                kind: "module-teardown-error".to_string(),
+                identifiers: vec![format!("{}: {}", report.name, report.errors.join("; "))],
+            });
+        }
+        if runtime_teardown.verified && runtime_teardown.residue_free {
+            completed_steps.push(format!("Stopped the {} runtime", runtime_metadata.provider));
+        } else {
+            let cause = runtime_teardown
+                .residue
+                .iter()
+                .map(|item| format!("{}: {}", item.kind, item.identifiers.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ");
+            warnings.push(format!(
+                "Runtime cleanup was not verified residue-free: {cause}"
+            ));
+            // Bare worktrees with no devcontainer setup or recorded runtime keep the no-Docker lifecycle.
+            // A synchronized config can also have been started manually or by the Mac app without an ID.
+            let possible_runtime = runtime_metadata.provider != RuntimeProviderKind::Container
+                || module_reports.iter().any(|report| !report.teardown_ok)
+                || runtime_teardown.residue.iter().any(|item| {
+                    matches!(
+                        item.kind.as_str(),
+                        "container"
+                            | "container-cleanup-attempted"
+                            | "compose-project"
+                            | "compose-ownership-error"
+                    )
+                })
+                || runtime_metadata.runtime_id.is_some()
+                || runtime_metadata.container_id.is_some()
+                || worktree_path
+                    .join(".devcontainer/devcontainer.json")
+                    .exists()
+                || worktree_path
+                    .join(".devcontainer/.devcontainer.json")
+                    .exists()
+                || worktree_path.join(".devcontainer.json").exists()
+                || self
+                    .repo_root
+                    .join(".devcontainer/devcontainer.json")
+                    .exists()
+                || self
+                    .repo_root
+                    .join(".devcontainer/.devcontainer.json")
+                    .exists()
+                || self.repo_root.join(".devcontainer.json").exists();
+            if possible_runtime && !request.force_remove {
+                let mut stopped = plan.clone();
+                stopped.blockers = vec![Blocker::runtime_cleanup_failed(&worktree_path, cause)];
+                stopped.warnings.extend(warnings);
+                return Err(stopped.into_stopped(completed_steps));
             }
-        };
-        completed_steps.push(format!("Stopped the {} runtime", runtime_metadata.provider));
+        }
 
         let mut worktree_removed = false;
         if worktree_exists {
@@ -2319,6 +2410,28 @@ impl FeatureWorkflow {
         Ok(parent.join(work_feature))
     }
 
+    fn runtime_ownership_path(
+        &self,
+        provider: RuntimeProviderKind,
+        worktree_path: &Path,
+    ) -> PathBuf {
+        if provider == RuntimeProviderKind::Container {
+            if let (Some(parent), Some(name)) = (
+                self.repo_root_alias.as_ref().and_then(|root| root.parent()),
+                worktree_path.file_name(),
+            ) {
+                // A symlink to the repository alone does not alias its sibling worktrees. Only
+                // a verified alias of the worktree's parent can authorize the lexical label.
+                if matches!((parent.canonicalize().ok(), worktree_path.parent().and_then(|path| path.canonicalize().ok())),
+                    (Some(alias), Some(actual)) if alias == actual)
+                {
+                    return parent.join(name);
+                }
+            }
+        }
+        worktree_path.to_path_buf()
+    }
+
     fn main_worktree_name(&self) -> String {
         self.repo_root
             .file_name()
@@ -2906,7 +3019,8 @@ impl FeatureWorkflow {
         }
 
         let managed_env = dev_dir.join(".branchbox.env");
-        let mut file = create_secure_file(&managed_env)?;
+        let retained_projects = modules::compose::retained_teardown_projects(worktree_path)?;
+        let mut file = Vec::new();
         writeln!(
             file,
             "# BranchBox-managed overrides (auto-generated, do not edit)"
@@ -2945,8 +3059,11 @@ impl FeatureWorkflow {
                 sanitize_identifier_env_value(devcontainer)
             )?;
         }
-
-        Ok(())
+        file.extend_from_slice(
+            modules::compose::teardown_identity_lines(worktree_path, &retained_projects)?
+                .as_bytes(),
+        );
+        atomic_fs::write_atomic(&managed_env, &file, 0o600)
     }
 
     fn run_module_setup(
@@ -9175,7 +9292,6 @@ mod tests {
         let temp = setup_test_repo();
         let repo_path = temp.path();
         fs::write(repo_path.join(".env"), "APP_URL=dev.example.com\n").unwrap();
-        copy_repo_devcontainer(repo_path);
 
         std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
 
@@ -9187,6 +9303,7 @@ mod tests {
         workflow
             .start(StartRequest {
                 name: Some("dirty".to_string()),
+                mode: StartMode::Minimal,
                 ..StartRequest::default()
             })
             .unwrap();
@@ -9518,7 +9635,9 @@ mod tests {
         };
         assert!(changed_anything);
         assert!(
-            completed_steps.iter().any(|step| step.contains("runtime")),
+            completed_steps
+                .iter()
+                .any(|step| step.starts_with("Moved docs/features/in-progress/late.md")),
             "{completed_steps:?}"
         );
         assert!(
@@ -12996,6 +13115,49 @@ volumes:
         assert!(!managed_env.lines().any(|line| line == "INJECTED_BRANCH=1"));
         assert!(!managed_env.lines().any(|line| line == "INJECTED_URL=1"));
         assert!(!managed_env.lines().any(|line| line == "INJECTED_MAIN=1"));
+    }
+
+    #[test]
+    fn managed_env_rewrites_preserve_only_same_workspace_cleanup_identity() {
+        let temp_dir = setup_test_repo();
+        let workspace = temp_dir.path().join("test-feature");
+        fs::create_dir_all(workspace.join(".devcontainer")).unwrap();
+        let projects = BTreeSet::from(["vsc-actual-feature".to_string()]);
+        modules::compose::persist_teardown_projects(&workspace, &projects).unwrap();
+        let workflow = FeatureWorkflow::new(temp_dir.path()).unwrap();
+        workflow
+            .write_branchbox_env(
+                &workspace,
+                "test-feature",
+                "feature/test-feature",
+                None,
+                Some("generated-feature"),
+                None,
+                "main",
+            )
+            .unwrap();
+        assert_eq!(
+            modules::compose::retained_teardown_projects(&workspace).unwrap(),
+            projects
+        );
+
+        let other = temp_dir.path().join("other-feature");
+        fs::create_dir_all(other.join(".devcontainer")).unwrap();
+        let copied = fs::read(workspace.join(".devcontainer/.branchbox.env")).unwrap();
+        let other_env = other.join(".devcontainer/.branchbox.env");
+        fs::write(&other_env, &copied).unwrap();
+        assert!(workflow
+            .write_branchbox_env(
+                &other,
+                "other-feature",
+                "feature/other-feature",
+                None,
+                Some("generated-other"),
+                None,
+                "main"
+            )
+            .is_err());
+        assert_eq!(fs::read(other_env).unwrap(), copied);
     }
 
     #[test]

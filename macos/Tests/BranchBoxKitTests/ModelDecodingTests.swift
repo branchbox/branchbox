@@ -426,6 +426,14 @@ private func listing(_ name: String) throws -> FeatureListing {
                                                    containerUser: "vscode"))
         #expect(up.isRecognized)
         #expect(service.isRecognized)
+        let imageConfig = try decodeJSON(DevcontainerServiceInfo.self,
+            #"{"service_name":null,"port":0,"service_url":"","container_user":"vscode","container_type":"image","configured_user":"root","workspace_folder":"/workspace"}"#)
+        #expect(imageConfig.isRecognized && imageConfig.hasEffectiveConfiguration)
+        #expect(imageConfig.effectiveUser == "root" && imageConfig.workspaceFolder == "/workspace")
+        let defaultUser = try decodeJSON(DevcontainerServiceInfo.self,
+            #"{"container_type":"dockerfile","container_user":"vscode","configured_user":null,"workspace_folder":"/workspace"}"#)
+        #expect(defaultUser.isRecognized && defaultUser.effectiveUser == nil)
+        #expect(service.effectiveUser == "vscode", "Legacy detection retains its estimate")
     }
 
     @Test func unrecognizedDevcontainerPayloadsAreFlagged() throws {

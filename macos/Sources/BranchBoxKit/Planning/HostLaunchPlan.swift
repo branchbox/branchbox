@@ -178,22 +178,26 @@ public struct HostLaunchPlan: Sendable, Hashable {     // executed by App/Servic
 
     // MARK: Dev container shell
 
-    /// `docker exec -it -u <user> <containerId> bash -l` in the running dev container. Without the record the
-    /// workspace folder is unknown, so docker's working directory is the container's default.
+    /// Open Bash when installed, otherwise the container's POSIX shell. User and working directory come from
+    /// effective configuration when available, otherwise Docker's defaults.
     public static func devcontainerShell(_ status: DevcontainerStatus, terminal: TerminalChoice) -> HostLaunchPlan {
-        devcontainerShellPlan(status, terminal: terminal, user: status.service?.containerUser, workspaceFolder: nil, cd: nil)
+        devcontainerShellPlan(status, terminal: terminal, user: status.service?.effectiveUser,
+                              workspaceFolder: status.service?.workspaceFolder, cd: nil)
     }
 
-    /// `docker exec -it -u <remoteUser> -w <remoteWorkspaceFolder> <containerId> bash -l`, started from the
-    /// worktree folder.
+    /// Open a shell from the worktree folder, preferring effective configuration to the recorded runtime.
     public static func devcontainerShell(_ status: DevcontainerStatus, terminal: TerminalChoice, record: FeatureRecord,
                                          folderExists: Bool) -> HostLaunchPlan {
         if let disabled = unavailable(record, folderExists: folderExists) { return disabled }
         guard record.runtime.provider == .container else {
             return disabledPlan("Only features on the container runtime have a dev container")
         }
-        let user = status.service?.containerUser ?? record.runtime.containerUser
-        return devcontainerShellPlan(status, terminal: terminal, user: user, workspaceFolder: workspaceFolder(for: record),
+        let service = status.service
+        let user = service?.hasEffectiveConfiguration == true ? service?.effectiveUser
+            : (service?.effectiveUser ?? record.runtime.containerUser)
+        let folder = service?.hasEffectiveConfiguration == true ? service?.workspaceFolder
+            : (service?.workspaceFolder ?? record.runtime.workspaceFolder)
+        return devcontainerShellPlan(status, terminal: terminal, user: user, workspaceFolder: folder,
                                      cd: record.worktreePath)
     }
 
@@ -240,7 +244,7 @@ public struct HostLaunchPlan: Sendable, Hashable {     // executed by App/Servic
         var argv = ["docker", "exec", "-it"]
         if let user, !user.isEmpty { argv += ["-u", user] }
         if let workspaceFolder, !workspaceFolder.isEmpty { argv += ["-w", workspaceFolder] }
-        argv += [containerID, "bash", "-l"]
+        argv += [containerID, "sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh; fi"]
         return scriptPlan(cd: folder, command: shellCommand(argv), terminal: terminal)
     }
 

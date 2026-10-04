@@ -131,8 +131,12 @@ struct EnvironmentCard: View {
                         FactRow(label: "Service", value: service + (status.service?.port.map { " :\(String($0))" } ?? ""),
                                 monospaced: true)
                     }
-                    if let user = status.service?.containerUser ?? record.runtime.containerUser {
+                    if let user = status.service?.hasEffectiveConfiguration == true ? status.service?.effectiveUser
+                        : (status.service?.effectiveUser ?? record.runtime.containerUser) {
                         FactRow(label: "User", value: user, monospaced: true)
+                    }
+                    if let folder = status.service?.workspaceFolder, !folder.isEmpty {
+                        FactRow(label: "Workspace", value: folder, monospaced: true)
                     }
                 }
             }
@@ -249,7 +253,9 @@ struct EnvironmentCard: View {
                     CopyButton(text: container, label: "Copy Container ID").buttonStyle(.borderless)
                 }
             }
-            if let folder = runtime.workspaceFolder, !folder.isEmpty {
+            if !(showsLiveContainerFacts && (load.status?.service?.hasEffectiveConfiguration == true
+                                            || load.status?.service?.workspaceFolder != nil)),
+               let folder = runtime.workspaceFolder, !folder.isEmpty {
                 FactRow(label: "Workspace", value: folder, monospaced: true)
             }
             if !showsLiveContainerFacts, let user = runtime.containerUser, !user.isEmpty {

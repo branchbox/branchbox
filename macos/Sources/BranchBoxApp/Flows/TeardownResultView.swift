@@ -163,7 +163,7 @@ struct TeardownResultView: View {
     /// What the verified check found, in the runtime's own terms.
     static func verifiedCleanDetail(provider: String?) -> String {
         switch provider.map(RuntimeProvider.init(raw:)) {
-        case .container?: "Checked: no containers, networks or volumes are left."
+        case .container?: "Checked: feature dev containers and owned Compose resources are gone."
         case .sbx?: "Checked: the sandbox is gone."
         case .localVM?: "Checked: the VM is gone."
         default: "Checked: nothing from the runtime is left."
@@ -182,10 +182,11 @@ struct TeardownResultView: View {
             guard !item.identifiers.isEmpty else { return nil }
             let ids = item.identifiers.map(HostLaunchPlan.shellQuote).joined(separator: " ")
             let kind = item.kind.lowercased()
-            if kind.contains("volume") { return "docker volume rm \(ids)" }
-            if kind.contains("network") { return "docker network rm \(ids)" }
-            if kind.contains("container") { return "docker rm -f \(ids)" }
-            return "# \(item.kind): \(item.identifiers.joined(separator: " "))"
+            if kind == "volume" || kind == "tool-request-volume" { return "docker volume rm \(ids)" }
+            if kind == "network" { return "docker network rm \(ids)" }
+            if kind == "container" { return "docker rm -f \(ids)" }
+            let diagnostic = "\(item.kind): \(item.identifiers.joined(separator: " "))"
+            return "# " + diagnostic.replacingOccurrences(of: "\n", with: "\n# ")
         }.joined(separator: "\n")
     }
 }

@@ -57,7 +57,7 @@ extension CLIBackend {
         do {
             let decoded = try output.decode(TeardownSummary.self, what: "teardown summary")
             if let preamble = decoded.preamble { relay.warning(preamble) }
-            summary = decoded.value
+            summary = Self.teardownSummary(decoded.value, capabilities: currentIdentity.capabilities)
         } catch BackendError.refused(let refusal) {
             throw try await enriched(refusal, request: request)
         }
@@ -75,6 +75,23 @@ extension CLIBackend {
         let worktreePath = plan.worktree.path
         return TeardownOutcome(summary: summary, branch: branch,
                                worktreeGone: fileSystem.kind(at: worktreePath) == .missing)
+    }
+
+    /// Older container providers reported a clean runtime without inspecting standalone devcontainers.
+    /// Use the execution's backend identity so a later CLI switch cannot upgrade that receipt's evidence.
+    static func teardownSummary(_ summary: TeardownSummary, capabilities: Set<Capability>) -> TeardownSummary {
+        guard let runtime = summary.runtimeTeardown, runtime.provider.map(RuntimeProvider.init(raw:)) == .container,
+              runtime.verified, !capabilities.contains(.hostContainerTeardownVerified) else { return summary }
+        let unverified = RuntimeTeardownReport(provider: runtime.provider, runtimeID: runtime.runtimeID,
+                                              verified: false, residueFree: runtime.residueFree, residue: runtime.residue)
+        return TeardownSummary(workFeature: summary.workFeature, branchName: summary.branchName,
+                               worktreeRemoved: summary.worktreeRemoved, branchDeleted: summary.branchDeleted,
+                               adapterCleanupWarnings: summary.adapterCleanupWarnings, moduleReports: summary.moduleReports,
+                               runtimeTeardown: unverified,
+                               warnings: summary.warnings + ["This CLI cannot verify feature container cleanup. Check Docker for remaining resources; update to a CLI with host-container-teardown-verified."],
+                               branchAction: summary.branchAction, branchDeleteError: summary.branchDeleteError,
+                               discardedChanges: summary.discardedChanges, preserved: summary.preserved,
+                               registryUpdated: summary.registryUpdated)
     }
 
     /// A 0.13.x "Devcontainer/compose changes detected" refusal gets the re-preflight's user changes and plan, so

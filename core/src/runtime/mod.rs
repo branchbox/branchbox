@@ -19,6 +19,7 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+mod host_container;
 mod in_guest;
 mod local_vm;
 pub(crate) use in_guest::recover_runtime_metadata as recover_in_guest_runtime_metadata;
@@ -303,6 +304,16 @@ pub trait RuntimeProvider {
 
     /// Remove provider-owned state before the BranchBox worktree is removed.
     fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport>;
+
+    /// Destroy resources owned by a worktree before its files are removed. Host devcontainers
+    /// are identified by workspace labels rather than a persisted outer-runtime ID.
+    fn destroy_worktree(
+        &self,
+        metadata: &RuntimeMetadata,
+        _worktree_path: &Path,
+    ) -> Result<RuntimeTeardownReport> {
+        self.destroy(metadata)
+    }
 }
 
 /// Resolve a runtime provider without making optional provider dependencies
@@ -379,10 +390,23 @@ impl RuntimeProvider for ContainerRuntimeProvider {
     }
 
     fn destroy(&self, metadata: &RuntimeMetadata) -> Result<RuntimeTeardownReport> {
-        Ok(RuntimeTeardownReport::residue_free(
+        Ok(RuntimeTeardownReport::unverified(
             self.kind(),
             metadata.runtime_id.clone(),
+            "Host container cleanup requires the owning worktree path",
         ))
+    }
+
+    fn destroy_worktree(
+        &self,
+        metadata: &RuntimeMetadata,
+        worktree_path: &Path,
+    ) -> Result<RuntimeTeardownReport> {
+        host_container::destroy(
+            &crate::devcontainer_runtime::Docker::new(),
+            metadata,
+            worktree_path,
+        )
     }
 }
 

@@ -206,24 +206,69 @@ import Testing
     @Test func devcontainerShell() throws {
         let service = DevcontainerServiceInfo(serviceName: "app", port: 3000, serviceURL: nil, containerUser: "vscode")
         let running = DevcontainerStatus(state: .running, containerID: "c0ffee", service: service)
+        let selector = "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh; fi"
         let plan = HostLaunchPlan.devcontainerShell(running, terminal: .terminal, record: Sample.record(worktreePath: Self.awkwardPath),
                                                     folderExists: true)
         let script = try #require(Self.script(plan))
-        #expect(script.hasSuffix("&& exec docker exec -it -u vscode -w /workspaces/eta c0ffee bash -l\n"))
-        #expect(try Self.words(of: script) == ["docker", "exec", "-it", "-u", "vscode", "-w", "/workspaces/eta", "c0ffee", "bash", "-l"])
+        #expect(try Self.words(of: script) == ["docker", "exec", "-it", "-u", "vscode", "c0ffee", "sh", "-c", selector])
         #expect(plan.workingDirectory == Self.awkwardPath)
 
-        // Without the record: no folder to start in and no workspace folder.
-        #expect(Self.script(HostLaunchPlan.devcontainerShell(running, terminal: .iTerm))
-            == "#!/bin/sh\nexec docker exec -it -u vscode c0ffee bash -l\n")
+        // Unknown working directories use Docker's default rather than a template guess.
+        #expect(try Self.words(of: try #require(Self.script(HostLaunchPlan.devcontainerShell(running, terminal: .iTerm))))
+            == ["docker", "exec", "-it", "-u", "vscode", "c0ffee", "sh", "-c", selector])
         let anonymous = DevcontainerStatus(state: .running, containerID: "c0ffee")
-        #expect(Self.script(HostLaunchPlan.devcontainerShell(anonymous, terminal: .iTerm)) == "#!/bin/sh\nexec docker exec -it c0ffee bash -l\n")
+        #expect(try Self.words(of: try #require(Self.script(HostLaunchPlan.devcontainerShell(anonymous, terminal: .iTerm))))
+            == ["docker", "exec", "-it", "c0ffee", "sh", "-c", selector])
         // The record's user when detect named none.
         let fromRecord = HostLaunchPlan.devcontainerShell(anonymous, terminal: .terminal,
                                                           record: Sample.record(workspaceFolder: "/w s", containerUser: "dev"),
                                                           folderExists: true)
         #expect(try Self.words(of: try #require(Self.script(fromRecord)))
-            == ["docker", "exec", "-it", "-u", "dev", "-w", "/w s", "c0ffee", "bash", "-l"])
+            == ["docker", "exec", "-it", "-u", "dev", "-w", "/w s", "c0ffee", "sh", "-c", selector])
+    }
+
+    @Test func effectiveConfigurationOverridesLegacyEstimatesAndRecordedRuntime() throws {
+        let record = Sample.record(workspaceFolder: "/old/workspace", containerUser: "vscode")
+        for configuredUser in [String?.some("root"), nil] {
+            let service = DevcontainerServiceInfo(serviceName: nil, port: 0, serviceURL: "", containerUser: "vscode",
+                                                 configuredUser: configuredUser, workspaceFolder: "/workspace/it's $HOME",
+                                                 containerType: "image")
+            let status = DevcontainerStatus(state: .running, containerID: "c0ffee", service: service)
+            for plan in [HostLaunchPlan.devcontainerShell(status, terminal: .terminal),
+                         HostLaunchPlan.devcontainerShell(status, terminal: .terminal, record: record, folderExists: true)] {
+                let words = try Self.words(of: try #require(Self.script(plan)))
+                #expect(!words.contains("vscode") && !words.contains("/old/workspace"))
+                #expect(words.contains("/workspace/it's $HOME"))
+                #expect(words.contains("-u") == (configuredUser != nil))
+                if let configuredUser { #expect(words.contains(configuredUser)) }
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func devcontainerShellSelectsAnInstalledInteractiveShell(hasBash: Bool) throws {
+        let status = DevcontainerStatus(state: .running, containerID: "c0ffee")
+        let argv = try Self.words(of: try #require(Self.script(HostLaunchPlan.devcontainerShell(status, terminal: .terminal))))
+        let selector = try #require(argv.last)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for executable in hasBash ? ["bash", "sh"] : ["sh"] {
+            let url = directory.appendingPathComponent(executable)
+            try "#!/bin/sh\nprintf '%s\\n' '\(executable)' \"$@\"\n".write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", selector]
+        process.environment = ["PATH": directory.path]
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(String(decoding: data, as: UTF8.self) == (hasBash ? "bash\n-l\n" : "sh\n"))
     }
 
     @Test(arguments: [DevcontainerStatus(state: .stopped, containerID: "c0ffee"), DevcontainerStatus(state: .notCreated),

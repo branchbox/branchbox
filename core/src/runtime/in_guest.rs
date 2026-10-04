@@ -495,13 +495,13 @@ fn validate_private_compose_stage_mounts(
     if mounts
         .iter()
         .filter(|mount| {
-            !matches!(
+            !(matches!(
                 mount.scope,
                 LeaseScope::ProjectEnvironment
                     | LeaseScope::ProviderEnvironment
                     | LeaseScope::ToolRequest
-            ) && !(mount.scope == LeaseScope::ToolEndpoint
-                && linked_tool_endpoints.contains(&mount.lease_id))
+            ) || (mount.scope == LeaseScope::ToolEndpoint
+                && linked_tool_endpoints.contains(&mount.lease_id)))
                 && matches!(mount.target, MaterializationTarget::File(_))
         })
         .any(|mount| stage.starts_with(&mount.source) || mount.source.starts_with(stage))

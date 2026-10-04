@@ -147,7 +147,7 @@ private func promptedStart(_ name: String = "oauth") -> StartFeatureRequest {
 
         let contract = try await PreviewBackend(scenario: .contract).identity()
         #expect(contract.contractVersion == 1)
-        #expect(contract.capabilities.count == 13)
+        #expect(contract.capabilities.count == 14)
         #expect(contract.supports(.teardownPlan) && contract.supports(.initJSON))
 
         let empty = try await PreviewBackend(scenario: .emptyProject).listFeatures(in: sampleProject, includeRemoved: true)

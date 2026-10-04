@@ -339,8 +339,11 @@ private func discardRetry(_ recoveries: [RecoveryAction]) -> RecoveryAction? {
             ResidueItem(kind: "container", identifiers: ["abc123", "def456"]),
             ResidueItem(kind: "tool-request-volume", identifiers: ["vol one"]),
             ResidueItem(kind: "port-proxy", identifiers: ["proxy-1"]),
+            ResidueItem(kind: "container-removal-error", identifiers: ["Cannot remove container abc123:\npermission denied"]),
+            ResidueItem(kind: "container-cleanup-attempted", identifiers: ["already-gone"]),
         ])
-        #expect(commands == "docker rm -f abc123 def456\ndocker volume rm 'vol one'\n# port-proxy: proxy-1")
+        #expect(commands == "docker rm -f abc123 def456\ndocker volume rm 'vol one'\n# port-proxy: proxy-1\n"
+            + "# container-removal-error: Cannot remove container abc123:\n# permission denied\n# container-cleanup-attempted: already-gone")
     }
 }
 

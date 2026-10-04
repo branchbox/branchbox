@@ -16,11 +16,12 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use worktree_core::devcontainer_runtime::{
-    DevcontainerRuntime, DownOptions, ExecOptions, UpOptions,
+    DevcontainerConfig, DevcontainerRuntime, DevcontainerType, DownOptions, ExecOptions, UpOptions,
 };
 use worktree_core::modules::{
     add_cloudflared_service, configure_workspace_settings, detect_container_user,
-    detect_main_service, inject_coding_agent_mounts, DevcontainerModule, Module, SyncStrategy,
+    detect_main_service_from_config, inject_coding_agent_mounts, DevcontainerModule, Module,
+    SyncStrategy,
 };
 use worktree_core::workflows::feature::{FeatureMetadata, FeatureStatus, FeatureWorkflow};
 use worktree_core::{human, humanln, output};
@@ -929,6 +930,9 @@ struct DetectOutput {
     service_url: String,
     container_user: String,
     home_path: String,
+    container_type: &'static str,
+    configured_user: Option<String>,
+    workspace_folder: String,
 }
 
 #[derive(Serialize)]
@@ -1005,39 +1009,100 @@ fn detect(path: Option<PathBuf>, stack: Option<String>, json_output: bool) -> Re
     let project_path =
         std::fs::canonicalize(&project_path).context("Failed to resolve project path")?;
 
-    let devcontainer_dir = project_path.join(".devcontainer");
-    if !devcontainer_dir.exists() {
+    let standard_config = project_path.join(".devcontainer/devcontainer.json");
+    let config_path = if standard_config.exists() {
+        standard_config
+    } else {
+        project_path.join(".devcontainer.json")
+    };
+    if !config_path.exists() {
         if json_output {
             output::emit_json(&serde_json::json!({
-                "error": "No .devcontainer directory found"
+                "error": "No devcontainer configuration found"
             }))?;
         } else {
             eprintln!(
-                "No .devcontainer directory found at {}",
+                "No devcontainer configuration found at {}",
                 project_path.display()
             );
         }
         std::process::exit(1);
     }
 
-    let stack_hint = stack.as_deref();
-    let service_info =
-        detect_main_service(&devcontainer_dir, stack_hint).context("Failed to detect service")?;
-
-    // Read devcontainer.json for container user detection
-    let config_path = devcontainer_dir.join("devcontainer.json");
-    let container_user = if config_path.exists() {
-        let contents = std::fs::read_to_string(&config_path)?;
-        // Use JSONC parser to handle comments in devcontainer.json
-        let config: serde_json::Value =
-            jsonc_parser::parse_to_serde_value(&contents, &Default::default())
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to parse devcontainer.json as JSONC: {:?}", e)
-                })?
-                .unwrap_or_default();
-        detect_container_user(&devcontainer_dir, &config)
+    let devcontainer_dir = config_path.parent().unwrap_or(&project_path);
+    let contents = std::fs::read_to_string(&config_path)?;
+    // Detection reads only its own fields. Unrelated valid fields (e.g. nullable remoteEnv values)
+    // must not fail because a runtime implementation models them more narrowly.
+    let config: serde_json::Value =
+        jsonc_parser::parse_to_serde_value(&contents, &Default::default())
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "Failed to parse {} as JSONC: {err:?}",
+                    config_path.display()
+                )
+            })?
+            .unwrap_or_default();
+    let runtime_config = DevcontainerConfig {
+        remote_user: config
+            .get("remoteUser")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned),
+        container_user: config
+            .get("containerUser")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned),
+        workspace_folder: config
+            .get("workspaceFolder")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned),
+        ..DevcontainerConfig::default()
+    };
+    let container_type = if config
+        .get("dockerComposeFile")
+        .is_some_and(|value| !value.is_null())
+    {
+        DevcontainerType::DockerCompose
+    } else if config.get("build").is_some_and(|value| !value.is_null())
+        || config
+            .get("dockerFile")
+            .is_some_and(|value| !value.is_null())
+    {
+        DevcontainerType::Dockerfile
     } else {
-        worktree_core::modules::ContainerUser::default()
+        DevcontainerType::Image
+    };
+    // Only active Compose configurations have a Compose service. An image/Dockerfile workspace can
+    // still contain unused scaffold files; those do not describe its running environment.
+    let service_info = if container_type == DevcontainerType::DockerCompose {
+        detect_main_service_from_config(devcontainer_dir, &config, stack.as_deref())
+            .context("Failed to detect service")?
+    } else {
+        worktree_core::modules::ServiceInfo {
+            name: None,
+            port: 0,
+            service_url: String::new(),
+        }
+    };
+
+    let mut container_user = detect_container_user(devcontainer_dir, &config);
+    let configured_user = runtime_config.effective_remote_user().map(str::to_owned);
+    if let Some(user) = &configured_user {
+        container_user.username = user.clone();
+        container_user.home_path = if user == "root" {
+            "/root".to_string()
+        } else {
+            format!("/home/{user}")
+        };
+    }
+    let workspace_name = project_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    let workspace_folder = runtime_config.effective_workspace_folder(workspace_name);
+    let container_type = match container_type {
+        DevcontainerType::DockerCompose => "compose",
+        DevcontainerType::Dockerfile => "dockerfile",
+        DevcontainerType::Image => "image",
     };
 
     if json_output {
@@ -1047,6 +1112,9 @@ fn detect(path: Option<PathBuf>, stack: Option<String>, json_output: bool) -> Re
             service_url: service_info.service_url,
             container_user: container_user.username,
             home_path: container_user.home_path,
+            container_type,
+            configured_user,
+            workspace_folder,
         };
         output::emit_json(&output)?;
     } else {
@@ -1060,6 +1128,8 @@ fn detect(path: Option<PathBuf>, stack: Option<String>, json_output: bool) -> Re
         humanln!("Service URL:    {}", service_info.service_url);
         humanln!("Container User: {}", container_user.username);
         humanln!("Home Path:      {}", container_user.home_path);
+        humanln!("Container Type: {}", container_type);
+        humanln!("Workspace:      {}", workspace_folder);
     }
 
     Ok(())

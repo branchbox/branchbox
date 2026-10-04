@@ -255,7 +255,8 @@ enum FeatureConfirmations {
     static func stopDeletingVolumes(_ feature: FeatureRef) -> FeatureConfirmation {
         FeatureConfirmation(
             title: "Stop the dev container and delete its volumes?",
-            message: "Databases and caches kept in Docker volumes for \(feature.name) are deleted permanently. "
+            message: "For a single container, attached anonymous volumes are deleted; named and shared volumes are kept. "
+                + "For Compose, volumes owned by the feature's project are deleted. Deleted data cannot be recovered. "
                 + "Files in the worktree are kept.",
             confirmLabel: "Stop and Delete Volumes",
             request: .devcontainer(.down(removeVolumes: true), feature))

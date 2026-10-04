@@ -656,7 +656,17 @@ pub fn detect_main_service(
     let config_contents = std::fs::read_to_string(&config_path)?;
     let config = parse_json_with_comments(&config_contents, &config_path)?;
 
-    let compose_path = match find_compose_file(devcontainer_dir, &config) {
+    detect_main_service_from_config(devcontainer_dir, &config, stack_hint)
+}
+
+/// Detect service facts from an already parsed active configuration, resolving Compose files relative
+/// to that configuration's directory. This also supports a workspace-root `.devcontainer.json`.
+pub fn detect_main_service_from_config(
+    devcontainer_dir: &Path,
+    config: &JsonValue,
+    stack_hint: Option<&str>,
+) -> Result<ServiceInfo> {
+    let compose_path = match find_compose_file(devcontainer_dir, config) {
         Some(p) => p,
         None => {
             return Ok(default_service_info(stack_hint));

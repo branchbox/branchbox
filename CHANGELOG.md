@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Feature teardown removes standalone image/Dockerfile devcontainers bearing the exact worktree's
+  workspace label, and discovers owned Compose resources through verified lexical and canonical
+  workspace labels. Discovered Compose identities survive partial cleanup for safe retries.
+  Cleanup checks command results and remaining resources; failures report an unverified receipt,
+  and observed residue never reports residue-free. Remaining Compose ownership evidence is preserved.
+  Failed runtime/module cleanup retains a possibly provisioned worktree and registry entry for retry;
+  `--force` can override retention while the receipt still reports cleanup status. Bare features
+  still work without Docker.
+- Devcontainer Stop checks every exact workspace/configuration match and observed or retained
+  Compose project. Stop keeps volumes by default; explicit volume deletion covers attached anonymous
+  volumes for standalone containers and owned Compose volumes. Cleanup failures no longer report success.
+- Devcontainer detection reports the configured user and workspace from the active devcontainer
+  configuration, including root `.devcontainer.json` and unrelated nullable fields; image/Dockerfile
+  projects no longer inherit service facts from unused Compose files.
+
 - Reject Compose `provider` services in managed in-guest projects before staging CLI inputs;
   Compose would otherwise run the repository-selected provider binary on the guest host.
 - Reject ambient variable interpolation left in sanitized or generated in-guest Compose inputs,
@@ -127,6 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### macOS app
 
+- Open Shell uses the configured container user and workspace, and falls back from Bash to `sh`
+  for images that do not provide Bash.
 - The macOS app finds the `branchbox` CLI when it is launched from Finder or the Dock, and the CLI it runs finds
   `docker`, `git`, the devcontainer CLI (nvm), `op` and `gh`. GUI apps inherit launchd's
   `PATH=/usr/bin:/bin:/usr/sbin:/sbin`; the app now captures your login shell's environment once

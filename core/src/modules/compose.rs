@@ -8,10 +8,145 @@
 
 use super::Module;
 use crate::{Error, Result};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+
+const TEARDOWN_PROJECTS_KEY: &str = "BRANCHBOX_TEARDOWN_COMPOSE_PROJECTS";
+const TEARDOWN_WORKSPACE_KEY: &str = "BRANCHBOX_TEARDOWN_WORKSPACE_SHA256";
+
+fn managed_env_contents(feature_dir: &Path) -> Result<String> {
+    if fs::symlink_metadata(feature_dir.join(".devcontainer"))
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(Error::validation(
+            "Compose cleanup identity cannot use a symlinked devcontainer directory",
+        ));
+    }
+    let path = feature_dir.join(".devcontainer/.branchbox.env");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            Ok(fs::read_to_string(path)?)
+        }
+        Ok(_) => Err(Error::validation(
+            "Compose cleanup identity requires a regular managed env file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn ensure_managed_env_directory(feature_dir: &Path) -> Result<()> {
+    let directory = feature_dir.join(".devcontainer");
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(Error::validation(
+            "Compose cleanup identity requires a regular devcontainer directory",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&directory)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn workspace_digest(feature_dir: &Path) -> Result<String> {
+    let workspace = feature_dir.canonicalize()?;
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+    ))
+}
+
+/// Retained cleanup identity is valid only for the workspace that observed the exact labels.
+/// Copying the managed env to another worktree cannot authorize cleanup of the old project.
+pub(crate) fn retained_teardown_projects(feature_dir: &Path) -> Result<BTreeSet<String>> {
+    let contents = managed_env_contents(feature_dir)?;
+    let values = |key: &str| {
+        contents
+            .lines()
+            .filter_map(move |line| {
+                let (name, value) = line.split_once('=')?;
+                (name.trim() == key).then_some(value.trim())
+            })
+            .collect::<Vec<_>>()
+    };
+    let projects = values(TEARDOWN_PROJECTS_KEY);
+    let scopes = values(TEARDOWN_WORKSPACE_KEY);
+    if projects.is_empty() && scopes.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    if projects.len() != 1 || scopes.len() != 1 || scopes[0] != workspace_digest(feature_dir)? {
+        return Err(Error::validation("Compose cleanup identity is malformed or belongs to another workspace; preserve it and retry from its owning worktree"));
+    }
+    let names: BTreeSet<_> = projects[0].split(',').map(ToOwned::to_owned).collect();
+    if names.is_empty()
+        || !names
+            .iter()
+            .all(|name| ComposeModule::is_compose_project_name(name))
+    {
+        return Err(Error::validation(
+            "Compose cleanup identity contains an invalid project name",
+        ));
+    }
+    Ok(names)
+}
+
+pub(crate) fn teardown_identity_lines(
+    feature_dir: &Path,
+    projects: &BTreeSet<String>,
+) -> Result<String> {
+    if !projects
+        .iter()
+        .all(|project| ComposeModule::is_compose_project_name(project))
+    {
+        return Err(Error::validation(
+            "Cannot retain an invalid Compose cleanup project name",
+        ));
+    }
+    if projects.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        "{TEARDOWN_PROJECTS_KEY}={}\n{TEARDOWN_WORKSPACE_KEY}={}\n",
+        projects.iter().cloned().collect::<Vec<_>>().join(","),
+        workspace_digest(feature_dir)?
+    ))
+}
+
+pub(crate) fn persist_teardown_projects(
+    feature_dir: &Path,
+    projects: &BTreeSet<String>,
+) -> Result<()> {
+    let contents = managed_env_contents(feature_dir)?;
+    // Preserve unrelated bytes (which may include private values) and existing permissions.
+    let mut updated = contents
+        .split_inclusive('\n')
+        .filter(|line| {
+            !line.split_once('=').is_some_and(|(name, _)| {
+                matches!(name.trim(), TEARDOWN_PROJECTS_KEY | TEARDOWN_WORKSPACE_KEY)
+            })
+        })
+        .collect::<String>();
+    if !projects.is_empty() {
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(&teardown_identity_lines(feature_dir, projects)?);
+    }
+    if updated != contents {
+        ensure_managed_env_directory(feature_dir)?;
+        crate::atomic_fs::write_atomic(
+            &feature_dir.join(".devcontainer/.branchbox.env"),
+            updated.as_bytes(),
+            0o600,
+        )?;
+    }
+    Ok(())
+}
 
 /// Docker Compose module
 pub struct ComposeModule {
@@ -107,7 +242,7 @@ impl ComposeModule {
             .collect())
     }
 
-    fn is_compose_project_name(value: &str) -> bool {
+    pub(crate) fn is_compose_project_name(value: &str) -> bool {
         value
             .chars()
             .next()
@@ -167,6 +302,7 @@ impl ComposeModule {
 
     /// Remove and verify only resources bearing an exact, owned Compose project label.
     fn cleanup_project_resources(&self, project: &str) -> Result<()> {
+        let mut errors = Vec::new();
         for (kind, remove_args) in [
             ("container", vec!["rm", "-f"]),
             ("network", vec!["network", "rm"]),
@@ -180,6 +316,9 @@ impl ComposeModule {
                     &format!("remove {kind} '{id}' for project '{project}'"),
                 )?;
                 if !output.status.success() {
+                    errors.push(format!(
+                        "Cannot remove {kind} '{id}' for project '{project}'"
+                    ));
                     tracing::warn!(
                         "Failed to remove {} '{}' for project '{}': {}",
                         kind,
@@ -197,9 +336,10 @@ impl ComposeModule {
                 remaining.push(format!("{kind}:{id}"));
             }
         }
-        if !remaining.is_empty() {
+        if !remaining.is_empty() || !errors.is_empty() {
             return Err(Error::validation(format!(
-                "Docker teardown left resources for Compose project '{project}': {}",
+                "Docker teardown did not verify cleanup for Compose project '{project}': {}; {}",
+                errors.join(", "),
                 remaining.join(", ")
             )));
         }
@@ -315,7 +455,24 @@ impl Module for ComposeModule {
         let compose_yml = project_dir.join(".devcontainer/docker-compose.yml");
         let dockerfile = project_dir.join(".devcontainer/Dockerfile");
 
-        compose_yaml.exists() || compose_yml.exists() || dockerfile.exists()
+        let root_compose_config = fs::read_to_string(project_dir.join(".devcontainer.json"))
+            .ok()
+            .and_then(|contents| {
+                jsonc_parser::parse_to_serde_value(&contents, &Default::default())
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|config| config.get("dockerComposeFile").cloned())
+            .is_some_and(|files| {
+                files.as_str().is_some_and(|file| !file.is_empty())
+                    || files.as_array().is_some_and(|files| {
+                        !files.is_empty()
+                            && files
+                                .iter()
+                                .all(|file| file.as_str().is_some_and(|file| !file.is_empty()))
+                    })
+            });
+        compose_yaml.exists() || compose_yml.exists() || dockerfile.exists() || root_compose_config
     }
 
     fn init(&mut self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
@@ -376,20 +533,33 @@ impl Module for ComposeModule {
         let compose_file = feature_dir
             .join(".devcontainer")
             .join(&self.compose_file_name);
-        if !compose_file.exists() {
-            tracing::info!("No compose file found, skipping container cleanup");
-            return Ok(());
+        let mut projects = retained_teardown_projects(feature_dir)?;
+        projects.extend(self.discover_devcontainer_projects(feature_dir)?);
+        if compose_file.is_file() && !self.compose_project_name.is_empty() {
+            projects.insert(self.compose_project_name.clone());
         }
-
-        let mut projects = self.discover_devcontainer_projects(feature_dir)?;
-        projects.insert(self.compose_project_name.clone());
-        for project in projects {
+        // Container labels can disappear before network/volume cleanup completes. Retain their
+        // exact project identity first, so a retry cannot mistake an empty container probe for success.
+        persist_teardown_projects(feature_dir, &projects)?;
+        let mut errors = Vec::new();
+        for project in &projects {
             tracing::info!(
                 "Removing Docker resources for Compose project '{}'...",
                 project
             );
-            self.down_project(feature_dir, &compose_file, &project)?;
+            let result = if compose_file.is_file() {
+                self.down_project(feature_dir, &compose_file, project)
+            } else {
+                self.cleanup_project_resources(project)
+            };
+            if let Err(error) = result {
+                errors.push(error.to_string());
+            }
         }
+        if !errors.is_empty() {
+            return Err(Error::validation(errors.join("; ")));
+        }
+        persist_teardown_projects(feature_dir, &BTreeSet::new())?;
 
         tracing::info!("Containers, networks, and volumes removed");
         Ok(())
@@ -431,6 +601,100 @@ impl Module for ComposeModule {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn teardown_identity_is_atomic_scoped_and_preserves_unrelated_env_bytes() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir(temp.path().join(".devcontainer")).unwrap();
+        let env = temp.path().join(".devcontainer/.branchbox.env");
+        let original = "# managed fixture\nCOMPOSE_PROJECT_NAME=fixture-owned\nPRIVATE_FIXTURE='literal space'\n";
+        fs::write(&env, original).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&env, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let projects = BTreeSet::from(["vsc-owned".to_string(), "fixture-owned".to_string()]);
+        persist_teardown_projects(temp.path(), &projects).unwrap();
+        assert!(fs::read_to_string(&env).unwrap().starts_with(original));
+        assert_eq!(retained_teardown_projects(temp.path()).unwrap(), projects);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&env).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        persist_teardown_projects(temp.path(), &BTreeSet::new()).unwrap();
+        assert_eq!(fs::read_to_string(&env).unwrap(), original);
+    }
+
+    #[test]
+    fn teardown_identity_creates_a_managed_directory_for_root_devcontainer_configs() {
+        let workspace = TempDir::new().unwrap();
+        let projects = BTreeSet::from(["vsc-root-config".to_string()]);
+        assert!(retained_teardown_projects(workspace.path())
+            .unwrap()
+            .is_empty());
+        persist_teardown_projects(workspace.path(), &projects).unwrap();
+        assert!(workspace
+            .path()
+            .join(".devcontainer/.branchbox.env")
+            .is_file());
+        assert_eq!(
+            retained_teardown_projects(workspace.path()).unwrap(),
+            projects
+        );
+    }
+
+    #[test]
+    fn copied_malformed_and_unsafe_teardown_identity_never_authorizes_cleanup() {
+        let source = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        for path in [source.path(), other.path()] {
+            fs::create_dir(path.join(".devcontainer")).unwrap();
+        }
+        let projects = BTreeSet::from(["vsc-owned".to_string()]);
+        persist_teardown_projects(source.path(), &projects).unwrap();
+        let contents =
+            fs::read_to_string(source.path().join(".devcontainer/.branchbox.env")).unwrap();
+        let env = other.path().join(".devcontainer/.branchbox.env");
+        fs::write(&env, &contents).unwrap();
+        assert!(retained_teardown_projects(other.path()).is_err());
+        for contents in [
+            format!("{TEARDOWN_PROJECTS_KEY}=vsc-owned\n"),
+            format!("{TEARDOWN_PROJECTS_KEY}=invalid/name\n{TEARDOWN_WORKSPACE_KEY}={}\n", workspace_digest(other.path()).unwrap()),
+            format!("{TEARDOWN_PROJECTS_KEY}=vsc-owned\n{TEARDOWN_PROJECTS_KEY}=foreign\n{TEARDOWN_WORKSPACE_KEY}={}\n", workspace_digest(other.path()).unwrap()),
+        ] {
+            fs::write(&env, &contents).unwrap();
+            assert!(retained_teardown_projects(other.path()).is_err());
+            assert_eq!(fs::read_to_string(&env).unwrap(), contents);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn teardown_identity_refuses_symlinked_files_and_parent_directories() {
+        use std::os::unix::fs::symlink;
+        let source = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        fs::create_dir(source.path().join(".devcontainer")).unwrap();
+        let private = other.path().join("private-fixture");
+        fs::write(&private, "unchanged\n").unwrap();
+        let env = source.path().join(".devcontainer/.branchbox.env");
+        symlink(&private, &env).unwrap();
+        let projects = BTreeSet::from(["vsc-owned".to_string()]);
+        assert!(retained_teardown_projects(source.path()).is_err());
+        assert!(persist_teardown_projects(source.path(), &projects).is_err());
+        fs::remove_file(&env).unwrap();
+        fs::remove_dir(source.path().join(".devcontainer")).unwrap();
+        symlink(other.path(), source.path().join(".devcontainer")).unwrap();
+        assert!(retained_teardown_projects(source.path()).is_err());
+        assert!(persist_teardown_projects(source.path(), &projects).is_err());
+        assert_eq!(fs::read_to_string(&private).unwrap(), "unchanged\n");
+        assert!(!other.path().join(".branchbox.env").exists());
+    }
 
     #[test]
     fn test_detect_compose_yaml() {

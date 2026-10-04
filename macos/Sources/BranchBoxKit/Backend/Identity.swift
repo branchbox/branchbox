@@ -112,6 +112,7 @@ public struct Capability: RawRepresentable, Hashable, Sendable, Codable {
     public static let teardownPlan             = Capability(rawValue: "teardown-plan")
     public static let teardownDiscardChanges   = Capability(rawValue: "teardown-discard-changes")
     public static let teardownUnmergedPreflight = Capability(rawValue: "teardown-unmerged-preflight")
+    public static let hostContainerTeardownVerified = Capability(rawValue: "host-container-teardown-verified")
     public static let pruneJSON                = Capability(rawValue: "prune-json")
     public static let detectJSON               = Capability(rawValue: "detect-json")
     public static let devcontainerSyncJSON     = Capability(rawValue: "devcontainer-sync-json")

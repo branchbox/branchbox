@@ -28,6 +28,43 @@ private func backend(_ scripted: ScriptedProcessRunner, identity: BackendIdentit
 }
 
 @Suite struct TeardownTests {
+    @Test(arguments: [false, true])
+    func containerCleanupReceiptRequiresTheExecutionCapability(verifiedBackend: Bool) async throws {
+        let runner = ScriptedProcessRunner(Scripted.preflight() + [.exit(teardownCommand, stdout: Scripted.teardownSummary)])
+        let capabilities: Set<Capability> = verifiedBackend ? [.hostContainerTeardownVerified] : []
+        let outcome = try await backend(runner, identity: Scripted.identity(contract: true, capabilities))
+            .teardownFeature(request(), progress: { _ in })
+        #expect(outcome.worktreeGone && outcome.summary.worktreeRemoved)
+        #expect(outcome.branch == .kept("feature/eta"))
+        #expect(outcome.summary.runtimeTeardown?.verified == verifiedBackend)
+        #expect(outcome.summary.runtimeTeardown?.residueFree == true)
+        #expect(outcome.summary.moduleReports == [ModuleReport(name: "specs", teardownOk: true)])
+        #expect(outcome.summary.warnings.contains { $0.contains("cannot verify feature container cleanup") } == !verifiedBackend)
+    }
+
+    @Test func containerCapabilityDowngradePreservesCleanupEvidenceAndOtherProviders() {
+        let residue = [ResidueItem(kind: "container", identifiers: ["remaining"])]
+        let runtime = RuntimeTeardownReport(provider: "container", runtimeID: "recorded", verified: true,
+                                            residueFree: false, residue: residue)
+        let summary = TeardownSummary(workFeature: "eta", branchName: "feature/eta", worktreeRemoved: true,
+            branchDeleted: true, adapterCleanupWarnings: ["adapter"], moduleReports: [ModuleReport(name: "compose", teardownOk: false)],
+            runtimeTeardown: runtime, warnings: ["original"], branchAction: "delete", branchDeleteError: "branch error",
+            discardedChanges: [ChangedFile(path: "note", kind: "untracked", area: "other")],
+            preserved: [PreservedFile(path: "spec", destination: "/main/spec")], registryUpdated: true)
+        let downgraded = CLIBackend.teardownSummary(summary, capabilities: [])
+        #expect(downgraded.runtimeTeardown == RuntimeTeardownReport(provider: "container", runtimeID: "recorded",
+            verified: false, residueFree: false, residue: residue))
+        #expect(downgraded.branchDeleted && downgraded.branchAction == summary.branchAction)
+        #expect(downgraded.adapterCleanupWarnings == summary.adapterCleanupWarnings)
+        #expect(downgraded.moduleReports == summary.moduleReports && downgraded.branchDeleteError == summary.branchDeleteError)
+        #expect(downgraded.discardedChanges == summary.discardedChanges && downgraded.preserved == summary.preserved)
+        #expect(downgraded.registryUpdated == summary.registryUpdated && downgraded.warnings.first == "original")
+        #expect(CLIBackend.teardownSummary(summary, capabilities: [.hostContainerTeardownVerified]) == summary)
+        let sandbox = TeardownSummary(workFeature: "eta",
+            runtimeTeardown: RuntimeTeardownReport(provider: "sbx", verified: true, residueFree: true))
+        #expect(CLIBackend.teardownSummary(sandbox, capabilities: []) == sandbox)
+    }
+
     // MARK: - Refusals before any spawn (§6.5 steps 1–4)
 
     @Test func legacyTeardownWithAnUntrackedUserFileRefusesWithoutSpawningTheCLI() async throws {

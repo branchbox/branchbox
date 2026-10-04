@@ -488,6 +488,18 @@ private func fixture(_ name: String) throws -> String { try Fixtures.string("cli
         #expect(runner.specs.first { $0.executable.lastPathComponent == "docker" }?.arguments
                 == ["ps", "-a", "--filter", "label=devcontainer.local_folder=/r/eta", "--format", "{{json .}}"])
 
+        let imageOnly = ScriptedProcessRunner([
+            .exit(["branchbox", "feature", "list"], stdout: Scripted.etaRecord),
+            .exit(["docker", "ps"], stdout: #"{"ID":"image123","State":"running"}"# + "\n"),
+            .exit(["branchbox", "devcontainer", "detect"], stdout:
+                #"{"service_name":null,"port":0,"service_url":"","container_type":"image","container_user":"root","configured_user":"root","workspace_folder":"/workspace"}"#),
+        ])
+        let imageStatus = try await Scripted.backend(imageOnly, fileSystem: fileSystem, environment: environment)
+            .devcontainerStatus(for: Scripted.eta)
+        #expect(imageStatus.state == .running && imageStatus.containerID == "image123")
+        #expect(imageStatus.service?.serviceName == nil)
+        #expect(imageStatus.service?.effectiveUser == "root" && imageStatus.service?.workspaceFolder == "/workspace")
+
         #expect(CLIBackend.containerState("") == (.notCreated, nil))
         #expect(CLIBackend.containerState(#"{"ID":"x","State":"exited"}"#) == (.stopped, "x"))
 

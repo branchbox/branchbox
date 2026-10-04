@@ -79,6 +79,11 @@ private let remotion = feature("remotion")
             branch: .kept("feature/c"), worktreeGone: false)
 
         #expect(Dispatcher.outcome(for: .teardown(clean)).state == .succeeded)
+        let unverified = TeardownOutcome(summary: TeardownSummary(workFeature: "a", worktreeRemoved: true,
+            runtimeTeardown: RuntimeTeardownReport(provider: "container", verified: false, residueFree: true)),
+            branch: .kept("feature/a"), worktreeGone: true)
+        #expect(Dispatcher.outcome(for: .teardown(unverified)).state == .succeededWithWarnings)
+        #expect(Dispatcher.outcome(for: .teardown(unverified)).warnings == ["The runtime cleanup could not be verified"])
         #expect(Dispatcher.outcome(for: .teardown(failedDelete)).state == .partial)
         let messy = Dispatcher.outcome(for: .teardown(residue))
         #expect(messy.state == .succeededWithWarnings)

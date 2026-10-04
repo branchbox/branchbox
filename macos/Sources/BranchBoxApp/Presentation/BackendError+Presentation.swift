@@ -247,6 +247,7 @@ extension Capability {
         case .teardownPlan: "teardown previews"
         case .teardownDiscardChanges: "safe discarding of changes"
         case .teardownUnmergedPreflight: "unmerged-branch checks"
+        case .hostContainerTeardownVerified: "verified feature container cleanup"
         case .pruneJSON: "prune previews"
         case .detectJSON: "project detection"
         case .devcontainerSyncJSON: "per-feature workspace updates"

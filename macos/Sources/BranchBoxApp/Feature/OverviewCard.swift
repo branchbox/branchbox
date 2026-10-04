@@ -2,10 +2,10 @@ import BranchBoxKit
 import BranchBoxPreview
 import SwiftUI
 
-/// Branch, base, folder (with a "Missing" state) and last commit; dates, compose project and env file behind
+/// Branch, base, folder (with a "Missing" state) and recorded commit; dates, compose project and env file behind
 /// a "Dates and files" disclosure.
 ///
-/// The last commit shows its short SHA; its subject needs a git read the backend does not offer yet.
+/// The commit is the registry's short SHA; this card does not read the worktree's current Git HEAD.
 struct OverviewCard: View {
     let record: FeatureRecord
     let folderExists: Bool
@@ -27,9 +27,10 @@ struct OverviewCard: View {
                         folderRow(path)
                     }
                     if let commit = FeaturePresentation.shortCommit(record.lastCommit), let full = record.lastCommit {
-                        FactRow(label: "Last commit", value: commit, monospaced: true) {
-                            CopyButton(text: full, label: "Copy Commit SHA").buttonStyle(.borderless)
+                        FactRow(label: "Recorded commit", value: commit, monospaced: true) {
+                            CopyButton(text: full, label: "Copy Recorded Commit SHA").buttonStyle(.borderless)
                         }
+                        .help("Commit SHA recorded in the feature registry; current Git HEAD is not probed here.")
                     }
                     if let removed = record.removedAt {
                         dateRow("Torn down", removed)

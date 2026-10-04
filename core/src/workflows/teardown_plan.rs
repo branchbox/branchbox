@@ -304,6 +304,13 @@ pub enum Blocker {
         cause: String,
         message: String,
     },
+    /// Runtime cleanup could not be verified; keep the worktree's ownership/configuration for a retry.
+    RuntimeCleanupFailed {
+        cause: String,
+        message: String,
+        #[serde(rename = "override")]
+        override_hint: String,
+    },
     /// The directory at the feature's worktree path is not a linked worktree of this
     /// repository (the main worktree, an unrelated repository or a plain folder). Nothing
     /// overrides it: teardown never deletes such a directory.
@@ -512,6 +519,21 @@ impl Blocker {
         }
     }
 
+    pub fn runtime_cleanup_failed(worktree: &Path, cause: String) -> Self {
+        let filter = format!("label=devcontainer.local_folder={}", worktree.display());
+        let filter = format!("'{}'", filter.replace('\'', "'\\''"));
+        Blocker::RuntimeCleanupFailed {
+            message: format!(
+                "Could not verify runtime cleanup for {}: {cause}. Start Docker or restore runtime access and retry. \
+                 Inspect owned containers with `docker ps -a --filter {filter}`. \
+                 --force removes the worktree anyway and can leave runtime resources; add --keep-branch to retain the branch, otherwise --force force-deletes it.",
+                worktree.display()
+            ),
+            cause,
+            override_hint: "--force".to_string(),
+        }
+    }
+
     /// The directory `worktree` is not a linked worktree of the repository; `cause` says what
     /// it is instead.
     pub fn not_a_worktree(worktree: &Path, cause: String) -> Self {
@@ -548,6 +570,7 @@ impl Blocker {
             | Blocker::WorktreeLocked { message, .. }
             | Blocker::StatusUnavailable { message, .. }
             | Blocker::WorktreeRemovalFailed { message, .. }
+            | Blocker::RuntimeCleanupFailed { message, .. }
             | Blocker::NotAWorktree { message, .. }
             | Blocker::SpecNotPreserved { message, .. } => message,
         }
@@ -2471,6 +2494,7 @@ mod tests {
                 Blocker::WorktreeLocked { .. } => "worktree_locked",
                 Blocker::StatusUnavailable { .. } => "status_unavailable",
                 Blocker::WorktreeRemovalFailed { .. } => "worktree_removal_failed",
+                Blocker::RuntimeCleanupFailed { .. } => "runtime_cleanup_failed",
                 Blocker::NotAWorktree { .. } => "not_a_worktree",
                 Blocker::SpecNotPreserved { .. } => "spec_not_preserved",
             })

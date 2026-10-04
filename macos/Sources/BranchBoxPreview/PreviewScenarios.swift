@@ -110,7 +110,7 @@ public enum PreviewSamples {
     public static let allCapabilities: Set<Capability> = [
         .jsonErrorEnvelope, .registryLock, .writeAheadStart, .teardownPlan, .teardownDiscardChanges,
         .teardownUnmergedPreflight, .pruneJSON, .detectJSON, .devcontainerSyncJSON, .config, .tunnelCredentials,
-        .doctor, .initJSON,
+        .doctor, .initJSON, .hostContainerTeardownVerified,
     ]
 
     /// Where the CLI locator looks when nothing overrides it.

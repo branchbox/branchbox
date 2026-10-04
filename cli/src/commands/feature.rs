@@ -32,7 +32,7 @@ use worktree_core::{
 /// Contract capabilities this module adds to `branchbox version --json` (DESIGN §5.3):
 /// `prune-json` is `prune --dry-run --json`, `prune --yes --json` and `--feature` selection
 /// (§5.9).
-pub const CAPABILITIES: &[&str] = &["prune-json"];
+pub const CAPABILITIES: &[&str] = &["prune-json", "host-container-teardown-verified"];
 
 /// `schema_version` of the prune documents.
 const PRUNE_SCHEMA_VERSION: u32 = 1;

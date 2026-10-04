@@ -58,19 +58,33 @@ public struct DevcontainerStatus: Sendable, Hashable {
 
 public struct DevcontainerServiceInfo: Decodable, Sendable, Hashable { public let serviceName: String?; public let port: Int?
     public let serviceURL: String?; public let containerUser: String?    // devcontainer detect --json (snake_case)
-    public init(serviceName: String?, port: Int?, serviceURL: String?, containerUser: String?) {
+    public let configuredUser: String?; public let workspaceFolder: String?; public let containerType: String?
+    public init(serviceName: String?, port: Int?, serviceURL: String?, containerUser: String?,
+                configuredUser: String? = nil, workspaceFolder: String? = nil, containerType: String? = nil) {
         self.serviceName = serviceName
         self.port = port
         self.serviceURL = serviceURL
         self.containerUser = containerUser
+        self.configuredUser = configuredUser
+        self.workspaceFolder = workspaceFolder
+        self.containerType = containerType
     }
 
-    /// The payload named a service. `devcontainer detect --json` without a `.devcontainer` prints
+    /// Newer CLIs identify the effective configuration rather than estimating a user from adjacent files.
+    /// An absent configured user means Docker's default user; the legacy estimate must not override it.
+    public var hasEffectiveConfiguration: Bool { containerType?.isEmpty == false }
+    public var effectiveUser: String? { hasEffectiveConfiguration ? configuredUser : containerUser }
+
+    /// Image-only configurations may have a user/workspace without a Compose service. Without configuration,
+    /// `devcontainer detect --json` prints
     /// `{"error": "..."}` (exit 1), which decodes with every field nil.
-    public var isRecognized: Bool { serviceName != nil }
+    public var isRecognized: Bool {
+        serviceName != nil || containerUser != nil || configuredUser != nil || workspaceFolder != nil || hasEffectiveConfiguration
+    }
 
     private enum CodingKeys: String, CodingKey {
         case serviceName = "service_name", port, serviceURL = "service_url", containerUser = "container_user"
+        case configuredUser = "configured_user", workspaceFolder = "workspace_folder", containerType = "container_type"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -79,5 +93,8 @@ public struct DevcontainerServiceInfo: Decodable, Sendable, Hashable { public le
         port = c.lenient(Int.self, forKey: .port)
         serviceURL = c.lenient(String.self, forKey: .serviceURL)
         containerUser = c.lenient(String.self, forKey: .containerUser)
+        configuredUser = c.lenient(String.self, forKey: .configuredUser)
+        workspaceFolder = c.lenient(String.self, forKey: .workspaceFolder)
+        containerType = c.lenient(String.self, forKey: .containerType)
     }
 }

@@ -47,7 +47,7 @@ enum Scripted {
     static let everything: Set<Capability> = [
         .jsonErrorEnvelope, .registryLock, .writeAheadStart, .teardownPlan, .teardownDiscardChanges,
         .teardownUnmergedPreflight, .pruneJSON, .detectJSON, .devcontainerSyncJSON, .config, .tunnelCredentials,
-        .doctor, .initJSON,
+        .doctor, .initJSON, .hostContainerTeardownVerified,
     ]
 
     static func backend(_ runner: any ProcessRunning, identity: BackendIdentity = identity(),
