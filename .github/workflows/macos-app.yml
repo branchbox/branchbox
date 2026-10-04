@@ -50,9 +50,13 @@ jobs:
         # test, so the grep fails the step if Swift Testing did not run at all (for example under
         # SwiftPM 6.0's --parallel), instead of passing an empty run.
         shell: bash
+        # The store tests time main-actor work; run them apart from the git-heavy CLI tests, which saturate
+        # the runner's few cores with git processes.
         run: |
-          swift test --package-path macos --parallel 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+          swift test --package-path macos --parallel --skip BranchBoxStoresTests 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
           grep -Eq 'Test run with [1-9][0-9]* tests? .*passed' "$RUNNER_TEMP/swift-test.log"
+          swift test --package-path macos --parallel --filter BranchBoxStoresTests 2>&1 | tee "$RUNNER_TEMP/swift-test-stores.log"
+          grep -Eq 'Test run with [1-9][0-9]* tests? .*passed' "$RUNNER_TEMP/swift-test-stores.log"
       - name: Guard against gRPC, SwiftProtobuf and NIO imports
         run: |
           ! grep -rn 'import GRPC\|SwiftProtobuf\|NIOCore' macos/Sources

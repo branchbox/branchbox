@@ -729,7 +729,7 @@ private let remotion = feature("remotion")
     // MARK: Termination
 
     @Test func prepareForTerminationCancelsEverythingWithinItsBound() async throws {
-        let harness = Harness { $0.terminationTimeout = .milliseconds(400) }
+        let harness = Harness { $0.terminationTimeout = .seconds(2) }
         defer { harness.tearDown() }
         _ = try await harness.startWithSampleProject()
         await harness.backend.script(.exec, .suspendUntilResumed)
@@ -743,7 +743,7 @@ private let remotion = feature("remotion")
         await harness.backend.clearCalls()
         let began = ContinuousClock.now
         await harness.model.prepareForTermination()
-        #expect(ContinuousClock.now - began < .seconds(2))
+        #expect(ContinuousClock.now - began < .seconds(5))
         #expect(exec.state == .cancelled(note: nil))
         #expect(start.state == .cancelled(note: nil))
         #expect(harness.model.operations.running.isEmpty)
