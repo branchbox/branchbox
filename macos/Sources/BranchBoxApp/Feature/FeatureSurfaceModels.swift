@@ -105,6 +105,7 @@ struct FeatureActionAvailability: Sendable, Hashable {
     /// features that have no dev container.
     var primaryEditor: HostLaunchPlan {
         let mode: EditorOpenMode = preferences.editorMode == .devContainer && record.runtime.provider == .container
+            && record.worktreeIssue == nil
             ? .devContainer : .folder
         return HostLaunchPlan.editor(preferences.editor, mode: mode, record: record, folderExists: folderExists)
     }
@@ -116,7 +117,7 @@ struct FeatureActionAvailability: Sendable, Hashable {
     }
 
     var primaryEditorOpensDevContainer: Bool {
-        preferences.editorMode == .devContainer && record.runtime.provider == .container
+        preferences.editorMode == .devContainer && record.runtime.provider == .container && record.worktreeIssue == nil
     }
 
     func editor(_ choice: EditorChoice) -> HostLaunchPlan {
@@ -125,6 +126,7 @@ struct FeatureActionAvailability: Sendable, Hashable {
 
     /// The folder reopened in its dev container (VS Code unless Cursor is preferred).
     var devContainer: HostLaunchPlan {
+        if let issue = record.worktreeIssue { return HostLaunchPlan(kind: .disabled(reason: "Git worktree needs repair: \(issue)")) }
         let choice: EditorChoice = preferences.editor == .cursor ? .cursor : .vscode
         return HostLaunchPlan.editor(choice, mode: .devContainer, record: record, folderExists: folderExists)
     }
@@ -170,6 +172,10 @@ struct FeatureActionAvailability: Sendable, Hashable {
         isRemoved ? .disabled("\(record.workFeature) has been torn down") : .enabled
     }
 
+    private var gitCheck: ActionAvailability {
+        record.worktreeIssue.map { .disabled("Git worktree needs repair: \($0)") } ?? .enabled
+    }
+
     /// Run Command: not for torn-down or orphaned features, and not without the CLI.
     var runCommand: ActionAvailability {
         let state: ActionAvailability
@@ -182,12 +188,12 @@ struct FeatureActionAvailability: Sendable, Hashable {
         } else {
             state = .enabled
         }
-        return .first(backendCheck, removedCheck, state)
+        return .first(backendCheck, removedCheck, gitCheck, state)
     }
 
     /// Tear Down opens the sheet; a torn-down feature has nothing left to tear down.
     var teardown: ActionAvailability {
-        .first(removedCheck, backendCheck)
+        .first(removedCheck, backendCheck, gitCheck)
     }
 
     /// Dev container Start / Stop / Rebuild: the container runtime with its folder present.
@@ -197,12 +203,17 @@ struct FeatureActionAvailability: Sendable, Hashable {
         let folder: ActionAvailability = folderExists ? .enabled : .disabled("The folder \(record.worktreePath ?? "") is missing")
         let setup: ActionAvailability = record.setup?.state == .inProgress
             ? .disabled("\(record.workFeature) is still being set up") : .enabled
-        return .first(removedCheck, runtime, folder, setup, backendCheck, busyCheck)
+        return .first(removedCheck, runtime, folder, setup, backendCheck, gitCheck, busyCheck)
     }
 
     /// Share via Tunnel / Stop Sharing.
     var tunnel: ActionAvailability {
         .first(removedCheck, backendCheck, busyCheck)
+    }
+
+    /// Provisioning changes the environment; removal can still clean up an existing public tunnel.
+    var tunnelProvision: ActionAvailability {
+        .first(removedCheck, backendCheck, gitCheck, busyCheck)
     }
 
     /// Remediation buttons wait for the feature's running operation.
@@ -333,6 +344,9 @@ enum RemediationPresenter {
         case .folderMissing?:
             return "The worktree folder was moved or deleted outside BranchBox. Clean Up forgets the worktree and keeps "
                 + "the branch; there is nothing left to discard."
+        case .worktreeInvalid?:
+            return (record.worktreeIssue ?? "Git cannot use this worktree.")
+                + " Your files remain on disk. Inspect the Git metadata before attempting setup or teardown."
         case .interrupted?:
             return "BranchBox stopped before setup finished, so parts of the environment may be missing. Resume Setup "
                 + "re-runs it on the existing folder without touching your files."

@@ -94,9 +94,9 @@ private func refused(_ cause: RefusalCause, message: String = "Refusing to tear 
 
     @Test func attentionVocabulary() {
         let reasons: [AttentionReason] = [.degraded, .failedRetained, .orphaned, .interrupted, .setupIncomplete(module: "compose"),
-                                          .folderMissing, .unknownStatus("x_y"), .unregisteredWorktree]
+                                          .folderMissing, .worktreeInvalid, .unknownStatus("x_y"), .unregisteredWorktree]
         #expect(reasons.map(\.label) == ["Degraded", "Failed (kept)", "Orphaned", "Interrupted", "Setup incomplete",
-                                         "Folder missing", "x y", "Unregistered worktree"])
+                                         "Folder missing", "Git worktree broken", "x y", "Unregistered worktree"])
         #expect(reasons.allSatisfy { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: nil) != nil })
     }
 
@@ -388,7 +388,7 @@ private func refused(_ cause: RefusalCause, message: String = "Refusing to tear 
         let confirmation = CancelConfirmation(kind: kind, title: "Starting oauth", capabilities: capabilities)
         #expect(confirmation.title == "Stop “Starting oauth”?")
         #expect(confirmation.warnsAboutCorruption == warns)
-        #expect(confirmation.message.contains("partial worktree") == warns)
+        #expect(confirmation.message.contains("partial worktree") == (warns || kind == .start))
         #expect(confirmation.message.contains(".branchbox/registry.json") == warns)
         #expect(confirmation.stopLabel == "Stop")
         #expect(confirmation.keepLabel == "Keep Running")

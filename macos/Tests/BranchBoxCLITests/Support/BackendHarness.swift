@@ -51,7 +51,7 @@ enum Scripted {
     ]
 
     static func backend(_ runner: any ProcessRunning, identity: BackendIdentity = identity(),
-                        fileSystem: any FileSystemProbing = MutableFileSystem(["/r/eta": .directory]),
+                        fileSystem: any FileSystemProbing = MutableFileSystem(["/r/eta": .directory, "/r/eta/.git": .directory]),
                         environment: StaticEnvironment = StaticEnvironment(),
                         settings: BackendSettings = BackendSettings()) -> CLIBackend {
         CLIBackend(executable: URL(fileURLWithPath: cli), identity: identity, runner: runner, environment: environment,

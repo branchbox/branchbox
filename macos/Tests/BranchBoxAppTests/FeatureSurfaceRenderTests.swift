@@ -30,6 +30,11 @@ struct FeatureSurfaceRenderTests {
 
     @Test func attentionStates() async throws {
         let world = try await RenderWorld.start()
+        var brokenGit = RenderSamples.checkout
+        brokenGit.worktreeIssue = "The .git file points to Git metadata that cannot be found at /old/main/.git/worktrees/checkout-v2."
+        try SnapshotRenderer.render("feature-detail-broken-git", size: Self.widePane) {
+            world.detail(brokenGit, devcontainer: .unavailable("Git worktree needs repair: \(brokenGit.worktreeIssue ?? "")"))
+        }
         let sbx = try #require(PreviewSamples.features.first { $0.workFeature == "sbx-demo" })
         try SnapshotRenderer.render("feature-detail-degraded-sbx", size: Self.tallPane) { world.detail(sbx) }
         try SnapshotRenderer.render("feature-detail-failed-retained", size: Self.pane) { world.detail(RenderSamples.retainedSandbox) }

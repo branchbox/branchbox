@@ -54,6 +54,7 @@ public enum DispatchResult { case started(OperationRecord), queued(OperationReco
         }
         let kind = request.operationKind
         let target = request.operationTarget
+        if let issue = worktreeIssue(for: request) { return .rejected(reason: "Git worktree needs repair: \(issue)") }
         if kind.isMutating {
             if let other = operations.queue.featureConflict(kind: kind, target: target) {
                 return .rejected(reason: OperationStore.busyReason(other))
@@ -72,6 +73,31 @@ public enum DispatchResult { case started(OperationRecord), queued(OperationReco
         let blocker = operations.submit(record) { [weak self] record in self?.run(record) }
         if let blocker { return .queued(record, behind: blocker.title) }
         return .started(record)
+    }
+
+    /// Known broken Git metadata is not repaired or discarded by an ordinary operation. Host folder actions and
+    /// tunnel removal remain available; the health callout offers a read-only inspection command.
+    private func worktreeIssue(for request: OperationRequestContext) -> String? {
+        let features: [FeatureRef]
+        switch request {
+        case .start(let request): features = [FeatureRef(project: request.project, name: request.name)]
+        case .teardown(let request): features = [request.feature]
+        case .exec(let request): features = [request.feature]
+        case .devcontainer(_, let feature): features = [feature]
+        case .tunnelOpen(let feature): features = [feature]
+        case .prune(let selection): features = selection.rows.map(\.feature)
+        case .syncDevcontainers(let request):
+            guard !request.dryRun else { return nil }
+            let records = projects.project(request.project)?.features ?? []
+            features = records.filter {
+                $0.status == .active && (request.features.isEmpty || request.features.contains($0.workFeature))
+            }.map { FeatureRef(project: request.project, name: $0.workFeature) }
+        default: return nil
+        }
+        return features.lazy.compactMap { feature in
+            self.projects.project(feature.project)?.feature(named: feature.name)?.worktreeIssue
+                .map { "\(feature.name): \($0)" }
+        }.first
     }
 
     /// Re-runs a `.retry` recovery's request; nil for the recoveries the UI performs itself.
@@ -196,12 +222,12 @@ public enum DispatchResult { case started(OperationRecord), queued(OperationReco
         projects.project(project)?.requestRefresh(.afterOperation)
     }
 
-    /// Without `registry-lock` and `write-ahead-start`, an interrupted start or teardown leaves no trace in the
-    /// registry, so the record says what may be left behind (D-18).
+    /// Start can be interrupted inside git worktree add, before even a write-ahead CLI writes its registry entry.
+    /// Legacy teardown can also leave a partial feature, so the record says what may be left behind (D-18).
     private func cancellationNote(for kind: OperationKind) -> String? {
+        if kind == .start { return "Stopped while starting; a partial worktree may be left behind" }
         guard !(environment.supports(.registryLock) && environment.supports(.writeAheadStart)) else { return nil }
         switch kind {
-        case .start: return "Stopped while starting; a partial worktree may be left behind"
         case .teardown, .prune: return "Stopped while tearing down; a feature may be partly removed"
         default: return nil
         }

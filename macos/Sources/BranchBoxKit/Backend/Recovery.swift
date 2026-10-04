@@ -26,7 +26,7 @@ public enum RecoveryAction: Sendable, Hashable, Identifiable {
     }
 }
 
-public enum AttentionReason: Sendable, Hashable { case degraded, failedRetained, orphaned, interrupted, setupIncomplete(module: String), folderMissing, unknownStatus(String), unregisteredWorktree }
+public enum AttentionReason: Sendable, Hashable { case degraded, failedRetained, orphaned, interrupted, setupIncomplete(module: String), folderMissing, worktreeInvalid, unknownStatus(String), unregisteredWorktree }
 public struct AttentionItem: Sendable, Hashable, Identifiable {
     public let id: String; public let featureOrPath: String; public let reason: AttentionReason
     public init(id: String, featureOrPath: String, reason: AttentionReason) {

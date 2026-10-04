@@ -45,10 +45,11 @@ extension RealCLI {
 
             let (error, seconds) = try await Self.cancelAfterTwoSeconds(cli, LiveCLI.minimalStart("slow", in: repo.project))
             repo.removeHook("post-checkout")
-            guard case .cancelled? = error else {
+            guard case .cancelled(let note)? = error else {
                 Issue.record("expected .cancelled, got \(String(describing: error))")
                 return
             }
+            #expect(note == CLIBackend.partialWorktreeNote, "an unregistered worktree is possible in both CLI modes")
             #expect(seconds < 6, "the cancel took \(seconds) s")
             #expect(try await processes(mentioning: repo.container.path).isEmpty, "the CLI outlived the cancel")
             #expect(try await processes(mentioning: "sleep \(Self.hookSleep)").isEmpty, "the hook outlived the cancel")

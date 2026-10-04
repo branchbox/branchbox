@@ -10,7 +10,7 @@ struct ModulesCard: View {
         FeatureCard("Setup", systemImage: "checklist") {
             if record.moduleOutcomes.isEmpty {
                 Text(record.startMode == StartFeatureRequest.Mode.minimal.rawValue
-                     ? "Quick features skip the setup modules."
+                     ? "No setup steps were recorded for this Quick feature."
                      : "No setup steps were recorded for this feature.")
                     .foregroundStyle(.secondary)
             } else {

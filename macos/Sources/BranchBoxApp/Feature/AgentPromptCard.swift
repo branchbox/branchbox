@@ -8,6 +8,7 @@ struct AgentPromptCard: View {
     let record: FeatureRecord
     let feature: FeatureRef
     let availability: FeatureActionAvailability
+    var autoLaunchConfigured = false
 
     @State private var showsFullPrompt = false
 
@@ -32,34 +33,37 @@ struct AgentPromptCard: View {
 
     private var agentSummary: some View {
         Text(Self.summary(agent: availability.preferences.agentName, plan: record.defaultAgent,
-                          inContainer: record.runtime.provider == .container))
+                          autoLaunchConfigured: autoLaunchConfigured))
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// One state-dependent sentence about where and when the agent runs: what Launch does, then what happens on
-    /// its own when the feature starts. The CLI's own detail is used only when it explains a problem (waiting,
-    /// blocked); the command and setup hints go in the badge's help.
-    static func summary(agent: String, plan: DefaultAgentPlan?, inContainer: Bool) -> String {
+    /// The recorded CLI plan is not an observed agent session: machine-mode starts never launch that plan.
+    /// Automatic host-terminal launch is a separate app setting.
+    static func summary(agent: String, plan: DefaultAgentPlan?, autoLaunchConfigured: Bool = false) -> String {
         let launch = "Launch \(agent) opens it in this feature's folder."
-        guard let plan else { return launch }
-        let place = inContainer ? " in the dev container" : ""
+        let automatic = autoLaunchConfigured
+            ? " Automatic launch after a successful start is on in Project Settings."
+            : " Automatic launch is off in Project Settings."
+        guard let plan else { return launch + automatic }
         switch plan.status {
         case .ready:
-            return launch + " It also starts automatically\(place) when the feature starts."
+            return launch + automatic + " The recorded default-agent plan is ready."
         case .disabled:
-            return launch + " Nothing starts automatically when the feature starts."
-        case .waiting, .blocked, .unknown:
+            return launch + automatic
+        case .waiting:
+            return launch + automatic + " The recorded setup plan was waiting for an environment; check Environment for its current state."
+        case .blocked, .unknown:
             guard let detail = plan.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty else {
-                return launch
+                return launch + automatic
             }
-            return launch + " " + (detail.hasSuffix(".") ? detail : detail + ".")
+            return launch + automatic + " Recorded setup note: " + (detail.hasSuffix(".") ? detail : detail + ".")
         }
     }
 
     /// The badge's help: the command that runs automatically, or how to set it up.
     static func badgeHelp(_ plan: DefaultAgentPlan) -> String {
-        if let command = plan.command, !command.isEmpty { return "Runs “\(command)” when the feature starts" }
-        if let detail = plan.detail, !detail.isEmpty { return detail }
+        if let command = plan.command, !command.isEmpty { return "Recorded default-agent command: \(command)" }
+        if let detail = plan.detail, !detail.isEmpty { return "Recorded setup note: \(detail)" }
         return "Default agent: \(plan.status.label)"
     }
 

@@ -180,11 +180,11 @@ private func fixture(_ name: String) throws -> String { try Fixtures.string("cli
         legacy.cancel()
         #expect(await backendError { try await legacy.value } == .cancelled(note: CLIBackend.partialWorktreeNote))
 
-        // A CLI with write-ahead start and the registry lock records the half-done start itself.
+        // git worktree add can be stopped before a write-ahead CLI registers the half-done start.
         let writeAhead = Task { try await Scripted.backend(runner, identity: contract).startFeature(request, progress: { _ in }) }
         try await eventually { runner.launched.count == 2 }
         writeAhead.cancel()
-        #expect(await backendError { try await writeAhead.value } == .cancelled(note: nil))
+        #expect(await backendError { try await writeAhead.value } == .cancelled(note: CLIBackend.partialWorktreeNote))
 
         // Already cancelled: nothing is launched.
         let early = Task {

@@ -32,6 +32,7 @@ public enum Remediation {
         switch condition(of: record, folderExists: folderExists) {
         case .removed, .settingUp, .healthy: nil
         case .folderMissing: .folderMissing
+        case .worktreeInvalid: .worktreeInvalid
         case .interrupted: .interrupted
         case .unknownStatus(let raw): .unknownStatus(raw)
         case .failedRetained: .failedRetained
@@ -62,6 +63,9 @@ public enum Remediation {
             var request = TeardownRequest(feature: feature, recordedBranch: recordedBranch(record), branch: .keep)
             request.forceRemoval = true
             actions = [.cleanUpMissingFolder(request)]
+        case .worktreeInvalid:
+            let command = "git -C \(HostLaunchPlan.shellQuote(record.worktreePath ?? project.path)) rev-parse --git-dir"
+            actions = [.copyCommand(command, label: "Copy Git Check Command")]
         case .interrupted:
             actions = appCanStart(record.runtime.provider)
                 ? [.resumeSetup(startRequest(record, project: project, reuse: .existingWorktree(.fail))), tearDown]
@@ -104,6 +108,8 @@ public enum Remediation {
             return "\(name) was torn down."
         case .folderMissing:
             return "The folder \(record.worktreePath ?? "of \(name)") is gone."
+        case .worktreeInvalid:
+            return "\(name)'s Git worktree needs repair."
         case .interrupted:
             return "Setup of \(name) was interrupted."
         case .settingUp:
@@ -129,7 +135,7 @@ public enum Remediation {
     // MARK: Conditions
 
     enum Condition: Hashable {
-        case removed, folderMissing, interrupted, settingUp, unknownStatus(String), failedRetained, orphaned, degraded
+        case removed, folderMissing, worktreeInvalid, interrupted, settingUp, unknownStatus(String), failedRetained, orphaned, degraded
         case failedModules([ModuleOutcome])
         case healthy
     }
@@ -138,6 +144,7 @@ public enum Remediation {
         if record.status == .removed { return .removed }
         if record.setup?.state == .inProgress { return .settingUp }
         if !folderExists { return .folderMissing }
+        if record.worktreeIssue != nil { return .worktreeInvalid }
         if record.setup?.state == .interrupted { return .interrupted }
         switch record.status {
         case .unknown(let raw): return .unknownStatus(raw)

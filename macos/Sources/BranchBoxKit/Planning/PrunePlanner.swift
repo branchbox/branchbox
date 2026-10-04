@@ -70,6 +70,7 @@ public struct PrunePlanner: Sendable {
     /// Why a row is not preselected, or nil when it is safe.
     static func exclusionReason(feature: FeatureRecord, plan: TeardownPlanDocument?, policy: BranchPolicy) -> String? {
         if feature.setup?.state == .inProgress { return "Still being set up" }
+        if let issue = feature.worktreeIssue { return "Git worktree needs repair: \(issue)" }
         guard let plan else { return "Not checked for unsaved work yet" }
         if plan.droppedBlockers > 0 || plan.blockers.contains(where: { !TeardownDraft.knownBlockerKinds.contains($0.kind) }) {
             return "BranchBox reported a problem this app version can't read"

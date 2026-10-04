@@ -131,6 +131,7 @@ import Observation
     func unselectableReason(_ name: String) -> String? {
         guard let feature = features.first(where: { $0.workFeature == name }) else { return "Unknown feature" }
         if feature.setup?.state == .inProgress { return "Still being set up" }
+        if let issue = feature.worktreeIssue { return "Git worktree needs repair: \(issue)" }
         if plans[name] != nil { return nil }
         if let error = planErrors[name] { return "Couldn't check it: \(error)" }
         return "Checking for unsaved work…"

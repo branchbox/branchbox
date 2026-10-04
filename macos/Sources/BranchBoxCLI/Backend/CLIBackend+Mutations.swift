@@ -12,7 +12,8 @@ extension CLIBackend {
         relay.phase(.preparing)
         let output = try await cli(CLICommand.start(request), operation: "feature start", purpose: .mutation,
                                    project: request.project, workingDirectory: request.project.root, timeout: nil,
-                                   relay: relay, cancelNote: cancelNote,
+                                   // git worktree add can be stopped before even a write-ahead CLI registers it.
+                                   relay: relay, cancelNote: Self.partialWorktreeNote,
                                    environmentOverrides: request.verbose ? ["RUST_LOG": "debug"] : [:])
         var (summary, preamble) = try output.decode(StartSummary.self, what: "start summary")
         if let preamble {

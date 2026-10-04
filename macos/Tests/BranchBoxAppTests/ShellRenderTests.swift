@@ -141,6 +141,11 @@ struct ShellRenderTests {
             MainWindow(buildBadge: "PREVIEW · showcase")
                 .environment(model)
         }
+        model.post(.select(.feature(projectPath: PreviewSamples.project.path, name: "checkout-redesign")))
+        try render("shell-main-window-feature", size: CGSize(width: 1100, height: 720)) {
+            MainWindow(buildBadge: "PREVIEW · showcase")
+                .environment(model)
+        }
         await harness.remove()
     }
 

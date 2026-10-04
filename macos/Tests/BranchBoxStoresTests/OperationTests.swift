@@ -195,8 +195,9 @@ private let remotion = feature("remotion")
         #expect(cancelled.state == .cancelled(note: nil))
     }
 
-    @Test func cancellingALegacyStartSaysWhatMayBeLeft() async throws {
-        let harness = Harness(.legacy0134)
+    @Test(arguments: [PreviewScenario.legacy0134, .contract])
+    func cancellingAStartSaysWhatMayBeLeft(_ scenario: PreviewScenario) async throws {
+        let harness = Harness(scenario)
         defer { harness.tearDown() }
         _ = try await harness.startWithSampleProject()
         await harness.backend.script(.startFeature, .suspendUntilResumed)
@@ -210,6 +211,41 @@ private let remotion = feature("remotion")
     }
 
     // MARK: Admission (D-16)
+
+    @Test func brokenGitMetadataNeedsAttentionAndRejectsGitOperationsBeforeTheBackendRuns() async throws {
+        let harness = Harness()
+        defer { harness.tearDown() }
+        let store = try await harness.startWithSampleProject()
+        var broken = try #require(store.features.first { $0.workFeature == "prine" })
+        broken.worktreeIssue = "Git metadata is missing."
+        await harness.backend.setListing(FeatureListing(features: [broken]), for: sampleProject)
+        await store.refresh(.manual)
+        #expect(store.attention.map(\.reason) == [.worktreeInvalid])
+        #expect(store.features.first?.status == .active)
+        await harness.backend.clearCalls()
+        let ref = feature("prine")
+        let teardown = TeardownRequest(feature: ref, recordedBranch: broken.branchName, branch: .keep)
+        let requests: [OperationRequestContext] = [
+            .start(startRequest("prine")), .teardown(teardown), .exec(ExecRequest(feature: ref, command: ["true"])),
+            .devcontainer(.up(removeExisting: false, buildNoCache: false), ref),
+            .prune(PruneSelection(project: sampleProject, rows: [teardown])),
+            .tunnelOpen(ref), .syncDevcontainers(SyncRequest(project: sampleProject)),
+        ]
+        for request in requests {
+            guard case .rejected(let reason) = harness.model.actions.dispatch(request) else {
+                Issue.record("a broken Git worktree operation reached the backend")
+                continue
+            }
+            #expect(reason == "Git worktree needs repair: prine: Git metadata is missing.")
+        }
+        #expect(await harness.backend.calls.isEmpty)
+        let preview = try operation(of: harness.model.actions.dispatch(.syncDevcontainers(SyncRequest(project: sampleProject, dryRun: true))))
+        try await waitUntilFinished(preview)
+        #expect(preview.state == .succeeded)
+        let remove = try operation(of: harness.model.actions.dispatch(.tunnelRemove(ref, force: false)))
+        try await waitUntilFinished(remove)
+        #expect(remove.state == .succeeded)
+    }
 
     @Test func aBranchOrStrayIsDeletedByOneOperationAtATime() async throws {
         let harness = Harness()
@@ -745,7 +781,7 @@ private let remotion = feature("remotion")
         await harness.model.prepareForTermination()
         #expect(ContinuousClock.now - began < .seconds(5))
         #expect(exec.state == .cancelled(note: nil))
-        #expect(start.state == .cancelled(note: nil))
+        #expect(start.state == .cancelled(note: "Stopped while starting; a partial worktree may be left behind"))
         #expect(harness.model.operations.running.isEmpty)
         #expect(!harness.model.coordinator.isRunning)
         // Quitting spawns nothing new: no refresh after the cancelled operations, and no new operation.

@@ -82,7 +82,8 @@ struct EnvironmentCard: View {
             }
         default:
             let state = Self.recordState(record)
-            Tag(title: state.label, systemImage: state.symbol, tint: state.tint.color)
+            Tag(title: "Recorded: \(state.label)", systemImage: state.symbol, tint: state.tint.color)
+                .help("From the feature registry; this runtime is not checked live by BranchBox for Mac")
         }
     }
 
@@ -237,7 +238,7 @@ struct EnvironmentCard: View {
         let runtime = record.runtime
         return FactGrid {
             FactRow(label: "Runtime", value: runtime.provider.label)
-            FactRow(label: "Mode", value: FeaturePresentation.isQuick(record) ? "Quick (no setup modules)" : "Full")
+            FactRow(label: "Mode", value: FeaturePresentation.isQuick(record) ? "Quick" : "Full")
             if let id = runtime.runtimeID, !id.isEmpty {
                 FactRow(label: "Runtime ID", value: id, monospaced: true) {
                     CopyButton(text: id, label: "Copy Runtime ID").buttonStyle(.borderless)

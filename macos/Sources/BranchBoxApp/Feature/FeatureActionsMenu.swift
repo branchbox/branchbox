@@ -152,11 +152,14 @@ struct FeatureActionsMenu: View {
 
     @ViewBuilder private func sharingMenu(record: FeatureRecord, availability: FeatureActionAvailability) -> some View {
         let allowed = availability.tunnel
+        let provision = availability.tunnelProvision
         let status = record.tunnel?.status
         Menu("Sharing") {
             if status == .active || status == .pending || status == .manual {
                 if status != .active {
                     Button("Re-provision Tunnel") { FeatureCommands.dispatch(.tunnelOpen(feature), model: model) }
+                        .disabled(!provision.isEnabled)
+                        .help(provision.disabledReason ?? "Re-provision the feature's tunnel")
                 }
                 if let requestConfirmation {
                     Button("Stop Sharing…") {
@@ -167,8 +170,8 @@ struct FeatureActionsMenu: View {
             } else {
                 let tunnelsOff = model.projects.project(feature.project)?.config?.effective.tunnelEnabled == false
                 Button("Share via Tunnel") { FeatureCommands.dispatch(.tunnelOpen(feature), model: model) }
-                    .disabled(tunnelsOff)
-                    .help(tunnelsOff ? "Tunnels are off for this project (Project Settings)" : "Share the feature through a tunnel")
+                    .disabled(tunnelsOff || !provision.isEnabled)
+                    .help(provision.disabledReason ?? (tunnelsOff ? "Tunnels are off for this project (Project Settings)" : "Share the feature through a tunnel"))
                     .accessibilityIdentifier("feature.action.tunnelOpen")
             }
         }

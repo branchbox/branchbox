@@ -96,6 +96,13 @@ struct SyncRowPresentation: Identifiable, Hashable {
     /// The record whose results show: the run once there is one, else the preview.
     var current: OperationRecord? { run ?? preview }
 
+    /// A dry-run preview is still useful, but replacing setup files waits until known Git damage is inspected.
+    static func applyBlockedReason(features: [FeatureRecord]) -> String? {
+        let broken = features.filter { $0.status == .active && $0.worktreeIssue != nil }
+        guard !broken.isEmpty else { return nil }
+        return broken.map { "\($0.workFeature): \($0.worktreeIssue ?? "Git worktree needs repair")" }.joined(separator: "\n")
+    }
+
     /// Rows for a record's report; failures are rows like any other, whatever the CLI's exit status was.
     static func rows(for record: OperationRecord) -> [SyncRowPresentation] {
         guard case .sync(let report)? = record.result else { return [] }
@@ -162,6 +169,7 @@ struct SyncDevcontainersSheet: View {
 
     private var store: ProjectStore? { model.projects.project(project) }
     private var activeCount: Int { store?.features.filter { $0.status == .active }.count ?? 0 }
+    private var applyBlockedReason: String? { SyncSheetModel.applyBlockedReason(features: store?.features ?? []) }
 
     var body: some View {
         ProjectSheetScaffold(title: "Update All Workspaces",
@@ -169,6 +177,9 @@ struct SyncDevcontainersSheet: View {
                              systemImage: "arrow.triangle.2.circlepath") {
             VStack(alignment: .leading, spacing: 16) {
                 if sheet.run == nil { options }
+                if let reason = applyBlockedReason {
+                    ProjectNotice(style: .warning, title: "Inspect Git worktrees before updating", message: reason)
+                }
                 if let problem = sheet.dispatchProblem {
                     ProjectNotice(style: .error, title: "Couldn't start", message: problem)
                 }
@@ -285,7 +296,7 @@ struct SyncDevcontainersSheet: View {
                     // succeeded the same files, so it is safe.
                     Button("Try Again") { sheet.apply(project: project, using: model) }
                         .help("Run the update again; features that were already updated get the same files")
-                        .disabled(model.environment.identity == nil)
+                        .disabled(model.environment.identity == nil || applyBlockedReason != nil)
                         .accessibilityIdentifier("sync.retry")
                 }
                 Button("Done") { dismiss() }
@@ -302,7 +313,8 @@ struct SyncDevcontainersSheet: View {
             Button("Update Workspaces") { sheet.apply(project: project, using: model) }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(previewRunning || activeCount == 0 || model.environment.identity == nil)
+                .disabled(previewRunning || activeCount == 0 || model.environment.identity == nil || applyBlockedReason != nil)
+                .help(applyBlockedReason ?? "Update the active features' dev container setup")
                 .accessibilityIdentifier("sync.apply")
         }
     }

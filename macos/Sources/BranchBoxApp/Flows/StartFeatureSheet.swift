@@ -205,8 +205,8 @@ private struct StartForm: View {
                         .labelsHidden()
                         .fixedSize()
                         Text(flow.draft.mode == .full
-                             ? "Every module: dev container, Compose services, database, tunnel and specs."
-                             : "Just the worktree and its dev container; modules are skipped.")
+                             ? "Runs the project's enabled setup modules, except those skipped in Advanced."
+                             : "Skips dev container, Compose and specs setup; database and tunnel follow project settings.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

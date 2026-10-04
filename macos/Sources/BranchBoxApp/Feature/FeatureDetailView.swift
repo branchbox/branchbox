@@ -156,7 +156,7 @@ struct FeatureDetailContent: View {
     private var devcontainerKey: String {
         let finished = model.operations.records(for: .feature(feature))
             .filter { EnvironmentCard.devcontainerKinds.contains($0.kind) && !$0.isCancellable }.count
-        return "\(feature.project.path)#\(feature.name)#\(finished)#\(devcontainerReloads)#\(record.updatedAt?.timeIntervalSince1970 ?? 0)"
+        return "\(feature.project.path)#\(feature.name)#\(finished)#\(devcontainerReloads)#\(record.updatedAt?.timeIntervalSince1970 ?? 0)#\(folderExists)#\(record.status)#\(record.worktreeIssue ?? "")"
     }
 
     private func loadDevcontainer() async {
@@ -165,6 +165,10 @@ struct FeatureDetailContent: View {
             devcontainer = .unavailable(record.status == .removed
                 ? "The feature was torn down, so there is no dev container to check."
                 : "The feature's folder is missing, so there is no dev container to check or start.")
+            return
+        }
+        if let issue = record.worktreeIssue {
+            devcontainer = .unavailable("Git worktree needs repair: \(issue)")
             return
         }
         if devcontainer.status == nil { devcontainer = .loading }
@@ -268,7 +272,8 @@ struct FeatureDetailContent: View {
                             onReload: { devcontainerReloads += 1 },
                             onPerform: { effect in RemediationPerformer.perform(effect, model: model) })
             OverviewCard(record: record, folderExists: folderExists)
-            AgentPromptCard(record: record, feature: feature, availability: availability)
+            AgentPromptCard(record: record, feature: feature, availability: availability,
+                            autoLaunchConfigured: config?.autoLaunchAgentTerminal == true)
             TunnelCard(record: record, feature: feature, availability: availability, tunnelsEnabled: config?.tunnelEnabled)
             ModulesCard(record: record)
             if let adapter = record.adapter {

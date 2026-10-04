@@ -25,6 +25,9 @@ public struct FeatureRecord: Decodable, Sendable, Hashable, Identifiable {
     public let runtime: RuntimeInfo                  // default .container if absent
     public let defaultAgent: DefaultAgentPlan?       // default_agent
     public let setup: SetupInfo?                     // NEW (write-ahead; §5.4). nil on legacy CLIs / completed starts
+    /// Local read-only Git evidence, added by the CLI backend after listing. Never read from or written to the
+    /// feature registry, whose status may remain active even after its Git metadata has disappeared.
+    public var worktreeIssue: String?
 
     /// The prefix to hand back to `feature teardown --branch-prefix` (core rebuilds the branch as
     /// `<prefix>/<name>`): `branch_name` minus "/<work_feature>"; "" when the branch is the bare name;
@@ -49,7 +52,7 @@ public struct FeatureRecord: Decodable, Sendable, Hashable, Identifiable {
                 syncStrategy: String? = nil, startMode: String? = nil, promptSeed: String? = nil,
                 moduleOutcomes: [ModuleOutcome] = [], adapter: AdapterInfo? = nil,
                 runtime: RuntimeInfo = .containerDefault, defaultAgent: DefaultAgentPlan? = nil,
-                setup: SetupInfo? = nil) {
+                setup: SetupInfo? = nil, worktreeIssue: String? = nil) {
         self.workFeature = workFeature
         self.branchName = branchName
         self.worktreePath = worktreePath
@@ -75,6 +78,7 @@ public struct FeatureRecord: Decodable, Sendable, Hashable, Identifiable {
         self.runtime = runtime
         self.defaultAgent = defaultAgent
         self.setup = setup
+        self.worktreeIssue = worktreeIssue
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -115,6 +119,7 @@ public struct FeatureRecord: Decodable, Sendable, Hashable, Identifiable {
         runtime = c.lenient(RuntimeInfo.self, forKey: .runtime) ?? .containerDefault
         defaultAgent = c.lenient(DefaultAgentPlan.self, forKey: .defaultAgent)
         setup = c.lenient(SetupInfo.self, forKey: .setup)
+        worktreeIssue = nil
     }
 }
 

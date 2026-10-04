@@ -52,8 +52,9 @@ struct TunnelCard: View {
 
     @ViewBuilder private func statusTag(_ state: TunnelCardState) -> some View {
         if let status = record.tunnel?.status, state != .offInConfig {
-            Tag(title: status.label, systemImage: status.symbol, tint: status.tint.color)
-                .accessibilityLabel("Tunnel: \(status.label)")
+            Tag(title: "Recorded: \(status.label)", systemImage: status.symbol, tint: status.tint.color)
+                .accessibilityLabel("Last recorded tunnel status: \(status.label)")
+                .help("From the feature registry; BranchBox has not checked whether this address is reachable")
         } else {
             Tag(title: "Off", systemImage: "network.slash")
                 .accessibilityLabel("Tunnel: Off")
@@ -127,7 +128,7 @@ struct TunnelCard: View {
                     FactRow(label: "Notes", value: notes)
                 }
                 if let updated = tunnel.lastUpdated {
-                    FactRow(label: "Updated", value: FeaturePresentation.relative(updated))
+                    FactRow(label: "Last recorded", value: FeaturePresentation.relative(updated))
                 }
             }
         }
@@ -158,7 +159,7 @@ struct TunnelCard: View {
     }
 
     @ViewBuilder private func shareButton(title: String, prominent: Bool) -> some View {
-        let allowed = availability.tunnel
+        let allowed = availability.tunnelProvision
         let button = Button(title) { FeatureCommands.dispatch(.tunnelOpen(feature), model: model) }
             .disabled(!allowed.isEnabled)
             .help(allowed.disabledReason ?? "Open a tunnel for \(feature.name)")

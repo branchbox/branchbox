@@ -156,6 +156,7 @@ extension AttentionReason {
         case .interrupted: "Interrupted"
         case .setupIncomplete: "Setup incomplete"
         case .folderMissing: "Folder missing"
+        case .worktreeInvalid: "Git worktree broken"
         case .unknownStatus(let raw): FeatureStatus.unknown(raw).label
         case .unregisteredWorktree: "Unregistered worktree"
         }
@@ -169,6 +170,7 @@ extension AttentionReason {
         case .interrupted: "pause.circle.fill"
         case .setupIncomplete: "exclamationmark.circle.fill"
         case .folderMissing: "folder.badge.questionmark"
+        case .worktreeInvalid: "exclamationmark.triangle.fill"
         case .unknownStatus: "questionmark.circle"
         case .unregisteredWorktree: "questionmark.folder"
         }
@@ -177,7 +179,7 @@ extension AttentionReason {
     var tint: StatusTint {
         switch self {
         case .degraded, .setupIncomplete, .interrupted, .unregisteredWorktree: .orange
-        case .failedRetained, .folderMissing: .red
+        case .failedRetained, .folderMissing, .worktreeInvalid: .red
         case .orphaned: .purple
         case .unknownStatus: .gray
         }

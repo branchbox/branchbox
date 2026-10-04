@@ -10,7 +10,7 @@ import Foundation
 ///   that changes state), stdin `/dev/null` unless a payload is sent, and an explicit `--repo`/`-p`.
 /// - Every method throws only `BackendError`; cancellation throws `.cancelled` once the process group is gone.
 public struct CLIBackend: BranchBoxBackend {
-    /// The note on a cancelled start, teardown or init when the CLI cannot record a half-done one.
+    /// The note on a cancelled start, or an older CLI's teardown/init, which can leave an unrecorded worktree.
     public static let partialWorktreeNote = "may have left a partial worktree; see Needs attention"
 
     public let executable: URL
@@ -49,7 +49,8 @@ public struct CLIBackend: BranchBoxBackend {
     /// Contract teardown flags need `--discard-changes`; a CLI without it gets the legacy flags and app branch step.
     var teardownMode: CLICommand.TeardownMode { supports(.teardownDiscardChanges) ? .contract : .legacy }
 
-    /// Whether a cancelled start can leave an unrecorded worktree behind.
+    /// Legacy teardown/init may leave a partial worktree. Start always uses `partialWorktreeNote`, because
+    /// cancellation can interrupt git worktree add before the CLI writes its write-ahead registry entry.
     var cancelNote: String? {
         supports(.writeAheadStart) && supports(.registryLock) ? nil : Self.partialWorktreeNote
     }
@@ -186,14 +187,24 @@ public struct CLIBackend: BranchBoxBackend {
         let (records, preamble) = try await records(in: root, includeRemoved: includeRemoved)
         var warnings = preamble.map { [$0] } ?? []
         var strays: [StrayWorktree] = []
+        var registeredWorktrees: [WorktreeEntry]?
         do {
             let worktrees = try await git.worktrees(in: root.path)
+            registeredWorktrees = worktrees
             strays = StrayDetector.strays(in: worktrees, mainRoot: root.path, records: records.compactMap(\.value),
                                           configPrefix: LegacyConfig.effective(root: root.path).branchPrefix)
         } catch let error as BackendError {
             warnings.append("Unregistered worktrees were not checked: \(TeardownPreflight.summary(of: error))")
         }
-        return FeatureListing(decoding: records, strays: strays, warnings: warnings)
+        let listing = FeatureListing(decoding: records, strays: strays, warnings: warnings)
+        let checked = listing.features.map { record in
+            var record = record
+            record.worktreeIssue = WorktreeHealthInspector.issue(for: record, in: root.path,
+                                                                 worktrees: registeredWorktrees, fileSystem: fileSystem)
+            return record
+        }
+        return FeatureListing(features: checked, strays: strays, droppedRecords: listing.droppedRecords,
+                              warnings: listing.warnings)
     }
 
     func records(in project: ProjectRef, includeRemoved: Bool) async throws -> ([Lossy<FeatureRecord>], String?) {

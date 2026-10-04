@@ -245,6 +245,7 @@ public enum RefreshReason: Sendable, Hashable { case initial, registryChanged, a
     /// local copy keeps the store independent of Planning.
     static func attentionReason(for record: FeatureRecord, folderExists: Bool) -> AttentionReason? {
         if record.status == .removed { return nil }
+        if record.setup?.state != .inProgress, record.worktreeIssue != nil { return .worktreeInvalid }
         if record.setup?.state == .interrupted { return .interrupted }
         switch record.status {
         case .degraded: return .degraded

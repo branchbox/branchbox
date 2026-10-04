@@ -85,10 +85,12 @@ struct CommandContext: Sendable, Hashable {
         case .runCommand:
             guard let feature else { return .disabled(Self.noFeature) }
             if !backendReady { return .disabled(Self.cliUnavailable) }
+            if let issue = feature.worktreeIssue { return .disabled("Git worktree needs repair: \(issue)") }
             return feature.status == .removed ? .disabled("This feature was torn down") : .enabled
         case .startDevContainer, .stopDevContainer:
             guard let feature else { return .disabled(Self.noFeature) }
             if !backendReady { return .disabled(Self.cliUnavailable) }
+            if let issue = feature.worktreeIssue { return .disabled("Git worktree needs repair: \(issue)") }
             if feature.runtime.provider != .container { return .disabled("Only container features have a dev container") }
             if !featureFolderExists { return .disabled("The feature's folder is missing") }
             return featureBusy.map { .disabled($0) } ?? .enabled
@@ -96,12 +98,14 @@ struct CommandContext: Sendable, Hashable {
             guard let feature else { return .disabled(Self.noFeature) }
             if !backendReady { return .disabled(Self.cliUnavailable) }
             if feature.status == .removed { return .disabled("This feature was torn down") }
+            if let issue = feature.worktreeIssue { return .disabled("Git worktree needs repair: \(issue)") }
             if feature.tunnel?.status == .active { return .disabled("This feature is already shared") }
             return featureBusy.map { .disabled($0) } ?? .enabled
         case .tearDown:
             guard let feature else { return .disabled(Self.noFeature) }
             if !backendReady { return .disabled(Self.cliUnavailable) }
             if feature.status == .removed { return .disabled("This feature was already torn down") }
+            if let issue = feature.worktreeIssue { return .disabled("Git worktree needs repair: \(issue)") }
             return featureBusy.map { .disabled($0) } ?? .enabled
         case .projectSettings, .removeProject:
             return project == nil ? .disabled(Self.noProject) : .enabled
@@ -122,7 +126,8 @@ struct CommandContext: Sendable, Hashable {
             return HostLaunchPlan.agent(choice, terminal: terminal, record: feature, passPrompt: passPrompt,
                                         folderExists: featureFolderExists)
         default:
-            return HostLaunchPlan.editor(editor, mode: editorMode, record: feature, folderExists: featureFolderExists)
+            let mode: EditorOpenMode = feature.worktreeIssue == nil ? editorMode : .folder
+            return HostLaunchPlan.editor(editor, mode: mode, record: feature, folderExists: featureFolderExists)
         }
     }
 

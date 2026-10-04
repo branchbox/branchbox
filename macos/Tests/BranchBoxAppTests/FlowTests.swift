@@ -557,6 +557,8 @@ private func discardRetry(_ recoveries: [RecoveryAction]) -> RecoveryAction? {
     @Test func aContractCLIsStopConfirmationDoesNotWarnAboutCorruption() {
         let confirmation = CancelConfirmation(kind: .start, title: "Starting oauth", capabilities: PreviewSamples.allCapabilities)
         #expect(!confirmation.warnsAboutCorruption)
+        #expect(confirmation.message.contains("partial worktree"))
+        #expect(confirmation.message.contains("Needs attention"))
     }
 }
 

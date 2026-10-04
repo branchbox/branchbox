@@ -149,6 +149,10 @@ struct CancelConfirmation: Sendable, Hashable {
                 + "and corrupt the project's feature registry (.branchbox/registry.json). Stop only if it is stuck."
         } else if kind == .exec {
             message = "The command is interrupted; its output so far is kept."
+        } else if kind == .start {
+            message = "BranchBox interrupts the command, waits for its processes to exit, then refreshes. "
+                + "Stopping during worktree creation may leave a partial worktree behind; check Needs attention after stopping. "
+                + "Steps that already finished are not undone."
         } else {
             message = "BranchBox interrupts the command, waits for its processes to exit, then refreshes. "
                 + "Steps that already finished are not undone."
