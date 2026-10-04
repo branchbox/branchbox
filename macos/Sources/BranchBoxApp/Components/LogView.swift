@@ -80,7 +80,7 @@ struct LogView: View {
                 }
                 .overlay {
                     if visible.isEmpty {
-                        Text(lines.isEmpty ? "No output yet" : "No matching lines")
+                        Text(lines.isEmpty ? "No log messages" : "No matching lines")
                             .foregroundStyle(.secondary)
                     }
                 }
