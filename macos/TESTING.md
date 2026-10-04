@@ -105,6 +105,21 @@ Additional manual checks handed over by waves 3 and 4 (record each once, with ei
 | Settings › Tools › Locate… switches the CLI live (legacy ↔ contract); legacy project settings are read-only with Open config.json | pending |
 | Composed main-window screenshots for the PR from `scripts/macos-dev.sh --open --preview showcase` | pending |
 
+### Real-window preview check: 2026-10-04
+
+Built `BranchBox Dev.app` with Xcode 26.3 / Swift 6.2.4, verified its signature with
+`codesign --verify --deep --strict`, and launched it through LaunchServices with
+`BRANCHBOX_BACKEND=preview` and `BRANCHBOX_PREVIEW_SCENARIO=showcase`.
+Inspected the running window through accessibility and screenshots:
+
+- Quick Open (⌘K) opened and Return selected the highlighted feature.
+- The feature sidebar, interrupted-setup banner, environment cards and icon toolbar rendered clearly.
+- Start Feature showed its form, focused the name field and disabled Start until a name was entered.
+- Tear Down showed the changes summary, explicit branch choices and removed resources; Cancel returned to the feature.
+
+This checks the showcase layout and presentation flow. Real CLI operations, notification delivery,
+other window sizes and the remaining manual checklist still need their own verification.
+
 ### Docker Sandboxes (sbx) remediation
 
 - **Automated (fake `sbx`):** ✅ `SandboxRemediationTests` and `CancellationTests` drive failed_retained → Retry and

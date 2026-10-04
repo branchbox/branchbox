@@ -280,12 +280,19 @@ fn dry_run_json_prints_the_plan_and_changes_nothing() {
     let text = branchbox(&repo, &["feature", "teardown", "eta", "--dry-run"]);
 
     let after = snapshot(repo.root());
-    assert_eq!(
-        after.keys().collect::<Vec<_>>(),
-        before.keys().collect::<Vec<_>>(),
-        "a dry run adds or removes no file"
-    );
+    for path in after.keys() {
+        assert!(
+            before.contains_key(path),
+            "a dry run added {}",
+            path.display()
+        );
+    }
     for (path, contents) in &before {
+        assert!(
+            after.contains_key(path),
+            "a dry run removed {}",
+            path.display()
+        );
         assert!(
             after.get(path) == Some(contents),
             "a dry run changed {}",

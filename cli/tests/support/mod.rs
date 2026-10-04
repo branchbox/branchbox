@@ -122,6 +122,11 @@ pub fn init_test_repo() -> TestRepo {
     let repo = root.join("main");
     fs::create_dir_all(&repo).expect("create repo dir");
     git(&repo, &["init", "-q", "-b", "main"]);
+    // Recent Git versions launch maintenance after commits. Its background lock can
+    // disappear during a read-only command's filesystem snapshot, unrelated to that
+    // command. Keep disposable repositories free of asynchronous maintenance.
+    git(&repo, &["config", "maintenance.auto", "false"]);
+    git(&repo, &["config", "gc.auto", "0"]);
     fs::write(repo.join("README.md"), "# Test Repo\n").expect("write README");
     git(&repo, &["add", "README.md"]);
     git(&repo, &["commit", "-q", "-m", "Initial commit"]);
