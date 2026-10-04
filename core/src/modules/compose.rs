@@ -1144,8 +1144,6 @@ services:
   test:
     image: alpine:latest
     command: sleep 3600
-    labels:
-      com.docker.compose.project: branchbox-test-lifecycle
 "#;
 
         std::fs::write(
@@ -1159,11 +1157,34 @@ services:
         )
         .unwrap();
 
+        // FeatureWorkflow writes this workspace-bound identity before module setup. This direct
+        // module fixture must supply the same evidence instead of authorizing a basename fallback.
+        // Keep the project unique even when ignored Docker tests share an engine.
+        let project = format!(
+            "branchbox-test-lifecycle-{}",
+            &workspace_digest(&feature_dir).unwrap()[..12]
+        );
+        std::fs::write(
+            feature_dir.join(".devcontainer/.branchbox.env"),
+            format!(
+                "WORK_FEATURE=test-lifecycle\nCOMPOSE_PROJECT_NAME={project}\nDEVCONTAINER_NAME={project}\n{}",
+                compose_identity_line(&feature_dir, &project).unwrap()
+            ),
+        )
+        .unwrap();
+
         let mut module = ComposeModule::new();
 
         // Init
         module.init(main_dir.path(), &feature_dir).unwrap();
         assert!(module.enabled);
+        assert_eq!(module.compose_project_name, project);
+        assert_eq!(
+            module
+                .managed_cleanup_project(main_dir.path(), &feature_dir, &BTreeSet::new())
+                .unwrap(),
+            Some(project)
+        );
 
         // Setup (validate + check conflicts)
         module.setup(main_dir.path(), &feature_dir).unwrap();
