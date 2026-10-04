@@ -790,3 +790,192 @@ fn cleanup_identity_copied_from_another_workspace_never_authorizes_project_clean
         .unwrap()
         .contains("actual-volume"));
 }
+
+fn recorded_project(repo: &support::TestRepo, feature: &str) -> String {
+    let registry: Value =
+        serde_json::from_slice(&fs::read(repo.path().join(".branchbox/registry.json")).unwrap())
+            .unwrap();
+    registry["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["work_feature"] == feature)
+        .unwrap()["compose_project_name"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn copied_managed_compose_identity_refuses_before_target_or_foreign_mutation() {
+    for kind in ["image", "dockerfile"] {
+        for copy in [
+            "legacy",
+            "binding",
+            "duplicate-project",
+            "duplicate-binding",
+        ] {
+            let repo = support::init_test_repo();
+            setup_config(&repo, kind, true);
+            let docker = FakeDocker::new();
+            let worktree = start(&repo, &docker);
+            docker
+                .command(repo.path(), "")
+                .args(["feature", "start", "neighbor", "--minimal", "--json"])
+                .assert()
+                .success();
+            let neighbor = repo.root().join("neighbor");
+            let env_path = worktree.join(".devcontainer/.branchbox.env");
+            let own_env = fs::read_to_string(&env_path).unwrap();
+            let foreign_env =
+                fs::read_to_string(neighbor.join(".devcontainer/.branchbox.env")).unwrap();
+            let foreign_binding = foreign_env
+                .lines()
+                .find(|line| line.starts_with("BRANCHBOX_COMPOSE_IDENTITY_SHA256="))
+                .unwrap();
+            let copied = match copy {
+                "legacy" => {
+                    foreign_env
+                        .lines()
+                        .filter(|line| !line.starts_with("BRANCHBOX_COMPOSE_IDENTITY_SHA256="))
+                        .map(|line| {
+                            if line.starts_with("WORK_FEATURE=") {
+                                "WORK_FEATURE=owned"
+                            } else {
+                                line
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        + "\n"
+                }
+                "binding" => {
+                    own_env
+                        .lines()
+                        .map(|line| {
+                            if line.starts_with("BRANCHBOX_COMPOSE_IDENTITY_SHA256=") {
+                                foreign_binding
+                            } else {
+                                line
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        + "\n"
+                }
+                "duplicate-project" => format!(
+                    "{own_env}COMPOSE_PROJECT_NAME={}\n",
+                    recorded_project(&repo, "neighbor")
+                ),
+                "duplicate-binding" => format!("{own_env}{foreign_binding}\n"),
+                _ => unreachable!(),
+            };
+            fs::write(&env_path, &copied).unwrap();
+            let foreign_project = recorded_project(&repo, "neighbor");
+            let containers = format!(
+                "target\t{}\nforeign\t{}\t{}\n",
+                worktree.display(),
+                neighbor.display(),
+                foreign_project
+            );
+            let networks = format!("foreign-network\t{foreign_project}\n");
+            let volumes = format!("foreign-volume\t{foreign_project}\n");
+            fs::write(&docker.inventory, &containers).unwrap();
+            fs::write(&docker.networks, &networks).unwrap();
+            fs::write(&docker.volumes, &volumes).unwrap();
+            fs::write(&docker.log, "").unwrap();
+            let output = teardown(&repo, &docker, "", false);
+            assert!(!output.status.success(), "kind={kind}, copy={copy}");
+            assert_eq!(
+                support::assert_single_json(&output)["error"]["code"],
+                "teardown_refused"
+            );
+            assert!(worktree.exists());
+            assert_eq!(registry_status(&repo), "active");
+            assert_eq!(fs::read_to_string(&env_path).unwrap(), copied);
+            assert_eq!(fs::read_to_string(&docker.inventory).unwrap(), containers);
+            assert_eq!(fs::read_to_string(&docker.networks).unwrap(), networks);
+            assert_eq!(fs::read_to_string(&docker.volumes).unwrap(), volumes);
+            assert!(
+                !docker.calls().lines().any(|call| call.starts_with("rm ")
+                    || call.starts_with("compose ")
+                    || call.starts_with("network rm ")
+                    || call.starts_with("volume rm ")),
+                "{}",
+                docker.calls()
+            );
+            let forced = teardown(&repo, &docker, "", true);
+            assert!(
+                forced.status.success(),
+                "{}",
+                String::from_utf8_lossy(&forced.stderr)
+            );
+            let receipt = support::assert_single_json(&forced);
+            assert_eq!(receipt["runtime_teardown"]["verified"], false);
+            assert_eq!(receipt["runtime_teardown"]["residue_free"], false);
+            assert_eq!(fs::read_to_string(&docker.inventory).unwrap(), containers);
+            assert_eq!(fs::read_to_string(&docker.networks).unwrap(), networks);
+            assert_eq!(fs::read_to_string(&docker.volumes).unwrap(), volumes);
+        }
+    }
+}
+
+#[test]
+fn stopped_legacy_compose_identity_cleans_only_recorded_project_resources() {
+    let repo = support::init_test_repo();
+    setup_config(&repo, "image", true);
+    fs::write(
+        repo.path().join(".devcontainer/devcontainer.json"),
+        r#"{"dockerComposeFile":"compose.yaml","service":"unused"}"#,
+    )
+    .unwrap();
+    repo.git(&["add", ".devcontainer/devcontainer.json"]);
+    repo.git(&["commit", "-q", "-m", "active compose fixture"]);
+    let docker = FakeDocker::new();
+    let worktree = start(&repo, &docker);
+    let project = recorded_project(&repo, "owned");
+    let env_path = worktree.join(".devcontainer/.branchbox.env");
+    let legacy = fs::read_to_string(&env_path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("BRANCHBOX_COMPOSE_IDENTITY_SHA256="))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(!legacy.contains("BRANCHBOX_TEARDOWN_"));
+    fs::write(&env_path, legacy).unwrap();
+    fs::write(
+        &docker.inventory,
+        format!(
+            "foreign\t{}\tvsc-neighbor\n",
+            repo.root().join("neighbor").display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &docker.networks,
+        format!("owned-network\t{project}\nforeign-network\tvsc-neighbor\n"),
+    )
+    .unwrap();
+    fs::write(
+        &docker.volumes,
+        format!("owned-volume\t{project}\nforeign-volume\tvsc-neighbor\n"),
+    )
+    .unwrap();
+    let output = teardown(&repo, &docker, "", false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt = support::assert_single_json(&output);
+    assert_eq!(receipt["runtime_teardown"]["verified"], true);
+    assert_eq!(receipt["runtime_teardown"]["residue_free"], true);
+    assert!(!worktree.exists());
+    assert_only_neighbor_remains(&docker);
+    assert!(docker
+        .calls()
+        .contains(&format!("--project-name {project}")));
+    assert!(docker.calls().contains("network rm owned-network"));
+    assert!(docker.calls().contains("volume rm owned-volume"));
+}

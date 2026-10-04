@@ -77,6 +77,10 @@ A development environment orchestrator that manages git worktrees and devcontain
 
 **Registry integrity**: feature state lives in `{repo_root}/.branchbox/registry.json`, shared by every CLI run, the Mac app (through the CLI) and the agent. Every write takes an exclusive advisory lock on the `.branchbox` state directory (`atomic_fs::lock_state_dir`; the OS releases it if the holder dies) and lands through one atomic rename (`atomic_fs::write_atomic`), so concurrent starts and teardowns never lose entries and readers never see a torn file. A separate per-repository lock serializes git worktree and branch changes. `feature start` registers the feature (with a `setup` record) as soon as its worktree exists, so an interrupted start stays visible as `interrupted`.
 
+**Host Compose cleanup ownership**: newly generated `.devcontainer/.branchbox.env` files bind the managed project name to the canonical workspace. An older unbound managed name must match the recorded feature identity and worktree, or be supported by exact workspace Docker labels or valid scoped cleanup history. A Compose filename, ambient project variable, or matching folder basename alone cannot authorize cleanup. Copied, mismatched, malformed, or ambiguous identity refuses cleanup and preserves a possibly provisioned worktree unless removal is forced.
+
+Discovered project names are persisted atomically before container removal and retained across partial failures, so remaining networks and volumes can be found on retry. The scoped history cannot authorize another canonical workspace. Compose cleanup verifies owned containers, networks, and volumes before reporting a clean result; standalone container cleanup does not infer ownership of named volumes or custom networks.
+
 ### 2. Agent (Rust Daemon)
 
 **Location**: `agent/` (binary `branchbox-agent`)

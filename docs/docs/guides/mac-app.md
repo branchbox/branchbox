@@ -123,6 +123,10 @@ In the current CLI source build, feature teardown targets devcontainers with the
 
 Review the result's runtime cleanup status and warnings. Failed or unverified cleanup of a possibly provisioned environment keeps the worktree for retry unless removal is forced. Compose cleanup retains project identity before removing containers, so a retry can still find remaining networks or volumes. Keep the retained workspace and its managed configuration for that retry. Missing or changed Compose configuration can require restoration or manual inspection; it does not produce a clean receipt. The newer cleanup behavior is identified by the CLI's `host-container-teardown-verified` capability in Diagnostics. Older CLI builds can leave standalone devcontainers behind after feature teardown; use **Stop** first and check Docker separately when using those builds.
 
+New managed Compose identity is bound to the canonical workspace. Older managed env files need matching recorded feature/worktree identity or exact workspace-label evidence or valid cleanup history. A copied project name alone does not authorize cleanup. Mismatched or ambiguous identity stops teardown and keeps the worktree unless removal is forced; restore the owning feature's configuration and review its Docker resources before retrying.
+
+Keep cleanup history when the running Compose project uses a different name from the recorded managed project. Once its containers are gone, deleting that history can leave its networks or volumes undiscoverable; the cleanup receipt covers the owned projects whose identities were established.
+
 <figure className="mac-app-capture">
   <img src={useBaseUrl('/img/mac-app/teardown-plan.png')} alt="Teardown review with worktree changes and branch choices" width="2200" height="1440" loading="lazy" />
   <figcaption>The review shows what blocks removal and lets you retain an unmerged branch.</figcaption>

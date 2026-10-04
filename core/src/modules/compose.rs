@@ -16,6 +16,7 @@ use std::process::Command;
 
 const TEARDOWN_PROJECTS_KEY: &str = "BRANCHBOX_TEARDOWN_COMPOSE_PROJECTS";
 const TEARDOWN_WORKSPACE_KEY: &str = "BRANCHBOX_TEARDOWN_WORKSPACE_SHA256";
+const COMPOSE_IDENTITY_KEY: &str = "BRANCHBOX_COMPOSE_IDENTITY_SHA256";
 
 fn managed_env_contents(feature_dir: &Path) -> Result<String> {
     if fs::symlink_metadata(feature_dir.join(".devcontainer"))
@@ -58,6 +59,27 @@ fn workspace_digest(feature_dir: &Path) -> Result<String> {
     Ok(format!(
         "{:x}",
         Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+    ))
+}
+
+fn compose_identity_digest(feature_dir: &Path, project: &str) -> Result<String> {
+    let workspace = feature_dir.canonicalize()?;
+    let mut digest = Sha256::new();
+    digest.update(workspace.as_os_str().as_encoded_bytes());
+    digest.update([0]);
+    digest.update(project.as_bytes());
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+pub(crate) fn compose_identity_line(feature_dir: &Path, project: &str) -> Result<String> {
+    if !ComposeModule::is_compose_project_name(project) {
+        return Err(Error::validation(
+            "Invalid managed Compose project identity",
+        ));
+    }
+    Ok(format!(
+        "{COMPOSE_IDENTITY_KEY}={}\n",
+        compose_identity_digest(feature_dir, project)?
     ))
 }
 
@@ -218,6 +240,78 @@ impl ComposeModule {
                     .to_string(),
             )
         })
+    }
+
+    /// A configuration filename or an ambient project name cannot establish resource ownership.
+    /// Restore legacy identity only through the feature registry or exact Docker label evidence.
+    fn managed_cleanup_project(
+        &self,
+        main_dir: &Path,
+        feature_dir: &Path,
+        known: &BTreeSet<String>,
+    ) -> Result<Option<String>> {
+        let contents = managed_env_contents(feature_dir)?;
+        let values = |key: &str| -> Result<Option<String>> {
+            let matches: Vec<_> = contents
+                .lines()
+                .filter_map(|line| {
+                    let (name, value) = line.trim().split_once('=')?;
+                    (name.trim() == key).then_some(value.trim())
+                })
+                .collect();
+            if matches.len() > 1 {
+                return Err(Error::validation(
+                    "Duplicate managed Compose identity field",
+                ));
+            }
+            Ok(matches.first().map(|value| {
+                value
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+                    .or_else(|| {
+                        value
+                            .strip_prefix('"')
+                            .and_then(|value| value.strip_suffix('"'))
+                    })
+                    .unwrap_or(value)
+                    .to_string()
+            }))
+        };
+        let project = values("COMPOSE_PROJECT_NAME")?;
+        if let Some(project) = &project {
+            if !Self::is_compose_project_name(project) {
+                return Err(Error::validation(
+                    "Invalid managed Compose project identity",
+                ));
+            }
+        }
+        if values("WORK_FEATURE")?.is_some_and(|feature| {
+            feature_dir.file_name().and_then(|name| name.to_str()) != Some(feature.as_str())
+        }) {
+            return Err(Error::validation("Managed Compose identity belongs to another feature; restore this feature's managed env before retrying"));
+        }
+        let expected = crate::workflows::feature::recorded_compose_project(main_dir, feature_dir)?;
+        if let (Some(project), Some(expected)) = (&project, &expected) {
+            if project != expected {
+                return Err(Error::validation("Managed Compose project differs from this feature's recorded identity; restore its managed env before retrying"));
+            }
+        }
+        if let Some(scope) = values(COMPOSE_IDENTITY_KEY)? {
+            let project = project
+                .ok_or_else(|| Error::validation("Managed Compose identity has no project name"))?;
+            if scope != compose_identity_digest(feature_dir, &project)? {
+                return Err(Error::validation("Managed Compose identity is invalid or belongs to another workspace; restore this feature's managed env before retrying"));
+            }
+            return Ok(Some(project));
+        }
+        if let Some(expected) = expected {
+            return Ok(Some(expected));
+        }
+        match project {
+            Some(project) if known.contains(&project) => Ok(Some(project)),
+            None if !known.is_empty() => Ok(None),
+            _ => Err(Error::validation("Legacy managed Compose ownership is ambiguous; restore this feature's recorded or workspace-bound identity before retrying")),
+        }
     }
 
     fn docker_output(args: &[&str], description: &str) -> Result<std::process::Output> {
@@ -527,7 +621,7 @@ impl Module for ComposeModule {
         Ok(())
     }
 
-    fn teardown(&self, _main_dir: &Path, feature_dir: &Path) -> Result<()> {
+    fn teardown(&self, main_dir: &Path, feature_dir: &Path) -> Result<()> {
         tracing::info!("Stopping and removing containers...");
 
         let compose_file = feature_dir
@@ -535,8 +629,10 @@ impl Module for ComposeModule {
             .join(&self.compose_file_name);
         let mut projects = retained_teardown_projects(feature_dir)?;
         projects.extend(self.discover_devcontainer_projects(feature_dir)?);
-        if compose_file.is_file() && !self.compose_project_name.is_empty() {
-            projects.insert(self.compose_project_name.clone());
+        if compose_file.is_file() {
+            if let Some(project) = self.managed_cleanup_project(main_dir, feature_dir, &projects)? {
+                projects.insert(project);
+            }
         }
         // Container labels can disappear before network/volume cleanup completes. Retain their
         // exact project identity first, so a retry cannot mistake an empty container probe for success.
@@ -601,6 +697,72 @@ impl Module for ComposeModule {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn managed_compose_binding_checks_workspace_project_and_alias() {
+        let workspace = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let main = TempDir::new().unwrap();
+        fs::create_dir(workspace.path().join(".devcontainer")).unwrap();
+        fs::create_dir(other.path().join(".devcontainer")).unwrap();
+        let record = format!(
+            "COMPOSE_PROJECT_NAME=fixture-owned\n{}",
+            compose_identity_line(workspace.path(), "fixture-owned").unwrap()
+        );
+        let env = workspace.path().join(".devcontainer/.branchbox.env");
+        fs::write(&env, &record).unwrap();
+        let module = ComposeModule::new();
+        assert_eq!(
+            module
+                .managed_cleanup_project(main.path(), workspace.path(), &BTreeSet::new())
+                .unwrap(),
+            Some("fixture-owned".to_string())
+        );
+        #[cfg(unix)]
+        {
+            let alias = main.path().join("alias");
+            std::os::unix::fs::symlink(workspace.path(), &alias).unwrap();
+            assert_eq!(
+                compose_identity_line(&alias, "fixture-owned").unwrap(),
+                compose_identity_line(workspace.path(), "fixture-owned").unwrap()
+            );
+            assert_eq!(
+                module
+                    .managed_cleanup_project(main.path(), &alias, &BTreeSet::new())
+                    .unwrap(),
+                Some("fixture-owned".to_string())
+            );
+        }
+        fs::write(other.path().join(".devcontainer/.branchbox.env"), &record).unwrap();
+        assert!(module
+            .managed_cleanup_project(main.path(), other.path(), &BTreeSet::new())
+            .is_err());
+        fs::write(
+            &env,
+            record.replace(
+                "COMPOSE_PROJECT_NAME=fixture-owned",
+                "COMPOSE_PROJECT_NAME=foreign",
+            ),
+        )
+        .unwrap();
+        assert!(module
+            .managed_cleanup_project(main.path(), workspace.path(), &BTreeSet::new())
+            .is_err());
+        fs::write(&env, "COMPOSE_PROJECT_NAME=fixture-owned\n").unwrap();
+        assert!(module
+            .managed_cleanup_project(main.path(), workspace.path(), &BTreeSet::new())
+            .is_err());
+        assert_eq!(
+            module
+                .managed_cleanup_project(
+                    main.path(),
+                    workspace.path(),
+                    &BTreeSet::from(["fixture-owned".to_string()])
+                )
+                .unwrap(),
+            Some("fixture-owned".to_string())
+        );
+    }
 
     #[test]
     fn teardown_identity_is_atomic_scoped_and_preserves_unrelated_env_bytes() {

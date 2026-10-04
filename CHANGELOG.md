@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Failed runtime/module cleanup retains a possibly provisioned worktree and registry entry for retry;
   `--force` can override retention while the receipt still reports cleanup status. Bare features
   still work without Docker.
+- Generated managed Compose project identities bind the project to its canonical workspace.
+  Legacy identities restore only through matching recorded feature ownership or verified workspace
+  evidence; copied or ambiguous env files refuse cleanup before containers are removed.
 - Devcontainer Stop checks every exact workspace/configuration match and observed or retained
   Compose project. Stop keeps volumes by default; explicit volume deletion covers attached anonymous
   volumes for standalone containers and owned Compose volumes. Cleanup failures no longer report success.

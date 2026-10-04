@@ -92,17 +92,18 @@ bundle's signature passed `codesign --verify --deep --strict`.
 | Image / Dockerfile feature teardown | Dirty README refusal preserved the worktree and both owned containers. After committing, Keep removed both containers and the worktree, retained the branch, and preserved the neighbor | Real Docker, both active configuration types |
 | External Compose Stop / teardown | An external Dev Containers project used the `_devcontainer` suffix and `/tmp` alias. Stop kept its data; restart recovered the marker; explicit deletion removed its volume. A later feature teardown recovered stopped-project ownership and removed retained volumes; neighbor survived | Real Docker, isolated internal networks; no application services |
 | Native Compose Start / restart | BranchBox installed stable ownership labels; Stop kept the data marker across native restart; feature teardown removed all owned containers, networks and volumes | Real Docker through the same CLI used by the app |
+| Compose ownership / legacy compatibility | Copied legacy identity into active image and Dockerfile fixtures refused before removing target or foreign Docker resources. A copied workspace binding also refused; restoring each owning record cleaned its target and preserved the neighbor. A stopped older managed Compose project cleaned its retained volume through the exact recorded project | Six real Docker ownership checks; fresh native Compose lifecycle repeated after the fix |
 | Shell / active configuration | Root user and workspace came from the active config rather than unused scaffolds. The exact shell launch command opened `sh` in Alpine when Bash was unavailable | Real Docker PTY; opening the macOS Terminal window remains unverified |
-| Runtime / module contracts | 288 CLI, 695 core unit, 5 agent, 3 workflow and 17 doc tests passed | 1,008 executed cases; fake-tool contracts are not live service verification |
+| Runtime / module contracts | 290 CLI, 696 core unit, 5 agent, 3 workflow and 17 doc tests passed | 1,011 executed cases; fake-tool contracts are not live service verification |
 | Individual view renders | All 45 gated render declarations passed, producing 296 private light/dark PNGs including added broken-Git and whole-window feature samples; selected Start, Teardown, feature and health states were visually inspected | Offscreen smoke/visual review; native vibrancy/titlebar composition is not reproduced |
 
-The final Cargo suite reports 993 passed declarations and 27 ignored cases; two opt-in Docker smoke tests
-return early and are excluded from the 991 executed workspace cases. The 17 doc tests bring the executed Rust
-count to 1,008. The live Docker checks in this table did execute. Swift's final full run reported 700 registered
+The final Cargo suite reports 996 passed declarations and 27 ignored cases; two opt-in Docker smoke tests
+return early and are excluded from the 994 executed workspace cases. The 17 doc tests bring the executed Rust
+count to 1,011. The live Docker checks in this table did execute. Swift's final full run reported 700 registered
 cases in 92 suites: 632 enabled unit/component cases and 68 disabled render/integration/live-fixture cases.
 Separate final real-CLI runs reported 24 declarations each: contract executed 23 (one gated fixture), while legacy
 executed 21 (one gated fixture and two capability early returns). Each includes two support cases. The new
-cleanup regressions include 19 host/feature declarations (14 cleanup cases and five shared helper cases), ten
+cleanup regressions include 21 host/feature declarations (16 cleanup cases and five shared helper cases), ten
 Down declarations with failure variants, and five runtime unit cases.
 The final health integration exercised three real Git scenarios with each CLI: missing administrative metadata,
 missing `commondir`, and a healthy unborn/orphan branch that must remain usable. The last scenario prevents a
@@ -119,20 +120,33 @@ with an explicitly incomplete receipt. Older CLI container receipts are downgrad
 executing CLI lacks the verification capability. Standalone volumes/custom networks remain outside the
 feature-teardown container check.
 
+Generated Compose project identities now bind the exact project name to the canonical workspace in the
+same managed env write. Legacy recovery requires the matching feature's recorded project and canonical
+worktree, or established exact-label/history evidence. Copied/mismatched identity, duplicate fields and
+ambiguous legacy identity refuse Docker removal. A failed host module also stops provider destruction so
+the target container remains available for inspection. Isolated guest providers retain their verified
+runtime-boundary cleanup; the full suite and four targeted guest regressions confirm that path.
+Eight image/Dockerfile copy variants and Force's unverified receipt are covered hermetically. Differently
+named native/external groups need their retained observed identity after Stop; deleting that history can
+make remaining volumes undiscoverable. The live legacy case uses the exact recorded managed project.
+
 Formatting, Clippy with warnings as errors, nextest, doc tests, debug/release builds, coverage generation,
-and rustdoc with warnings as errors passed. Local line coverage is **79.08%**, below the repository's 90% target.
+and rustdoc with warnings as errors passed. The final full gate also passed with the developer's Docker
+engine blocked through PATH; clean-receipt fixtures use checked, command-scoped empty inventory probes.
+Local line coverage is **79.18%**, below the repository's 90% target.
 The guardrail preflight and pretend harness passed. The destructive ignored database/container suite was not
 run against the developer's live Docker engine; isolated CI owns that check. Local regular/verbose stack
 harnesses and the full agent control-plane stub harness remain unrun, so this is a component audit rather
-than release sign-off. The combined website/docs build passed with 184 local references and 88 anchors valid.
+than release sign-off. The combined website/docs build passed; 340 local references and 171 anchors across
+five reviewed pages resolved without errors.
 
-Final native package: `BranchBox-0.13.4-429-f637b8f.zip` (arm64), with the same-source release CLI
+Earlier native package: `BranchBox-0.13.4-429-f637b8f.zip` (arm64), with its same-source release CLI
 embedded. Bundle and helper signature checks passed; ZIP SHA-256:
 `200ba98879c0dc8dce2900e0eae88fbed9b886a8dbde5e4546f12992163f3daf`. It is ad hoc signed,
 without notarization. The locator still prefers an explicitly selected or installed CLI over the embedded fallback.
 
 The existing Rails checkout was not initialized, repaired or used to launch application services. Its pre-existing
-schema modification, BranchBox configuration and registry hashes were unchanged. A credential-free archive of
+schema modification, BranchBox configuration and registry hashes were unchanged. An isolated archive of
 tracked HEAD was tested separately through detect, init preview, minimal start, exec and keep-branch teardown.
 That command ran in the host worktree; the Python devcontainer check above supplied the actual Docker test.
 

@@ -1497,7 +1497,18 @@ impl FeatureWorkflow {
             }
         }
 
-        let mut runtime_teardown =
+        // Failed host-module cleanup may leave resource ownership unresolved. Do not remove its
+        // remaining container evidence after a module has refused cleanup. Guest providers own
+        // an isolated runtime-ID boundary and must still destroy that boundary on module errors.
+        let mut runtime_teardown = if runtime_metadata.provider == RuntimeProviderKind::Container
+            && module_reports.iter().any(|report| !report.teardown_ok)
+        {
+            runtime::RuntimeTeardownReport::unverified(
+                runtime_metadata.provider,
+                runtime_metadata.runtime_id.clone(),
+                "Provider cleanup skipped after module teardown failed".to_string(),
+            )
+        } else {
             match runtime::provider(runtime_metadata.provider).and_then(|provider| {
                 provider.destroy_worktree(
                     &runtime_metadata,
@@ -1516,7 +1527,8 @@ impl FeatureWorkflow {
                         err.to_string(),
                     )
                 }
-            };
+            }
+        };
         // Module failures also invalidate the runtime receipt: e.g. Compose volumes may remain even
         // after a successful empty devcontainer-container probe.
         for report in module_reports.iter().filter(|report| !report.teardown_ok) {
@@ -3046,11 +3058,11 @@ impl FeatureWorkflow {
             writeln!(file, "APP_URL={}", quote_env_value(&sanitized_url))?;
         }
         if let Some(compose) = compose_project_name {
-            writeln!(
-                file,
-                "COMPOSE_PROJECT_NAME={}",
-                sanitize_compose_project_name(compose)
-            )?;
+            let compose = sanitize_compose_project_name(compose);
+            writeln!(file, "COMPOSE_PROJECT_NAME={}", compose)?;
+            file.extend_from_slice(
+                modules::compose::compose_identity_line(worktree_path, &compose)?.as_bytes(),
+            );
         }
         if let Some(devcontainer) = devcontainer_name {
             writeln!(
@@ -7474,6 +7486,36 @@ impl Default for FeatureRegistry {
             features: Vec::new(),
         }
     }
+}
+
+/// Recover a legacy Compose identity only from this exact feature's registry entry.
+/// A copied managed env or a neighboring worktree's registry path is not ownership evidence.
+pub(crate) fn recorded_compose_project(
+    main_dir: &Path,
+    feature_dir: &Path,
+) -> Result<Option<String>> {
+    let feature = feature_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::validation("Invalid feature path for managed Compose identity"))?;
+    let Some(metadata) = FeatureStateStore::new(main_dir).get_feature(feature)? else {
+        return Ok(None);
+    };
+    if metadata.worktree_path.canonicalize()? != feature_dir.canonicalize()? {
+        return Err(Error::validation(
+            "Recorded Compose identity belongs to another workspace",
+        ));
+    }
+    if metadata
+        .compose_project_name
+        .as_deref()
+        .is_some_and(|project| !modules::compose::ComposeModule::is_compose_project_name(project))
+    {
+        return Err(Error::validation(
+            "Invalid recorded Compose project identity",
+        ));
+    }
+    Ok(metadata.compose_project_name)
 }
 
 /// The project's feature registry (`<repo>/.branchbox/registry.json`).

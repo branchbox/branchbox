@@ -297,8 +297,11 @@ Current CLI source builds also remove standalone devcontainers identified by the
 | **Database** | Database module supplies a feature-specific name when `.env` exists and lacks `DATABASE_NAME`; application configuration and explicit database setup must use it |
 
 During teardown, BranchBox matches the exact `devcontainer.local_folder` Docker label before acting
-on a devcontainer CLI project. It also restores the BranchBox-managed project name from
-`.devcontainer/.branchbox.env`. Discovered Compose project names are saved atomically there, scoped
+on a devcontainer CLI project. New BranchBox-managed project identity in `.devcontainer/.branchbox.env`
+is bound to the canonical workspace. Older unbound identity requires a matching recorded feature
+and worktree, exact workspace-label evidence, or valid scoped cleanup history. A copied project
+name or Compose filename alone does not authorize cleanup; ambiguous or mismatched identity
+stops teardown and keeps the worktree unless removal is forced. Discovered Compose project names are saved atomically there, scoped
 to the canonical workspace, before resources are removed. They remain available if a later cleanup
 step fails, including when the containers are already gone. Copied or malformed cleanup identity
 does not authorize another workspace's cleanup. Teardown verifies that no owned containers,
