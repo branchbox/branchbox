@@ -27,13 +27,13 @@ concurrency:
 permissions:
   contents: read
 
-# Runner images: every job uses macos-15 (Apple silicon) with the latest stable Xcode, the same toolchain
-# developers build with. The app still deploys to macOS 14 (LSMinimumSystemVersion); only building needs it.
+# Runner images: every job uses macos-26 (Apple silicon) with the latest stable Xcode, the same OS and
+# toolchain developers use. The app requires macOS 26, so tests cannot run on older images.
 
 jobs:
   test:
     name: Swift build + test
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
     # The gated suites (DESIGN §13.2) against the CLI built from this same commit (contract mode), then the
     # JSON that CLI prints, captured live and decoded by the app's models.
     name: Integration (same-commit CLI)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +107,7 @@ jobs:
   integration-floor:
     # The same suites against the oldest supported CLI (0.13.4, the floor; legacy mode), from its release.
     name: Integration (CLI 0.13.4 floor)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +136,7 @@ jobs:
 
   package:
     name: Package BranchBox.app
-    runs-on: macos-15
+    runs-on: macos-26
     needs: test
     timeout-minutes: 45
     steps:

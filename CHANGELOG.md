@@ -246,14 +246,14 @@ Text-mode output and the manual harness:
 
 #### macOS app
 
-- The macOS app requires macOS 14 or later (was macOS 13).
+- The macOS app requires macOS 26 or later (was macOS 13) and builds with Xcode 26.
 - The macOS app is rebuilt on a new, dependency-free Swift package (`macos/Package.swift`, Swift 6 language
   mode). It is split into `BranchBoxKit` (backend contract, CLI JSON models, process contract),
   `BranchBoxCLI`, `BranchBoxStores`, `BranchBoxPreview` and the `BranchBoxApp` executable. The product is now
   `BranchBox`: run it with `swift run --package-path macos BranchBox` instead of `swift run BranchBoxApp`.
   Debug builds can run entirely on a scripted preview backend with `BRANCHBOX_BACKEND=preview`.
 - macOS app CI moves to `.github/workflows/macos-app.yml`. It builds with warnings as errors and runs the
-  tests on macOS 14 with Xcode 16.2 (the Swift 6.0 floor) and on macOS 15. The old `macos_swift` job is gone
+  tests on macOS 26 with the latest stable Xcode. The old `macos_swift` job is gone
   from `ci.yml`.
 - On first launch the app carries over the 0.13 app's project (`branchbox.workspace`) and recent prompts. It
   deletes the saved teardown choices (Force, Delete branch, Complete spec), the transport preference and the
@@ -274,7 +274,7 @@ Text-mode output and the manual harness:
 - `macos/.swiftpm/` is no longer tracked; it is now ignored.
 - `scripts/package-macos-app.sh` is rewritten. It builds a universal (arm64 and x86_64) `BranchBox.app`
   in `macos/build/` (was `BranchBoxApp.app`) with the Cargo workspace version, the git build number and
-  commit, bundle ID `dev.branchbox.app`, macOS 14 or later and the app icon, signs it with the hardened
+  commit, bundle ID `dev.branchbox.app`, macOS 26 or later and the app icon, signs it with the hardened
   runtime (ad hoc unless `--sign IDENTITY`) and fails unless `codesign --verify --deep --strict`, the
   architectures and the version check pass. `--zip` adds `BranchBox-<version>-<build>-<sha>.zip` and its
   `.sha256`; `--native`, `--configuration debug`, `--out DIR`, `--scratch-path` and `--jobs` are also

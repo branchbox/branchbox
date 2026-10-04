@@ -98,7 +98,7 @@ Additional manual checks handed over by waves 3 and 4 (record each once, with ei
 |---|---|
 | Finder launch with a stripped PATH through `scripts/macos-dev.sh --open` (launchd environment; notifications appear in a real bundle) | pending |
 | Dock reopen, and menu bar Open BranchBox with the main window closed and with the menu bar icon hidden | pending |
-| ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K, macOS 14); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | pending |
+| ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | pending |
 | Log auto-scroll, scroll-up pause and Jump to Latest with a 2,000-line operation; Run Command with multi-MB output | pending |
 | Project toolbar at the 1100 pt default width (icon-only secondary actions, overflow) and primary-button prominence / red destructive styling in a key window | pending |
 | Dev container Start/Stop on a compose repository updates the Environment card; Diagnostics with Docker stopped | pending |

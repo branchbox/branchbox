@@ -188,7 +188,7 @@ docker run -it --rm -v $(pwd)/install.sh:/install.sh:ro ubuntu:22.04 bash /insta
 
 ## Mac App
 
-The Mac app lives in `macos/`, a Swift package with no third-party dependencies. It needs macOS 14 and Xcode 16 or later (Swift 6). Linux devcontainers cannot build it: the Apple SDKs only ship with macOS.
+The Mac app lives in `macos/`, a Swift package with no third-party dependencies. It needs macOS 26 and Xcode 26 or later (Swift 6.2). Linux devcontainers cannot build it: the Apple SDKs only ship with macOS.
 
 ```bash
 cd macos

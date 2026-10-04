@@ -279,7 +279,7 @@ verify_tls = true
 - Rust 1.89+
 - Docker
 - Node.js 20+ (for building the docs site)
-- macOS 14 + Xcode 16 or later (for the Mac app)
+- macOS 26 + Xcode 26 or later (for the Mac app)
 
 ### Local Development
 

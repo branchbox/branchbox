@@ -155,7 +155,7 @@ branchbox --version
 
 BranchBox for Mac is a native app for your features: it lists every feature worktree across your projects, starts and tears them down safely, and opens them in your editor, terminal or coding agent. It drives the `branchbox` CLI you installed above, so install the CLI first.
 
-**Requirements:** macOS 14 or later and `branchbox` 0.13.4 or later. With 0.13.4 the app runs in a compatible "legacy mode"; newer CLIs unlock project settings, tunnel credentials and the doctor checks.
+**Requirements:** macOS 26 or later and `branchbox` 0.13.4 or later. With 0.13.4 the app runs in a compatible "legacy mode"; newer CLIs unlock project settings, tunnel credentials and the doctor checks.
 
 The app is not notarized yet, so there is no download page or Homebrew cask. A Homebrew cask will come with Developer ID signing. Until then:
 

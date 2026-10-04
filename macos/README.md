@@ -6,7 +6,7 @@ The app is a front end for the `branchbox` command-line tool you already have in
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later.
+- macOS 26 (Tahoe) or later.
 - The `branchbox` CLI, version 0.13.4 or later (`brew install branchbox/tap/branchbox`).
   - With 0.13.4 the app runs in **legacy mode**. Everything works, but it does its own safety checks before a teardown, and the project settings, tunnel credentials and doctor editors are read-only.
   - A CLI that answers `branchbox version --json` unlocks every feature. The app gates features on the capabilities the CLI reports, not on its version number.
@@ -88,7 +88,7 @@ Point `BRANCHBOX_IT_CLI` at a 0.13.4 binary to exercise legacy mode. Set `BRANCH
 
 `.github/workflows/macos-app.yml` runs on changes to `macos/`, `cli/`, `core/` and the mac scripts:
 
-- `test`: builds with warnings as errors and runs the tests on macOS 15 with the latest stable Xcode. It also fails if gRPC, SwiftProtobuf or NIO imports come back, or if the menu bar presents a sheet or an alert.
+- `test`: builds with warnings as errors and runs the tests on macOS 26 with the latest stable Xcode. It also fails if gRPC, SwiftProtobuf or NIO imports come back, or if the menu bar presents a sheet or an alert.
 - `integration`: builds the CLI from the same commit and runs the integration suites against it, then captures live fixtures and decodes them.
 - `integration-floor`: runs the integration suites against the released 0.13.4 CLI (legacy mode).
 - `package`: builds the universal app and uploads it as an artifact.

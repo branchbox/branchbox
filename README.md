@@ -145,7 +145,7 @@ hash -r
 ```
 
 ### **Mac app (preview)**
-BranchBox for Mac is a native front end for the CLI (macOS 14+, `branchbox` 0.13.4+). Builds are
+BranchBox for Mac is a native front end for the CLI (macOS 26+, `branchbox` 0.13.4+). Builds are
 not notarized yet: download the `BranchBox-macOS-<sha>` artifact from a CI run and see
 [`macos/README.md`](macos/README.md) for installing it. A Homebrew cask will follow.
 
