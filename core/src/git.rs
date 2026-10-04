@@ -187,7 +187,7 @@ impl GitWorktree {
     /// processes (and threads). Git cannot run them concurrently in one repository:
     /// `worktree add` writes `.git/worktrees/<id>/` file by file, and a concurrent command that
     /// scans the worktrees (another add, a remove, `branch -D`) dies reading a file that is still
-    /// empty ("failed to read .git/worktrees/<id>/commondir"). The lock is taken on the shared
+    /// empty (`failed to read .git/worktrees/<id>/commondir`). The lock is taken on the shared
     /// git directory, apart from the registry lock, so a slow checkout never holds up registry
     /// updates.
     fn lock_worktree_admin(&self) -> Result<StateDirLock> {

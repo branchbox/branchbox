@@ -17,7 +17,7 @@ import Foundation
     var waiting: Int { waiters.count }
 
     /// Runs `body` once a slot is free. Refresh loops are never cancelled, so waiting is not cancellable either.
-    func run<T>(_ body: () async throws -> T) async rethrows -> T {
+    func run<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await acquire()
         defer { release() }
         return try await body()

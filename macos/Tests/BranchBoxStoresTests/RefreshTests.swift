@@ -233,9 +233,13 @@ import Testing
         #expect(probe.started == [0, 1, 2])
         #expect(limiter.running == 2)
 
-        for index in [0, 2, 3, 4] {
+        // Each freed slot goes to the oldest waiter; wait for it to start before freeing the next
+        // one, or two handed-off waiters race to record their start.
+        for (step, index) in [0, 2, 3, 4].enumerated() {
             try await waitUntil { probe.finishers[index] != nil }
             probe.finish(index)
+            let expectedStarts = min(5, 4 + step)
+            try await waitUntil { probe.started.count == expectedStarts }
         }
         for task in tasks { await task.value }
         #expect(probe.started == [0, 1, 2, 3, 4])

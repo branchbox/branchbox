@@ -469,7 +469,18 @@ mod tests {
             Some(json!({"socket": "/tmp/agent.sock"})),
         );
 
-        assert_eq!(format!("{recoded:?}"), format!("{:?}", original()));
+        // Under RUST_BACKTRACE=1 each error carries its own capture-site backtrace.
+        let without_backtrace = |debug: String| {
+            debug
+                .split("\n\nStack backtrace:")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            without_backtrace(format!("{recoded:?}")),
+            without_backtrace(format!("{:?}", original()))
+        );
         assert_eq!(recoded.to_string(), original().to_string());
         assert_eq!(format!("{recoded:#}"), format!("{:#}", original()));
 

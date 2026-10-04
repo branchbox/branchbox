@@ -43,7 +43,11 @@ macro_rules! branchbox_cmd {
         let mut cmd = ::assert_cmd::Command::new(env!("CARGO_BIN_EXE_branchbox"));
         cmd.current_dir($dir)
             .env("BRANCHBOX_SKIP_HOST_VALIDATION", "1")
-            .env("RUST_LOG", "off");
+            .env("RUST_LOG", "off")
+            // Byte-compatibility assertions compare stderr; CI's RUST_BACKTRACE=1 would append
+            // anyhow backtraces to every `Error:` line.
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0");
         for name in $crate::support::SCRUBBED_ENV {
             cmd.env_remove(name);
         }
