@@ -95,27 +95,6 @@ Need a quick health check without rerunning the harness? Use `branchbox agent st
 
 Run the script locally before publishing releases (or wire it into CI once Docker is available). When it fails, use the manual checklist above to dig into the exact stage and file detailed bug reports.
 
-## Mac App ↔ Agent Loop
-
-Milestone 2 adds a minimal SwiftUI client under `macos/` so we can validate end-to-end agent orchestration on macOS. Run this loop in addition to the CLI harness whenever you touch the agent, control-plane drain, or desktop app code:
-
-1. **Start the agent locally**
-   - From the repo root run `cargo run -p branchbox-agent` (or `scripts/manual-agent-e2e.sh` to reuse the smoke harness). Set `BRANCHBOX_AGENT_DIR` so the daemon stores its SQLite queue outside your real workspace if you want a clean slate.
-   - Optional: point the HTTP drain at a staging endpoint with `BRANCHBOX_CP_ENDPOINT=https://example.test/hooks/devices BRANCHBOX_CP_TOKEN=fake-token` so you can confirm batches land outside stdout.
-2. **Configure workspace + gRPC address for the mac app**
-   - On macOS set the expected workspace path via `defaults write dev.branchbox.app workspace "$(pwd)"`.
-   - Override the transport as needed with `export BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515` or by editing `~/Library/Preferences/dev.branchbox.app.plist`.
-3. **Run the SwiftUI preview**
-   - From a mac host run `cd macos && swift run BranchBoxApp`. The window should list all features detected by `FeatureService/List`. Rows tagged “CLI” indicate the fallback path kicked in because the gRPC transport was unavailable.
-   - Linux devcontainers cannot build the SwiftUI target—the Apple SDKs that provide `OSLog`, SwiftUI, and friends only ship with macOS/Xcode—so this step must execute on a macOS machine or CI runner.
-4. **Start + teardown from the UI**
-   - Use the “Start feature” form to launch a new worktree (toggle minimal mode + prompt seed as needed). Confirm the action flows through gRPC (watch the agent logs) and that the entry appears with the right status.
-   - Select “Teardown” on the new feature. Verify the worktree disappears, the specs module runs, and the UI updates.
-5. **Confirm control-plane delivery**
-   - Tail the agent logs to ensure the HTTP drain batches the start + teardown events (look for `control plane` lines and host metadata). When pointing at a stub endpoint you should see HTTP 200s; otherwise the agent logs that it fell back to local logging.
-
-Document any divergence (UI not updating, CLI fallback misfiring, HTTP drain errors) in the Milestone 2 tracking issue before marking a PR ready for review.
-
 ## Release-blocking matrix
 
 Every release candidate must pass the harness in all modes and stacks listed below. This matrix mirrors the requirements in `AGENTS.md` and `RELEASING.md`—document the results in your release notes so reviewers know the workflow was exercised end-to-end.
@@ -143,3 +122,26 @@ OP_SIGNING_KEY_REF='op://<vault>/<item>/private key' \
 ```
 
 See `scripts/manual-1password-e2e.md` for prerequisites, troubleshooting, and the expected warning-path behavior when invalid OP refs are provided.
+
+## Mac App ↔ CLI Loop
+
+The Mac app (`macos/`) is a front end for the `branchbox` CLI: every action runs `branchbox … --json`. Run this loop on a Mac whenever you touch the macOS app, the CLI's JSON output, teardown, prune, `config`, `init` or the feature registry. Use a disposable repository, never a real project. Record the results (CLI version, legacy or contract mode, pass/fail per step) in `macos/TESTING.md` and in the PR.
+
+Run it twice when the change affects both modes: once with the branch-built CLI (contract mode) and once with the released 0.13.4 CLI (legacy mode). In legacy mode, step 12 is skipped.
+
+0. **Build.** Run `cargo build -p branchbox-cli`, then `scripts/package-macos-app.sh --native --zip`. If you use a CI artifact instead, remove the quarantine flag first: `xattr -dr com.apple.quarantine BranchBox.app`.
+1. **Launch from Finder**, so the app starts with launchd's minimal `PATH`. Onboarding should find `/opt/homebrew/bin/branchbox`; to test the branch CLI, choose `target/debug/branchbox` in Settings › Tools › Locate…. Diagnostics shows the chosen CLI, its capabilities and the doctor checks.
+2. **Add a project.** Create a disposable repository (`git init`, one commit), add it, and choose Set Up BranchBox with the layout kept (the app runs `init -y`). The project appears, and the repository did not move.
+3. **Start a minimal feature.** The inspector streams the log, and the result shows the resolved name. In Terminal, `branchbox feature list --json --repo <repo>` lists it.
+4. **Start another feature from Terminal.** The app shows it within about a second, without a manual refresh.
+5. **Run Command** `echo hi`, then `sh -c 'exit 3'`. The second shows exit code 3 in the output, with no error alert.
+6. **Teardown refusal and discard.** Run `touch notes.txt` in a feature's worktree, then Tear Down. The refusal card names `notes.txt` and nothing was removed. Choose Discard and confirm: the feature is removed, and `git branch --list` shows the branch kept or deleted as the chosen policy says.
+7. **Unmerged branch.** Commit in a feature's worktree, then Tear Down with Delete if merged. Teardown is blocked on the unmerged branch. Choose Force-delete and confirm: the branch is deleted.
+8. **Prune.** With three features, one of them with an untracked file, open Prune. The dirty feature is unchecked. Run it and check the per-feature results.
+9. **Cancel a start.** Add a `post-checkout` hook that sleeps (`printf '#!/bin/sh\nsleep 30\n' > .git/hooks/post-checkout && chmod +x .git/hooks/post-checkout`), start a feature and cancel it. The confirmation explains what cancelling leaves behind. The feature then shows as Interrupted (or an unregistered worktree), with Resume Setup or Remove.
+10. **Window lifecycle.** Close the main window: the app stays in the menu bar, and the menu bar's Open BranchBox reopens it. Close it again and use the menu bar's Tear Down… on a feature: the window opens with the teardown sheet.
+11. **Quit during an operation.** Start a feature and quit. The app asks first. Choose Cancel and Quit; afterwards `pgrep branchbox` prints nothing.
+12. **Project settings** (contract CLI only). Change the branch prefix in the project's settings. `branchbox config get feature.branch_prefix --json --repo <repo>` shows the new value.
+13. **Unbundled dev loop.** `cd macos && swift run BranchBox` starts a feature without crashing. Notifications are switched off there.
+
+Clean up the disposable repository and its sibling worktrees afterwards. File any divergence (the app and `branchbox feature list` disagreeing, a refusal without a recovery, a leftover `branchbox` process) before marking the PR ready.

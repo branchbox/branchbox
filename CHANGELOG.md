@@ -9,11 +9,576 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### CLI and core
+
 - Create the in-guest tool-request replay ledger with its owner-only mode in one step. Two
   dispatchers opening the ledger at the same moment could have the second find the directory
   before the first had set its permissions, and refuse it as not owner-only.
 - Build on non-Unix targets again: the consumer-readable check on a `provider-credential`
   source reads Unix file modes and is now gated to Unix like the private-file check beside it.
+- Concurrent BranchBox processes no longer lose each other's registry updates. Every change to
+  `.branchbox/registry.json` is a read-modify-write under an exclusive lock on the `.branchbox`
+  directory (released when the holder exits), and the file is replaced atomically, so a reader
+  never sees a partial document and a crash mid-write leaves the previous registry intact. A
+  writer that waits more than 30 s fails with an error naming the lock. The devcontainer sync
+  baselines under `.branchbox/devcontainer-sync/` are replaced atomically as well.
+- Starting several features at once in one repository no longer fails with `fatal: failed to
+  read .git/worktrees/<name>/commondir`. BranchBox now serializes its own `git worktree`
+  changes and branch deletions per repository; git cannot run them concurrently.
+- `tunnel open` and `tunnel remove` for a feature that is not registered now say so and name the
+  registry file (`Feature '<name>' is not registered in <repo>/.branchbox/registry.json`)
+  instead of reporting `Worktree not found`. When `tunnel open` cannot derive a hostname, the
+  error names the `.env` file it read.
+- A `feature start --runtime sbx` (or `local-vm`) that is killed after its sandbox exists no
+  longer leaks the sandbox. The in-progress registry entry records the sandbox as soon as it is
+  created, so `feature teardown --force` removes it instead of reporting the runtime as cleaned
+  up.
+- On filesystems without file locks (some NFS, SMB and FUSE mounts), registry and worktree
+  changes no longer fail. BranchBox warns once and continues without the lock, as 0.13 did.
+- Two concurrent starts of the same feature now refuse the second one with the usual "worktree
+  already exists" error instead of a raw `git worktree add` failure.
+- `feature start --json` prints only its JSON summary on stdout. The "Prompt truncated to 2000
+  characters before storage." notice used to precede the JSON and break parsers; it now goes to
+  stderr and is also listed in the summary's `warnings`.
+- `feature teardown` without `--force` no longer deletes uncommitted work (BUG-04). When
+  `git worktree remove` refused a worktree with modified or untracked files, BranchBox deleted
+  the directory anyway and reported success. Teardown now lists the worktree's changes before it
+  does anything and refuses, naming the files, unless `--discard-changes` (or `--force`) says to
+  discard them. The `remove_dir_all` fallback is reachable only under `--force`; without it a
+  failed `git worktree remove` keeps the worktree and its registry entry and names git's error.
+- A freshly started feature tears down without `--force`, also in a repository with no
+  `.gitignore` (UX-13). Files BranchBox wrote itself (`.devcontainer/.branchbox.env` and the
+  other reserved names, the `.devcontainer/.env` link, the feature block appended to `.env`, the
+  Peacock and window-title settings in `.vscode/settings.json`, the "Open Feature URL" task,
+  `.devcontainer` files still matching their sync baseline, and files identical to the main
+  worktree's) are recognized by their content and no longer count as changes. Editing any of
+  them, for example adding a setting to a tracked `.vscode/settings.json`, makes it a user change
+  again.
+- Teardown deletes the branch the feature was started on (DRIFT-07). A feature started with
+  `--branch-prefix spike` had its `spike/<name>` branch left behind while teardown tried
+  `feature/<name>`. The branch now comes from `--branch-prefix` when given, else from the
+  registry, else from the configured prefix. `prune` uses the registry too. A branch that does
+  not exist is skipped with a warning.
+- Whether a branch is merged now follows `git branch -d` (its upstream when one is set, else
+  `HEAD`) instead of parsing `git branch --merged`, which missed branches checked out in another
+  worktree.
+- `feature start` keeps the settings of an existing `.vscode/settings.json` that has comments or
+  trailing commas; it used to replace them with only BranchBox's keys.
+- `feature teardown <name>` refuses when the folder at the feature's path is not a linked worktree
+  of the repository, with or without `--force`. `teardown main` (the standard `<project>/main`
+  layout) used to run the specs module and the adapter cleanup against the main worktree, deleting
+  its `tmp/` and `.cache/` contents, and `--force` then deleted the whole main repository; an
+  unrelated sibling repository or folder was deleted the same way. The plan reports a
+  `not_a_worktree` blocker that no flag overrides. The folder a half-finished forced teardown
+  leaves behind (registered, with no `.git` link) still needs `--force`.
+- The feature spec teardown promises to keep is no longer lost when moving it to the main
+  worktree fails (for example a read-only `docs/features/backlog/`): teardown stops with a
+  `spec_not_preserved` blocker before the runtime goes, also under `--discard-changes`; only
+  `--force` removes it anyway. Only the one spec teardown moves (the first of `in-progress/`,
+  `backlog/` and `completed/`) counts as preserved; another copy is a user change. An in-guest
+  teardown moves no spec, so an edited spec there is a user change too.
+- The adapter cleanup (`tmp/`, `.cache/`, `build/`, `dist/` and the other stack caches) runs after
+  the runtime is stopped and the worktree passed its last check, right before removal. Files
+  written there meanwhile now stop the teardown instead of being deleted unseen, and a teardown
+  that stops keeps those directories.
+- `branchbox init` writes `.branchbox/config.json` atomically under the `.branchbox` lock, so a
+  concurrent reader never sees a partly written file. `init --update` (and any init over an
+  existing `config.json`) now edits only the settings it changes, keeping keys it does not know
+  and the file's formatting; it used to rewrite the file from scratch and drop them.
+- `branchbox init` treats a project as already set up only when `.branchbox/registry.json`
+  exists, the rule `detect --json` and `doctor` use. A `.branchbox/` holding only `config.json`
+  (from `config set`, `tunnel credentials set`, or committed configuration in a fresh clone) used
+  to make `init` report `already_initialized` and do nothing; it now sets the project up and
+  keeps that configuration.
+- `config set`, `config apply` and `tunnel credentials set` accept a `config.json` whose
+  `tunnel.providers.cloudflared` is `null` (what init writes when tunnels are declined) and
+  replace the null with the provider settings; they used to refuse it as "not an object".
+- `init --validate --json` reports the detected `stack`, `adapter` and `modules` instead of the
+  `generic` default.
+- `detect` and `doctor --repo` run from a subfolder report the main worktree's paths plainly
+  (`<main>/.branchbox/config.json`, not `<main>/sub/../.branchbox/config.json`).
+- The `config apply` refusals for an oversized or unparsable patch no longer contain a run of
+  spaces.
+- The Cloudflare token file written by `branchbox init` (`.branchbox/secure/cloudflared.env`) is
+  now owner-only (0600) from creation, in an owner-only (0700) directory, and replaced
+  atomically; a file an earlier version wrote world-readable is narrowed on the next write.
+  Lines BranchBox does not manage are kept.
+
+#### macOS app
+
+- The macOS app finds the `branchbox` CLI when it is launched from Finder or the Dock, and the CLI it runs finds
+  `docker`, `git`, the devcontainer CLI (nvm), `op` and `gh`. GUI apps inherit launchd's
+  `PATH=/usr/bin:/bin:/usr/sbin:/sbin`; the app now captures your login shell's environment once
+  (`$SHELL -l -i -c`, falling back to `-l -c`, then to its own environment), searches that PATH for the CLI
+  itself, and gives every command it runs that PATH plus the Homebrew, cargo, `~/.local/bin` and Docker
+  Desktop directories. The CLI path is used as found (`/opt/homebrew/bin/branchbox`, not the Cellar path), so
+  a `brew upgrade` is picked up. Only the PATH is remembered between launches, in
+  `~/Library/Application Support/BranchBox/environment-cache.json`.
+- The macOS app no longer freezes when a command prints more than about 64 KB (for example
+  `feature list --all` with many features). Output is read while the command runs, never after it exits.
+- Cancelling an operation in the macOS app stops everything the command started: SIGINT to its process
+  group, then SIGTERM after 5 s and SIGKILL after 3 more, and the app waits for the group to exit before
+  reporting the cancellation. A cancellation that arrives before the command has started means it never
+  starts. Quitting the app stops running commands the same way, within 10 s.
+- Tearing down a feature from the macOS app no longer deletes uncommitted work. Right before running
+  `feature teardown`, the app reads the worktree with git and separates your changes from the files BranchBox
+  generated (its `.devcontainer` env files, the managed `.env` block, Peacock colours in `.vscode/settings.json`,
+  copies of main's files). If any change is yours, it refuses and names the files without running anything. It
+  goes ahead only once you confirm discarding exactly those files, and it refuses again if new changes appeared
+  after you confirmed. With CLI 0.13.x it never passes `--force` without that confirmation.
+- With CLI 0.13.x the app now always runs teardown with `--keep-branch` and deletes the branch itself afterwards:
+  `git branch -d` for "Delete if merged", `-D` only for "Force-delete". If git refuses to delete the branch, the
+  teardown still counts as done and the app shows git's reason. "Merged" follows `git branch -d`: the branch's
+  upstream if it has one, otherwise main's `HEAD`. A branch checked out in another worktree is no longer
+  misread (the app no longer parses `git branch --merged`). The derived `--branch-prefix` is passed, so a
+  `spike/zeta` branch is found.
+- On its first launch the macOS app waits for the login-shell capture (about 2 s) before locating the CLI, so a
+  `branchbox` earlier on your PATH is used rather than the one in `/opt/homebrew/bin`. Later launches search the
+  remembered PATH straight away.
+- Opening a feature worktree (or the folder that holds `main/`) as a project opens its main worktree. With CLI
+  0.13.4, `feature list` run from a feature worktree lists nothing.
+- Errors in the macOS app show the CLI's own cause: the JSON error envelope on 0.14, or the `Error:` line and
+  its "Caused by" list on 0.13.x, never the last log line. A corrupt `.branchbox/registry.json` is reported as
+  such, and known refusals (worktree exists, not a git repository, `sbx login` needed, no main `.devcontainer`,
+  and others) name their cause.
+- `devcontainer sync` with CLI 0.13.x: a feature whose sync failed is shown as failed even though the CLI exits 0.
+- `devcontainer up/down/build` with Docker stopped shows "Docker is not available" instead of a decode error, and
+  `feature exec` shows a failing command's exit code and output instead of an error.
+
+### Changed
+
+#### CLI and core
+
+- `feature start` registers the feature as soon as its worktree exists. Until the start
+  completes, the entry carries `setup: {state, pid, started_at}`; `feature list --json` reports
+  `state: "interrupted"` once that process has exited or the start is more than 24 hours old.
+  A start that fails or is killed midway therefore stays listed instead of leaving an
+  unregistered worktree behind. Older CLIs ignore the new key.
+- `feature list` reports an active or retained feature whose worktree directory no longer exists
+  as `orphaned`.
+- `branchbox init` adds `.branchbox/devcontainer-sync/`, `.branchbox/.registry.*.tmp` (left
+  behind only if a write crashes) and `.branchbox/.lock` (the lock file on platforms that cannot
+  lock the directory) to `.gitignore`.
+- A command that waits for another BranchBox process to release the registry or worktree lock
+  logs one line saying so on stderr.
+- Any `--json` flag now implies a non-interactive run. Nothing prompts; each prompt takes its
+  non-interactive outcome instead (usually a refusal that names the flag to pass), as it already
+  did without a terminal. Prompts also require stdin to be a terminal, not only stdout, and
+  `branchbox init` no longer reads its reorganization answers from piped stdin: without a
+  terminal it keeps the repository where it is and says to rerun with `--yes`.
+- In `--json` mode, human-readable text goes to stderr, so stdout carries exactly one JSON
+  document. Text mode prints the same text to stdout as before.
+- Log lines on stderr are coloured only when stderr is a terminal and `NO_COLOR` is not set; they
+  no longer carry ANSI escape codes when redirected to a file or pipe.
+- `branchbox name validate` reports an invalid name as an error (`Error: Invalid feature name:
+  <name>`, exit 1) after its existing explanation, like every other failing command.
+- Without a terminal (or with `--json`), a teardown that would delete an unmerged branch now
+  refuses before it changes anything, naming `--keep-branch` and `--force-delete-branch`, unless
+  `feature.teardown.force_delete_unmerged_by_default` is set. It used to remove the worktree and
+  mark the feature removed first, then fail on the branch. Interactive teardown still asks.
+- Teardown without `--force` no longer discards changes silently, for every caller: the CLI and
+  the agent's IPC and gRPC teardown now get a `teardown_refused` error for a worktree with
+  uncommitted changes. Callers that relied on the silent discard must pass `--force` (as the
+  repository's harnesses and tests do) or `--discard-changes`. `prune` is unchanged: it still
+  discards changes and force-deletes branches, as documented.
+- A teardown that refuses changes nothing: the tunnel, modules, spec, adapter, runtime, worktree,
+  branch and registry entry are all left as they were. If user changes appear while teardown is
+  stopping the runtime, it stops before removing the worktree, keeps the worktree and the
+  registry entry, and lists what it already did. The registry entry is marked removed only once
+  the worktree is gone.
+- `--force` still force-deletes the branch (`git branch -D`) when deleting it. When that deletes
+  unmerged commits, the summary warns: `Force-deleted unmerged branch <branch> (<n> commits); use
+  --discard-changes to discard files without deleting unmerged commits`. The `--force` help says
+  what it does.
+- `feature teardown --json` reports a refusal as the `teardown_refused` envelope whose
+  `details` are `{plan, changed_anything, completed_steps}`. Before, a refusal over module files
+  carried `plan: null` and a `files` list.
+- A failed branch delete after the worktree is gone is reported and the teardown still succeeds
+  (exit 0, `branch_deleted: false`, `branch_delete_error`).
+- In machine mode `prune` without `--yes` fails with `confirmation_required`, and a `--feature`
+  that is not an active or retained feature fails with `feature_not_found` before anything is
+  pruned.
+- `branchbox devcontainer sync` exits 1 when any worktree failed to sync, in text and JSON mode,
+  after printing the full report. It used to print the failures and exit 0. Text mode still
+  prints each worktree's row as it finishes.
+- A successful `devcontainer sync` records the worktree's devcontainer baseline, so a later
+  teardown recognises the synced files as BranchBox's own.
+- `branchbox init` without a terminal names `--op-github-ref` and `--skip-1password` in its
+  "1Password credential references not configured" warning. An unknown `--stack` is refused with
+  `validation_failed` (the message is unchanged).
+
+Text-mode output and the manual harness:
+
+- The refusal banner's first line is unchanged when devcontainer or compose files changed
+  (`⚠️  Detected devcontainer/compose changes inside <path>:`), and the `Error:` line still starts
+  with `Devcontainer/compose changes detected; rerun this command with --force to proceed.`, now
+  followed by a `Caused by:` line naming every changed file and `--discard-changes`. Other
+  changes print `⚠️  Detected uncommitted changes inside <path>:`. Each listed file now shows its
+  kind (`• README.md (modified)`), and the last banner line reads `(BranchBox refuses to discard
+  them without --discard-changes or --force)`.
+- `scripts/manual-cli-e2e.sh` needs no change: its dirty-teardown step still fails first and
+  succeeds on the scripted `--force` retry, and the phrases it checks ("Detected
+  devcontainer/compose changes", "Tunnel descriptor missing") are still printed. Its two clean
+  teardowns (`--delete-branch --complete-spec`) succeed without `--force` as before.
+- A missing branch is reported as `Branch '<branch>' not found; nothing to delete` instead of a
+  `Failed to delete branch` warning carrying git's error.
+
+#### macOS app
+
+- The macOS app requires macOS 14 or later (was macOS 13).
+- The macOS app is rebuilt on a new, dependency-free Swift package (`macos/Package.swift`, Swift 6 language
+  mode). It is split into `BranchBoxKit` (backend contract, CLI JSON models, process contract),
+  `BranchBoxCLI`, `BranchBoxStores`, `BranchBoxPreview` and the `BranchBoxApp` executable. The product is now
+  `BranchBox`: run it with `swift run --package-path macos BranchBox` instead of `swift run BranchBoxApp`.
+  Debug builds can run entirely on a scripted preview backend with `BRANCHBOX_BACKEND=preview`.
+- macOS app CI moves to `.github/workflows/macos-app.yml`. It builds with warnings as errors and runs the
+  tests on macOS 14 with Xcode 16.2 (the Swift 6.0 floor) and on macOS 15. The old `macos_swift` job is gone
+  from `ci.yml`.
+- On first launch the app carries over the 0.13 app's project (`branchbox.workspace`) and recent prompts. It
+  deletes the saved teardown choices (Force, Delete branch, Complete spec), the transport preference and the
+  devcontainer strategy, so an old Force setting can never pre-arm a teardown.
+- A development build (`swift run`, `swift test`) keeps its projects and logs in "BranchBox Dev" folders, as it
+  already keeps its preferences in the `dev.branchbox.app.dev` suite.
+- Quitting while operations run asks first; Cancel and Quit stops them and their processes.
+  Closing the window keeps BranchBox in the menu bar, and the Dock icon reopens it.
+- Empty and blocking states keep their buttons at their natural width and stack them when space
+  is short. Paths are listed one per line instead of wrapping mid-path.
+- Waiting operations show a clock instead of a spinner, prune progress shows "n of m" beside a
+  wider bar, and setup checklists no longer show "0 ms".
+- An error banner offers Retry only for errors that can pass on their own. A refused teardown
+  offers Show Changes and "Discard N changes and tear down…" (confirmed first) instead.
+- The macOS app no longer uses gRPC. The generated SwiftProtobuf/gRPC stubs, the agent bridge and the
+  grpc-swift, swift-protobuf and swift-nio dependencies are gone, along with `macos/Package.resolved`. The app
+  drives the `branchbox` CLI directly through its JSON output. `scripts/generate-swift-protos.sh` is removed.
+- `macos/.swiftpm/` is no longer tracked; it is now ignored.
+- `scripts/package-macos-app.sh` is rewritten. It builds a universal (arm64 and x86_64) `BranchBox.app`
+  in `macos/build/` (was `BranchBoxApp.app`) with the Cargo workspace version, the git build number and
+  commit, bundle ID `dev.branchbox.app`, macOS 14 or later and the app icon, signs it with the hardened
+  runtime (ad hoc unless `--sign IDENTITY`) and fails unless `codesign --verify --deep --strict`, the
+  architectures and the version check pass. `--zip` adds `BranchBox-<version>-<build>-<sha>.zip` and its
+  `.sha256`; `--native`, `--configuration debug`, `--out DIR`, `--scratch-path` and `--jobs` are also
+  available. It no longer builds the Rust CLI: the app uses the `branchbox` you have installed, and
+  `--embed-cli PATH` bundles a prebuilt one at `Contents/Helpers/branchbox` instead of
+  `Contents/Resources/bin/branchbox`. `--notarize` is not available yet and says what it needs (a
+  Developer ID identity and `NOTARY_PROFILE`).
+- `scripts/macos-dev.sh` builds `BranchBox Dev.app` from the same Info.plist template as the release app,
+  so it carries the workspace version, git build number and commit, and the app icon.
+
+### Added
+
+#### CLI and core
+
+- `branchbox version --json` prints `{"version", "contract_version", "capabilities"}`, so tools
+  can tell which machine-readable features this CLI supports (`json-error-envelope`,
+  `registry-lock` and `write-ahead-start` so far). `branchbox version` prints the same text as
+  `branchbox --version`.
+- In `--json` mode a failing command prints an error envelope on stdout,
+  `{"schema_version": 1, "error": {"code", "message", "causes", "details"}}`, with a stable
+  `code` such as `not_a_git_repository`, `worktree_not_found`, `feature_not_found`,
+  `teardown_refused`, `registry_locked` or `agent_unreachable`. stderr keeps the same `Error: …`
+  report, and the exit code is unchanged. Invalid arguments such as `feature list --status
+  bogus` report `validation_failed`. A panic prints an `internal_panic` envelope and still
+  exits 101. Commands whose JSON payload already reports the failure (`feature exec --json`,
+  `devcontainer up/down/build/exec --json`) print only that payload.
+- `feature teardown --discard-changes` discards the worktree's uncommitted changes without
+  force-deleting the branch.
+- `feature teardown --dry-run` prints the teardown plan and changes nothing; with `--json` it is
+  the plan document: the worktree and its lock, the user changes (path, kind, area), the
+  BranchBox-generated files and the rule that recognized each, the spec teardown moves to the
+  main worktree, the branch with its source, merge state and action, the project's teardown
+  defaults, and the blockers (`uncommitted_changes`, `unmerged_branch`, `worktree_locked`,
+  `status_unavailable`, `not_a_worktree`, `spec_not_preserved`), each with a cause-naming message
+  and the flag that overrides it. It accepts the same flags as a real teardown and exits 0 for
+  any valid feature name (a missing worktree is a plan with `worktree.exists: false`; the text
+  output says that a real teardown needs `--force`).
+- `feature teardown --json` summaries gain `branch_action` (`keep`, `delete`, `force_delete`),
+  `branch_delete_error`, `discarded_changes`, `preserved` (the spec moved to the main worktree)
+  and `registry_updated`.
+- `prune --dry-run --json` lists each candidate with its plan and an `at_risk` summary of the
+  uncommitted changes and unmerged commits the forced prune would destroy; `prune --yes --json`
+  reports each feature's result (`removed` or `failed`, with its summary or error) and exits 1
+  if any failed. `--feature <name>` (repeatable) limits prune to the named features. The text
+  listing notes what each feature would lose.
+- `branchbox version --json` lists `teardown-plan`, `teardown-discard-changes`,
+  `teardown-unmerged-preflight` and `prune-json`.
+- `branchbox detect --json` prints `{"schema_version": 1, "project", "git_repository",
+  "initialized", "stack", "adapter", "modules", "has_devcontainer", "has_env", "warnings"}`.
+  `stack` and `adapter` are lowercase ids (`rust`, `nodejs`, `generic`), and `initialized` means
+  the repository's main worktree has `.branchbox/registry.json`. The text output is unchanged;
+  a project folder that does not exist is now refused instead of being reported as `Generic`.
+- `branchbox devcontainer sync --json` reports every worktree it looked at:
+  `{"schema_version": 1, "dry_run", "strategy", "results": [{"work_feature", "worktree_path",
+  "status": "synced|would_sync|skipped|failed", "files", "skip_reason", "error",
+  "registry_updated"}], "synced", "failed", "skipped"}`. `--feature NAME` (repeatable) syncs only
+  the named features, in any status but `removed`; an unknown or removed name is refused with
+  `feature_not_found` before anything is synced. Without a `.devcontainer` in the main worktree,
+  a sync now fails with `devcontainer_source_missing` naming the missing path.
+- `branchbox tunnel credentials set --account-id ID --api-token-stdin [--repo R] [--json]` stores
+  the Cloudflare API token, read from standard input (or a hidden prompt on a terminal) and never
+  accepted as an argument, in `.branchbox/secure/cloudflared.env`, then points
+  `tunnel.providers.cloudflared` at it (`account_id`, `api_token_path`,
+  `manual_instructions: false`) so tunnels provision automatically. Other lines of the file and
+  every other key, and the formatting, of `.branchbox/config.json` are kept. An empty or
+  whitespace token, an invalid account ID, or a `config.json` with comments is refused with
+  nothing changed. The config change goes through the same checks as `branchbox config`.
+  `--clear` removes the stored token and turns manual tunnel instructions back
+  on. The token never appears in any output.
+- `branchbox doctor [--repo R] [--check-auth] [--json]` checks git, the Docker CLI, daemon and
+  Compose, the Dev Container CLI, Docker Sandboxes (including sign-in), the local-vm driver, the
+  1Password and GitHub CLIs, whether it runs on the host, and `PATH`; with `--repo`, also the
+  repository, its BranchBox setup, `config.json`, `registry.json` and `.gitignore` entries. Each
+  check has a status (`ok`, `warn`, `error`, `skipped`), a cause and a remediation. A tool that
+  does not answer within 3 s is killed and reported as timed out; a check that runs a tool
+  twice (Compose and its `docker-compose` fallback, a CLI's version then its sign-in) shares
+  those 3 s, so the whole report takes about 3 s at most. `op` and `gh` sign-in is
+  checked only with `--check-auth`. The command exits 1 when a required check fails; with
+  `--json` the report is printed either way.
+- `branchbox config get [KEY] [--json]`, `config set KEY VALUE`, `config unset KEY` and
+  `config apply --file <PATH|-> [--dry-run] [--json]` read and change `.branchbox/config.json`.
+  `get --json` prints `{"schema_version": 1, "path", "exists", "effective", "file", "keys"}`, where
+  each key row has its `type`, `allowed` values, `default`, effective `value`, `source`
+  (`file` or `default`) and `description`. `apply` takes an RFC 7386 JSON merge patch (`null`
+  unsets a key) and prints `{"schema_version": 1, "changed": [{"key", "old", "new"}],
+  "effective"}`. Values are checked before anything is written: an unknown key is refused with
+  `config_unknown_key`, an invalid value with `config_invalid` naming the key and the accepted
+  values (`feature.branch_prefix` must make `<prefix>/<name>` a valid git branch). Edits keep the
+  file's formatting, permissions and unknown keys, are written atomically under the `.branchbox`
+  lock, and refuse a file with comments, naming the line and column. The supported keys are
+  documented in the new configuration reference (`docs/docs/reference/configuration.md`),
+  generated from the same key registry.
+- `branchbox init --json` prints `{"schema_version": 1, "workspace_path", "repository_state":
+  {"kind", …}, "reorganized", "stack", "adapter", "modules", "devcontainer_status": {"kind", …},
+  "registry_initialized", "onepassword": {"status": "configured|skipped|not_configured"},
+  "warnings", "next_steps"}` and never prompts (it implies `--yes`); progress goes to stderr.
+- `branchbox init --op-github-ref op://… [--op-signing-key-ref op://…]` records the 1Password
+  references in `.devcontainer/.env` without the interactive questions. Each reference is
+  checked with `op read` before init changes anything, and an unreadable one is refused naming
+  the flag, the reference and the `op` error; `--no-verify-op-refs` skips the check.
+  `--skip-1password` records that the project does not use 1Password.
+- `branchbox version --json` lists the `detect-json`, `devcontainer-sync-json`, `config`,
+  `tunnel-credentials`, `doctor` and `init-json` capabilities.
+
+#### macOS app
+
+- The macOS app reads the CLI's version and capabilities from `branchbox version --json`, and from
+  `branchbox --version` on 0.13.x, and refuses CLIs older than 0.13.4 with a message naming the version it
+  found. The result is cached per CLI binary and re-checked when the binary changes.
+- The macOS app lists worktrees that are in BranchBox's layout but missing from the registry, for example after
+  an interrupted start, as "Unregistered worktree", and can remove them; a dirty one only after you confirm
+  discarding its changes. Your own worktrees elsewhere, or on other branches, are never listed.
+- The app's doctor checks git, the Docker CLI and daemon, Docker Compose, the Dev Container CLI, Docker Sandboxes
+  (`sbx ls`, including sign-in), the 1Password CLI and the GitHub CLI, with a 5 s limit each. With CLI 0.14 it
+  is merged with `branchbox doctor --json`.
+- "Copy as Command" gives a shell-ready command line, with `--prompt` text, your extra environment values and
+  tokens redacted.
+- The macOS app keeps your projects in `~/Library/Application Support/BranchBox/projects.json`, pinned ones first,
+  then the most recently opened. Adding a feature worktree adds its main worktree instead and says so, as does
+  adding a folder that holds BranchBox worktrees; the same repository is never added twice, even through a symlink.
+  A project whose folder is gone stays listed so you can locate or remove it, and removing a project never touches
+  its files.
+- Projects refresh by themselves:
+  - when `.branchbox/registry.json` changes on disk, whichever way the CLI wrote it, also while the app is in the
+    background;
+  - when the app becomes active and the data is more than 5 seconds old;
+  - every minute for the selected project while the app is active, and every 5 minutes for all projects (both
+    configurable, or off);
+  - after every operation, including failed and cancelled ones.
+
+  A refresh requested while one is running waits for one more pass instead of restarting it, a failed refresh
+  keeps showing the last good list, and at most two `feature list` processes run at a time.
+- Operations queue instead of colliding. A feature runs one change at a time; a second one is refused with the name
+  of the one in progress. Prune, Update All Workspaces, Set Up, project settings and tunnel credentials wait for
+  the project's other changes, and later changes wait for them. With a CLI older than 0.14 (no registry lock),
+  every change to a project's registry runs in the order you started it, shown as "Waiting for …". Running a
+  command in a feature is never blocked.
+- Prune tears the selected features down one at a time, exactly as selected. A refused teardown is recorded and
+  skipped, and Stop ends the prune before the next feature.
+- Each operation's full log is written to `~/Library/Logs/BranchBox/operations/` (the newest 100 are kept, as set
+  in Settings), with Settings' extra environment values and tunnel tokens redacted. The last 100 operations are
+  remembered across launches.
+- An operation that fails, or takes longer than 10 seconds, while you are not looking at BranchBox posts a
+  notification ("oauth is ready", "Couldn't start oauth", "Teardown of oauth needs attention"), as Settings allow.
+  A start or teardown stopped on a CLI without the registry lock says what it may have left behind.
+- The macOS app has a UI-free planning layer (`BranchBoxKit/Planning`) that decides what the app offers
+  before anything runs, with table-driven tests:
+  - Tear Down never discards changes or forces removal on the first attempt. When the CLI or the app's
+    preflight refuses because of uncommitted changes, the app offers "Discard N changes and tear down…",
+    which asks for confirmation listing those files, and tears down only if the uncommitted changes are
+    still exactly those files (new changes stop it again). An unmerged branch is kept by default, even when the project config deletes merged branches;
+    Force-delete is never preselected, and "Delete if merged" on an unmerged branch is blocked with the
+    commit count.
+  - Every refusal and partial failure gets only the recoveries that match it: Keep or Force-delete for an
+    unmerged branch, forced removal (always keeping the branch) for a locked or unreadable worktree, Reuse
+    for a folder that already exists, `sbx login` in Terminal for a Docker Sandbox that needs signing in,
+    and Locate or a Homebrew command for a missing or outdated CLI. Other failures offer the log and the
+    Diagnostics window.
+  - Prune preselects only features whose teardown loses nothing and explains every row it leaves out (for
+    example uncommitted changes, a locked worktree, or a setup that is still running).
+  - Start Feature applies the CLI's own naming rules: a title becomes the slug the CLI would choose, and
+    only that slug is sent. It blocks prompts over 2,000 characters (counted as the CLI counts them), a
+    name or folder that is already in use, and "keep the sandbox on failure" for runtimes other than
+    Docker Sandboxes.
+  - Health remediation for interrupted setups, failed modules, a missing folder, degraded, retained,
+    orphaned and unrecognised statuses, with the callout text for each. Resume, Recreate and Re-run Setup
+    are offered only for runtimes the app can start, and Retry with the kept runtime only for Docker
+    Sandboxes. A start that is still running is never offered a cleanup. Feature names starting with "-"
+    are refused.
+  - Opening a feature in VS Code, Cursor or another editor, in its dev container, in Terminal or iTerm, or
+    with a coding agent (the project's `editor.default_agent`, then the app setting) with the feature's
+    prompt. Terminal scripts single-quote every path and prompt, and the built-in agents get the prompt
+    after `--`. The project's `editor.default_agent` comes from the repository, so it is only ever an agent
+    name (`claude`, `codex`, or one bare executable name); anything else is ignored in favour of the app
+    setting and never runs as shell text. Terminals and agents for Docker Sandboxes
+    are disabled for now and offer `sbx exec <id> bash` to copy instead, and every host action is disabled
+    while the feature's folder is missing.
+- The macOS app has a shared SwiftUI kit for the screens that follow: status, runtime and attention
+  badges that never rely on colour alone, colour swatches, the module checklist, port links, result
+  cards with confirmed destructive recoveries, error banners, a live log view (level icons, timestamps,
+  Find, a warnings filter and auto-scroll that pauses when you scroll up), operation rows and progress
+  views whose Stop confirmation warns about partial worktrees and registry damage on older CLIs, empty
+  states, and a copy button with a VoiceOver announcement.
+- "Copy diagnostic report" produces redacted Markdown with the app version and Git SHA, the CLI's path,
+  source, version and capabilities, the child PATH, the redacted command line, the exit status and the
+  last 50 stderr lines. Tokens, prompts, extra environment values and the home folder are removed.
+- The Mac app now runs on the BranchBox CLI you have installed. It finds `branchbox` on your
+  login-shell PATH or in the usual Homebrew and Cargo folders (or where Settings points it), and
+  lists, starts and tears down features through it.
+- A new main window: a sidebar with one group per project, listing features with their colour,
+  status (or what needs attention), runtime, a "Quick" tag and a spinner while an operation runs.
+  Unregistered worktrees, starts in progress, loading, empty and failed-refresh states have rows
+  of their own, and "Show removed" lists torn-down features. Double-click opens a feature in your
+  editor; search filters every project. The selection is remembered per window.
+- When the CLI is missing, too old or unusable, the window says so and offers Locate…, the
+  Homebrew command and Re-detect. A 0.13.x CLI gets a dismissible banner naming what needs a
+  newer one.
+- Menus and shortcuts for every feature and project action (⌘N Start Feature, ⌘O Add Project,
+  ⌘R Refresh, ⌘K Quick Open, ⌘⌫ Tear Down, ⌃⌘E/T/A/O/R, ⌥⌘R, ⌥⌘C, ⇧⌥⌘C, ⌥⌘I, ⇧⌘., ⌥⌘L).
+  Unavailable commands are disabled and their help tag says why.
+- Quick Open (⌘K): search features, projects and commands and act on them from the keyboard.
+- A menu bar menu with a status summary, recent activity, each project's features and their
+  actions, and Start Feature. Its icon shows a dot while work runs, a badge and count when
+  something needs attention, and a mark when the CLI is unavailable.
+- Notifications when an operation finishes while you are away (bundled app only), with Show and
+  Open in Editor actions. While BranchBox is in front they appear as a message in the window.
+- `scripts/macos-dev.sh` builds a signed `BranchBox Dev.app` for development: run it in the
+  foreground, `--open` it like Finder does (`--background` keeps it behind other apps), or
+  `--build-only` to print the bundle path. `--env K=V` and `--preview <scenario>` pass settings
+  to the app.
+- The macOS app's feature detail is rebuilt around what you do with a feature:
+  - A header with the feature's colour, name, status (and derived attention such as "Interrupted" or
+    "Folder missing"), runtime, Quick mode and "branch from base · created …", with the everyday actions
+    next to it: Open in your editor (a split button with VS Code, Cursor and Open in Dev Container),
+    Terminal, Launch Agent (the project's `editor.default_agent` or your App Settings agent) and Open URL.
+  - A health callout explains what happened and offers exactly the fixes BranchBox can run: Resume Setup
+    for an interrupted start, Retry for a kept or stopped sandbox (plus the `sbx exec` inspect command),
+    Recreate Runtime for an orphaned feature, Clean Up for a missing folder (keeps the branch), Re-run Setup
+    for failed setup steps, Run Doctor for an unknown status, and Tear Down. None of them discards changes;
+    the buttons wait while another operation runs on the feature.
+  - Cards for links (feature URL, tunnel and published ports open in the browser; addresses that only work
+    inside the container are copy-only), the dev container (Running / Stopped / Not created, Start, Stop,
+    Stop and Delete Volumes…, Rebuild…, Open Shell, "Config out of date" → Update All Workspaces…),
+    sharing (Share via Tunnel, Stop Sharing… and, when the provider refuses, Remove Anyway… behind a second
+    confirmation; manual setup steps as a numbered list), overview, coding agent and prompt (Show All, Copy,
+    Launch with Prompt), setup checklist, runtime, adapter warnings and pull request. They sit in two
+    columns when the window is wide enough.
+  - Torn-down features are read-only and offer Delete Branch… while the branch still exists.
+- One feature actions menu is shared by the sidebar, the menu bar and the toolbar's More menu. Disabled
+  items say why (for example a missing folder, or a Docker Sandbox shell, which offers Copy Shell Command).
+- The Run Command window runs a command in a feature's runtime or its running dev container, through
+  `/bin/sh -lc` by default, with per-feature history and per-project Quick Commands. It shows output and
+  errors, the exit code and the duration; a non-zero exit is a result, not an error.
+- The macOS app's Start Feature sheet derives the feature's name, branch and folder from the title as you type
+  (checked with the CLI 250 ms after the last keystroke), with Edit Name to choose the slug yourself. Only the
+  resolved slug is sent, never the title. It blocks a name or folder already in use and prompts over 2,000
+  characters, and notes a branch that already exists or a removed feature with the same name. It offers a
+  searchable base branch (Current HEAD by default), Container with Docker's state, Docker Sandboxes when
+  installed (with Sign In… when signed out), Local VM as Linux-only, Full or Quick setup, recent prompts and
+  the default prompt (Quick only). Advanced options (branch prefix, skipped modules, reuse, keep the sandbox on
+  failure, verbose logs) are remembered per project once a start runs; cancelling remembers nothing.
+- A start runs in the sheet with its live log, [Run in Background] and [Stop…]. The result shows the name
+  the CLI actually used, the setup checklist, skipped modules, links and ports, and every warning, with a
+  stash warning called out; [Open in Editor] is the default action, and the coding agent launches on its own
+  when the project's config asks for it. A failed start shows its cause with [Edit and Retry], and
+  [Show Feature] when it left a registry entry.
+- The Teardown sheet says what will happen before anything runs: your uncommitted changes ("will be
+  permanently deleted"), BranchBox-generated files, the spec that is kept, unmerged commits, the runtime and
+  tunnel that go with it, and a folder that is already gone. The first attempt never discards anything; a
+  refusal shows in the same sheet with "Discard N changes and tear down…", confirmed with the file list.
+  Force-delete asks first with the commit count. The result says whether the worktree is gone (checked on
+  disk), what happened to the branch (with [Force-Delete Branch…] only for an unmerged one), whether the
+  runtime cleanup was verified or left resources behind (with [Copy Cleanup Commands], copied and never run),
+  module reports, warnings, and a red flag when CLI 0.13 deleted the folder by hand.
+- The Prune sheet checks every feature for unsaved work (four at a time), preselects the safe ones and says
+  why each other row is left out, with [Select Safe], [All] and [None] and a branch policy (Keep, Delete if
+  merged, Force-delete after a confirmation listing the branches). Checking a feature with uncommitted
+  changes asks first and discards only the files it listed. Features are torn down one after another; a
+  refused one is skipped and reported ("2 torn down · 0 partial · 1 refused · 0 failed") with its own
+  recoveries. "Nothing to prune" when every feature is gone.
+- The Unregistered Worktree sheet shows the folder, branch and commit with [Reveal], [Open in Terminal] and
+  [Remove Worktree…]. A worktree with uncommitted changes is refused and offers to discard exactly those
+  files; the branch can be deleted afterwards when it is merged.
+- Activity: the main window's inspector lists the selected feature's or project's operations with their live
+  logs; the Activity window lists every operation (this session's and earlier ones) with project and state
+  filters, [Reveal Log File] and [Copy Diagnostic Report]; the toolbar popover shows what is running and the
+  latest results. Viewing a failed or partial operation clears its attention badge. Stopping an operation
+  always asks first, and on a CLI without registry locking the question warns about a partial worktree and a
+  damaged registry.
+- BranchBox for Mac has a Welcome checklist for first launch: install the branchbox tool (with the
+  Homebrew command, Locate… and Check Again), check Git, Docker and the optional tools (each problem
+  offers its fix: Open Docker Desktop, Sign In to Docker Sandboxes, copy an install command, allow
+  notifications), then add the first project. It is reachable again from Diagnostics and Settings.
+- Add Project accepts a folder from an open panel or a drop. A feature folder or a container folder
+  adds the project's main folder and says so; a repository without BranchBox offers Set Up
+  BranchBox…; a folder that is not a Git repository explains why.
+- Set Up BranchBox runs `branchbox init -y` from a form: project type (prefilled from detection),
+  dev container, `.env` and coding-agent support, tunnels (off by default), 1Password references,
+  and where the repository lives. The repository stays where it is unless you pick "Move it into a
+  parent folder" and confirm. Preview shows the dry run's log; the result lists the stack, modules,
+  warnings and next steps with Start Your First Feature…. Repair and Check Setup use `--update` and
+  `--validate`.
+- Project detail shows the project's path, detection chips, default runtime and branch prefix,
+  status counts and a sortable feature table, with Start Feature, Prune, Update All Workspaces,
+  Project Settings, Repair, Check Setup and Remove from Sidebar (which never deletes files).
+- Update All Workspaces previews and then copies (or links) main's dev container setup to every
+  active feature, with a result row per feature; a failed feature is shown even when the CLI exits 0.
+- Project Settings edits `.branchbox/config.json` through `branchbox config apply`: Features,
+  Teardown, Runtime, Sharing and Coding Agent tabs built from the CLI's key table, a review of the
+  changes before applying, and errors shown next to the setting the CLI rejected. The Cloudflare API
+  token goes to `branchbox tunnel credentials set` on stdin and is never stored by the app. With
+  CLI 0.13.x the settings are read-only, with Open config.json.
+- App Settings has General, Tools (which CLI is used, Locate…/Use Automatic/Check Again, the shell
+  PATH with Re-capture, extra environment variables), Editors & Terminal, Coding Agent,
+  Notifications, Refresh and Advanced tabs. Changes take effect without relaunching.
+- The Diagnostics window lists the CLI (path, version, contract version, capabilities, skipped
+  copies), the shell environment, every tool check with its fix, the runtimes, each project's health
+  and the recent operations, with Run Checks Again, Copy Report (redacted) and Show Logs in Finder.
+- The Mac app has an icon (the BranchBox logo, from `macos/Packaging/AppIcon.iconset`;
+  `macos/Packaging/make-iconset.sh` regenerates it from `assets/icons`).
+- `scripts/macos-capture-fixtures.sh <cli> <outdir>` records the JSON a `branchbox` CLI prints for the
+  commands the app runs (version, list, start, exec, teardown plan and teardown, a missing feature), from a
+  throwaway git repo, with paths scrubbed and a `manifest.json` describing each file.
+- macOS app CI runs the integration suites against the CLI built from the same commit and against the
+  0.13.4 release (the oldest CLI the app supports), decodes freshly captured CLI output, and uploads a
+  universal, ad-hoc-signed `BranchBox-macOS-<sha>` app zip with every run (kept for 14 days).
+- The app's integration suites (`BRANCHBOX_IT=1`) now cover the whole lifecycle against a real CLI in both
+  legacy (0.13.x) and contract mode: exec exit codes, the dirty-teardown refusal and its discard recovery,
+  each branch policy and a custom branch prefix, duplicate starts, the generated-files recovery, a 40-feature
+  registry (over 64 KiB of JSON, 20 concurrent readers), cancelling a start (stray removal, and Interrupted →
+  Resume on contract CLIs), concurrent registry writers, prune planning, config round trips and the registry
+  watcher. Every Rust golden fixture in `cli/tests/fixtures/contract/` is decoded by the app's models in the
+  default test run, and `LiveFixtureDecodeTests` reports keys a CLI prints that the app does not read.
+  `macos/TESTING.md` records the latest verification run and the manual Mac App ↔ CLI loop.
+
+#### Documentation
+
+- A JSON contract reference (`docs/docs/reference/json-contract.md`) documents machine mode, the
+  error envelope, the stable error codes, exit codes, capabilities and every `--json` payload.
+- The CLI reference is regenerated from the `--help` of every subcommand, including `version`,
+  `doctor`, `config` and `tunnel credentials`, with notes on teardown safety and the `--force`
+  semantics.
+- `macos/README.md` is rewritten for the CLI-backed app (requirements, how the CLI is found,
+  dev loops, packaging, installing a CI build past Gatekeeper, troubleshooting), and the manual
+  E2E guide's "Mac App ↔ CLI Loop" replaces the old agent loop.
 
 ## [0.13.3] - 2026-09-09
 

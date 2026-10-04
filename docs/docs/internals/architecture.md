@@ -12,40 +12,33 @@ This document covers internal architecture details. For user-focused documentati
 
 ## Overview
 
-A distributed development environment orchestrator that manages git worktrees and devcontainers via a Rust CLI, always-on agent, and SwiftUI macOS client.
+A development environment orchestrator that manages git worktrees and devcontainers. The Rust core library does the work; the `branchbox` CLI is its primary interface, and its `--json` output is the integration API for everything else: the native macOS app, scripts, CI and external orchestrators. An optional agent daemon runs the same workflows in the background and drains telemetry to a control-plane endpoint.
 
 ## System Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
 │                User Device                   │
-│ ┌──────────────┐   ┌──────────────┐          │
-│ │  Mac App     │   │    CLI       │          │
-│ │  (SwiftUI)   │   │   (Rust)     │          │
-│ └──────┬───────┘   └──────┬───────┘          │
-│        │                  │                  │
-│        └───────┬──────────┘                  │
-│                │                             │
-│        ┌───────▼──────────┐                  │
-│        │  BranchBox Agent │                  │
-│        │  (Rust daemon)   │                  │
-│        └───────┬──────────┘                  │
-│                │                             │
-│        ┌───────▼──────────┐                  │
-│        │ Worktree Core    │                  │
-│        │ (Rust library)   │                  │
-│        └───────┬──────────┘                  │
-│                │ RuntimeProvider             │
-│      ┌─────────┼──────────┐                  │
-│      │         │          │                  │
-│ container   local-vm     sbx                 │
-│ (default) (Firecracker) (experimental)       │
-│      └─────────┴──────────┘                  │
-└──────────────────────────────────────────────┘
-                 │
-                 │ Batched events / heartbeats
-                 ▼
-      HTTPS drain (control-plane endpoint or stub)
+│ ┌──────────────┐  argv + --json  ┌─────────┐ │
+│ │  Mac App     │ ──────────────▶ │  CLI    │ │
+│ │  (SwiftUI)   │ ◀────────────── │ (Rust)  │ │
+│ └──────────────┘  one JSON doc   └────┬────┘ │
+│                                       │      │
+│ ┌──────────────┐               ┌──────▼────┐ │
+│ │ Agent daemon │ ─────────────▶│ Worktree  │ │
+│ │ (optional)   │  in-process   │ Core (lib)│ │
+│ └──────┬───────┘               └──────┬────┘ │
+│        │          .branchbox/registry.json   │
+│        │          (locked, atomic writes)    │
+│        │                              │      │
+│        │                RuntimeProvider      │
+│        │              ┌───────┼────────┐     │
+│        │         container local-vm   sbx    │
+│        │         (default)(Firecracker)(exp.)│
+└────────┼─────────────────────────────────────┘
+         │ Batched events / heartbeats
+         ▼
+  HTTPS drain (control-plane endpoint or stub)
 ```
 
 ## Components
@@ -80,40 +73,26 @@ A distributed development environment orchestrator that manages git worktrees an
 
 **Distribution**:
 - Published to crates.io as `worktree-core`
-- Embedded in agent, CLI, and available for FFI bindings
+- Linked into the CLI and the agent
+
+**Registry integrity**: feature state lives in `{repo_root}/.branchbox/registry.json`, shared by every CLI run, the Mac app (through the CLI) and the agent. Every write takes an exclusive advisory lock on the `.branchbox` state directory (`atomic_fs::lock_state_dir`; the OS releases it if the holder dies) and lands through one atomic rename (`atomic_fs::write_atomic`), so concurrent starts and teardowns never lose entries and readers never see a torn file. A separate per-repository lock serializes git worktree and branch changes. `feature start` registers the feature (with a `setup` record) as soon as its worktree exists, so an interrupted start stays visible as `interrupted`.
 
 ### 2. Agent (Rust Daemon)
 
-**Location**: `agent/`
+**Location**: `agent/` (binary `branchbox-agent`)
 
-**Purpose**: Long-running daemon on the user's device that executes worktree operations. Milestone 1 delivered the macOS/Linux/devcontainer daemon plus CLI bridge; Milestone 2 added the control-plane HTTP drain and `branchbox agent status` reporting. Windows transport support is tracked internally (see `docs/features/backlog/agent-windows-support.md` in the repo).
+**Purpose**: Optional long-running daemon that runs worktree workflows in the background and forwards telemetry. Milestone 1 delivered the macOS/Linux/devcontainer daemon; Milestone 2 added the control-plane HTTP drain and `branchbox agent status` reporting. Windows transport support is tracked internally (see `docs/features/backlog/agent-windows-support.md` in the repo).
 
 **Features**:
-- gRPC server listening on localhost (configurable bind address)
-- Executes commands from local clients (CLI + macOS preview) over IPC/gRPC
-- Offline operation with SQLite queue + durable control-plane acknowledgements (`control_plane_status.last_ack_event_id`)
+- Links the core library in-process, so it runs the same workflows as the CLI
+- JSON IPC on a Unix domain socket (`~/.branchbox/agent/branchbox-agent.sock` by default) and a tonic gRPC server on `127.0.0.1:50515`
+- SQLite event queue with durable control-plane acknowledgements (`control_plane_status.last_ack_event_id`)
 - Configurable HTTP drain (`BRANCHBOX_CP_ENDPOINT`/`BRANCHBOX_CP_TOKEN`) with exponential backoff/jitter and telemetry surfaced via `branchbox agent status`
 - Periodic heartbeat + event batching for the configured drain endpoint
-- State synchronization
-- Auto-update capability
-- CLI fallback bridge when the daemon is offline so macOS preview + CLI stay usable
 
-**Communication**:
-- **Local**: Unix domain socket (BranchBox agent-managed path)
-- **Remote**: TCP gRPC (configurable address) for CLI/macOS clients
-- **Drain**: HTTPS POSTs to the configured endpoint (control-plane or stub) for telemetry/state sync
+**Status**: the agent is not distributed: the Homebrew formula and release archives ship only the CLI. Run it from source (`cargo run -p branchbox-agent`, or `scripts/manual-agent-e2e.sh`). Today only `branchbox agent status` talks to it; the CLI and the Mac app run workflows directly. A Mac app backend that talks to the agent is planned for later, once the agent's handlers and transport are hardened.
 
-**Installation**:
-```bash
-# Homebrew
-brew install branchbox-agent
-
-# Initialize
-branchbox-agent init
-
-# Install as system service
-sudo branchbox-agent install
-```
+**Configuration**: `~/.branchbox/agent/agent.toml` (override the path with `BRANCHBOX_AGENT_CONFIG`, the state directory with `BRANCHBOX_AGENT_DIR`, and the gRPC address with `BRANCHBOX_AGENT_GRPC_ADDR`). See [Agent Configuration](#agent-configuration).
 
 ### 3. CLI Tool (Rust)
 
@@ -129,49 +108,44 @@ branchbox feature teardown oauth-integration
 branchbox devcontainer sync
 ```
 
+**Machine interface**: every command with `--json` prints exactly one JSON document on stdout (human text goes to stderr), never prompts, and reports failures as an error envelope with a stable code. `branchbox version --json` lists capability strings so clients can gate features. See the [JSON contract](../reference/json-contract.md).
+
 **Distribution**:
-- Homebrew: `brew install worktree`
+- Homebrew: `brew install branchbox/tap/branchbox`
+- Install script: `curl -fsSL https://raw.githubusercontent.com/branchbox/branchbox/main/install.sh | bash`
 - Cargo: `cargo install --path cli --locked`
 - Direct binary download from GitHub releases
 
 ### 4. Mac App (SwiftUI)
 
-**Location**: `macos/`
+**Location**: `macos/` (a Swift package; see `macos/README.md`)
 
-**Purpose**: Native macOS application for worktree management
+**Purpose**: Native macOS front end for BranchBox: every project's features at a glance, safe teardown and prune, health remediation, editor/terminal/agent launch, project setup and settings.
 
-**Features**:
-- View local worktrees with adapter/module metadata, prompt history, tunnel telemetry, and transport badges
-- Start/stop/teardown features (minimal mode toggles plus `--force` / `--complete-spec` confirmations)
-- Visual indicators for agent gRPC vs CLI fallback plus drain health surfaced via `branchbox agent status`
-- Monitor Docker containers + module output snippets
-- Workspace picker + configuration UI for CLI/gRPC endpoints
+**How it works**:
+- **CLI-JSON first.** The app spawns the user's installed `branchbox` (found on the login-shell `PATH`, never embedded by default) and decodes its `--json` output. It never writes repository files itself: settings go through `config apply`, the tunnel token through `tunnel credentials set --api-token-stdin`.
+- **Capabilities, not versions.** `branchbox version --json` decides which features are enabled. A 0.13.x CLI runs in legacy mode, where the app performs the teardown safety checks itself.
+- **Layers**: `BranchBoxKit` (contracts, models, pure planning) → `BranchBoxCLI` (process runner, environment, `CLIBackend`) and `BranchBoxStores` (observable state) → `BranchBoxApp` (SwiftUI). A `BranchBoxBackend` protocol keeps the UI independent of the transport; an agent-backed conformer can be added later.
+- **Freshness.** FSEvents on `.branchbox/` refreshes the app within about a second of a CLI change made in Terminal.
 
-**Communication**:
-- Talks to local agent via Unix socket or localhost gRPC
-- Falls back to invoking the CLI directly when the daemon is unavailable
-
-**Distribution**:
-- Mac App Store
-- Direct download (DMG)
+**Distribution**: an ad-hoc signed universal `.app` built by `scripts/package-macos-app.sh` and uploaded by CI (`.github/workflows/macos-app.yml`). The app is not sandboxed: it must run `branchbox`, `git` and `docker` and read repositories anywhere. Developer ID signing, notarization and a Homebrew cask come later.
 
 ## Communication Protocols
 
-### Local Communication
-
-- CLI and macOS clients talk to the agent over a Unix domain socket under `~/.branchbox/agent/` by default.
-- Non-interactive tooling can opt into TCP gRPC by exporting `BRANCHBOX_AGENT_GRPC_ADDR=127.0.0.1:50515`.
-- Authentication piggybacks on OS permissions—the socket inherits the user's UID/GID and is not world-readable.
+### Mac App ↔ CLI
 
 ```
-CLI / Mac App → Unix socket → BranchBox agent → Worktree core
+Mac App → branchbox <command> --json --repo <path> → Worktree core → .branchbox/registry.json
+        ← one JSON document on stdout (payload or error envelope), exit code
 ```
 
-### Remote Communication
+- One process per operation, in its own process group so cancel and quit can stop it and its children.
+- Concurrent operations are safe because the CLI locks the registry; with a 0.13.x CLI (no `registry-lock` capability) the app queues registry writers per project instead.
 
-- The gRPC server can bind to alternative interfaces (e.g., devcontainer ↔ host) when `BRANCHBOX_AGENT_GRPC_ADDR` points at a non-loopback IP.
-- Secure the connection via SSH or WireGuard tunnels if you expose the agent outside localhost.
-- All APIs return structured errors so remote callers can fall back to CLI direct mode if the agent becomes unreachable.
+### Agent
+
+- `branchbox agent status` talks to the agent over its Unix domain socket under `~/.branchbox/agent/`. The socket inherits the user's UID/GID and is not world-readable.
+- The agent also serves gRPC on `127.0.0.1:50515` (`BRANCHBOX_AGENT_GRPC_ADDR` changes it). It has no authentication, so do not bind it to a non-loopback address; secure any remote access with SSH or WireGuard.
 
 ### Telemetry Drain
 
@@ -254,29 +228,21 @@ loop {
 
 ## Deployment
 
-### Agent Installation (macOS)
+### Agent (from source)
 
 ```bash
-# Homebrew
-brew tap branchbox/tap
-brew install branchbox-agent
-
-# Manual
-curl -L https://github.com/branchbox/branchbox/releases/download/vX.Y.Z/branchbox-agent-darwin-arm64.tar.gz | tar xz
-sudo mv branchbox-agent /usr/local/bin/
-
-# Initialize
-branchbox-agent init
-
-# Install as LaunchDaemon
-sudo branchbox-agent install
+cargo run -p branchbox-agent
+# or exercise it with the drain stub
+./scripts/manual-agent-e2e.sh --cp-stub
 ```
+
+There is no packaged agent, service installer or LaunchDaemon yet.
 
 ### Agent Configuration
 
-`~/.branchbox/agent/config.toml`:
+`~/.branchbox/agent/agent.toml` (every key is optional):
 ```toml
-workspace_root = "/workspaces/main"
+workspace_root = "/path/to/project/main"
 state_dir = "/Users/you/.branchbox/agent"
 socket_path = "/Users/you/.branchbox/agent/branchbox-agent.sock"
 heartbeat_interval_secs = 30
@@ -291,10 +257,6 @@ enabled = true
 endpoint = "https://example.test/hooks/devices"
 api_token = "stub-token"
 verify_tls = true
-
-[logging]
-level = "info"
-file = "/Users/you/.branchbox/agent/agent.log"
 ```
 
 ## Technology Stack
@@ -305,17 +267,19 @@ file = "/Users/you/.branchbox/agent/agent.log"
 | **Agent** | Rust + Tokio | Low resource, reliable, async I/O |
 | **CLI** | Rust + Clap | Single binary, fast startup, great UX |
 | **Mac App** | SwiftUI | Native macOS, best performance/UX |
-| **Communication** | gRPC (tonic) | Type-safe, bi-directional streaming |
-| **Database** | SQLite | Durable local registry + event queue |
+| **App ↔ CLI** | `--json` process contract | One stable API for the app, scripts and CI |
+| **Agent transport** | JSON IPC (Unix socket) + gRPC (tonic) | Local-only daemon access |
+| **Feature registry** | JSON file, locked + atomic writes | Shared by every CLI version and the app |
+| **Agent queue** | SQLite | Durable event queue for the drain |
 
 ## Development Setup
 
 ### Prerequisites
 
-- Rust 1.75+
+- Rust 1.89+
 - Docker
 - Node.js 20+ (for building the docs site)
-- Swift toolchain + Xcode (for the macOS preview app)
+- macOS 14 + Xcode 16 or later (for the Mac app)
 
 ### Local Development
 
@@ -331,15 +295,18 @@ cargo build
 # Run tests
 cargo test
 
-# Build agent
-cd ../agent
-cargo build
-cargo run -- --config-file dev-config.toml
+# Build and run the agent (optional)
+cd ..
+cargo run -p branchbox-agent
 
-# Build CLI
-cd ../cli
-cargo build
-./target/debug/worktree --help
+# Build the CLI
+cargo build -p branchbox-cli
+./target/debug/branchbox --help
+
+# Build and test the Mac app (macOS only)
+swift build --package-path macos --build-tests -Xswiftc -warnings-as-errors
+swift test --package-path macos --parallel
+```
 
 ## References
 

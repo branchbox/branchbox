@@ -5,7 +5,7 @@
 This document tracks the implementation progress of the BranchBox distributed system.
 
 **Created**: 2025-10-21
-**Status**: 🟢 Phase 3 Ready – Milestone 2 (agent daemon + macOS preview) completed; control-plane + distribution work queued
+**Status**: 🟢 Milestone 2 (agent daemon + drain) completed; the macOS app was rebuilt on the CLI's `--json` contract (mac-app-revamp, 2026-10); control-plane work queued
 
 ## Project Structure
 
@@ -248,14 +248,21 @@ branchbox/
 - [ ] Web UI for device management
 - [ ] Real-time updates (Turbo Streams)
 
-### ✅ Phase 6: Mac App (COMPLETE)
+### ⏳ Phase 6: Mac App (REVAMP IN PROGRESS)
 
-- [x] SwiftUI preview app under `macos/` with workspace picker + transport badges
-- [x] gRPC client built on `grpc-swift` with CLI fallback when the daemon is offline
-- [x] Feature list + start/teardown flows (minimal mode, prompt seeds, `--force`/`--complete-spec`)
-- [x] Module/tunnel telemetry chips, adapter metadata panes, and drain health surfaced via `branchbox agent status`
-- [x] Control-plane drain stub harness (`scripts/manual-agent-e2e.sh --cp-stub`) documented for validation
-- [ ] Follow-up: move from handwritten protos to generated sources (see `docs/features/backlog/mac-app-proto-codegen.md`)
+The Milestone 2 preview (gRPC to the agent with a CLI fallback) was replaced by the mac-app-revamp (`docs/features/in-progress/mac-app-revamp.md`):
+
+- [x] Zero-dependency Swift 6 package (macOS 14): Kit, CLI, Stores, Preview and App targets; gRPC, SwiftProtobuf and the generated stubs removed
+- [x] `CLIBackend` drives the installed `branchbox` through `--json`, with login-shell `PATH` capture, CLI location, capability gating and a legacy mode for 0.13.x
+- [x] Multi-project sidebar, feature detail with health remediation, runtime/ports, editor/terminal/agent launch, Run Command, devcontainer and tunnel actions
+- [x] Safe teardown (plan first, discard only as a confirmed recovery, branch policy), prune as a loop of safe teardowns, interrupted starts and stray worktrees
+- [x] Activity window and logs, menu bar extra, Quick Open, notifications, quit confirmation
+- [x] Add project, `init`, project settings via `config apply`, tunnel credentials, Diagnostics with `doctor`, app Settings
+- [x] CLI and core: error envelope, registry lock and atomic writes, write-ahead start, teardown safety (`--discard-changes`, `--dry-run`), `version`/`doctor`/`config`/`tunnel credentials`, `--json` for detect/sync/prune/init
+- [ ] Packaging script, dev bundle and full CI (`.github/workflows/macos-app.yml` integration and package jobs)
+- [ ] Swift 6.0.3 (Xcode 16.2) compile verified in CI
+- [ ] End-to-end verification on the packaged app (Mac App ↔ CLI Loop) with 0.13.4 and a contract CLI
+- [ ] Later: Developer ID signing, notarization, Homebrew cask; an agent-backed transport
 
 ## Code Quality
 
@@ -399,12 +406,11 @@ cargo test
    - Surface control-plane connectivity + recent events inside the macOS Agent tab (drives the new “View log” buttons).
 
 2. **macOS Build + Release Automation**
-   - Add a GitHub Actions workflow that runs `swift build`, `swift test`, and `./scripts/package-macos-app.sh` on `macos-latest`.
-   - Upload signed/notarized artifacts (or at least zipped `.app` bundles) so internal testers can download each PR build.
+   - Done in the mac-app-revamp: `.github/workflows/macos-app.yml` builds, tests and uploads a zipped ad-hoc-signed `.app` per PR.
+   - Remaining: Developer ID signing, notarization and a Homebrew cask.
 
 3. **Dependency Hygiene**
-   - Bump `swift-protobuf` and `grpc-swift` when their plugins migrate off the deprecated `Path` APIs (or fork + patch with `@preconcurrency` and `URL` usage to silence Sendable warnings).
-   - Track the warnings in `docs/features/backlog/mac-app-polish.md` so we fail CI once the upstream fix merges.
+   - Done: the Mac app has no SwiftPM dependencies (gRPC and SwiftProtobuf removed) and builds with warnings as errors.
 
 4. **Agent Diagnostics + Tunnel Health**
    - Populate the Agent tab with control-plane delivery timeline, retry button, and registry diffs.
@@ -426,8 +432,8 @@ cargo test
 1. **Automated Tunnel Providers**
    - Expand beyond Cloudflare (add Tailscale, local reverse proxy) with remediation UX when automation fails.
 
-2. **Native Notifications + Launch Agents**
-   - Convert the macOS preview into a true menu-bar daemon that auto-launches the Rust agent and emits notifications.
+2. **Agent-backed Mac app**
+   - The Mac app already has a menu bar extra and notifications. Add an agent-daemon backend behind its `BranchBoxBackend` protocol once the agent's handlers and transport are hardened.
 
 3. **Remote Commands**
    - Allow the control plane to trigger start/teardown, view logs, and sync tunnels across fleets once auth is in place.
@@ -519,7 +525,7 @@ cargo build --release
   - Added an authenticated HTTP drain (configured via `BRANCHBOX_CP_ENDPOINT`/`BRANCHBOX_CP_TOKEN`) that batches feature events + heartbeats with host metadata for the control plane.
   - Hardened registry persistence with `control_plane_status` (batch IDs + `last_ack_event_id`) to support durable acknowledgements and exponential backoff on failures.
   - Extended the manual agent harness with `--cp-stub` plus documentation so contributors can exercise the drain locally.
-  - Bootstrapped a SwiftUI macOS preview app (workspace picker, telemetry badges, teardown sheet, CLI fallback) that speaks the same gRPC surface as the CLI.
+  - Bootstrapped a SwiftUI macOS preview app (workspace picker, telemetry badges, teardown sheet, CLI fallback) over gRPC. It was replaced in 2026-10 by the CLI-backed app (mac-app-revamp).
   - Added `branchbox agent status`/gRPC bindings so downstream clients can detect drain configuration, last delivery, and error conditions.
-  - Documented codegen follow-ups (`docs/features/backlog/mac-app-proto-codegen.md`) for moving away from handwritten proto stubs.
+  - Documented codegen follow-ups (`docs/features/backlog/mac-app-proto-codegen.md`), since archived: the app no longer uses protos.
   - Remaining work for Milestone 3: Windows/TCP transport and the production Rails control-plane endpoints.

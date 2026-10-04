@@ -151,6 +151,24 @@ cargo install --path cli --locked
 branchbox --version
 ```
 
+## Mac App (Preview)
+
+BranchBox for Mac is a native app for your features: it lists every feature worktree across your projects, starts and tears them down safely, and opens them in your editor, terminal or coding agent. It drives the `branchbox` CLI you installed above, so install the CLI first.
+
+**Requirements:** macOS 14 or later and `branchbox` 0.13.4 or later. With 0.13.4 the app runs in a compatible "legacy mode"; newer CLIs unlock project settings, tunnel credentials and the doctor checks.
+
+The app is not notarized yet, so there is no download page or Homebrew cask. A Homebrew cask will come with Developer ID signing. Until then:
+
+1. Download the `BranchBox-macOS-<sha>` artifact from a run of the **macOS App** workflow on GitHub Actions (kept for 14 days), or build it yourself with `scripts/package-macos-app.sh --native --zip`.
+2. Unzip it and move `BranchBox.app` to `/Applications`.
+3. Clear the quarantine flag that macOS adds to downloads:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/BranchBox.app
+   ```
+   Alternatively, open the app once, then choose **System Settings › Privacy & Security › Open Anyway**. On macOS 15 and later, Control-clicking Open in Finder no longer bypasses this check.
+
+The app finds the CLI on your login shell's `PATH` (or in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`). Use **Settings › Tools › Locate…** to pick another one, and **Window › Diagnostics** to see which CLI it uses and whether git and Docker are ready. See [`macos/README.md`](https://github.com/branchbox/branchbox/blob/main/macos/README.md) for details.
+
 ## Verify Installation
 
 After installation, verify that BranchBox is working:

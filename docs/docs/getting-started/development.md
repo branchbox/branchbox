@@ -186,6 +186,26 @@ docker run -it --rm -v $(pwd)/install.sh:/install.sh:ro ubuntu:22.04 bash /insta
 
 **Coverage**: Static analysis (shellcheck) + automated tests (bats) + CI (GitHub Actions)
 
+## Mac App
+
+The Mac app lives in `macos/`, a Swift package with no third-party dependencies. It needs macOS 14 and Xcode 16 or later (Swift 6). Linux devcontainers cannot build it: the Apple SDKs only ship with macOS.
+
+```bash
+cd macos
+swift build --build-tests -Xswiftc -warnings-as-errors   # what CI runs
+swift test --parallel
+swift run BranchBox                                       # unbundled dev build
+```
+
+- `swift run BranchBox` runs without notifications and uses separate "BranchBox Dev" settings and storage. Test a branch-built CLI with `BRANCHBOX_CLI_PATH="$PWD/../target/debug/branchbox" swift run BranchBox`.
+- Debug builds can run without any CLI on a fake backend: `BRANCHBOX_BACKEND=preview BRANCHBOX_PREVIEW_SCENARIO=showcase swift run BranchBox`.
+- `scripts/macos-dev.sh` wraps a debug build as `macos/build/dev/BranchBox Dev.app` and runs it with logs in your terminal; `--open` launches it like Finder does, which reproduces the minimal `PATH` a released app sees.
+- Integration tests against a real CLI run only when asked: `BRANCHBOX_IT=1 BRANCHBOX_IT_CLI="$PWD/target/debug/branchbox" swift test --package-path macos --filter BranchBoxIntegrationTests`.
+- Package with `scripts/package-macos-app.sh` (universal, ad-hoc signed; `--zip` for an archive).
+- Before a PR that touches the app or the CLI's JSON output, run the Mac App ↔ CLI Loop at the end of the [CLI end-to-end test](./manual-cli-e2e.md).
+
+The app reads the CLI's `--json` output, so changes to payloads must follow the [JSON contract](../reference/json-contract.md): only add keys, keep error codes stable, and regenerate the golden fixtures with `UPDATE_CONTRACT_FIXTURES=1`. See [`macos/README.md`](https://github.com/branchbox/branchbox/blob/main/macos/README.md) for the target layout and CI jobs.
+
 ## Code Quality
 
 ```bash
@@ -223,7 +243,7 @@ cargo doc --open
 cargo doc --no-deps
 ```
 
-When updating CLI commands, manually regenerate the CLI reference by capturing `branchbox --help` output and updating `docs/docs/reference/cli.md`.
+When updating CLI commands, regenerate `docs/docs/reference/cli.md` from the `--help` output of `branchbox` and every subcommand. When a `--json` payload or error code changes, update `docs/docs/reference/json-contract.md` too. `docs/docs/reference/configuration.md` is generated: run `UPDATE_CONFIG_REFERENCE=1 cargo test -p worktree-core config_edit`.
 
 ## Project Structure
 
@@ -243,7 +263,7 @@ branchbox/
 │   └── Cargo.toml
 ├── agent/                  # Local agent daemon (Milestones 1-2)
 ├── cli/                    # CLI tool
-├── macos/                  # SwiftUI preview app (Milestone 2)
+├── macos/                  # BranchBox for Mac (Swift package, drives the CLI)
 ├── docs/                   # Documentation
 ├── .env.sample             # Environment variable template
 ├── .gitignore
@@ -283,7 +303,8 @@ Before submitting a PR:
 
 For detailed architecture information, see:
 - [Architecture Overview](../internals/architecture.md) - System design and components
-- [PROTOCOL.md](https://github.com/branchbox/branchbox/blob/main/docs/PROTOCOL.md) - Communication protocols (gRPC, REST)
+- [JSON Contract](../reference/json-contract.md) - The `--json` output the Mac app and scripts rely on
+- [PROTOCOL.md](https://github.com/branchbox/branchbox/blob/main/docs/PROTOCOL.md) - Agent protocols (gRPC, REST)
 - [CLAUDE.md](https://github.com/branchbox/branchbox/blob/main/CLAUDE.md) - AI agent development guidelines
 - [AGENTS.md](https://github.com/branchbox/branchbox/blob/main/AGENTS.md) - Repository guidelines and patterns
 
@@ -295,7 +316,7 @@ For detailed architecture information, see:
 - [x] Core library implementation (Milestone 0)
 - [x] CLI implementation (Milestone 0)
 - [x] Agent implementation (Milestone 1 — daemon + CLI IPC on macOS/Linux/devcontainers)
-- [x] Mac app implementation (Milestone 2 — SwiftUI preview riding the gRPC surface)
+- [x] Mac app (native SwiftUI front end for the CLI's `--json` contract; agent backend later)
 
 ## Related Projects
 

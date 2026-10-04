@@ -97,7 +97,8 @@ An always-on BranchBox Agent tracks:
 - Heartbeats  
 - Stack metadata  
 - Control-plane connectivity  
-- macOS app integration over gRPC  
+
+The native macOS app and scripts drive the same `branchbox` CLI through its stable `--json` contract (one JSON document per command, an error envelope with stable codes, and `branchbox version --json` capabilities), so the app, agents and Terminal always agree about what is on disk.
 
 Agents can safely:
 
@@ -143,6 +144,11 @@ Then open a new terminal or run:
 hash -r
 ```
 
+### **Mac app (preview)**
+BranchBox for Mac is a native front end for the CLI (macOS 14+, `branchbox` 0.13.4+). Builds are
+not notarized yet: download the `BranchBox-macOS-<sha>` artifact from a CI run and see
+[`macos/README.md`](macos/README.md) for installing it. A Homebrew cask will follow.
+
 ---
 
 ## Quick Start
@@ -178,6 +184,11 @@ Your feature now has:
 When you run `branchbox feature teardown <name>`, BranchBox resolves the actual Compose project
 created for that worktree—including the distinct project name used by the devcontainer CLI—and
 verifies its containers, network, and volumes are removed before deleting the worktree.
+
+Teardown never deletes your work by surprise. If the worktree has uncommitted changes, or the
+branch has commits that are not merged, it refuses before removing anything and tells you which
+flag to use: `--discard-changes` to drop the changes, `--keep-branch` or `--force-delete-branch`
+for the branch. Preview any teardown with `--dry-run`.
 
 Prefer a disposable sample project?
 
