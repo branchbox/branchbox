@@ -90,7 +90,7 @@ The devcontainer uses a pre-built image from GHCR by default (`ghcr.io/branchbox
 ## Feature Start UX & Fast Path Modes
 
 - `branchbox feature start` ships with a muscle-memory alias: `branchbox feature new`. Both commands accept the same flags.
-- Minimal mode (`--minimal`, with hidden alias `--fast`) skips the devcontainer, compose, and specs modules for lightweight edits—no preview flag required.
+- Minimal mode (`--minimal`, with hidden alias `--fast`) skips the devcontainer, compose, and specs modules by default for lightweight edits—no preview flag required. Other modules and policy-enforced setup can still run; inspect the summary rather than assuming nothing was provisioned.
 - `--default-prompt` drops in the built-in BranchBox seed for minimal starts so agents have immediate context. Use `--prompt "seed text"` when you want to provide your own (still capped at 2,000 characters and annotated with the prompt-bridge flag).
 - `--json` mirrors the entire summary (checklist, module table, warnings, prompt seed, timestamps) as structured JSON; pair it with `--no-summary` if you only want machine-readable output.
 
@@ -204,7 +204,7 @@ swift run BranchBox                                       # unbundled dev build
 - Package with `scripts/package-macos-app.sh` (universal, ad-hoc signed; `--zip` for an archive).
 - Before a PR that touches the app or the CLI's JSON output, run the Mac App ↔ CLI Loop at the end of the [CLI end-to-end test](./manual-cli-e2e.md).
 
-The app reads the CLI's `--json` output, so changes to payloads must follow the [JSON contract](../reference/json-contract.md): only add keys, keep error codes stable, and regenerate the golden fixtures with `UPDATE_CONTRACT_FIXTURES=1`. See [`macos/README.md`](https://github.com/branchbox/branchbox/blob/main/macos/README.md) for the target layout and CI jobs.
+The app reads the CLI's `--json` output, so changes to payloads must follow the [JSON contract](../reference/json-contract.md): only add keys, keep error codes stable, and regenerate the golden fixtures with `UPDATE_CONTRACT_FIXTURES=1`. See [`macos/README.md`](https://github.com/branchbox/branchbox/blob/main/macos/README.md) for the target layout and CI jobs, and the [Mac app user guide](../guides/mac-app.md) for supported controls and runtime limits. Preview-backend screens use sample data and do not validate real CLI behavior.
 
 ## Code Quality
 

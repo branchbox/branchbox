@@ -3,6 +3,26 @@
  * Matches the landing page aesthetics - dark theme with violet accents
  */
 
+/* Real Mac app captures embedded in the user guide. */
+.mac-app-capture {
+  margin: 1.5rem 0;
+}
+
+.mac-app-capture img,
+.mac-app-capture video {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 12px;
+}
+
+.mac-app-capture figcaption {
+  margin-top: 0.5rem;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.9rem;
+}
+
 /* ============================================================================
    Color Palette (matching website/styles.css)
    ============================================================================ */

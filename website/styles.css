@@ -938,6 +938,115 @@ strong {
 }
 
 /* ==========================================================================
+   Mac App
+   ========================================================================== */
+
+.mac-app {
+    padding: var(--space-4xl) 0;
+    border-top: 1px solid var(--color-border-subtle);
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), transparent 65%);
+    scroll-margin-top: 90px;
+}
+
+.mac-app-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xl);
+    justify-content: space-between;
+    margin-bottom: var(--space-2xl);
+}
+
+.mac-app-heading > div {
+    max-width: 760px;
+}
+
+.mac-app-heading h2 {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+    margin: var(--space-md) 0;
+}
+
+.mac-app-heading p,
+.mac-app-capabilities p {
+    color: var(--color-text-secondary);
+}
+
+.mac-app-heading .cta-btn {
+    flex-shrink: 0;
+}
+
+.mac-app-badge {
+    display: inline-block;
+    padding: var(--space-xs) var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    color: var(--color-accent-bright);
+    font-size: 0.85rem;
+}
+
+.mac-app-capabilities {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-lg);
+}
+
+.mac-app-capabilities article {
+    padding: var(--space-xl);
+    background: var(--color-bg-card);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+}
+
+.mac-app-capabilities h3 {
+    font-size: 1.1rem;
+    margin-bottom: var(--space-sm);
+}
+
+.mac-app-requirements {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+    margin-top: var(--space-lg);
+}
+
+.terminal-caption {
+    margin-top: var(--space-md);
+    color: var(--color-text-secondary);
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+.mac-app-media {
+    margin-bottom: var(--space-xl);
+}
+
+.mac-app-media img,
+.mac-app-media video {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-bg-code);
+    box-shadow: var(--shadow-lg);
+}
+
+.mac-app-media figcaption {
+    color: var(--color-text-secondary);
+    font-size: 0.85rem;
+    margin-top: var(--space-sm);
+}
+
+@media (max-width: 800px) {
+    .mac-app-heading {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .mac-app-capabilities {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ==========================================================================
    Footer
    ========================================================================== */
 

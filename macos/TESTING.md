@@ -39,7 +39,7 @@ Each test reads the CLI's identity and asserts what that mode must do.
 | `SandboxRemediationTests` | fake `sbx`: failed_retained → Retry + Copy Inspect Command (`sbx exec <id> bash`) → Retry reuses the sandbox → active | ✓ | ✓ |
 | `LiveFixtureDecodeTests` | gated on `BRANCHBOX_LIVE_FIXTURES`; plus an ungated self-test of the key recorder | n/a | n/a |
 
-## Latest run: 2026-10-04 (VER-1, automated)
+## Earlier baseline: 2026-10-04 (VER-1, automated)
 
 Machine: Apple M4 Pro, macOS 26.5.1 (25F80), Xcode 26.3, Swift 6.2.4, rustc 1.90.0, cargo-nextest 0.9.111,
 cargo-llvm-cov 0.6.21. Worktree `feature/mac-app-revamp` at `a00b3ee` plus the uncommitted wave 1–4 changes.
@@ -64,13 +64,106 @@ CLIs:
 | `./scripts/review-preflight.sh` | ✅ | |
 | `scripts/package-macos-app.sh --native --zip` + `codesign --verify --deep --strict` | ✅ | `BranchBox-0.13.4-390-a00b3ee.zip` (arm64, ad hoc, hardened runtime); valid on disk, satisfies its Designated Requirement |
 
-## Mac App ↔ CLI Loop (manual) — PENDING
+## Latest component audit and live review: 2026-10-04
 
-**Status: not run yet.** Launching the app and showing windows was not possible in the verification session,
-so every step below is pending for the owner. Run the loop as written in
+App/runtime source: `f637b8f` on `feature/mac-app-revamp`; website and audit-record changes are documented separately.
+
+The packaged **BranchBox Dev** app was exercised with the branch-built 0.13.4 CLI (contract version 1,
+13 capabilities), using a disposable Git repository and an image-only `python:3.12-alpine` devcontainer.
+This was a real CLI backend, not the showcase preview backend. Subsequent CLI/Docker retests used the
+final source build with 14 capabilities, including `host-container-teardown-verified`. The development
+bundle's signature passed `codesign --verify --deep --strict`.
+
+| Component | Observed result | Scope |
+|---|---|---|
+| Add project / detection | Git repository appeared in the sidebar with the Generic stack; a tracked Rails source snapshot detected Rails | Native UI + real CLI |
+| Initialize project | Preview left `git status` empty; Apply created setup files and kept the existing folder layout | Native UI |
+| Start feature | Quick resolved the title to a feature name/branch/folder, created the worktree, and reported four skipped modules | Native UI + CLI list |
+| Devcontainer sync | Preview listed one workspace; Apply updated it and cleared the outdated-config warning | Native UI |
+| Container lifecycle | Start showed Running; Stop, restart and confirmed Rebuild succeeded; Docker inspection verified the new container IDs | Native UI + real Docker, disposable container |
+| Command runner | Python ran in **Dev container** and returned stdout/exit 0; a shell command returned exit 3 and its stderr without a transport-error alert | Native UI + real Docker |
+| Teardown safety | A modified README caused refusal before removal; the file and running container remained. An unmerged commit selected Keep; Delete-if-merged disabled Tear Down | Native UI; discard/force execution covered by CLI integrations |
+| Prune | A dirty feature was unchecked; a clean feature with an unmerged commit remained selectable under Keep | Native UI planning; execution covered by integrations |
+| External CLI changes | A feature created directly by the CLI appeared without pressing Refresh | Native filesystem watcher |
+| Navigation / settings | Quick Open search opened Diagnostics; General, Tools, Coding Agent and Refresh tabs were inspected | Native UI |
+| Diagnostics | CLI capabilities and installed-tool/runtime rows rendered; Run Checks Again refreshed their timestamp | Native UI |
+| Existing worktree health | Three Active registry records had folders with broken `.git` pointers. The revised app showed attention badges and the missing metadata path, disabled Git-dependent actions, and retained folder/editor access | Read-only existing Rails checkout + real temporary-repository regression |
+| Standalone Stop / volumes | Two exact owned containers were removed each time; default Stop retained anonymous volumes. Explicit deletion removed attached anonymous volumes and preserved a shared named volume and neighboring container | Real Docker, disposable image containers |
+| Image / Dockerfile feature teardown | Dirty README refusal preserved the worktree and both owned containers. After committing, Keep removed both containers and the worktree, retained the branch, and preserved the neighbor | Real Docker, both active configuration types |
+| External Compose Stop / teardown | An external Dev Containers project used the `_devcontainer` suffix and `/tmp` alias. Stop kept its data; restart recovered the marker; explicit deletion removed its volume. A later feature teardown recovered stopped-project ownership and removed retained volumes; neighbor survived | Real Docker, isolated internal networks; no application services |
+| Native Compose Start / restart | BranchBox installed stable ownership labels; Stop kept the data marker across native restart; feature teardown removed all owned containers, networks and volumes | Real Docker through the same CLI used by the app |
+| Shell / active configuration | Root user and workspace came from the active config rather than unused scaffolds. The exact shell launch command opened `sh` in Alpine when Bash was unavailable | Real Docker PTY; opening the macOS Terminal window remains unverified |
+| Runtime / module contracts | 288 CLI, 695 core unit, 5 agent, 3 workflow and 17 doc tests passed | 1,008 executed cases; fake-tool contracts are not live service verification |
+| Individual view renders | All 45 gated render declarations passed, producing 296 private light/dark PNGs including added broken-Git and whole-window feature samples; selected Start, Teardown, feature and health states were visually inspected | Offscreen smoke/visual review; native vibrancy/titlebar composition is not reproduced |
+
+The final Cargo suite reports 993 passed declarations and 27 ignored cases; two opt-in Docker smoke tests
+return early and are excluded from the 991 executed workspace cases. The 17 doc tests bring the executed Rust
+count to 1,008. The live Docker checks in this table did execute. Swift's final full run reported 700 registered
+cases in 92 suites: 632 enabled unit/component cases and 68 disabled render/integration/live-fixture cases.
+Separate final real-CLI runs reported 24 declarations each: contract executed 23 (one gated fixture), while legacy
+executed 21 (one gated fixture and two capability early returns). Each includes two support cases. The new
+cleanup regressions include 19 host/feature declarations (14 cleanup cases and five shared helper cases), ten
+Down declarations with failure variants, and five runtime unit cases.
+The final health integration exercised three real Git scenarios with each CLI: missing administrative metadata,
+missing `commondir`, and a healthy unborn/orphan branch that must remain usable. The last scenario prevents a
+false warning based only on Git's zero HEAD hash. Sync Preview remains available on damaged rows, while Apply
+and tunnel provisioning wait for inspection; tunnel removal remains available.
+
+The audit found and fixed real cleanup defects: standalone feature teardown previously left a running
+container while returning `verified: true` and `residue_free: true`; Compose Stop assumed a project name;
+and partial Compose cleanup could lose its project identity after removing containers. Cleanup now checks
+command outcomes and exact ownership probes, persists workspace-scoped project identity before mutations,
+retains failed worktrees for retry, and does not infer ownership from a basename. Copied/malformed/symlinked
+history, aliases and literal `$` paths have hermetic regression coverage. Force can still remove a workspace
+with an explicitly incomplete receipt. Older CLI container receipts are downgraded in the app when the
+executing CLI lacks the verification capability. Standalone volumes/custom networks remain outside the
+feature-teardown container check.
+
+Formatting, Clippy with warnings as errors, nextest, doc tests, debug/release builds, coverage generation,
+and rustdoc with warnings as errors passed. Local line coverage is **79.08%**, below the repository's 90% target.
+The guardrail preflight and pretend harness passed. The destructive ignored database/container suite was not
+run against the developer's live Docker engine; isolated CI owns that check. Local regular/verbose stack
+harnesses and the full agent control-plane stub harness remain unrun, so this is a component audit rather
+than release sign-off. The combined website/docs build passed with 184 local references and 88 anchors valid.
+
+Final native package: `BranchBox-0.13.4-429-f637b8f.zip` (arm64), with the same-source release CLI
+embedded. Bundle and helper signature checks passed; ZIP SHA-256:
+`200ba98879c0dc8dce2900e0eae88fbed9b886a8dbde5e4546f12992163f3daf`. It is ad hoc signed,
+without notarization. The locator still prefers an explicitly selected or installed CLI over the embedded fallback.
+
+The existing Rails checkout was not initialized, repaired or used to launch application services. Its pre-existing
+schema modification, BranchBox configuration and registry hashes were unchanged. A credential-free archive of
+tracked HEAD was tested separately through detect, init preview, minimal start, exec and keep-branch teardown.
+That command ran in the host worktree; the Python devcontainer check above supplied the actual Docker test.
+
+Public media use only the disposable workspace and contain no customer source or credentials:
+
+- [Feature overview](../docs/static/img/mac-app/feature-overview.png)
+- [Start feature](../docs/static/img/mac-app/start-feature.png)
+- [Teardown plan](../docs/static/img/mac-app/teardown-plan.png)
+- [Command execution](../docs/static/img/mac-app/run-command.png)
+- [Silent walkthrough](../docs/static/media/mac-app-walkthrough.mp4): actual screen capture; main sequence at 2×,
+command execution at normal speed; H.264, 1600×1048, 30 fps, 60 seconds. Full decode completed without errors.
+
+**Media quality follow-up:** native captures contain a persistent translucent horizontal band across the feature
+detail, obscuring part of the Overview and Environment cards. The standalone overview figure is withheld from
+the guide; the recording remains review evidence, not a polished release asset. Feature-only offscreen renders
+at 820 pt and 1180 pt widths are clean. This suggests native hosting/material composition, but the cause has not
+been established. The Mac locked before resize/scroll/inspector comparisons and the remaining Activity and
+Diagnostics captures; those require a manual unlock. No compositor fix is claimed by this audit.
+
+Remaining live checks: real Rails/Postgres/Sidekiq application behavior, external database cleanup, public tunnels,
+1Password credential acquisition, SBX/Local VM/in-guest provisioning, OS notification delivery, and the additional
+manual-window behaviors below. Registry module outcomes and recorded tunnel state do not establish those results.
+
+## Mac App ↔ CLI Loop (manual) — partial live coverage
+
+**Status: the live component pass above covers part of the contract-CLI loop.** The original VER-1 checklist
+below remains a record of the full two-mode loop, including destructive confirmation and quit/cancellation
+steps that have not all been performed through the native UI. Run the remaining steps as written in
 `docs/docs/getting-started/manual-cli-e2e.md` ("Mac App ↔ CLI Loop", steps 0–13) on the packaged app, once with
-each CLI, and fill in the tables (✅ / ❌ with a note, or n/a). Keep screenshots out of the repository; reference
-them by file name in the PR.
+each CLI, and fill in the tables (✅ / ❌ with a note, or n/a). Private evidence stays outside the repository;
+the explicitly requested, credential-free website screenshots are checked in under `docs/static/img/mac-app`.
 
 Run details to record: date, macOS version, app version and build (`BranchBox-<version>-<build>-<sha>.zip`), CLI
 path and `branchbox --version` for each run.
@@ -136,9 +229,9 @@ other window sizes and the remaining manual checklist still need their own verif
    `git worktree add`, before core writes its write-ahead entry (which needs the worktree to exist), so a start
    cancelled there leaves an unregistered worktree in both modes, not an Interrupted record. The listing reports
    the stray and Remove cleans it (tested). But because contract CLIs advertise `write-ahead-start` and
-   `registry-lock`, `CLIBackend.cancelNote` and `ActionDispatcher.cancellationNote` drop the "a partial worktree may
-   be left behind" note on them. Follow-up for SW-1/SW-2: keep the note for a start cancelled before the CLI
-   printed its "Created worktree" line, or always for starts. DESIGN §13.4 step 9 already allows either outcome.
+   `registry-lock`, the initial implementation dropped the "a partial worktree may be left behind" note on them.
+   **Resolved in the component audit:** start cancellation always keeps that warning, with dispatcher and real
+   hook-cancellation regression coverage. DESIGN §13.4 step 9 allows either outcome.
 2. **SwiftPM replaces `TMPDIR` for the test process**, so `TMPDIR=… swift test` does not move the TempRepos. The
    CI integration jobs now set `BRANCHBOX_IT_TMP` instead.
 3. **0.13.x's dirty-module refusal is no longer reached by the app's own teardown** (since wave 2 the app sends

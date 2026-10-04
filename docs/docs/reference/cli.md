@@ -473,7 +473,7 @@ Options:
 
 ## branchbox feature teardown
 
-Teardown never deletes uncommitted work or unmerged commits unless you ask for it:
+Teardown checks reported Git changes and the branch's merge state before removal:
 
 - When the worktree has changes of yours (modified, staged or untracked files), teardown refuses **before anything is removed**. The refusal lists the files and names `--discard-changes`.
 - When the branch would be deleted but has commits that are not merged, teardown refuses the same way and names `--keep-branch` and `--force-delete-branch`. In a terminal it asks first when `feature.teardown.prompt_force_delete_unmerged` is on, and `feature.teardown.force_delete_unmerged_by_default` force-deletes without asking.

@@ -1,5 +1,5 @@
 # BranchBox
-### *Parallel development for humans and AI agents — real environments, zero collisions.*
+### *Parallel feature workspaces for humans and AI agents.*
 
 [![Release](https://img.shields.io/github/v/release/branchbox/branchbox)](https://github.com/branchbox/branchbox/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/branchbox/branchbox/total)](https://github.com/branchbox/branchbox/releases)
@@ -8,22 +8,19 @@
 
 **[Website](https://branchbox.dev)** · **[Documentation](https://branchbox.dev/docs)** · **[GitHub](https://github.com/branchbox/branchbox)**
 
-BranchBox is an open-source engine for **isolated, fully provisioned development environments** designed for engineers working with AI coding agents, or anyone juggling multiple features at once.
+BranchBox is an open-source engine for **parallel feature worktrees and configurable development environments**, designed for engineers working with AI coding agents or juggling multiple features at once.
 
-Every feature becomes its own **self-contained workspace** with:
+Every feature gets a dedicated Git worktree and branch. Configured setup modules and runtime providers can also supply:
 
-- A dedicated Git worktree  
-- Its own devcontainer  
-- Its own Docker network  
-- Its own database  
-- Its own ports  
-- Its own environment variables  
-- Optional Cloudflare or SSH tunnels  
-- Shared tool credentials mounted safely  
+- Synced devcontainer configuration
+- A separate Compose project identity
+- Feature-specific database naming
+- Runtime port mappings
+- A copied and customized environment file
+- Optional Cloudflare tunnels
+- Configured credential mounts or scoped runtime credentials
 
-You get **real dev environments**, not lightweight sandboxes.  
-Your agents get safe rooms to operate.  
-Your main workspace stays clean.
+Start the container and application when needed, and run your project's database setup explicitly. A successful feature setup reports completed configuration steps; it does not prove that the application or database is running.
 
 If you’ve ever run multiple features or agents in parallel and felt things colliding, leaking, or breaking — BranchBox solves that. It makes parallel development a first-class workflow.
 
@@ -49,27 +46,27 @@ The problem: none of our tools were built for this.
 
 BranchBox adds the missing layer:
 
-> **A safe, predictable compute system where every feature has its own fully isolated, fully functional dev environment.**
+> **Separate feature code in Git worktrees, configure its environment, and choose a runtime boundary.**
 
 Start one feature or ten.  
 Work alone or with multiple agents.  
-Nothing touches anything else unless you want it to.
+Shared mounts, external services, and fixed host ports follow your project configuration.
 
 ---
 
 ## What BranchBox gives you
 
-### 1. True isolation  
-Every feature gets its own:
+### 1. Configurable isolation
+Each feature has its own branch and directory. Configured container setups also use a feature-specific:
 
 - Compose project  
 - Docker network  
 - Ports  
 - `.env` file  
-- Database  
+- Database name when the module can add it to `.env`
 - Devcontainer  
 
-Zero collisions. Zero shared state unless explicitly mounted.
+Compose identities separate owned resources. Fixed host ports and external databases still need project configuration that keeps them separate.
 
 ### 2. Real development environments  
 Not an agent-only sandbox — a **full stack** environment:
@@ -80,18 +77,15 @@ Not an agent-only sandbox — a **full stack** environment:
 - VS Code + Cursor devcontainers  
 - Built-in adapter system for detecting stacks  
 
-If it runs locally, BranchBox can isolate it cleanly.
+Use the stack adapters or generic setup to configure your project's workspace.
 
 ### 3. Parallel workflows that feel effortless  
-Start five features at once.  
-Run five containers.  
-Open five devcontainers.  
-Agents run jobs while you code in another branch.
+Keep multiple feature workspaces available at once. Start their environments as needed, and let an agent work in one feature while you code in another branch.
 
 The mental overhead stays low, and the environments stay clean.
 
 ### 4. Agent-ready by design  
-An always-on BranchBox Agent tracks:
+An optional source-built BranchBox agent daemon tracks:
 
 - Feature events  
 - Heartbeats  
@@ -145,9 +139,16 @@ hash -r
 ```
 
 ### **Mac app (preview)**
-BranchBox for Mac is a native front end for the CLI (macOS 26+, `branchbox` 0.13.4+). Builds are
-not notarized yet: download the `BranchBox-macOS-<sha>` artifact from a CI run and see
-[`macos/README.md`](macos/README.md) for installing it. A Homebrew cask will follow.
+BranchBox for Mac is a native front end for the CLI (macOS 26+, `branchbox` 0.13.4+). Add projects,
+start features, inspect environments and operation logs, open your tools, and review changes before
+teardown. Container controls depend on Docker and the Dev Container CLI; some project settings
+require capabilities provided by newer CLIs.
+
+Read the **[Mac app user guide](https://branchbox.dev/docs/guides/mac-app)** for the workflow and
+runtime limits. Preview bundles are ad hoc signed and not notarized: obtain a
+`BranchBox-macOS-<sha>` artifact from a successful
+[macOS App CI run](https://github.com/branchbox/branchbox/actions/workflows/macos-app.yml), or build
+from source. See [`macos/README.md`](macos/README.md) for installation and development.
 
 ---
 
@@ -173,22 +174,35 @@ Use `branchbox init -y` for non-interactive defaults.
 
 If `init` generates `.devcontainer/` from BranchBox templates, it also includes optional 1Password-backed git bootstrap hooks (`init-host.sh` + `setup-git.sh`). Those hooks are not auto-injected into pre-existing custom devcontainer configs.
 
-Your feature now has:
+The feature now has its own worktree and branch. Enabled modules can also configure:
 
-- Its own DB  
+- Feature-specific database naming
 - Its own Docker network  
 - Its own ports  
-- Its own devcontainer  
-- Its own environment variables  
+- Devcontainer configuration
+- A customized environment file
 
-When you run `branchbox feature teardown <name>`, BranchBox resolves the actual Compose project
-created for that worktree—including the distinct project name used by the devcontainer CLI—and
-verifies its containers, network, and volumes are removed before deleting the worktree.
+Start the devcontainer separately for container-runtime features, then run your application's setup and database commands. Inspect the feature's module results and environment state rather than treating registry status as an application health check.
 
-Teardown never deletes your work by surprise. If the worktree has uncommitted changes, or the
+In current CLI source builds, `branchbox feature teardown <name>` removes devcontainers identified
+by the worktree's exact workspace label, including standalone image/Dockerfile containers. Compose
+cleanup resolves the actual project created for that worktree and removes its owned containers,
+network, and volumes. Standalone volumes and custom networks are not removed by the container check.
+Review the runtime cleanup result: failed or unverified cleanup of a possibly provisioned environment
+keeps the worktree for retry unless removal is forced. Compose project identity is retained in that
+workspace before cleanup, allowing retries after containers are gone. Missing or changed Compose
+configuration can require restoration or manual inspection. Older CLI builds can leave standalone
+devcontainers behind; stop those environments and check Docker separately before removing the workspace.
+
+`branchbox devcontainer down` keeps volumes by default. `--volumes` deletes attached anonymous
+standalone volumes or owned Compose volumes; named/shared standalone volumes are not inferred.
+
+If the worktree has reported uncommitted changes, or the
 branch has commits that are not merged, it refuses before removing anything and tells you which
 flag to use: `--discard-changes` to drop the changes, `--keep-branch` or `--force-delete-branch`
-for the branch. Preview any teardown with `--dry-run`.
+for the branch. Preview any teardown with `--dry-run`. The current plan does not list Git-ignored
+files, which are deleted with the worktree. Copy any local data you need first; keeping the branch
+preserves commits, not ignored files or Compose volumes.
 
 Prefer a disposable sample project?
 

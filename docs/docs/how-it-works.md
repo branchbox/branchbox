@@ -43,7 +43,7 @@ BranchBox:
 4. **Runs modules** based on what it detects:
    - **Devcontainer**: Syncs `.devcontainer/` to the new worktree
    - **Compose**: Sets `COMPOSE_PROJECT_NAME` for Docker isolation
-   - **Database**: Initializes an isolated database
+   - **Database**: Adds a feature-specific `DATABASE_NAME` to an existing `.env` when absent; it suggests a setup command but does not create, migrate, or seed the database
    - **Tunnel**: Provisions a Cloudflare tunnel (if available)
    - **Specs**: Moves feature spec from `backlog/` to `in-progress/`
 5. **Copies your `.env`** with updated values (`APP_URL`, `COMPOSE_PROJECT_NAME`)
@@ -228,10 +228,10 @@ Modules are composable features that run during the worktree lifecycle:
 
 | Module | Purpose | When It Runs |
 |--------|---------|--------------|
-| **Devcontainer** | Sync `.devcontainer/` config | Always (if `.devcontainer/` exists) |
-| **Compose** | Isolate Docker Compose project | Always (if `compose.yaml` exists) |
-| **Database** | Isolate database | If `database.yml` or similar detected |
-| **Tunnel** | Provision Cloudflare tunnel | Always (manual fallback if no cloudflared) |
+| **Devcontainer** | Sync `.devcontainer/` config | When detected and not skipped by mode/settings |
+| **Compose** | Configure Docker Compose project identity | When detected and not skipped by mode/settings |
+| **Database** | Configure database naming in an existing `.env` | When database configuration is detected and the module is not skipped |
+| **Tunnel** | Provision a configured feature tunnel | When enabled and not skipped; provider and credentials determine automatic or manual setup |
 | **Specs** | Feature spec lifecycle | If `docs/features/` exists |
 
 Modules run in dependency order. You can skip any module with `--skip-module`.
@@ -259,7 +259,7 @@ BranchBox tracks features in `.branchbox/registry.json`:
 }
 ```
 
-This is how `branchbox feature list` knows what's running.
+This is how `branchbox feature list` reports registered features. An active registry record is not by itself proof that the application or database server is running.
 
 ## What `branchbox feature teardown` Does
 
@@ -274,11 +274,11 @@ BranchBox:
 1. **Runs module teardown** (in reverse order)
    - Specs: Optionally moves spec to `completed/`
    - Tunnel: Removes tunnel configuration
-   - Compose: Discovers the worktree's actual devcontainer Compose project, then removes its containers, networks, and volumes
+   - Compose: Discovers the worktree's actual devcontainer Compose project, then removes its owned containers, networks, and volumes
    - Devcontainer: (No-op)
 
-:::note[Database Persistence]
-The database module does **not** automatically delete databases on teardown. Feature databases persist to prevent accidental data loss. To clean them up, manually drop the database or use your database admin tools.
+:::note[Database and Volume Cleanup]
+Current CLI source builds also remove standalone devcontainers identified by the worktree's exact workspace label. That container check does not remove volumes or custom networks; Compose cleanup targets the worktree's owned Compose volumes. The database module can also attempt engine-specific cleanup through host database tools when it detects an engine; it does not guarantee database persistence or successful cleanup of an external database. Keeping the feature's Git branch does not retain its Compose volumes. Review runtime cleanup warnings: failed or unverified cleanup can keep the worktree for retry unless removal is forced.
 :::
 2. **Removes the git worktree** at `../add-oauth/`
 3. **Optionally deletes the branch** (prompts if unmerged)
@@ -292,14 +292,22 @@ The database module does **not** automatically delete databases on teardown. Fea
 | **Working directory** | Each feature = own folder (`../feature-name/`) |
 | **Docker network** | `COMPOSE_PROJECT_NAME` creates separate network |
 | **Docker containers** | Compose project name prefixes all containers |
-| **Ports** | Each Compose project gets its own port mappings |
+| **Ports** | Compose configuration determines host bindings; SBX/Local VM record their resolved proxy mappings. Fixed host ports still need a conflict-free project configuration. |
 | **Environment** | `.env` copied and customized per feature |
-| **Database** | Database module creates feature-specific DB |
+| **Database** | Database module supplies a feature-specific name when `.env` exists and lacks `DATABASE_NAME`; application configuration and explicit database setup must use it |
 
 During teardown, BranchBox matches the exact `devcontainer.local_folder` Docker label before acting
 on a devcontainer CLI project. It also restores the BranchBox-managed project name from
-`.devcontainer/.branchbox.env`. Teardown verifies that no containers, networks, or volumes with
-either owned project label remain before removing the worktree.
+`.devcontainer/.branchbox.env`. Discovered Compose project names are saved atomically there, scoped
+to the canonical workspace, before resources are removed. They remain available if a later cleanup
+step fails, including when the containers are already gone. Copied or malformed cleanup identity
+does not authorize another workspace's cleanup. Teardown verifies that no owned containers,
+networks, or volumes remain before reporting clean Compose cleanup. If configuration is missing
+or ownership cannot be resolved, review the warning and restore the configuration for retry.
+
+`branchbox devcontainer down` keeps volumes by default and retains Compose project identity for
+later cleanup. Its explicit `--volumes` option removes attached anonymous standalone volumes or
+owned Compose volumes. It does not infer named/shared standalone volumes or custom networks.
 
 ---
 

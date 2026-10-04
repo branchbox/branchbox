@@ -101,6 +101,11 @@ const config: Config = {
           position: 'left',
         },
         {
+          to: '/guides/mac-app',
+          label: 'Mac App',
+          position: 'left',
+        },
+        {
           to: '/reference/cli',
           label: 'CLI',
           position: 'left',
@@ -140,6 +145,10 @@ const config: Config = {
         {
           title: 'Guides',
           items: [
+            {
+              label: 'Mac App',
+              to: '/guides/mac-app',
+            },
             {
               label: 'Parallel Features',
               to: '/guides/parallel-features',

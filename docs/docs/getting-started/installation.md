@@ -10,8 +10,6 @@ This guide covers all installation methods for BranchBox across different platfo
 
 ### macOS (Homebrew)
 
-*Coming soon - Homebrew tap will be available in a future release.*
-
 ```bash
 brew install branchbox/tap/branchbox
 ```
@@ -153,21 +151,20 @@ branchbox --version
 
 ## Mac App (Preview)
 
-BranchBox for Mac is a native app for your features: it lists every feature worktree across your projects, starts and tears them down safely, and opens them in your editor, terminal or coding agent. It drives the `branchbox` CLI you installed above, so install the CLI first.
+BranchBox for Mac is a native app for your features: it lists feature worktrees across your projects, starts features, reviews teardown choices, and opens your editor, terminal or coding agent. It drives the `branchbox` CLI you installed above, so install the CLI first.
 
-**Requirements:** macOS 26 or later and `branchbox` 0.13.4 or later. With 0.13.4 the app runs in a compatible "legacy mode"; newer CLIs unlock project settings, tunnel credentials and the doctor checks.
+**Requirements:** macOS 26 or later and `branchbox` 0.13.4 or later. The released 0.13.4 CLI uses legacy compatibility fallbacks; a development build can report the same version with newer capabilities. Project configuration and tunnel credential editing require CLI capabilities; host-tool diagnostics remain available in legacy mode.
 
-The app is not notarized yet, so there is no download page or Homebrew cask. A Homebrew cask will come with Developer ID signing. Until then:
+The current app packaging uses ad hoc signing rather than Developer ID notarization. Obtain a preview build or build from source:
 
-1. Download the `BranchBox-macOS-<sha>` artifact from a run of the **macOS App** workflow on GitHub Actions (kept for 14 days), or build it yourself with `scripts/package-macos-app.sh --native --zip`.
+1. Download the `BranchBox-macOS-<sha>` artifact from a successful run of the [**macOS App** workflow](https://github.com/branchbox/branchbox/actions/workflows/macos-app.yml) on GitHub Actions (retained for 14 days), or build it yourself with `scripts/package-macos-app.sh --native --zip` using Xcode 26. GitHub may require you to sign in to download workflow artifacts.
 2. Unzip it and move `BranchBox.app` to `/Applications`.
-3. Clear the quarantine flag that macOS adds to downloads:
+3. Open it once, then use **System Settings › Privacy & Security › Open Anyway** if Gatekeeper blocks this preview build. For a build you trust, you can alternatively clear the downloaded bundle's quarantine flag:
    ```bash
    xattr -dr com.apple.quarantine /Applications/BranchBox.app
    ```
-   Alternatively, open the app once, then choose **System Settings › Privacy & Security › Open Anyway**. On macOS 15 and later, Control-clicking Open in Finder no longer bypasses this check.
 
-The app finds the CLI on your login shell's `PATH` (or in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`). Use **Settings › Tools › Locate…** to pick another one, and **Window › Diagnostics** to see which CLI it uses and whether git and Docker are ready. See [`macos/README.md`](https://github.com/branchbox/branchbox/blob/main/macos/README.md) for details.
+The app finds the CLI on your login shell's `PATH` or standard install locations. Use **Settings › Tools › Locate…** to pick another one, and **Window › Diagnostics** to see which CLI it uses and whether Git and Docker are ready. Continue with the [Mac app user guide](../guides/mac-app.md), or see [`macos/README.md`](https://github.com/branchbox/branchbox/blob/main/macos/README.md) for development and packaging details.
 
 ## Verify Installation
 

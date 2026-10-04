@@ -58,13 +58,13 @@ A few commands report failure inside their own payload. They print the full payl
 | Command | Failure inside the payload |
 |---|---|
 | `feature exec --json` | The inner command failed: `{exit_code, stdout, stderr}` carries its exit code. |
-| `devcontainer up/down/build/exec --json` | `"outcome": "error"`, for example `{"outcome":"error","message":"Docker is not available"}`. |
+| `devcontainer up/build/exec --json` | `"outcome": "error"`, for example `{"outcome":"error","message":"Docker is not available"}`. |
 | `feature dispatch-tool --json` | The correlated response, including the not-pending outcome (exit 75). |
 | `doctor --json` | A required check has `"status": "error"`. |
 | `devcontainer sync --json` | A worktree's row has `"status": "failed"`. |
 | `prune --yes --json` | A row has `"outcome": "failed"`. |
 
-`devcontainer detect`, `configure`, `add-tunnel` and `inject-agents --json` still answer a missing `.devcontainer/` with the older `{"error": "No .devcontainer directory found"}` object and exit 1. Recognize an envelope by `schema_version` plus an object-valued `error`.
+`devcontainer configure`, `add-tunnel` and `inject-agents --json` still answer a missing `.devcontainer/` with the older `{"error": "No .devcontainer directory found"}` object and exit 1. `devcontainer detect` also accepts root `.devcontainer.json`; when neither location is available, it returns `{"error":"No devcontainer configuration found"}` and exits 1. Recognize an envelope by `schema_version` plus an object-valued `error`.
 
 ## Error codes {#error-codes}
 
@@ -94,7 +94,7 @@ New codes may be added. Treat an unknown code as a generic failure and show `mes
 `branchbox version --json` tells a client what this CLI supports:
 
 ```json
-{"version":"0.13.4","contract_version":1,"capabilities":["json-error-envelope","registry-lock","write-ahead-start","teardown-plan","teardown-discard-changes","teardown-unmerged-preflight","prune-json","detect-json","devcontainer-sync-json","config","tunnel-credentials","doctor","init-json"]}
+{"version":"0.13.4","contract_version":1,"capabilities":["json-error-envelope","registry-lock","write-ahead-start","teardown-plan","teardown-discard-changes","teardown-unmerged-preflight","host-container-teardown-verified","prune-json","detect-json","devcontainer-sync-json","config","tunnel-credentials","doctor","init-json"]}
 ```
 
 - Gate on capability strings, not on version numbers. A capability is added in the same change that implements it.
@@ -109,6 +109,7 @@ New codes may be added. Treat an unknown code as a generic failure and show `mes
 | `teardown-plan` | `feature teardown --dry-run --json`. |
 | `teardown-discard-changes` | `feature teardown --discard-changes`, `--delete-branch`, `--force-delete-branch`. |
 | `teardown-unmerged-preflight` | An unmerged branch is refused before anything is removed. |
+| `host-container-teardown-verified` | Container teardown checks removal of exact workspace-labeled devcontainers, including standalone containers, and reports cleanup failures or residue. Failed module cleanup also invalidates the receipt; standalone volumes/custom networks are not inferred. |
 | `prune-json` | `prune --dry-run --json` and `prune --yes --json`. |
 | `detect-json` | `detect --json`. |
 | `devcontainer-sync-json` | `devcontainer sync --json [--feature NAME]...`. |
@@ -162,7 +163,7 @@ The start summary: the resolved name, branch, worktree path, URLs, runtime, modu
 
 | Field | Values |
 |---|---|
-| Blocker `kind` | `not_a_worktree` (no override), `uncommitted_changes`, `unmerged_branch`, `worktree_locked`, `status_unavailable`, `spec_not_preserved`, `worktree_removal_failed` |
+| Blocker `kind` | `not_a_worktree` (no override), `uncommitted_changes`, `unmerged_branch`, `worktree_locked`, `status_unavailable`, `spec_not_preserved`, `worktree_removal_failed`, `runtime_cleanup_failed` |
 | Change `kind` | `untracked`, `modified`, `added`, `deleted`, `typechange`, `conflicted`, `staged` |
 | Change `area` | `devcontainer`, `compose`, `vscode`, `spec`, `env`, `other` |
 | Generated `rule` | `reserved_name`, `devcontainer_baseline`, `derived_from_main`, `devcontainer_env_link`, `env_feature_block`, `vscode_managed_keys`, `vscode_managed_tasks` |
@@ -173,7 +174,9 @@ The start summary: the resolved name, branch, worktree path, URLs, runtime, modu
 
 **Summary** (`--json`): `{work_feature, branch_name, worktree_removed, branch_deleted, branch_action, branch_delete_error, discarded_changes[], preserved[], registry_updated, module_reports[], runtime_teardown{…}, adapter_cleanup_warnings[], warnings[]}`.
 
-**Refusal**: exit 1 with a `teardown_refused` envelope whose `details.plan` is the plan above. `changed_anything` is `false` unless the refusal came after the runtime and modules had already stopped (new changes appeared during the run, or the spec could not be moved); even then the worktree and the registry entry are kept.
+`runtime_teardown` contains `{provider, runtime_id?, verified, residue_free, residue[{kind, identifiers[]}]}`. `verified` describes whether cleanup checks completed successfully; it can be `true` while observed resources make `residue_free` false. Command/probe errors, unresolved Compose ownership, or module failures invalidate the receipt. The host container check covers exact workspace-labeled containers, while the Compose module covers owned project containers, networks, and volumes; standalone volumes/custom networks are outside that container check.
+
+**Refusal**: exit 1 with a `teardown_refused` envelope whose `details.plan` is the plan above. `changed_anything` is `false` for an initial safety refusal. A later refusal can report `true` after earlier teardown steps changed something; `completed_steps` names those steps, while the worktree and active registry entry remain available for retry. `runtime_cleanup_failed` blocks removal of a possibly provisioned environment unless `--force` is supplied. Force can remove the workspace with an incomplete cleanup receipt; `--keep-branch` still retains its branch.
 
 Examples: `teardown/plan_fresh.json`, `teardown/plan_dirty_unmerged.json`, `teardown/summary_discard.json`, `teardown/refusal_envelope.json`.
 
@@ -219,7 +222,11 @@ The keys are listed in the [configuration reference](./configuration.md). Exampl
 
 ### `devcontainer up/down/build/exec --json` {#devcontainer}
 
-camelCase objects: `up` → `{outcome, containerId, remoteUser, remoteWorkspaceFolder, composeProjectName}`, `down` → `{outcome, removedContainers}`, `build` → `{outcome, imageName}`, `exec` → `{outcome, exitCode, stdout, stderr}`. `devcontainer detect --json` → `{service_name, port, service_url, container_user, home_path}`.
+camelCase objects: `up` → `{outcome, containerId, remoteUser, remoteWorkspaceFolder, composeProjectName}`, `down` → `{outcome, removedContainers}`, `build` → `{outcome, imageName}`, `exec` → `{outcome, exitCode, stdout, stderr}`. `devcontainer detect --json` → `{service_name, port, service_url, container_user, home_path, container_type, configured_user, workspace_folder}`.
+
+The newer detection fields describe active configuration: `container_type` is `compose`, `dockerfile`, or `image`; `configured_user` is the explicit remote/container user or `null`; `workspace_folder` is configuration-derived, with standard basename variables expanded. `container_user` retains a historical estimate when no user is configured. Image/Dockerfile configurations do not report service facts from unused Compose files. These are configuration facts rather than a running-container probe.
+
+In current source builds, `down` checks command results and remaining owned resources before returning success. Cleanup failures exit 1 with an error envelope. Default Down keeps volumes; `--volumes` deletes attached anonymous standalone volumes or owned Compose volumes, leaving named/shared standalone volumes untouched. Compose identity is retained within its canonical workspace for partial-failure retries and for later explicit volume cleanup.
 
 ## For contributors {#contributors}
 

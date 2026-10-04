@@ -126,9 +126,9 @@ branchbox devcontainer sync
 - **CLI-JSON first.** The app spawns the user's installed `branchbox` (found on the login-shell `PATH`, never embedded by default) and decodes its `--json` output. It never writes repository files itself: settings go through `config apply`, the tunnel token through `tunnel credentials set --api-token-stdin`.
 - **Capabilities, not versions.** `branchbox version --json` decides which features are enabled. A 0.13.x CLI runs in legacy mode, where the app performs the teardown safety checks itself.
 - **Layers**: `BranchBoxKit` (contracts, models, pure planning) → `BranchBoxCLI` (process runner, environment, `CLIBackend`) and `BranchBoxStores` (observable state) → `BranchBoxApp` (SwiftUI). A `BranchBoxBackend` protocol keeps the UI independent of the transport; an agent-backed conformer can be added later.
-- **Freshness.** FSEvents on `.branchbox/` refreshes the app within about a second of a CLI change made in Terminal.
+- **Freshness.** Optional file watching on `.branchbox/`, configurable polling, app activation, completed operations, and explicit refreshes trigger registry reads. Runtime status outside container devcontainers comes from recorded registry state, rather than a continuous live probe.
 
-**Distribution**: an ad-hoc signed universal `.app` built by `scripts/package-macos-app.sh` and uploaded by CI (`.github/workflows/macos-app.yml`). The app is not sandboxed: it must run `branchbox`, `git` and `docker` and read repositories anywhere. Developer ID signing, notarization and a Homebrew cask come later.
+**Distribution**: an ad-hoc signed universal `.app` built by `scripts/package-macos-app.sh` and uploaded by CI (`.github/workflows/macos-app.yml`). The app is not sandboxed: it must run `branchbox`, `git` and `docker` and read repositories anywhere. The current build is not Developer ID signed or notarized. See the [Mac app guide](../guides/mac-app.md) for user-facing capabilities and limits.
 
 ## Communication Protocols
 
@@ -194,8 +194,8 @@ CREATE TABLE config (
 The agent is designed to work **completely offline**:
 
 1. **Local commands execute immediately**
-   - Mac App/CLI → Agent → Worktree Core
-   - No network required
+   - Mac App → CLI → Worktree Core; daemon workflows use the core in-process
+   - Local registry and worktree operations do not require the control plane; fetching code, pulling images, and provisioning tunnels can require network access
 
 2. **State updates queued for sync**
    - Agent writes to a durable SQLite queue

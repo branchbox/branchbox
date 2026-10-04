@@ -39,16 +39,11 @@ cd ../fix-auth-bug
 # Fix the bug here...
 ```
 
-You now have two completely isolated environments:
+You now have two separate feature worktrees:
 - `../payment-refactor/` — Your refactor, untouched
 - `../fix-auth-bug/` — The urgent fix
 
-Each has its own:
-- Git branch
-- Docker containers
-- Database
-- Ports
-- Environment variables
+Each has its own Git branch and working directory. Configured setup modules can add a Compose identity, devcontainer configuration, database naming, and a customized environment file. Start each container environment and application separately; fixed host ports and external databases still depend on your project configuration.
 
 ### Switch Between Them Freely
 

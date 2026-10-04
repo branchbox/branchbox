@@ -1,6 +1,6 @@
-# Website
+# BranchBox documentation website
 
-This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
+User-facing documentation lives in `docs/` and is built with Docusaurus. The repository's separate `website/` directory holds the landing page. The combined deployment serves the landing page at `https://branchbox.dev/` and these docs at `https://branchbox.dev/docs/`.
 
 ## Installation
 
@@ -26,4 +26,8 @@ This command generates static content into the `build` directory and can be serv
 
 ## Deployment
 
-Deployment is automated via GitHub Actions when changes are pushed to the `main` branch. The documentation is published to GitHub Pages at https://branchbox.github.io/branchbox/
+The **Deploy Site** GitHub Actions workflow builds and deploys changes to `main`. It copies the landing page to the deployment root and the Docusaurus output to `/docs/`.
+
+To build the same combined layout locally, run `scripts/build-site.sh` from the repository root. This installs the locked docs dependencies and writes the combined site to the root `build/` directory.
+
+Mac app media lives in `static/img/mac-app/` and `static/media/`. Docusaurus pages use `useBaseUrl` for media paths; the static landing page references `/docs/img/mac-app/` and `/docs/media/`. Keep captured screens free of private project paths and credentials, and label preview-backend images as illustrative sample data.

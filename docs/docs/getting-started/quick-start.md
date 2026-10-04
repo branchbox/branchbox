@@ -4,7 +4,7 @@ sidebar_position: 0
 
 # Quick Start
 
-Get BranchBox running in 2 minutes.
+Install BranchBox, initialize a project, and start your first feature workspace.
 
 ## Install
 
@@ -109,13 +109,13 @@ As shown in the output, the new workspace is created in the parent directory. Ch
 cd ../add-user-authentication
 ```
 
-You're now in a fully isolated workspace:
+You're now in a separate feature worktree. Depending on the configured modules, it also has:
 - **Own git branch** — `feature/add-user-authentication`
-- **Own Docker network** — no port conflicts
-- **Own database** — no data leaks
+- **Compose project identity** — isolates owned container resources; fixed host ports still need conflict-free configuration
+- **Database naming configuration** — the database module can add `DATABASE_NAME` to an existing `.env`, but your application must use it and run its own database setup
 - **Own `.env`** — customized for this feature
 
-Run your app, make changes, commit freely. Your main workspace is untouched.
+For the container runtime, start the devcontainer separately when you need it. Run your project's database setup and application commands, make changes, and commit in this worktree. Feature setup alone does not prove those services are running.
 
 ## Optional: Use an SBX MicroVM
 
