@@ -267,8 +267,8 @@ private struct TeardownPlanSections: View {
             }
         } else if user.isEmpty {
             FlowSection(title: "Your changes", systemImage: "checkmark.shield") {
-                FlowFactRow(systemImage: "checkmark.circle.fill", tint: .green, text: "No uncommitted changes",
-                            detail: "Everything in this worktree is committed to its branch.")
+                FlowFactRow(systemImage: "checkmark.circle.fill", tint: .green, text: "No user changes reported",
+                            detail: "Git-ignored files are not listed; they are removed with the worktree even when you keep the branch.")
             }
         } else {
             FlowSection(title: "Will be permanently deleted", systemImage: "exclamationmark.octagon",

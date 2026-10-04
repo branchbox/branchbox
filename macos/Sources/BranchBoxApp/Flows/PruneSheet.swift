@@ -97,7 +97,7 @@ private struct PruneContent: View {
                         subtitle: "Tear down the features you're done with, one at a time.", systemImage: "scissors") {
             HStack(spacing: 8) {
                 Button("Select Safe") { flow.selectSafe() }
-                    .help("Only features where nothing of yours would be lost")
+                    .help("Select features that pass the reported-change and branch checks")
                 Button("All") { flow.selectAll() }
                 Button("None") { flow.selectNone() }
                 if flow.isChecking {
@@ -117,6 +117,7 @@ private struct PruneContent: View {
                 .help("What happens to each feature's branch")
             }
             PruneTable(flow: flow)
+            FlowNotice(style: .info, text: "Git-ignored files are not listed; they are removed with each worktree even when you keep its branch.")
             if flow.policy == .deleteIfMerged {
                 FlowNotice(style: .info, text: "Unmerged branches are kept, and their rows say so.")
             } else if flow.policy == .forceDelete {
@@ -332,7 +333,7 @@ private struct PruneRowView: View {
             } else if !plan.changes.statusAvailable {
                 Label("Unknown", systemImage: "questionmark.circle").font(.callout).foregroundStyle(.orange)
             } else if plan.changes.user.isEmpty {
-                Label("None", systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+                Label("None reported", systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
             } else {
                 let count = plan.changes.user.count
                 Label(plan.changes.truncated ? "\(count)+ files" : Pluralized.count(count, "file"),
