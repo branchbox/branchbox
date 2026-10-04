@@ -3,6 +3,9 @@
 #[macro_use]
 extern crate assert_cmd;
 
+#[path = "support/empty_docker.rs"]
+mod empty_docker;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
@@ -1602,7 +1605,10 @@ fn teardown_json_includes_verified_runtime_residue_contract() {
         .assert()
         .success();
 
-    let output = branchbox_cmd!(repo_path)
+    let docker = empty_docker::EmptyDocker::new();
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let output = docker
+        .command(branchbox_cmd!(repo_path))
         .args([
             "feature",
             "teardown",
@@ -1626,6 +1632,7 @@ fn teardown_json_includes_verified_runtime_residue_contract() {
         payload["runtime_teardown"]["residue"],
         serde_json::json!([])
     );
+    docker.assert_probed(&[&worktree_path]);
 }
 
 #[test]

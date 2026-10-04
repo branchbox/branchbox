@@ -7,6 +7,9 @@
 #[macro_use]
 mod support;
 
+#[path = "support/empty_docker.rs"]
+mod empty_docker;
+
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -136,7 +139,13 @@ fn yes_json_prunes_every_candidate_and_reports_each_result() {
     let repo = init_test_repo();
     let (risky, clean) = two_features(&repo);
 
-    let report = assert_ok_json(&branchbox(&repo, &["prune", "--yes", "--json"]));
+    let docker = empty_docker::EmptyDocker::new();
+    let output = docker
+        .command(branchbox_cmd!(repo.path()))
+        .args(["prune", "--yes", "--json"])
+        .output()
+        .expect("prune with empty engine");
+    let report = assert_ok_json(&output);
 
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["dry_run"], false);
@@ -150,6 +159,7 @@ fn yes_json_prunes_every_candidate_and_reports_each_result() {
     }
     assert!(!risky.exists() && !clean.exists());
     assert!(active_features(&repo).is_empty());
+    docker.assert_probed(&[&risky, &clean]);
     assert_fixture(
         AREA,
         "prune_execute",

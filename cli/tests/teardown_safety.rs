@@ -12,6 +12,9 @@
 #[macro_use]
 mod support;
 
+#[path = "support/empty_docker.rs"]
+mod empty_docker;
+
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -232,10 +235,13 @@ fn discard_changes_removes_the_worktree_and_deletes_a_merged_branch_with_d() {
     let worktree = start_minimal(&repo, "eta");
     dirty(&worktree);
 
-    let summary = assert_ok_json(&branchbox(
-        &repo,
-        &["feature", "teardown", "eta", "--discard-changes", "--json"],
-    ));
+    let docker = empty_docker::EmptyDocker::new();
+    let output = docker
+        .command(branchbox_cmd!(repo.path()))
+        .args(["feature", "teardown", "eta", "--discard-changes", "--json"])
+        .output()
+        .expect("discard teardown with empty engine");
+    let summary = assert_ok_json(&output);
 
     assert_eq!(summary["worktree_removed"], true);
     assert_eq!(summary["branch_action"], "delete", "-d, not -D");
@@ -258,6 +264,7 @@ fn discard_changes_removes_the_worktree_and_deletes_a_merged_branch_with_d() {
     assert!(!branch_exists(&repo, "feature/eta"));
     assert!(repo.path().join("docs/features/backlog/eta.md").exists());
     assert_eq!(status_of(&repo, "eta"), "removed");
+    docker.assert_probed(&[&worktree]);
     assert_fixture(
         AREA,
         "summary_discard",
@@ -413,7 +420,7 @@ fn full_mode_devcontainer_edits_keep_the_harness_phrase_on_stdout() {
     repo.git(&["add", ".devcontainer"]);
     repo.git(&["commit", "-q", "-m", "Add devcontainer"]);
 
-    start(&repo, "dc-ok", &[]);
+    let clean_worktree = start(&repo, "dc-ok", &[]);
     let plan = assert_ok_json(&branchbox(
         &repo,
         &["feature", "teardown", "dc-ok", "--dry-run", "--json"],
@@ -426,10 +433,13 @@ fn full_mode_devcontainer_edits_keep_the_harness_phrase_on_stdout() {
                               "rule": "devcontainer_baseline"})),
         "{plan:#}"
     );
-    let summary = assert_ok_json(&branchbox(
-        &repo,
-        &["feature", "teardown", "dc-ok", "--json"],
-    ));
+    let docker = empty_docker::EmptyDocker::new();
+    let output = docker
+        .command(branchbox_cmd!(repo.path()))
+        .args(["feature", "teardown", "dc-ok", "--json"])
+        .output()
+        .expect("clean full-mode teardown with empty engine");
+    let summary = assert_ok_json(&output);
     assert_eq!(summary["worktree_removed"], true);
     assert!(!repo
         .path()
@@ -474,20 +484,22 @@ fn full_mode_devcontainer_edits_keep_the_harness_phrase_on_stdout() {
     assert!(stderr.contains("Caused by:") && stderr.contains("--discard-changes"));
     assert!(devcontainer.exists());
 
-    let forced = branchbox(
-        &repo,
-        &[
+    let forced = docker
+        .command(branchbox_cmd!(repo.path()))
+        .args([
             "feature",
             "teardown",
             "dc-edit",
             "--delete-branch",
             "--complete-spec",
             "--force",
-        ],
-    );
+        ])
+        .output()
+        .expect("forced full-mode teardown with empty engine");
     assert!(forced.status.success(), "{}", stderr_of(&forced));
     assert!(stdout_of(&forced).contains("Feature teardown finished"));
     assert!(!worktree.exists());
+    docker.assert_probed(&[&clean_worktree, &worktree]);
     assert!(repo
         .path()
         .join("docs/features/completed/dc-edit.md")
