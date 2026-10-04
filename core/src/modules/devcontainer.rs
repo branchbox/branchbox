@@ -77,6 +77,56 @@ fn stable_content_hash(bytes: &[u8]) -> u64 {
     })
 }
 
+/// A feature's devcontainer sync baseline: each synced `.devcontainer` file (path relative to
+/// `.devcontainer`, `/`-separated) mapped to its [`baseline_digest`] as of the last sync.
+pub type DevcontainerBaseline = BTreeMap<String, String>;
+
+/// The digest a baseline records for a file's bytes: FNV-1a 64 as 16 lowercase hex digits.
+/// Teardown classifies a `.devcontainer` file as BranchBox-generated when its digest still
+/// equals the baseline's.
+pub fn baseline_digest(bytes: &[u8]) -> String {
+    format!("{:016x}", stable_content_hash(bytes))
+}
+
+/// Name of a feature worktree's baseline: its directory name, as recorded at start.
+fn baseline_feature_name(feature_dir: &Path) -> &str {
+    feature_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("feature")
+}
+
+fn read_baseline_at(path: &Path) -> Result<Option<DevcontainerBaseline>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(Error::Io(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to read devcontainer sync baseline {}: {err}",
+                    path.display()
+                ),
+            )))
+        }
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|err| {
+        Error::validation(format!(
+            "Invalid devcontainer sync baseline {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+/// Replace the baseline at `path` atomically, so a concurrent reader never sees a partial file.
+fn write_baseline_at(path: &Path, baseline: &DevcontainerBaseline) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let payload = serde_json::to_vec_pretty(baseline)?;
+    crate::atomic_fs::write_atomic(path, &payload, 0o644)
+}
+
 impl DevcontainerModule {
     pub fn new() -> Self {
         Self {
@@ -95,7 +145,53 @@ impl DevcontainerModule {
         }
     }
 
-    fn current_manifest(&self, target_dir: &Path) -> Result<BTreeMap<String, String>> {
+    /// Where the baseline of `feature` lives: `<main>/.branchbox/devcontainer-sync/<feature>.json`.
+    pub fn baseline_path(main_dir: &Path, feature: &str) -> PathBuf {
+        main_dir
+            .join(".branchbox/devcontainer-sync")
+            .join(format!("{feature}.json"))
+    }
+
+    /// The recorded baseline of `feature`, or `None` when none was recorded (features started
+    /// before baselines existed, or never synced).
+    pub fn read_baseline(main_dir: &Path, feature: &str) -> Result<Option<DevcontainerBaseline>> {
+        read_baseline_at(&Self::baseline_path(main_dir, feature))
+    }
+
+    /// Record the current `.devcontainer` contents of `feature_dir` as its baseline, after a
+    /// successful sync. Needs a module initialized with the main worktree.
+    pub fn record_baseline(&self, feature_dir: &Path) -> Result<()> {
+        let main_dir = self
+            .source_dir
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .ok_or_else(|| {
+                Error::validation(
+                    "Cannot record a devcontainer sync baseline: the devcontainer module was not \
+                     initialized with the main worktree",
+                )
+            })?;
+        let path = Self::baseline_path(main_dir, baseline_feature_name(feature_dir));
+        write_baseline_at(&path, &self.current_manifest(feature_dir)?)
+    }
+
+    /// Delete the baseline of `feature` once its worktree is gone. A missing baseline is fine.
+    pub fn remove_baseline(main_dir: &Path, feature: &str) -> Result<()> {
+        let path = Self::baseline_path(main_dir, feature);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(Error::Io(std::io::Error::new(
+                err.kind(),
+                format!(
+                    "Failed to remove devcontainer sync baseline {}: {err}",
+                    path.display()
+                ),
+            ))),
+        }
+    }
+
+    fn current_manifest(&self, target_dir: &Path) -> Result<DevcontainerBaseline> {
         let devcontainer = target_dir.join(".devcontainer");
         let mut manifest = BTreeMap::new();
         if !devcontainer.exists() {
@@ -119,7 +215,7 @@ impl DevcontainerModule {
             let bytes = std::fs::read(entry.path())?;
             manifest.insert(
                 relative.to_string_lossy().replace('\\', "/"),
-                format!("{:016x}", stable_content_hash(&bytes)),
+                baseline_digest(&bytes),
             );
         }
         Ok(manifest)
@@ -129,15 +225,11 @@ impl DevcontainerModule {
         let Some(path) = self.manifest_path.as_ref() else {
             return Ok(Vec::new());
         };
-        if !path.exists() {
+        let Some(baseline) = read_baseline_at(path)? else {
             return Ok(vec![
                 "baseline unavailable (feature predates safe reuse tracking)".to_string(),
             ]);
-        }
-        let baseline: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(path)?)
-            .map_err(|err| {
-                Error::validation(format!("Invalid devcontainer sync baseline: {err}"))
-            })?;
+        };
         let current = self.current_manifest(target_dir)?;
         let mut paths: Vec<String> = baseline
             .keys()
@@ -154,12 +246,7 @@ impl DevcontainerModule {
         let Some(path) = self.manifest_path.as_ref() else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let payload = serde_json::to_vec_pretty(&self.current_manifest(target_dir)?)?;
-        std::fs::write(path, payload)?;
-        Ok(())
+        write_baseline_at(path, &self.current_manifest(target_dir)?)
     }
 
     /// Sync devcontainer files to target directory
@@ -343,15 +430,10 @@ impl Module for DevcontainerModule {
             Some("inspect") => ReuseSyncPolicy::Inspect,
             _ => ReuseSyncPolicy::Overwrite,
         };
-        let feature_name = feature_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("feature");
-        self.manifest_path = Some(
-            main_dir
-                .join(".branchbox/devcontainer-sync")
-                .join(format!("{feature_name}.json")),
-        );
+        self.manifest_path = Some(Self::baseline_path(
+            main_dir,
+            baseline_feature_name(feature_dir),
+        ));
 
         tracing::info!(
             "Devcontainer module initialized (strategy: {:?})",
@@ -2745,5 +2827,158 @@ volumes:
         let user = ContainerUser::default();
         assert_eq!(user.username, "vscode");
         assert_eq!(user.home_path, "/home/vscode");
+    }
+
+    fn baseline_fixture(temp: &TempDir) -> (PathBuf, PathBuf) {
+        let main = temp.path().join("main");
+        let feature = temp.path().join("alpha");
+        std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        std::fs::write(
+            main.join(".devcontainer/devcontainer.json"),
+            r#"{"name": "test"}"#,
+        )
+        .unwrap();
+        std::fs::write(main.join(".devcontainer/compose.yaml"), "services: {}").unwrap();
+        std::fs::write(main.join(".devcontainer/.env"), "SECRET=1\n").unwrap();
+        std::fs::create_dir_all(&feature).unwrap();
+        (main, feature)
+    }
+
+    fn sync_dir_entries(main: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(main.join(".branchbox/devcontainer-sync"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn test_baseline_digest_is_fnv1a_64_hex() {
+        // Pinned so other implementations of the generated-file rule (the app's legacy-mode
+        // classifier) can match it byte for byte.
+        assert_eq!(baseline_digest(b""), "cbf29ce484222325");
+        assert_eq!(baseline_digest(b"a"), "af63dc4c8601ec8c");
+        assert_eq!(baseline_digest(b"foobar"), "85944171f73967e8");
+    }
+
+    #[test]
+    fn test_record_baseline_round_trips_and_is_removed() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let (main, feature) = baseline_fixture(&temp);
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.sync_to(&feature).unwrap();
+        assert!(DevcontainerModule::read_baseline(&main, "alpha")
+            .unwrap()
+            .is_none());
+
+        module.record_baseline(&feature).unwrap();
+        assert_eq!(
+            DevcontainerModule::baseline_path(&main, "alpha"),
+            main.join(".branchbox/devcontainer-sync/alpha.json")
+        );
+        let baseline = DevcontainerModule::read_baseline(&main, "alpha")
+            .unwrap()
+            .expect("baseline recorded");
+        assert_eq!(
+            baseline.keys().collect::<Vec<_>>(),
+            ["compose.yaml", "devcontainer.json"],
+            "excluded files never enter the baseline"
+        );
+        assert_eq!(
+            baseline["devcontainer.json"],
+            baseline_digest(&fs::read(feature.join(".devcontainer/devcontainer.json")).unwrap())
+        );
+        assert_eq!(
+            sync_dir_entries(&main),
+            ["alpha.json"],
+            "no temp files left"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = DevcontainerModule::baseline_path(&main, "alpha");
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
+
+        DevcontainerModule::remove_baseline(&main, "alpha").unwrap();
+        assert!(DevcontainerModule::read_baseline(&main, "alpha")
+            .unwrap()
+            .is_none());
+        DevcontainerModule::remove_baseline(&main, "alpha").unwrap();
+    }
+
+    #[test]
+    fn test_setup_records_the_baseline_read_by_read_baseline() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let (main, feature) = baseline_fixture(&temp);
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.setup(&main, &feature).unwrap();
+
+        let baseline = DevcontainerModule::read_baseline(&main, "alpha")
+            .unwrap()
+            .expect("setup records the baseline");
+        assert_eq!(baseline, module.current_manifest(&feature).unwrap());
+        assert!(module.divergence(&feature).unwrap().is_empty());
+        assert_eq!(sync_dir_entries(&main), ["alpha.json"]);
+    }
+
+    #[test]
+    fn test_record_baseline_requires_an_initialized_module() {
+        let temp = TempDir::new().unwrap();
+        let err = DevcontainerModule::new()
+            .record_baseline(temp.path())
+            .unwrap_err();
+        assert!(err.to_string().contains("not initialized"), "{err}");
+    }
+
+    #[test]
+    fn test_invalid_baseline_names_its_path() {
+        let temp = TempDir::new().unwrap();
+        let path = DevcontainerModule::baseline_path(temp.path(), "alpha");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{ not json").unwrap();
+
+        let err = DevcontainerModule::read_baseline(temp.path(), "alpha").unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("Invalid devcontainer sync baseline"),
+            "{message}"
+        );
+        assert!(message.contains(&path.display().to_string()), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_record_baseline_refuses_a_symlinked_baseline() {
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let (main, feature) = baseline_fixture(&temp);
+        let outside = temp.path().join("outside.json");
+        fs::write(&outside, "{}").unwrap();
+        let path = DevcontainerModule::baseline_path(&main, "alpha");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.sync_to(&feature).unwrap();
+        let err = module.record_baseline(&feature).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Refusing to write through symlink"),
+            "{err}"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "{}");
     }
 }

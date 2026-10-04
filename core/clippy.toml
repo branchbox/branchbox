@@ -1,0 +1,6 @@
+# Human text must not reach stdout directly: in `--json` mode stdout carries exactly one JSON
+# document, and the output layer routes human text to stderr (DESIGN §5.2).
+disallowed-macros = [
+    { path = "std::println", reason = "use crate::humanln! (worktree_core::output) so --json mode keeps stdout for its single JSON document" },
+    { path = "std::print", reason = "use crate::human! (worktree_core::output) so --json mode keeps stdout for its single JSON document" },
+]

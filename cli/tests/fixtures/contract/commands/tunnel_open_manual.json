@@ -1,0 +1,22 @@
+{
+  "state": {
+    "hostname": "dev-eta.example.com",
+    "instructions": [
+      "Sign in to Cloudflare Zero Trust and navigate to Access → Tunnels.",
+      "Create (or reuse) a tunnel named `eta`.",
+      "Configure the route so `dev-eta.example.com` proxies traffic to `http://dev:3000`.",
+      "Download the tunnel credentials JSON or copy the tunnel token.",
+      "Store the token in `.devcontainer/.cloudflared.env` (TUNNEL_TOKEN=...)",
+      "Refer to `legacy/cloudflared/README.md` for script-driven helpers until automation lands."
+    ],
+    "last_updated": "<ts>",
+    "notes": "Cloudflare automation disabled during init; follow manual steps.",
+    "provider": "cloudflared",
+    "service_url": "http://dev:3000",
+    "status": "manual"
+  },
+  "warnings": [
+    "Tunnel requires manual setup: Cloudflare automation disabled during init; follow manual steps."
+  ],
+  "work_feature": "eta"
+}

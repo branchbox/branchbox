@@ -1,0 +1,44 @@
+{
+  "adapter_cleanup_warnings": [],
+  "branch_action": "delete",
+  "branch_delete_error": null,
+  "branch_deleted": true,
+  "branch_name": "feature/eta",
+  "discarded_changes": [
+    {
+      "area": "other",
+      "kind": "modified",
+      "path": "README.md"
+    },
+    {
+      "area": "other",
+      "kind": "untracked",
+      "path": "notes.txt"
+    }
+  ],
+  "module_reports": [
+    {
+      "errors": [],
+      "name": "specs",
+      "teardown_ok": true
+    }
+  ],
+  "preserved": [
+    {
+      "destination": "docs/features/backlog/eta.md",
+      "path": "docs/features/in-progress/eta.md"
+    }
+  ],
+  "registry_updated": true,
+  "runtime_teardown": {
+    "provider": "container",
+    "residue": [],
+    "residue_free": true,
+    "verified": true
+  },
+  "warnings": [
+    "Tunnel descriptor missing; skipping provider teardown"
+  ],
+  "work_feature": "eta",
+  "worktree_removed": true
+}

@@ -1,0 +1,189 @@
+{
+  "at_risk": {
+    "uncommitted_changes": [
+      {
+        "count": 1,
+        "paths": [
+          "scratch.txt"
+        ],
+        "truncated": false,
+        "work_feature": "risky"
+      }
+    ],
+    "unmerged_commits": [
+      {
+        "ahead": 1,
+        "branch": "feature/risky",
+        "work_feature": "risky"
+      }
+    ]
+  },
+  "candidates": [
+    {
+      "branch_name": "feature/clean",
+      "plan": {
+        "blockers": [],
+        "branch": {
+          "action": "force_delete",
+          "ahead": 0,
+          "exists": true,
+          "merged": true,
+          "merged_into_head": true,
+          "name": "feature/clean",
+          "reference": "HEAD",
+          "reference_name": "main",
+          "source": "registry",
+          "upstream": null
+        },
+        "changes": {
+          "generated": [
+            {
+              "path": ".devcontainer/.branchbox.env",
+              "rule": "reserved_name"
+            },
+            {
+              "path": ".devcontainer/.env",
+              "rule": "devcontainer_env_link"
+            },
+            {
+              "path": ".env",
+              "rule": "env_feature_block"
+            },
+            {
+              "path": ".vscode/settings.json",
+              "rule": "vscode_managed_keys"
+            },
+            {
+              "path": ".vscode/tasks.json",
+              "rule": "vscode_managed_tasks"
+            }
+          ],
+          "preserved": [
+            {
+              "destination": "docs/features/backlog/clean.md",
+              "path": "docs/features/in-progress/clean.md"
+            }
+          ],
+          "status_available": true,
+          "truncated": false,
+          "user": []
+        },
+        "defaults": {
+          "delete_branch_by_default": true,
+          "force_delete_unmerged_by_default": false
+        },
+        "registered": true,
+        "runtime": {
+          "provider": "container",
+          "runtime_id": null
+        },
+        "schema_version": 1,
+        "status": "active",
+        "tunnel": {
+          "status": "disabled"
+        },
+        "warnings": [],
+        "work_feature": "clean",
+        "worktree": {
+          "exists": true,
+          "lock_reason": null,
+          "locked": false,
+          "path": "<repo>/clean"
+        }
+      },
+      "status": "active",
+      "work_feature": "clean",
+      "worktree_path": "<repo>/clean"
+    },
+    {
+      "branch_name": "feature/risky",
+      "plan": {
+        "blockers": [],
+        "branch": {
+          "action": "force_delete",
+          "ahead": 1,
+          "exists": true,
+          "merged": false,
+          "merged_into_head": false,
+          "name": "feature/risky",
+          "reference": "HEAD",
+          "reference_name": "main",
+          "source": "registry",
+          "upstream": null
+        },
+        "changes": {
+          "generated": [
+            {
+              "path": ".devcontainer/.branchbox.env",
+              "rule": "reserved_name"
+            },
+            {
+              "path": ".devcontainer/.env",
+              "rule": "devcontainer_env_link"
+            },
+            {
+              "path": ".env",
+              "rule": "env_feature_block"
+            },
+            {
+              "path": ".vscode/settings.json",
+              "rule": "vscode_managed_keys"
+            },
+            {
+              "path": ".vscode/tasks.json",
+              "rule": "vscode_managed_tasks"
+            }
+          ],
+          "preserved": [
+            {
+              "destination": "docs/features/backlog/risky.md",
+              "path": "docs/features/in-progress/risky.md"
+            }
+          ],
+          "status_available": true,
+          "truncated": false,
+          "user": [
+            {
+              "area": "other",
+              "kind": "untracked",
+              "path": "scratch.txt"
+            }
+          ]
+        },
+        "defaults": {
+          "delete_branch_by_default": true,
+          "force_delete_unmerged_by_default": false
+        },
+        "registered": true,
+        "runtime": {
+          "provider": "container",
+          "runtime_id": null
+        },
+        "schema_version": 1,
+        "status": "active",
+        "tunnel": {
+          "status": "disabled"
+        },
+        "warnings": [],
+        "work_feature": "risky",
+        "worktree": {
+          "exists": true,
+          "lock_reason": null,
+          "locked": false,
+          "path": "<repo>/risky"
+        }
+      },
+      "status": "active",
+      "work_feature": "risky",
+      "worktree_path": "<repo>/risky"
+    }
+  ],
+  "dry_run": true,
+  "policy": {
+    "complete_spec": false,
+    "delete_branch": true,
+    "discard_changes": true,
+    "force_delete_branch": true
+  },
+  "schema_version": 1
+}

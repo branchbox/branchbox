@@ -1,7 +1,9 @@
 use crate::agent::AgentClient;
+use crate::json_error;
 use anyhow::Result;
 use chrono::{DateTime, Local, Utc};
 use clap::{Args, Subcommand};
+use worktree_core::{humanln, output};
 
 #[derive(Subcommand)]
 pub enum AgentCommands {
@@ -16,6 +18,18 @@ pub struct AgentStatusArgs {
     pub json: bool,
 }
 
+impl AgentCommands {
+    /// Whether this invocation asked for machine (`--json`) output.
+    pub fn wants_json(&self) -> bool {
+        match self {
+            AgentCommands::Status(args) => args.json,
+        }
+    }
+}
+
+/// Contract capabilities this module adds to `branchbox version --json` (DESIGN §5.3).
+pub const CAPABILITIES: &[&str] = &[];
+
 pub fn execute(command: AgentCommands) -> Result<()> {
     match command {
         AgentCommands::Status(args) => run_status(args),
@@ -23,14 +37,21 @@ pub fn execute(command: AgentCommands) -> Result<()> {
 }
 
 fn run_status(args: AgentStatusArgs) -> Result<()> {
-    let client = AgentClient::connect()?;
-    let status = client.agent_status()?;
+    // `connect` only fails when no socket can be used at all.
+    let client = AgentClient::connect().map_err(agent_unreachable)?;
+    let status = client.agent_status().map_err(|err| {
+        if is_transport_failure(&err) {
+            agent_unreachable(err)
+        } else {
+            err
+        }
+    })?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&status)?);
+        output::emit_json(&status)?;
         return Ok(());
     }
 
-    println!(
+    humanln!(
         "Control plane: {}",
         match (
             status.control_plane_configured,
@@ -42,31 +63,43 @@ fn run_status(args: AgentStatusArgs) -> Result<()> {
         }
     );
     if let Some(ack) = status.last_ack_event_id {
-        println!("Last acked event ID: {ack}");
+        humanln!("Last acked event ID: {ack}");
     }
     if let Some(batch) = status.last_sent_batch_id {
         if let Some(cursor) = status.last_sent_event_id {
-            println!("Last batch sent: #{batch} (through event {cursor})");
+            humanln!("Last batch sent: #{batch} (through event {cursor})");
         } else {
-            println!("Last batch sent: #{batch}");
+            humanln!("Last batch sent: #{batch}");
         }
     } else if let Some(cursor) = status.last_sent_event_id {
-        println!("Last sent cursor: event {cursor}");
+        humanln!("Last sent cursor: event {cursor}");
     }
     if let Some(ts) = format_timestamp(status.last_sent_at.as_deref()) {
-        println!("Last send attempt: {ts}");
+        humanln!("Last send attempt: {ts}");
     }
     if let Some(ts) = format_timestamp(status.last_delivery_at.as_deref()) {
-        println!("Last delivery: {ts}");
+        humanln!("Last delivery: {ts}");
     }
     if let Some(ts) = format_timestamp(status.last_failure_at.as_deref()) {
-        println!("Last failure: {ts}");
+        humanln!("Last failure: {ts}");
     }
     if let Some(err) = status.last_error.as_deref() {
-        println!("Last error: {err}");
+        humanln!("Last error: {err}");
     }
 
     Ok(())
+}
+
+/// The envelope code for an agent that cannot be reached. The error still prints exactly as
+/// before (`Error: failed to connect to BranchBox agent at …`).
+fn agent_unreachable(err: anyhow::Error) -> anyhow::Error {
+    json_error::recode(err, "agent_unreachable", None)
+}
+
+/// Whether talking to the agent failed at the socket (missing socket, refused or dropped
+/// connection) rather than in the agent's own reply, which keeps its code.
+fn is_transport_failure(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<std::io::Error>())
 }
 
 fn format_timestamp(raw: Option<&str>) -> Option<String> {

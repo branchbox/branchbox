@@ -1,0 +1,50 @@
+{
+  "changed": [
+    {
+      "key": "runtime.provider",
+      "new": "sbx",
+      "old": null
+    },
+    {
+      "key": "feature.teardown.delete_branch_by_default",
+      "new": false,
+      "old": null
+    },
+    {
+      "key": "tunnel.enabled",
+      "new": null,
+      "old": true
+    }
+  ],
+  "effective": {
+    "editor": {
+      "auto_launch_agent_terminal": false,
+      "default_agent": null,
+      "hide_secondary_sidebar": false,
+      "preferred_sidebar_view": null
+    },
+    "feature": {
+      "branch_prefix": "feature",
+      "teardown": {
+        "delete_branch_by_default": false,
+        "force_delete_unmerged_by_default": false,
+        "prompt_force_delete_unmerged": true
+      }
+    },
+    "runtime": {
+      "provider": "sbx",
+      "sbx": {
+        "run_services": []
+      }
+    },
+    "tunnel": {
+      "default_provider": "cloudflared",
+      "enabled": true,
+      "providers": {
+        "cloudflared": null
+      }
+    },
+    "version": "<version>"
+  },
+  "schema_version": 1
+}

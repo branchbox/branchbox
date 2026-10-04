@@ -1,9 +1,17 @@
+use super::teardown_plan::{
+    blocking_changes, branch_action, build_teardown_plan, classify_changes, discards_changes,
+    parse_jsonc_object, Blocker, BranchAction, BranchPlan, BranchSource, FsChangeContext,
+    PlanInputs, PreservedFile, ResolvedBranch, TeardownDefaults, TeardownOptions, TeardownPlan,
+    UserChange, WorktreeState, WorktreeStatus, ENV_FEATURE_SECTION_MARKER, MAX_CLASSIFIED_ENTRIES,
+    VSCODE_COLOR_CUSTOMIZATIONS, VSCODE_FEATURE_URL_TASK, VSCODE_PEACOCK_COLOR,
+    VSCODE_PEACOCK_REMOTE_COLOR, VSCODE_WINDOW_TITLE,
+};
 use crate::{
-    adapters,
+    adapters, atomic_fs,
     config::BranchBoxConfig,
     devcontainer_runtime::DevcontainerConfig,
-    git::GitWorktree,
-    modules::{self, ModuleHandle, SpecStatus},
+    git::{GitWorktree, RemovalForce, WorktreeRegistration},
+    modules::{self, DevcontainerModule, ModuleHandle, SpecStatus},
     naming,
     runtime::{
         self, InGuestFacadePlan, RuntimeContext, RuntimeMetadata, RuntimePort, RuntimeProviderKind,
@@ -26,6 +34,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Instant;
+
+/// Capabilities of the feature workflow, reported by `branchbox version --json`.
+/// `write-ahead-start`: `start` registers the feature as soon as its worktree exists, and
+/// `list` reports an unfinished start as `setup.state: interrupted` (DESIGN §5.4).
+pub(crate) const CAPABILITIES: &[&str] = &["write-ahead-start"];
 
 /// Feature start execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -148,6 +161,10 @@ pub struct FeatureWorkflow {
     repo_root: PathBuf,
     git: GitWorktree,
     state: FeatureStateStore,
+    /// Test hook: runs on the worktree right before teardown checks it again and removes it,
+    /// to stand in for a change made while the runtime and modules were being stopped.
+    #[cfg(test)]
+    before_worktree_removal: Option<fn(&Path)>,
 }
 
 /// Parameters for starting a feature worktree.
@@ -278,6 +295,15 @@ struct StashState {
     reference: Option<String>,
 }
 
+/// The write-ahead registry entry of a start in progress (see [`SetupRecord`]).
+#[derive(Debug)]
+struct ProvisionalStart {
+    work_feature: String,
+    pid: u32,
+    /// The entry the provisional one replaced, restored if the start removes its worktree.
+    previous: Option<FeatureMetadata>,
+}
+
 /// Parameters for tearing down a feature worktree.
 #[derive(Debug, Clone)]
 pub struct TeardownRequest {
@@ -294,6 +320,9 @@ pub struct TeardownRequest {
 }
 
 /// Result of running feature teardown workflow.
+///
+/// The fields after `warnings` were added in 0.14 (DESIGN §5.6); clients of older CLIs see
+/// them missing.
 #[derive(Debug, Serialize)]
 pub struct TeardownSummary {
     pub work_feature: String,
@@ -304,6 +333,17 @@ pub struct TeardownSummary {
     pub module_reports: Vec<ModuleTeardownReport>,
     pub runtime_teardown: runtime::RuntimeTeardownReport,
     pub warnings: Vec<String>,
+    /// The branch step that ran: `keep`, `delete` (`git branch -d`) or `force_delete` (`-D`).
+    pub branch_action: BranchAction,
+    /// Why deleting the branch failed. Teardown still succeeds: the worktree is gone and the
+    /// branch is kept.
+    pub branch_delete_error: Option<String>,
+    /// User changes discarded with the worktree (`--discard-changes` or `--force`).
+    pub discarded_changes: Vec<UserChange>,
+    /// Files moved into the main worktree before the worktree was removed (the feature spec).
+    pub preserved: Vec<PreservedFile>,
+    /// Whether the registry entry was marked removed.
+    pub registry_updated: bool,
 }
 
 /// Module teardown execution report.
@@ -365,6 +405,8 @@ impl FeatureWorkflow {
             repo_root,
             git,
             state,
+            #[cfg(test)]
+            before_worktree_removal: None,
         })
     }
 
@@ -528,6 +570,46 @@ impl FeatureWorkflow {
                 .create(&worktree_path, &branch_name, base_branch.as_deref())?;
         }
 
+        // Write-ahead (DESIGN §5.4): register the feature as soon as its worktree exists, so a
+        // start that dies during setup is listed as interrupted instead of leaving an
+        // unregistered worktree behind. The final registry update clears the marker. From here
+        // on, an error path that removes the worktree again also discards this entry; every
+        // other error path leaves it, and `list` then reports the setup as interrupted.
+        let setup = SetupRecord::begin();
+        let provisional = self.record_provisional_start(
+            FeatureMetadata {
+                work_feature: work_feature.clone(),
+                branch_name: branch_name.clone(),
+                worktree_path: worktree_path.clone(),
+                base_branch: base_branch.clone(),
+                feature_url: None,
+                compose_project_name: None,
+                env_path: None,
+                status: FeatureStatus::Active,
+                created_at: setup.started_at,
+                updated_at: setup.started_at,
+                removed_at: None,
+                tunnel: None,
+                color: Some(generate_feature_color(&work_feature)),
+                pr_number: None,
+                last_commit: None,
+                devcontainer_outdated: false,
+                last_sync_at: None,
+                sync_strategy: None,
+                start_mode: request.mode,
+                prompt_seed: request.prompt_seed.clone(),
+                module_outcomes: Vec::new(),
+                last_summary_rendered_at: None,
+                adapter: None,
+                runtime: RuntimeMetadata {
+                    provider: runtime_kind,
+                    ..RuntimeMetadata::default()
+                },
+                setup: Some(setup),
+            },
+            &mut warnings,
+        );
+
         // Both of these exist to make a worktree reachable from the container:
         // one rewrites the worktree's absolute gitdir pointer, the other projects
         // its administrative files under the main checkout. A repository
@@ -545,24 +627,40 @@ impl FeatureWorkflow {
             if let Err(err) =
                 prepare_in_guest_devcontainer_config(&self.repo_root, &worktree_path, plan)
             {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                self.cleanup_failed_in_guest_worktree(
+                    &worktree_path,
+                    &branch_name,
+                    provisional.as_ref(),
+                );
                 return Err(err);
             }
             if !repository_workspace {
                 if let Err(err) = self.set_in_guest_git_worktree_path(&worktree_path) {
-                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    self.cleanup_failed_in_guest_worktree(
+                        &worktree_path,
+                        &branch_name,
+                        provisional.as_ref(),
+                    );
                     return Err(err);
                 }
             }
             let common_git = match repository_common_git_dir(&self.repo_root) {
                 Ok(path) => path,
                 Err(err) => {
-                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    self.cleanup_failed_in_guest_worktree(
+                        &worktree_path,
+                        &branch_name,
+                        provisional.as_ref(),
+                    );
                     return Err(err);
                 }
             };
             if let Err(err) = plan.grant_workspace_consumer_access(&worktree_path, &common_git) {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                self.cleanup_failed_in_guest_worktree(
+                    &worktree_path,
+                    &branch_name,
+                    provisional.as_ref(),
+                );
                 return Err(err);
             }
         }
@@ -855,11 +953,24 @@ impl FeatureWorkflow {
             runtime_manifest_path: request.runtime_manifest.as_deref(),
         };
         let mut runtime_metadata = match runtime_provider.prepare(&runtime_context) {
-            Ok(metadata) => metadata,
+            Ok(metadata) => {
+                // The runtime now exists (an sbx sandbox or a local VM), and starting the
+                // environment is the longest step. Record its identity in the write-ahead entry,
+                // so a start killed from here on can still be torn down: destroy needs
+                // `runtime_id`, and without it teardown would report the runtime residue-free.
+                if runtime_kind != RuntimeProviderKind::InGuest && metadata.runtime_id.is_some() {
+                    self.record_provisional_runtime(provisional.as_ref(), &metadata);
+                }
+                metadata
+            }
             Err(err) => {
                 self.rollback_prepared_tunnel(tunnel_state.as_ref());
                 if runtime_kind == RuntimeProviderKind::InGuest {
-                    self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                    self.cleanup_failed_in_guest_worktree(
+                        &worktree_path,
+                        &branch_name,
+                        provisional.as_ref(),
+                    );
                 }
                 return Err(err);
             }
@@ -917,6 +1028,7 @@ impl FeatureWorkflow {
                     last_summary_rendered_at: None,
                     adapter: adapter_summary.clone(),
                     runtime: runtime_metadata.clone(),
+                    setup: None,
                 })?;
                 return Err(Error::validation(format!(
                     "{err}. Retained SBX runtime '{}'. Inspect it with `sbx exec {} bash`; retry with `branchbox feature start {} --runtime sbx --reuse-runtime`, or clean it with `branchbox feature teardown {} --force`.",
@@ -931,7 +1043,22 @@ impl FeatureWorkflow {
                     "Runtime cleanup after startup failure left residue: {:?}",
                     report.residue
                 ),
-                Ok(_) => {}
+                Ok(_) => {
+                    // The runtime is gone, so the write-ahead entry must stop naming it; a later
+                    // teardown would otherwise try to remove it again. On residue or an error the
+                    // identity stays recorded so that teardown retries the removal.
+                    if runtime_kind != RuntimeProviderKind::InGuest
+                        && runtime_metadata.runtime_id.is_some()
+                    {
+                        self.record_provisional_runtime(
+                            provisional.as_ref(),
+                            &RuntimeMetadata {
+                                provider: runtime_kind,
+                                ..RuntimeMetadata::default()
+                            },
+                        );
+                    }
+                }
                 Err(cleanup_err) => tracing::warn!(
                     "Failed to clean up runtime after environment startup failure: {}",
                     cleanup_err
@@ -939,7 +1066,11 @@ impl FeatureWorkflow {
             }
             self.rollback_prepared_tunnel(tunnel_state.as_ref());
             if runtime_kind == RuntimeProviderKind::InGuest {
-                self.cleanup_failed_in_guest_worktree(&worktree_path, &branch_name);
+                self.cleanup_failed_in_guest_worktree(
+                    &worktree_path,
+                    &branch_name,
+                    provisional.as_ref(),
+                );
             }
             return Err(err);
         }
@@ -1008,6 +1139,7 @@ impl FeatureWorkflow {
             last_summary_rendered_at: Some(summary_generated_at),
             adapter: adapter_summary.clone(),
             runtime: runtime_metadata.clone(),
+            setup: None,
         }) {
             tracing::warn!("Failed to update feature registry: {}", err);
             warnings.push("Failed to update feature registry metadata".to_string());
@@ -1045,46 +1177,115 @@ impl FeatureWorkflow {
         })
     }
 
-    /// Tear down a feature worktree and optionally delete its branch.
+    /// Check that feature worktrees may be changed from here: BranchBox refuses to run inside a
+    /// container unless `BRANCHBOX_SKIP_HOST_VALIDATION` is set.
+    pub fn validate_host(&self) -> Result<()> {
+        self.ensure_host_environment()
+    }
+
+    /// What tearing down `request.work_feature` would do, without changing anything
+    /// (DESIGN §5.5): the worktree's user changes, the BranchBox-generated files and the spec
+    /// teardown keeps, the branch step, and every blocker that makes teardown refuse. `options`
+    /// are the ones the teardown would run with.
+    ///
+    /// A missing worktree is not an error here; the plan reports `worktree.exists: false`.
+    pub fn plan_teardown(
+        &self,
+        request: &TeardownRequest,
+        options: &TeardownOptions,
+    ) -> Result<TeardownPlan> {
+        if !naming::validate_work_feature(&request.work_feature) {
+            return Err(Error::InvalidFeatureName(request.work_feature.clone()));
+        }
+        let recorded = self.state.get_feature(&request.work_feature)?;
+        let worktree_path = self.worktree_path(&request.work_feature)?;
+        let in_guest = self
+            .teardown_runtime_metadata(recorded.as_ref(), &worktree_path)?
+            .provider
+            == RuntimeProviderKind::InGuest;
+        Ok(self
+            .gather_teardown_plan(
+                request,
+                options,
+                recorded.as_ref(),
+                &worktree_path,
+                in_guest,
+            )
+            .0)
+    }
+
+    /// The runtime a teardown of the feature at `worktree_path` stops: the registry's, or for a
+    /// start that never finished (or a feature with no entry), the in-guest assignment recovered
+    /// from the provider state.
+    fn teardown_runtime_metadata(
+        &self,
+        recorded: Option<&FeatureMetadata>,
+        worktree_path: &Path,
+    ) -> Result<RuntimeMetadata> {
+        Ok(match recorded {
+            // A start that never finished (write-ahead entry) recorded the provider but not the
+            // in-guest assignment identity; recover it from the provider state, as for a feature
+            // with no entry at all.
+            Some(metadata)
+                if metadata.runtime.provider == RuntimeProviderKind::InGuest
+                    && metadata.runtime.in_guest.is_none() =>
+            {
+                runtime::recover_in_guest_runtime_metadata(&self.repo_root, worktree_path)?
+                    .unwrap_or_else(|| metadata.runtime.clone())
+            }
+            Some(metadata) => metadata.runtime.clone(),
+            None => runtime::recover_in_guest_runtime_metadata(&self.repo_root, worktree_path)?
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Tear down a feature worktree and optionally delete its branch, with the policy of
+    /// callers that predate [`TeardownOptions`] (the agent): `--force` also discards user
+    /// changes, and no unmerged-branch preflight runs. Without `--force` a worktree with user
+    /// changes is refused, never deleted.
     pub fn teardown(&self, request: TeardownRequest) -> Result<TeardownSummary> {
+        let options = TeardownOptions::legacy(&request);
+        self.teardown_with_options(request, options)
+    }
+
+    /// Tear down a feature worktree and optionally delete its branch.
+    ///
+    /// The plan comes first: any blocker refuses with [`Error::TeardownRefused`] before the
+    /// tunnel, modules, spec, adapter or runtime are touched. User changes are discarded only
+    /// under `options.discard_changes` or `--force`; otherwise the worktree is checked again
+    /// right before removal, and new user changes stop the teardown with the worktree and its
+    /// registry entry kept. The worktree is removed with `git worktree remove --force` (what
+    /// is left is BranchBox-generated or already moved out), or `--force --force` under
+    /// `--force`, which alone may fall back to deleting the directory.
+    pub fn teardown_with_options(
+        &self,
+        request: TeardownRequest,
+        options: TeardownOptions,
+    ) -> Result<TeardownSummary> {
         self.ensure_host_environment()?;
 
-        let TeardownRequest {
-            work_feature,
-            branch_prefix,
-            delete_branch,
-            force_delete_branch,
-            force_remove,
-            force_remove_modules,
-            complete_spec,
-            telemetry,
-        } = request;
-
-        if !naming::validate_work_feature(&work_feature) {
-            return Err(Error::InvalidFeatureName(work_feature));
+        if !naming::validate_work_feature(&request.work_feature) {
+            return Err(Error::InvalidFeatureName(request.work_feature));
         }
 
-        let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_default();
-        let branch_prefix = branch_prefix.or_else(|| Some(config.feature.branch_prefix.clone()));
-        let branch_name = build_branch_name(branch_prefix.as_deref(), &work_feature);
-        let worktree_path = self.worktree_path(&work_feature)?;
-        let recorded_metadata = self.state.get_feature(&work_feature)?;
-        let runtime_metadata = match recorded_metadata.as_ref() {
-            Some(metadata) => metadata.runtime.clone(),
-            None => runtime::recover_in_guest_runtime_metadata(&self.repo_root, &worktree_path)?
-                .unwrap_or_default(),
-        };
+        let worktree_path = self.worktree_path(&request.work_feature)?;
+        let recorded_metadata = self.state.get_feature(&request.work_feature)?;
+        let runtime_metadata =
+            self.teardown_runtime_metadata(recorded_metadata.as_ref(), &worktree_path)?;
         let in_guest_teardown = runtime_metadata.provider == RuntimeProviderKind::InGuest;
         let worktree_exists = worktree_path.exists();
-        if !worktree_exists && !force_remove {
-            return Err(Error::WorktreeNotFound(worktree_path.display().to_string()));
+        if !worktree_exists && !request.force_remove {
+            return Err(Error::WorktreeMissing {
+                name: request.work_feature,
+                path: worktree_path,
+            });
         }
 
         // Repository lifecycle hooks can leave an in-guest worktree pointing at the container's
-        // view of the shared Git metadata. Repair that pointer before status/dirty checks use it.
+        // view of the shared Git metadata. Repair that pointer before status checks use it.
         // Forced teardown retains the existing best-effort filesystem fallback for irreparable
         // or already-partially-removed worktrees.
-        if worktree_exists && in_guest_teardown && !force_remove {
+        if worktree_exists && in_guest_teardown && !request.force_remove {
             self.fix_git_worktree_path(&worktree_path).map_err(|err| {
                 Error::validation(format!(
                     "Cannot restore in-guest Git worktree metadata before teardown: {err}"
@@ -1092,41 +1293,47 @@ impl FeatureWorkflow {
             })?;
         }
 
-        let skip_dirty_validation = force_remove || force_remove_modules;
-        if worktree_exists && !skip_dirty_validation {
-            let dirty_entries = self.detect_module_dirty_changes(&worktree_path)?;
-            if !dirty_entries.is_empty() {
-                return Err(Error::WorktreeDirty {
-                    worktree: worktree_path.clone(),
-                    files: dirty_entries,
-                });
-            }
+        // Nothing has changed yet: a blocked plan refuses here.
+        let (plan, branch) = self.gather_teardown_plan(
+            &request,
+            &options,
+            recorded_metadata.as_ref(),
+            &worktree_path,
+            in_guest_teardown,
+        );
+        if plan.is_blocked() {
+            return Err(plan.into_refusal());
         }
 
-        if telemetry {
+        let work_feature = request.work_feature.clone();
+        let discard = discards_changes(&request, &options);
+
+        if request.telemetry {
             std::env::set_var("BRANCHBOX_EMIT_TELEMETRY", "1");
         } else {
             std::env::remove_var("BRANCHBOX_EMIT_TELEMETRY");
         }
 
         let previous_complete = std::env::var("BRANCHBOX_COMPLETE_SPEC").ok();
-        if complete_spec {
+        if request.complete_spec {
             std::env::set_var("BRANCHBOX_COMPLETE_SPEC", "1");
         } else {
             std::env::remove_var("BRANCHBOX_COMPLETE_SPEC");
         }
 
         let mut warnings = Vec::new();
+        let mut completed_steps = Vec::new();
         let mut skip_modules: Vec<String> = Vec::new();
 
         if !in_guest_teardown && recorded_metadata.is_some() {
             match self.tunnel_remove(TunnelRemoveRequest {
                 work_feature: work_feature.clone(),
-                force: force_remove,
+                force: request.force_remove,
             }) {
                 Ok(summary) => {
                     warnings.extend(summary.warnings);
                     skip_modules.push("tunnel".to_string());
+                    completed_steps.push("Removed the feature tunnel".to_string());
                 }
                 Err(err) => warnings.push(format!("Automated tunnel teardown failed: {}", err)),
             }
@@ -1145,6 +1352,13 @@ impl FeatureWorkflow {
         } else {
             (Vec::new(), Vec::new())
         };
+        if !module_reports.is_empty() {
+            let names: Vec<&str> = module_reports
+                .iter()
+                .map(|report| report.name.as_str())
+                .collect();
+            completed_steps.push(format!("Tore down modules ({})", names.join(", ")));
+        }
         if !dependency_warnings.is_empty() {
             warnings.extend(dependency_warnings);
         }
@@ -1157,28 +1371,50 @@ impl FeatureWorkflow {
                 worktree_path.display()
             ));
         }
-        if !in_guest_teardown {
+        let spec_warnings_from = warnings.len();
+        let preserved: Vec<PreservedFile> = if in_guest_teardown {
+            Vec::new()
+        } else {
             self.handle_spec_on_teardown(
                 &work_feature,
-                &branch_name,
+                &branch.name,
                 &worktree_path,
-                complete_spec,
+                request.complete_spec,
                 &mut warnings,
-            );
-        }
-
-        let (adapter_cleanup_warnings, adapter_detection_warning) = if in_guest_teardown {
-            (Vec::new(), None)
-        } else {
-            self.cleanup_adapter(&worktree_path)
+            )
+            .into_iter()
+            .collect()
         };
-
+        for file in &preserved {
+            completed_steps.push(format!(
+                "Moved {} to {} in the main worktree",
+                file.path, file.destination
+            ));
+        }
         match previous_complete {
             Some(value) => std::env::set_var("BRANCHBOX_COMPLETE_SPEC", value),
             None => std::env::remove_var("BRANCHBOX_COMPLETE_SPEC"),
         }
-        if let Some(message) = adapter_detection_warning {
-            warnings.push(message);
+        // The plan promised to keep the spec: a move that failed stops here, before the runtime
+        // goes, even when user changes are discarded. Only --force removes it anyway.
+        if worktree_exists && !request.force_remove {
+            if let Some(unmoved) = plan.changes.preserved.iter().find(|file| {
+                !preserved.iter().any(|moved| moved.path == file.path)
+                    && worktree_path.join(&file.path).is_file()
+            }) {
+                let cause = warnings[spec_warnings_from..]
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "the move did not happen".to_string());
+                let mut stopped = plan.clone();
+                stopped.blockers = vec![Blocker::spec_not_preserved(
+                    &worktree_path,
+                    &unmoved.path,
+                    cause,
+                )];
+                stopped.warnings.extend(warnings);
+                return Err(stopped.into_stopped(completed_steps));
+            }
         }
 
         let runtime_teardown = match runtime::provider(runtime_metadata.provider)
@@ -1197,14 +1433,60 @@ impl FeatureWorkflow {
                 )
             }
         };
+        completed_steps.push(format!("Stopped the {} runtime", runtime_metadata.provider));
 
         let mut worktree_removed = false;
         if worktree_exists {
-            match self.git.remove(&worktree_path, force_remove) {
+            #[cfg(test)]
+            if let Some(hook) = self.before_worktree_removal {
+                hook(&worktree_path);
+            }
+
+            if !discard {
+                // A spec that was copied (not moved) out is still in the worktree and kept.
+                let copied_spec = preserved
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .find(|path| worktree_path.join(path).is_file());
+                self.recheck_before_removal(
+                    &request,
+                    &options,
+                    &plan,
+                    &worktree_path,
+                    copied_spec,
+                    &completed_steps,
+                )?;
+            }
+        }
+
+        // The adapter cleanup deletes caches and build output (tmp/, build/, dist/…). It runs
+        // only once the runtime is stopped and the worktree passed its last check, so a teardown
+        // that stops keeps them, and nothing written meanwhile is deleted unseen.
+        let (adapter_cleanup_warnings, adapter_detection_warning) = if in_guest_teardown {
+            (Vec::new(), None)
+        } else {
+            self.cleanup_adapter(&worktree_path)
+        };
+        if !in_guest_teardown && worktree_exists {
+            completed_steps.push("Ran the adapter cleanup".to_string());
+        }
+        if let Some(message) = adapter_detection_warning {
+            warnings.push(message);
+        }
+
+        if worktree_exists {
+            // Level 1 is safe without --force: everything left in the worktree was just
+            // verified to be BranchBox-generated or moved out, or the caller discards it.
+            let level = if request.force_remove {
+                RemovalForce::IncludingLocked
+            } else {
+                RemovalForce::DiscardChanges
+            };
+            match self.git.remove_worktree(&worktree_path, level) {
                 Ok(_) => {
                     worktree_removed = true;
                 }
-                Err(err) => {
+                Err(err) if request.force_remove => {
                     warnings.push(format!("Failed to remove worktree: {}", err));
                     if worktree_path.exists() {
                         match fs::remove_dir_all(&worktree_path) {
@@ -1224,6 +1506,14 @@ impl FeatureWorkflow {
                         }
                     }
                 }
+                Err(err) => {
+                    let mut stopped = plan.clone();
+                    stopped.blockers = vec![Blocker::worktree_removal_failed(
+                        &worktree_path,
+                        error_cause(&err),
+                    )];
+                    return Err(stopped.into_stopped(completed_steps));
+                }
             }
         } else {
             warnings.push(format!(
@@ -1239,49 +1529,376 @@ impl FeatureWorkflow {
             }
         }
 
-        let mut branch_deleted = false;
-        if delete_branch {
-            match self
-                .git
-                .delete_branch(&branch_name, force_remove || force_delete_branch)
-            {
-                Ok(_) => {
-                    branch_deleted = true;
-                }
-                Err(err) => {
-                    warnings.push(format!(
-                        "Failed to delete branch '{}': {}",
-                        branch_name, err
-                    ));
-                }
+        let worktree_gone = worktree_removed || !worktree_path.exists();
+        if worktree_gone {
+            if let Err(err) = DevcontainerModule::remove_baseline(&self.repo_root, &work_feature) {
+                warnings.push(err.to_string());
             }
         }
 
-        if let Err(err) = self.state.record_teardown(&work_feature) {
-            tracing::warn!("Failed to update feature registry: {}", err);
-            warnings.push("Failed to update feature registry metadata".to_string());
+        let branch_action = branch_action(&request);
+        let (branch_deleted, branch_delete_error) = self.delete_feature_branch(
+            &branch.name,
+            branch_action,
+            plan.branch.as_ref(),
+            &request,
+            &mut warnings,
+        );
+
+        let registry_updated = if worktree_gone {
+            match self.state.record_teardown(&work_feature) {
+                Ok(updated) => updated,
+                Err(err) => {
+                    tracing::warn!("Failed to update feature registry: {}", err);
+                    warnings.push("Failed to update feature registry metadata".to_string());
+                    false
+                }
+            }
+        } else {
+            warnings.push(format!(
+                "Kept the registry entry of '{}' because its worktree {} still exists",
+                work_feature,
+                worktree_path.display()
+            ));
+            false
+        };
+
+        if plan.changes.truncated && worktree_removed {
+            warnings.push(format!(
+                "Discarded more uncommitted changes than discarded_changes lists: only the first \
+                 {MAX_CLASSIFIED_ENTRIES} changes were classified"
+            ));
         }
+        let discarded_changes = if worktree_removed {
+            plan.changes.user.clone()
+        } else {
+            Vec::new()
+        };
 
         Ok(TeardownSummary {
             work_feature,
-            branch_name,
+            branch_name: branch.name,
             worktree_removed,
             branch_deleted,
             adapter_cleanup_warnings,
             module_reports,
             runtime_teardown,
             warnings,
+            branch_action,
+            branch_delete_error,
+            discarded_changes,
+            preserved,
+            registry_updated,
         })
     }
 
+    /// Gather what a teardown plan is decided from (the registry entry, the configuration,
+    /// the worktree's lock and status, the branch's merge state) and build it. Read-only.
+    /// Returns the branch teardown acts on alongside, which the plan omits when its merge
+    /// state could not be read.
+    fn gather_teardown_plan(
+        &self,
+        request: &TeardownRequest,
+        options: &TeardownOptions,
+        recorded: Option<&FeatureMetadata>,
+        worktree_path: &Path,
+        in_guest: bool,
+    ) -> (TeardownPlan, ResolvedBranch) {
+        let mut warnings = Vec::new();
+        let config = BranchBoxConfig::load(&self.repo_root).unwrap_or_else(|err| {
+            warnings.push(format!(
+                "Using default teardown settings: cannot read .branchbox/config.json: {err}"
+            ));
+            BranchBoxConfig::default()
+        });
+        let branch = resolve_teardown_branch(
+            request.branch_prefix.as_deref(),
+            recorded,
+            &config,
+            &request.work_feature,
+            &mut warnings,
+        );
+
+        let exists = worktree_path.exists();
+        let mut not_a_worktree = None;
+        let (locked, lock_reason) = if exists {
+            match self.git.worktree_registration(worktree_path) {
+                Ok(WorktreeRegistration::Linked { lock }) => {
+                    (lock.is_some(), lock.and_then(|lock| lock.reason))
+                }
+                Ok(WorktreeRegistration::Main) => {
+                    not_a_worktree = Some("it is the repository's main worktree".to_string());
+                    (false, None)
+                }
+                Ok(WorktreeRegistration::NotListed) => {
+                    // What a forced teardown whose removal failed halfway leaves behind: the
+                    // registered feature's folder, without its `.git` link. `git status` fails
+                    // there, so only --force removes it (status_unavailable).
+                    let leftover = recorded.is_some()
+                        && fs::symlink_metadata(worktree_path.join(".git")).is_err();
+                    if !leftover && !self.links_into_repository(worktree_path) {
+                        not_a_worktree = Some(format!(
+                            "git does not list it as a worktree of {}",
+                            self.repo_root.display()
+                        ));
+                    }
+                    (false, None)
+                }
+                Err(err) => {
+                    not_a_worktree = Some(format!(
+                        "cannot list the worktrees of {}: {}",
+                        self.repo_root.display(),
+                        error_cause(&err)
+                    ));
+                    (false, None)
+                }
+            }
+        } else {
+            (false, None)
+        };
+
+        let status = if !exists {
+            WorktreeStatus::Missing
+        } else {
+            match self.git.status_entries(worktree_path) {
+                Ok(entries) => {
+                    let context =
+                        self.change_context(worktree_path, &request.work_feature, &mut warnings);
+                    // R2: the spec teardown moves out is the one handle_spec_on_teardown picks.
+                    // An in-guest teardown moves none.
+                    let kept_spec = if in_guest {
+                        None
+                    } else {
+                        self.determine_feature_spec(worktree_path, &request.work_feature)
+                            .ok()
+                            .flatten()
+                            .map(|(spec, _)| self.spec_display_path(&spec, worktree_path))
+                    };
+                    WorktreeStatus::Classified(classify_changes(
+                        &entries,
+                        &context,
+                        &request.work_feature,
+                        request.complete_spec,
+                        kept_spec.as_deref(),
+                    ))
+                }
+                Err(err) => WorktreeStatus::Unavailable(error_cause(&err)),
+            }
+        };
+
+        let merge_state = match self.git.branch_merge_state(&branch.name) {
+            Ok(state) => Some(state),
+            Err(err) => {
+                warnings.push(format!(
+                    "Cannot tell whether branch '{}' is merged: {}",
+                    branch.name,
+                    error_cause(&err)
+                ));
+                None
+            }
+        };
+
+        let plan = build_teardown_plan(PlanInputs {
+            request,
+            options: *options,
+            recorded,
+            worktree: WorktreeState {
+                path: worktree_path.to_path_buf(),
+                exists,
+                locked,
+                lock_reason,
+            },
+            status,
+            branch: branch.clone(),
+            merge_state,
+            defaults: TeardownDefaults {
+                delete_branch_by_default: config.feature.teardown.delete_branch_by_default,
+                force_delete_unmerged_by_default: config
+                    .feature
+                    .teardown
+                    .force_delete_unmerged_by_default,
+            },
+            warnings,
+        });
+        let mut plan = plan;
+        if let Some(cause) = not_a_worktree {
+            // First, so a client that reads the first blocker names this cause.
+            plan.blockers
+                .insert(0, Blocker::not_a_worktree(worktree_path, cause));
+        }
+        (plan, branch)
+    }
+
+    /// Whether `worktree_path/.git` is a gitdir link into this repository's `worktrees/`
+    /// administrative directory, directly or through the container view
+    /// `/workspaces/main/.git/worktrees` that in-guest hooks can leave behind. Such a directory
+    /// is a worktree of this repository even when `git worktree list` shows another path for it.
+    fn links_into_repository(&self, worktree_path: &Path) -> bool {
+        let git_file = worktree_path.join(".git");
+        if !fs::symlink_metadata(&git_file).is_ok_and(|meta| meta.is_file()) {
+            return false;
+        }
+        let Ok(content) = fs::read_to_string(&git_file) else {
+            return false;
+        };
+        let Some(target) = content
+            .lines()
+            .find_map(|line| line.strip_prefix("gitdir:"))
+            .map(str::trim)
+        else {
+            return false;
+        };
+        let Ok(worktrees) = self
+            .repository_worktrees_dir()
+            .and_then(|dir| fs::canonicalize(dir).map_err(Error::from))
+        else {
+            return false;
+        };
+        let target = Path::new(target);
+        let candidate = match target.strip_prefix("/workspaces/main/.git/worktrees") {
+            Ok(relative) => worktrees.join(relative),
+            Err(_) if target.is_absolute() => target.to_path_buf(),
+            Err(_) => worktree_path.join(target),
+        };
+        fs::canonicalize(candidate)
+            .is_ok_and(|resolved| resolved.starts_with(&worktrees) && resolved != worktrees)
+    }
+
+    /// The classifier's view of `worktree_path`, with the feature's devcontainer baseline.
+    fn change_context(
+        &self,
+        worktree_path: &Path,
+        work_feature: &str,
+        warnings: &mut Vec<String>,
+    ) -> FsChangeContext {
+        let baseline = DevcontainerModule::read_baseline(&self.repo_root, work_feature)
+            .unwrap_or_else(|err| {
+                warnings.push(format!("Ignoring the devcontainer sync baseline: {err}"));
+                None
+            });
+        FsChangeContext::new(worktree_path, &self.repo_root, baseline)
+    }
+
+    /// Check the worktree again right before removing it, when user changes are not to be
+    /// discarded: the runtime and modules have been stopped meanwhile, so a change made since
+    /// the plan must stop the teardown instead of being deleted. Deleting a tracked file loses
+    /// nothing (its content is in `HEAD`), so that alone does not stop it; adapter cleanups
+    /// remove such files.
+    fn recheck_before_removal(
+        &self,
+        request: &TeardownRequest,
+        options: &TeardownOptions,
+        plan: &TeardownPlan,
+        worktree_path: &Path,
+        copied_spec: Option<&str>,
+        completed_steps: &[String],
+    ) -> Result<()> {
+        let mut stopped = plan.clone();
+        let blocker = match self.git.status_entries(worktree_path) {
+            Ok(entries) => {
+                let mut ignored = Vec::new();
+                let context =
+                    self.change_context(worktree_path, &request.work_feature, &mut ignored);
+                // The spec was already moved out; only a copy left behind is still kept.
+                let classification = classify_changes(
+                    &entries,
+                    &context,
+                    &request.work_feature,
+                    request.complete_spec,
+                    copied_spec,
+                );
+                let blocking = blocking_changes(classification.content_changes(), request, options);
+                let unlisted = classification.unlisted_user_changes;
+                if blocking.is_empty() && unlisted == 0 {
+                    return Ok(());
+                }
+                let blocker = Blocker::uncommitted_changes(worktree_path, &blocking, unlisted);
+                stopped.changes = classification.changes;
+                blocker
+            }
+            Err(err) => {
+                stopped.changes.status_available = false;
+                Blocker::status_unavailable(worktree_path, error_cause(&err))
+            }
+        };
+        stopped.blockers = vec![blocker];
+        Err(stopped.into_stopped(completed_steps.to_vec()))
+    }
+
+    /// The branch step. A missing branch is skipped with a warning; a failed delete is
+    /// reported in the summary (`branch_delete_error`) and does not fail the teardown.
+    fn delete_feature_branch(
+        &self,
+        branch: &str,
+        action: BranchAction,
+        planned: Option<&BranchPlan>,
+        request: &TeardownRequest,
+        warnings: &mut Vec<String>,
+    ) -> (bool, Option<String>) {
+        if action == BranchAction::Keep {
+            return (false, None);
+        }
+        if matches!(self.git.local_branch_exists(branch), Ok(false)) {
+            warnings.push(format!("Branch '{branch}' not found; nothing to delete"));
+            return (false, None);
+        }
+        let force = action == BranchAction::ForceDelete;
+        match self.git.delete_branch(branch, force) {
+            Ok(_) => {
+                // D-27: --force still means -D. Say what that cost when it deleted commits.
+                if force && request.force_remove && !request.force_delete_branch {
+                    if let Some(planned) =
+                        planned.filter(|planned| planned.exists && !planned.merged)
+                    {
+                        warnings.push(format!(
+                            "Force-deleted unmerged branch {branch} ({} {}); use \
+                             --discard-changes to discard files without deleting unmerged commits",
+                            planned.ahead,
+                            if planned.ahead == 1 {
+                                "commit"
+                            } else {
+                                "commits"
+                            }
+                        ));
+                    }
+                }
+                (true, None)
+            }
+            Err(err) => {
+                warnings.push(format!("Failed to delete branch '{}': {}", branch, err));
+                (false, Some(error_cause(&err)))
+            }
+        }
+    }
+
     /// List feature metadata from the registry, sorted by most recently updated.
+    ///
+    /// Statuses and setup states are reconciled with the machine, never persisted:
+    /// - an unfinished start is reported as `setup.state: interrupted` once its process has
+    ///   exited or it is more than 24 hours old;
+    /// - an active or retained feature whose worktree directory is gone is `orphaned`;
+    /// - otherwise the runtime provider decides between `orphaned` (runtime gone) and `degraded`
+    ///   (environment not ready). An unfinished start skips that check: its runtime identity is
+    ///   recorded only when the start completes.
     pub fn list_features(&self) -> Result<Vec<FeatureMetadata>> {
         let mut entries = self.state.list_features()?;
+        let now = Utc::now();
         for entry in &mut entries {
+            if let Some(setup) = entry.setup.as_mut() {
+                setup.state = setup.observed_state(now);
+            }
             if !matches!(
                 entry.status,
                 FeatureStatus::Active | FeatureStatus::FailedRetained
             ) {
+                continue;
+            }
+            // Only a definite "not found" counts: an unreadable parent is not a missing worktree.
+            if matches!(entry.worktree_path.try_exists(), Ok(false)) {
+                entry.status = FeatureStatus::Orphaned;
+                continue;
+            }
+            if entry.setup.is_some() {
                 continue;
             }
             if let Ok(provider) = runtime::provider(entry.runtime.provider) {
@@ -1393,7 +2010,7 @@ impl FeatureWorkflow {
         let metadata = self
             .state
             .get_feature(&request.work_feature)?
-            .ok_or_else(|| Error::WorktreeNotFound(request.work_feature.clone()))?;
+            .ok_or_else(|| self.state.feature_not_found(&request.work_feature))?;
 
         if metadata.status == FeatureStatus::Removed {
             return Err(Error::validation(format!(
@@ -1494,7 +2111,7 @@ impl FeatureWorkflow {
         let metadata = self
             .state
             .get_feature(&request.work_feature)?
-            .ok_or_else(|| Error::WorktreeNotFound(request.work_feature.clone()))?;
+            .ok_or_else(|| self.state.feature_not_found(&request.work_feature))?;
 
         let previous_state = metadata.tunnel.clone();
         if previous_state.is_none() {
@@ -1876,7 +2493,85 @@ impl FeatureWorkflow {
         }
     }
 
-    fn cleanup_failed_in_guest_worktree(&self, worktree_path: &Path, branch_name: &str) {
+    /// Record that this process is starting the feature (the write-ahead entry). A registry that
+    /// cannot be updated costs only that guarantee, so the start goes on with a warning and the
+    /// final registry update tries again.
+    fn record_provisional_start(
+        &self,
+        metadata: FeatureMetadata,
+        warnings: &mut Vec<String>,
+    ) -> Option<ProvisionalStart> {
+        let work_feature = metadata.work_feature.clone();
+        let pid = metadata
+            .setup
+            .as_ref()
+            .map_or_else(std::process::id, |setup| setup.pid);
+        match self.state.record_setup_started(metadata) {
+            Ok(previous) => Some(ProvisionalStart {
+                work_feature,
+                pid,
+                previous,
+            }),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to record the in-progress start in the feature registry: {err}"
+                );
+                warnings.push(format!(
+                    "Failed to record the in-progress start in the feature registry: {err}"
+                ));
+                None
+            }
+        }
+    }
+
+    /// Record the runtime a start is setting up in its write-ahead entry. Like the entry itself
+    /// this is best effort: a registry that cannot be updated costs only the guarantee that an
+    /// interrupted start's runtime can be found again, so it only warns.
+    fn record_provisional_runtime(
+        &self,
+        provisional: Option<&ProvisionalStart>,
+        runtime: &RuntimeMetadata,
+    ) {
+        let Some(provisional) = provisional else {
+            return;
+        };
+        if let Err(err) =
+            self.state
+                .record_setup_runtime(&provisional.work_feature, provisional.pid, runtime)
+        {
+            tracing::warn!(
+                "Failed to record the runtime of the in-progress start of '{}' in the feature registry: {}",
+                provisional.work_feature,
+                err
+            );
+        }
+    }
+
+    /// Take back the write-ahead entry of a start that removed its worktree again, restoring
+    /// whatever the registry held for the feature before.
+    fn discard_provisional_start(&self, provisional: Option<&ProvisionalStart>) {
+        let Some(provisional) = provisional else {
+            return;
+        };
+        if let Err(err) = self.state.discard_setup(
+            &provisional.work_feature,
+            provisional.pid,
+            provisional.previous.clone(),
+        ) {
+            tracing::warn!(
+                "Failed to remove the in-progress start of '{}' from the feature registry: {}",
+                provisional.work_feature,
+                err
+            );
+        }
+    }
+
+    fn cleanup_failed_in_guest_worktree(
+        &self,
+        worktree_path: &Path,
+        branch_name: &str,
+        provisional: Option<&ProvisionalStart>,
+    ) {
         // A repository workspace is the repository. Removing it is never the
         // right cleanup for a failed start, and the branch is left in place for
         // the same reason a failed run leaves its clone: the caller owns it.
@@ -1919,98 +2614,10 @@ impl FeatureWorkflow {
                 );
             }
         }
-    }
-
-    fn detect_module_dirty_changes(&self, worktree_path: &Path) -> Result<Vec<String>> {
+        // A worktree that could not be removed keeps its entry, which then lists as interrupted.
         if !worktree_path.exists() {
-            return Ok(Vec::new());
+            self.discard_provisional_start(provisional);
         }
-
-        let output = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(worktree_path)
-            .output()
-            .map_err(|err| {
-                Error::git(format!(
-                    "Failed to inspect worktree changes before teardown: {}",
-                    err
-                ))
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::git(format!(
-                "git status failed while checking for module changes: {}",
-                stderr.trim()
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut dirty_entries = Vec::new();
-        for line in stdout.lines() {
-            if line.len() <= 3 {
-                continue;
-            }
-
-            // The porcelain format always reserves the first three bytes for the staged/unstaged
-            // markers (`XY `). Slice directly to avoid trimming away the leading space and throwing
-            // off indexing for short filenames.
-            let entry = &line[3..];
-
-            for candidate in entry.split(" -> ") {
-                let unquoted = candidate.trim().trim_matches('"');
-                if unquoted.is_empty() {
-                    continue;
-                }
-                if Self::is_module_managed_path(unquoted) {
-                    dirty_entries.push(unquoted.to_string());
-                    break;
-                }
-            }
-        }
-
-        Ok(dirty_entries)
-    }
-
-    fn is_module_managed_path(path: &str) -> bool {
-        use std::ffi::OsStr;
-
-        if matches!(
-            path,
-            ".devcontainer/.devcontainer.json" | ".devcontainer/.branchbox-sbx-compose.yaml"
-        ) {
-            return false;
-        }
-
-        const MODULE_PREFIXES: [&str; 2] = [".devcontainer", "compose"];
-        if MODULE_PREFIXES
-            .iter()
-            .any(|prefix| Self::path_matches_prefix(path, prefix))
-        {
-            return true;
-        }
-
-        const MODULE_FILES: [&str; 4] = [
-            "compose.yaml",
-            "compose.yml",
-            "docker-compose.yml",
-            "docker-compose.yaml",
-        ];
-
-        if let Some(name) = Path::new(path).file_name().and_then(OsStr::to_str) {
-            return MODULE_FILES.contains(&name);
-        }
-
-        false
-    }
-
-    fn path_matches_prefix(path: &str, prefix: &str) -> bool {
-        if path == prefix {
-            return true;
-        }
-        path.strip_prefix(prefix)
-            .map(|remainder| remainder.starts_with('/'))
-            .unwrap_or(false)
     }
 
     fn capture_stash(&self, work_feature: &str) -> Result<StashState> {
@@ -2544,7 +3151,18 @@ impl FeatureWorkflow {
         }
 
         let env_path = self.repo_root.join(".env");
-        let app_url = AppUrl::from_env_file(&env_path)?;
+        let app_url = AppUrl::from_env_file(&env_path).map_err(|err| {
+            let cause = match err {
+                Error::Validation(message) => message,
+                other => other.to_string(),
+            };
+            Error::validation(format!(
+                "Cannot derive a tunnel hostname for '{}' from {}: {cause}. Set APP_URL in that \
+                 file and retry.",
+                metadata.work_feature,
+                env_path.display()
+            ))
+        })?;
         Ok(naming::generate_feature_url(
             &app_url.url,
             &metadata.work_feature,
@@ -3007,6 +3625,9 @@ impl FeatureWorkflow {
         Some(spec_path)
     }
 
+    /// Move the feature spec into the main worktree before the worktree goes: to
+    /// `docs/features/completed/` with `mark_complete`, else back to `docs/features/backlog/`.
+    /// Returns the move it made, if any; problems become warnings.
     fn handle_spec_on_teardown(
         &self,
         work_feature: &str,
@@ -3014,7 +3635,7 @@ impl FeatureWorkflow {
         worktree_path: &Path,
         mark_complete: bool,
         warnings: &mut Vec<String>,
-    ) {
+    ) -> Option<PreservedFile> {
         let worktree_spec = match self.determine_feature_spec(worktree_path, work_feature) {
             Ok(spec) => spec,
             Err(err) => {
@@ -3042,7 +3663,7 @@ impl FeatureWorkflow {
                     "Unable to locate feature spec '{}' during teardown",
                     work_feature
                 ));
-                return;
+                return None;
             };
 
             let features_dir = self.repo_root.join("docs/features");
@@ -3052,7 +3673,7 @@ impl FeatureWorkflow {
                     "Failed to prepare completed specs directory: {}",
                     err
                 ));
-                return;
+                return None;
             }
 
             let target = completed_dir.join(format!("{}.md", work_feature));
@@ -3063,8 +3684,12 @@ impl FeatureWorkflow {
                 "feature spec to completed",
                 false,
             ) {
-                return;
+                return None;
             }
+            let moved = PreservedFile {
+                path: self.spec_display_path(source_spec, worktree_path),
+                destination: self.spec_display_path(&target, worktree_path),
+            };
 
             for status_dir in [SpecStatus::Backlog, SpecStatus::InProgress] {
                 let candidate = features_dir
@@ -3096,10 +3721,9 @@ impl FeatureWorkflow {
                     err
                 ));
             }
+            Some(moved)
         } else {
-            let Some((source_spec, status)) = worktree_spec.or(repo_spec) else {
-                return;
-            };
+            let (source_spec, status) = worktree_spec.or(repo_spec)?;
 
             let features_dir = self.repo_root.join("docs/features");
             let backlog_dir = features_dir.join(SpecStatus::Backlog.as_str());
@@ -3108,11 +3732,12 @@ impl FeatureWorkflow {
                     "Failed to prepare backlog specs directory: {}",
                     err
                 ));
-                return;
+                return None;
             }
 
             let target = backlog_dir.join(format!("{}.md", work_feature));
 
+            let mut moved = None;
             if source_spec != target {
                 let preserve_source = matches!(status, SpecStatus::Completed);
                 if !self.transfer_spec(
@@ -3122,8 +3747,12 @@ impl FeatureWorkflow {
                     "feature spec back to repository",
                     preserve_source,
                 ) {
-                    return;
+                    return None;
                 }
+                moved = Some(PreservedFile {
+                    path: self.spec_display_path(&source_spec, worktree_path),
+                    destination: self.spec_display_path(&target, worktree_path),
+                });
             }
 
             if let Err(err) = update_spec_frontmatter(
@@ -3137,7 +3766,16 @@ impl FeatureWorkflow {
                     err
                 ));
             }
+            moved
         }
+    }
+
+    /// `spec` relative to the feature worktree or the main worktree it lives in, `/`-separated.
+    fn spec_display_path(&self, spec: &Path, worktree_path: &Path) -> String {
+        spec.strip_prefix(worktree_path)
+            .or_else(|_| spec.strip_prefix(&self.repo_root))
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| spec.display().to_string())
     }
 
     fn ensure_host_environment(&self) -> Result<()> {
@@ -3163,31 +3801,36 @@ impl FeatureWorkflow {
         fs::create_dir_all(&vscode_dir)?;
 
         // Set up Peacock extension color and window title
+        // Only the settings in VSCODE_MANAGED_SETTINGS are written: teardown recognizes the file
+        // as BranchBox-generated by comparing everything else with the committed file.
         let settings_path = vscode_dir.join("settings.json");
         let mut settings = if settings_path.exists() {
-            let content = fs::read_to_string(&settings_path)?;
-            serde_json::from_str(&content).unwrap_or_else(|e| {
-                tracing::debug!(
-                    "Failed to parse existing settings.json at {}: {}. Using empty object.",
-                    settings_path.display(),
-                    e
-                );
-                serde_json::json!({})
-            })
+            let content = fs::read(&settings_path)?;
+            match parse_jsonc_object(&content) {
+                Some(object) => serde_json::Value::Object(object),
+                None => {
+                    tracing::debug!(
+                        "Failed to parse existing settings.json at {} as a JSON object. Using \
+                         empty object.",
+                        settings_path.display()
+                    );
+                    serde_json::json!({})
+                }
+            }
         } else {
             serde_json::json!({})
         };
 
         if let Some(color_value) = color {
-            settings["peacock.color"] = serde_json::json!(color_value);
-            settings["peacock.remoteColor"] = serde_json::json!(color_value);
+            settings[VSCODE_PEACOCK_COLOR] = serde_json::json!(color_value);
+            settings[VSCODE_PEACOCK_REMOTE_COLOR] = serde_json::json!(color_value);
             if let Some(customizations) = build_color_customizations(color_value) {
-                settings["workbench.colorCustomizations"] = customizations;
+                settings[VSCODE_COLOR_CUSTOMIZATIONS] = customizations;
             }
         }
 
         // Customize window title to show feature name
-        settings["window.title"] = serde_json::json!(format!(
+        settings[VSCODE_WINDOW_TITLE] = serde_json::json!(format!(
             "${{rootName}} [{}] - ${{activeEditorShort}}",
             work_feature
         ));
@@ -3210,7 +3853,7 @@ impl FeatureWorkflow {
                     "version": "2.0.0",
                     "tasks": [
                         {
-                            "label": "Open Feature URL",
+                            "label": VSCODE_FEATURE_URL_TASK,
                             "type": "process",
                             "command": "xdg-open",
                             "args": [full_url.clone()],
@@ -4808,7 +5451,7 @@ fn runtime_ports(worktree_path: &Path) -> Vec<RuntimePort> {
 
 fn split_feature_section(path: &Path) -> Result<(String, Option<String>)> {
     let content = fs::read_to_string(path)?;
-    if let Some(pos) = content.find("# Feature-specific configuration") {
+    if let Some(pos) = content.find(ENV_FEATURE_SECTION_MARKER) {
         let base = content[..pos].trim_end().to_string();
         let mut base_with_newline = base;
         if !base_with_newline.ends_with('\n') {
@@ -4905,6 +5548,13 @@ fn ensure_not_symlink(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The crate-wide entry point to [`ensure_not_symlink`] for writers outside this module
+/// (`atomic_fs::write_atomic`). The guard itself stays a private `fn` here, where
+/// `scripts/review-preflight.sh` checks for it.
+pub(crate) fn refuse_symlink_target(path: &Path) -> io::Result<()> {
+    ensure_not_symlink(path)
 }
 
 fn write_text_file(path: &Path, contents: &str) -> io::Result<()> {
@@ -5081,6 +5731,61 @@ fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
     }
 }
 
+/// The branch teardown acts on (C10c): an explicit `--branch-prefix` wins, then the branch the
+/// registry recorded when the feature started, then the configured prefix. A recorded name
+/// that is not a plain branch name is ignored with a warning, so a hand-edited registry cannot
+/// smuggle an option into `git branch -d`.
+fn resolve_teardown_branch(
+    explicit_prefix: Option<&str>,
+    recorded: Option<&FeatureMetadata>,
+    config: &BranchBoxConfig,
+    work_feature: &str,
+    warnings: &mut Vec<String>,
+) -> ResolvedBranch {
+    if let Some(prefix) = explicit_prefix {
+        return ResolvedBranch {
+            name: build_branch_name(Some(prefix), work_feature),
+            source: BranchSource::ExplicitPrefix,
+        };
+    }
+    if let Some(recorded) = recorded
+        .map(|metadata| metadata.branch_name.as_str())
+        .filter(|name| !name.is_empty())
+    {
+        if is_plain_branch_name(recorded) {
+            return ResolvedBranch {
+                name: recorded.to_string(),
+                source: BranchSource::Registry,
+            };
+        }
+        warnings.push(format!(
+            "Ignoring the registry's branch name '{recorded}': it is not a plain branch name"
+        ));
+    }
+    ResolvedBranch {
+        name: build_branch_name(Some(&config.feature.branch_prefix), work_feature),
+        source: BranchSource::ConfigPrefix,
+    }
+}
+
+/// A branch name made of the characters BranchBox itself uses, that git cannot read as an
+/// option or a range.
+fn is_plain_branch_name(name: &str) -> bool {
+    !name.starts_with('-')
+        && !name.contains("..")
+        && !name.ends_with('/')
+        && sanitize_git_branch_env_value(name) == name
+}
+
+/// The part of `err` worth showing as a cause: a failed command's own message, without the
+/// "Command execution failed:" prefix.
+fn error_cause(err: &Error) -> String {
+    match err {
+        Error::CommandFailed(message) => message.trim().to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn resolve_git_object(repo_root: &Path, revision: &str) -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
@@ -5251,10 +5956,7 @@ fn resolve_repo_root(path: &Path) -> Result<PathBuf> {
         cursor = dir.parent().map(|p| p.to_path_buf());
     }
 
-    Err(Error::validation(format!(
-        "Not a git repository: {}",
-        path.display()
-    )))
+    Err(Error::NotAGitRepository(path.to_path_buf()))
 }
 
 #[derive(Clone)]
@@ -5499,6 +6201,119 @@ pub struct FeatureMetadata {
     /// registries defaults to the compatibility `container` provider.
     #[serde(default)]
     pub runtime: RuntimeMetadata,
+    /// Present only while a `feature start` has not completed (DESIGN §5.4): written as soon as
+    /// the worktree exists and cleared by the final registry update, so a start that died midway
+    /// stays visible. Older CLIs ignore the key.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_setup_record",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub setup: Option<SetupRecord>,
+}
+
+/// How long an unfinished start may stay `in_progress` before it is reported as `interrupted`
+/// even though its pid is alive (the pid may have been reused by an unrelated process).
+const SETUP_STALE_AFTER_HOURS: i64 = 24;
+
+/// Progress of a `feature start` that has not completed.
+///
+/// Only `in_progress` is ever written. `interrupted` is computed by
+/// [`FeatureWorkflow::list_features`] from [`SetupRecord::observed_state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupState {
+    InProgress,
+    Interrupted,
+}
+
+impl<'de> Deserialize<'de> for SetupState {
+    /// A state this version does not know (written by a newer BranchBox) reads as
+    /// `in_progress`, so the liveness and age rules still decide what to report.
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "interrupted" => Self::Interrupted,
+            _ => Self::InProgress,
+        })
+    }
+}
+
+/// The write-ahead marker of an unfinished start: which process is running it, and since when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupRecord {
+    pub state: SetupState,
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+}
+
+impl SetupRecord {
+    /// A record for a start that this process begins now.
+    fn begin() -> Self {
+        Self {
+            state: SetupState::InProgress,
+            pid: std::process::id(),
+            started_at: Utc::now(),
+        }
+    }
+
+    /// The state to report at `now`: `interrupted` once the recording process has exited or the
+    /// start is more than 24 hours old, otherwise the recorded state.
+    pub fn observed_state(&self, now: DateTime<Utc>) -> SetupState {
+        let stale = now.signed_duration_since(self.started_at)
+            > chrono::Duration::hours(SETUP_STALE_AFTER_HOURS);
+        if self.state == SetupState::Interrupted || stale || !process_is_alive(self.pid) {
+            SetupState::Interrupted
+        } else {
+            SetupState::InProgress
+        }
+    }
+}
+
+/// Whether `pid` names a live process. Only a definite "no such process" counts as dead: a
+/// process owned by another user (EPERM) is alive. Pid 0 and values outside `pid_t` are never a
+/// recorded start, so they count as dead rather than probing the process group.
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal 0 delivers nothing; kill(2) only checks that the process exists.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// Without kill(2) the liveness of a pid is unknown, so only the 24-hour rule applies.
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
+}
+
+/// Read `setup` leniently: a record this version cannot parse (a newer BranchBox may change its
+/// shape) is dropped instead of failing the whole registry load.
+fn deserialize_setup_record<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<SetupRecord>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match serde_json::from_value(value) {
+        Ok(record) => Ok(Some(record)),
+        Err(err) => {
+            tracing::debug!("Ignoring unreadable feature setup record: {err}");
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -5517,92 +6332,174 @@ impl Default for FeatureRegistry {
     }
 }
 
+/// The project's feature registry (`<repo>/.branchbox/registry.json`).
+///
+/// Every change is a locked read-modify-write through [`FeatureStateStore::mutate`], so
+/// concurrent BranchBox processes (CLI runs, the macOS app, the agent) never lose each other's
+/// updates, and every write replaces the file atomically. Readers take no lock: they always see
+/// a complete document.
 #[derive(Debug)]
 struct FeatureStateStore {
+    state_dir: PathBuf,
     path: PathBuf,
     legacy_path: PathBuf,
+    /// How long a change waits for another process to release the registry lock.
+    lock_timeout: std::time::Duration,
+    /// Test hook: sleep this long while holding the lock, between reading and writing the
+    /// registry, to widen the window in which an unlocked writer would lose an update.
+    #[cfg(test)]
+    hold_while_locked: Option<std::time::Duration>,
 }
 
 impl FeatureStateStore {
     fn new(repo_root: &Path) -> Self {
-        let branchbox_dir = repo_root.join(".branchbox");
-        let path = branchbox_dir.join("registry.json");
-        let legacy_path = branchbox_dir.join("feature.json");
-        Self { path, legacy_path }
-    }
-
-    fn record_start(&self, mut metadata: FeatureMetadata) -> Result<()> {
-        let mut registry = self.load_registry()?;
-        let now = metadata.updated_at;
-
-        if let Some(existing) = registry
-            .features
-            .iter_mut()
-            .find(|item| item.work_feature == metadata.work_feature)
-        {
-            if metadata.tunnel.is_none() {
-                metadata.tunnel = existing.tunnel.clone();
-            }
-            metadata.created_at = existing.created_at;
-            metadata.updated_at = now;
-            if metadata.status != FeatureStatus::Removed {
-                metadata.removed_at = None;
-            }
-            if metadata.last_sync_at.is_none() {
-                metadata.last_sync_at = existing.last_sync_at;
-            }
-            if metadata.sync_strategy.is_none() {
-                metadata.sync_strategy = existing.sync_strategy.clone();
-            }
-            if metadata.module_outcomes.is_empty() && !existing.module_outcomes.is_empty() {
-                metadata.module_outcomes = existing.module_outcomes.clone();
-            }
-            if metadata.last_summary_rendered_at.is_none() {
-                metadata.last_summary_rendered_at = existing.last_summary_rendered_at;
-            }
-            if metadata.prompt_seed.is_none() {
-                metadata.prompt_seed = existing.prompt_seed.clone();
-            }
-            if metadata.adapter.is_none() {
-                metadata.adapter = existing.adapter.clone();
-            }
-            *existing = metadata;
-        } else {
-            registry.features.push(metadata);
+        let state_dir = repo_root.join(".branchbox");
+        let path = state_dir.join("registry.json");
+        let legacy_path = state_dir.join("feature.json");
+        Self {
+            state_dir,
+            path,
+            legacy_path,
+            lock_timeout: atomic_fs::LOCK_TIMEOUT,
+            #[cfg(test)]
+            hold_while_locked: None,
         }
-
-        self.save_registry(&registry)
     }
 
-    fn record_teardown(&self, work_feature: &str) -> Result<()> {
+    /// Apply `change` to the registry under the `.branchbox` lock and save the result. Nothing is
+    /// written when `change` fails.
+    fn mutate<T>(&self, change: impl FnOnce(&mut FeatureRegistry) -> Result<T>) -> Result<T> {
+        let _lock = atomic_fs::lock_state_dir(&self.state_dir, self.lock_timeout)?;
         let mut registry = self.load_registry()?;
-        if let Some(existing) = registry
-            .features
-            .iter_mut()
-            .find(|item| item.work_feature == work_feature)
-        {
-            let now = Utc::now();
-            existing.status = FeatureStatus::Removed;
-            existing.updated_at = now;
-            existing.removed_at = Some(now);
-            if let Some(tunnel) = existing.tunnel.as_mut() {
-                tunnel.status = FeatureTunnelStatus::Disabled;
-                tunnel.last_updated = now;
-                tunnel.removed_at = Some(now);
-                tunnel.descriptor = None;
-                tunnel.instructions = None;
-                if tunnel.notes.is_none() {
-                    tunnel.notes = Some("Tunnel removed during teardown".to_string());
+        #[cfg(test)]
+        if let Some(hold) = self.hold_while_locked {
+            std::thread::sleep(hold);
+        }
+        let value = change(&mut registry)?;
+        self.save_registry(&registry)?;
+        Ok(value)
+    }
+
+    fn record_start(&self, metadata: FeatureMetadata) -> Result<()> {
+        self.mutate(|registry| {
+            upsert_started_feature(registry, metadata);
+            Ok(())
+        })
+    }
+
+    /// The write-ahead half of `start`: record that this process is setting the feature up.
+    ///
+    /// A feature with no entry, or only a removed one, gets `provisional` (merged like any
+    /// [`Self::record_start`]). A live entry (a `--reuse` start) keeps everything it recorded,
+    /// in particular its runtime identity, and only gains the setup marker. Returns the entry
+    /// that was there before, which [`Self::discard_setup`] restores.
+    fn record_setup_started(
+        &self,
+        provisional: FeatureMetadata,
+    ) -> Result<Option<FeatureMetadata>> {
+        self.mutate(|registry| {
+            let existing = registry
+                .features
+                .iter_mut()
+                .find(|item| item.work_feature == provisional.work_feature);
+            let previous = existing.as_deref().cloned();
+            match existing {
+                Some(existing) if existing.status != FeatureStatus::Removed => {
+                    existing.setup = provisional.setup;
+                    existing.updated_at = provisional.updated_at;
+                }
+                _ => upsert_started_feature(registry, provisional),
+            }
+            Ok(previous)
+        })
+    }
+
+    /// Undo [`Self::record_setup_started`] after a failed start removed its worktree again:
+    /// restore the previous entry, or drop the feature if it had none. An entry that no longer
+    /// carries this start's marker (`pid`) belongs to someone else and is left alone.
+    fn discard_setup(
+        &self,
+        work_feature: &str,
+        pid: u32,
+        previous: Option<FeatureMetadata>,
+    ) -> Result<()> {
+        self.mutate(|registry| {
+            let Some(index) = registry.features.iter().position(|item| {
+                item.work_feature == work_feature
+                    && item.setup.as_ref().is_some_and(|setup| setup.pid == pid)
+            }) else {
+                return Ok(());
+            };
+            match previous {
+                Some(previous) => registry.features[index] = previous,
+                None => {
+                    registry.features.remove(index);
                 }
             }
-        } else {
-            tracing::debug!(
-                "Feature '{}' not present in registry during teardown",
-                work_feature
-            );
-        }
+            Ok(())
+        })
+    }
 
-        self.save_registry(&registry)
+    /// Record the runtime an unfinished start prepared in its write-ahead entry, so teardown can
+    /// remove that runtime if the start never completes. Only the entry that still carries this
+    /// start's marker (`pid`) is changed. An entry that already names the same runtime keeps
+    /// everything it recorded (a `--reuse-runtime` start of a live entry).
+    fn record_setup_runtime(
+        &self,
+        work_feature: &str,
+        pid: u32,
+        runtime: &RuntimeMetadata,
+    ) -> Result<()> {
+        self.mutate(|registry| {
+            let Some(entry) = registry.features.iter_mut().find(|item| {
+                item.work_feature == work_feature
+                    && item.setup.as_ref().is_some_and(|setup| setup.pid == pid)
+            }) else {
+                return Ok(());
+            };
+            if entry.runtime.provider == runtime.provider
+                && entry.runtime.runtime_id == runtime.runtime_id
+            {
+                return Ok(());
+            }
+            entry.runtime = runtime.clone();
+            entry.updated_at = Utc::now();
+            Ok(())
+        })
+    }
+
+    /// Mark `work_feature` removed. Returns whether the registry had an entry to update.
+    fn record_teardown(&self, work_feature: &str) -> Result<bool> {
+        self.mutate(|registry| {
+            if let Some(existing) = registry
+                .features
+                .iter_mut()
+                .find(|item| item.work_feature == work_feature)
+            {
+                let now = Utc::now();
+                existing.status = FeatureStatus::Removed;
+                existing.updated_at = now;
+                existing.removed_at = Some(now);
+                existing.setup = None;
+                if let Some(tunnel) = existing.tunnel.as_mut() {
+                    tunnel.status = FeatureTunnelStatus::Disabled;
+                    tunnel.last_updated = now;
+                    tunnel.removed_at = Some(now);
+                    tunnel.descriptor = None;
+                    tunnel.instructions = None;
+                    if tunnel.notes.is_none() {
+                        tunnel.notes = Some("Tunnel removed during teardown".to_string());
+                    }
+                }
+                Ok(true)
+            } else {
+                tracing::debug!(
+                    "Feature '{}' not present in registry during teardown",
+                    work_feature
+                );
+                Ok(false)
+            }
+        })
     }
 
     fn get_feature(&self, work_feature: &str) -> Result<Option<FeatureMetadata>> {
@@ -5617,17 +6514,15 @@ impl FeatureStateStore {
     where
         F: FnMut(&mut FeatureMetadata),
     {
-        let mut registry = self.load_registry()?;
-        let feature = registry
-            .features
-            .iter_mut()
-            .find(|item| item.work_feature == work_feature)
-            .ok_or_else(|| Error::WorktreeNotFound(work_feature.to_string()))?;
-
-        update(feature);
-        let updated = feature.clone();
-        self.save_registry(&registry)?;
-        Ok(updated)
+        self.mutate(|registry| {
+            let feature = registry
+                .features
+                .iter_mut()
+                .find(|item| item.work_feature == work_feature)
+                .ok_or_else(|| self.feature_not_found(work_feature))?;
+            update(feature);
+            Ok(feature.clone())
+        })
     }
 
     fn record_devcontainer_sync(
@@ -5636,12 +6531,17 @@ impl FeatureStateStore {
         strategy: Option<&str>,
         success: bool,
     ) -> Result<()> {
-        let mut registry = self.load_registry()?;
-        if let Some(existing) = registry
-            .features
-            .iter_mut()
-            .find(|item| item.work_feature == work_feature)
-        {
+        self.mutate(|registry| {
+            let Some(existing) = registry
+                .features
+                .iter_mut()
+                .find(|item| item.work_feature == work_feature)
+            else {
+                return Err(Error::validation(format!(
+                    "Feature '{}' not present in registry during devcontainer sync",
+                    work_feature
+                )));
+            };
             let now = Utc::now();
             existing.devcontainer_outdated = !success;
             existing.last_sync_at = Some(now);
@@ -5649,12 +6549,15 @@ impl FeatureStateStore {
                 existing.sync_strategy = Some(value.to_string());
             }
             existing.updated_at = now;
-            self.save_registry(&registry)
-        } else {
-            Err(Error::validation(format!(
-                "Feature '{}' not present in registry during devcontainer sync",
-                work_feature
-            )))
+            Ok(())
+        })
+    }
+
+    /// The error for a feature this registry has no entry for, naming the registry file.
+    fn feature_not_found(&self, work_feature: &str) -> Error {
+        Error::FeatureNotFound {
+            name: work_feature.to_string(),
+            registry: self.path.clone(),
         }
     }
 
@@ -5675,6 +6578,7 @@ impl FeatureStateStore {
         Ok(FeatureRegistry::default())
     }
 
+    /// Only [`Self::mutate`] calls this, with the registry lock held.
     fn save_registry(&self, registry: &FeatureRegistry) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -5684,7 +6588,7 @@ impl FeatureStateStore {
             Error::config(format!("Failed to serialize feature registry: {}", err))
         })?;
 
-        write_text_file(&self.path, &serialized)?;
+        atomic_fs::write_atomic(&self.path, serialized.as_bytes(), 0o644)?;
         if self.legacy_path.exists() && self.legacy_path != self.path {
             let _ = fs::remove_file(&self.legacy_path);
         }
@@ -5699,6 +6603,48 @@ impl FeatureStateStore {
 
         serde_json::from_str(&data)
             .map_err(|err| Error::config(format!("Failed to parse feature registry: {}", err)))
+    }
+}
+
+/// Insert `metadata` for a started feature, or replace the existing entry while keeping what the
+/// new record does not know yet (creation time, tunnel, sync and module history).
+fn upsert_started_feature(registry: &mut FeatureRegistry, mut metadata: FeatureMetadata) {
+    let now = metadata.updated_at;
+
+    if let Some(existing) = registry
+        .features
+        .iter_mut()
+        .find(|item| item.work_feature == metadata.work_feature)
+    {
+        if metadata.tunnel.is_none() {
+            metadata.tunnel = existing.tunnel.clone();
+        }
+        metadata.created_at = existing.created_at;
+        metadata.updated_at = now;
+        if metadata.status != FeatureStatus::Removed {
+            metadata.removed_at = None;
+        }
+        if metadata.last_sync_at.is_none() {
+            metadata.last_sync_at = existing.last_sync_at;
+        }
+        if metadata.sync_strategy.is_none() {
+            metadata.sync_strategy = existing.sync_strategy.clone();
+        }
+        if metadata.module_outcomes.is_empty() && !existing.module_outcomes.is_empty() {
+            metadata.module_outcomes = existing.module_outcomes.clone();
+        }
+        if metadata.last_summary_rendered_at.is_none() {
+            metadata.last_summary_rendered_at = existing.last_summary_rendered_at;
+        }
+        if metadata.prompt_seed.is_none() {
+            metadata.prompt_seed = existing.prompt_seed.clone();
+        }
+        if metadata.adapter.is_none() {
+            metadata.adapter = existing.adapter.clone();
+        }
+        *existing = metadata;
+    } else {
+        registry.features.push(metadata);
     }
 }
 
@@ -5866,6 +6812,7 @@ fn get_last_commit_sha(repo_root: &Path, branch: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::CloudflaredConfig;
+    use crate::workflows::teardown_plan::{ChangeArea, ChangeKind};
     use serde_json::Value;
     use serde_yaml::Value as YamlValue;
     use std::fs;
@@ -6154,6 +7101,7 @@ mod tests {
             last_summary_rendered_at: None,
             adapter: None,
             runtime: RuntimeMetadata::default(),
+            setup: None,
         };
 
         store.record_start(metadata.clone()).unwrap();
@@ -6194,6 +7142,7 @@ mod tests {
             last_summary_rendered_at: None,
             adapter: None,
             runtime: RuntimeMetadata::default(),
+            setup: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -6236,6 +7185,7 @@ mod tests {
             last_summary_rendered_at: None,
             adapter: None,
             runtime: RuntimeMetadata::default(),
+            setup: None,
         };
 
         store.record_start(metadata1).unwrap();
@@ -6266,6 +7216,7 @@ mod tests {
             last_summary_rendered_at: None,
             adapter: None,
             runtime: RuntimeMetadata::default(),
+            setup: None,
         };
 
         store.record_start(metadata2).unwrap();
@@ -6309,6 +7260,7 @@ mod tests {
             last_summary_rendered_at: None,
             adapter: None,
             runtime: RuntimeMetadata::default(),
+            setup: None,
         };
 
         store.record_start(metadata).unwrap();
@@ -6480,6 +7432,7 @@ mod tests {
                 last_summary_rendered_at: None,
                 adapter: None,
                 runtime: RuntimeMetadata::default(),
+                setup: None,
             })
             .unwrap();
 
@@ -7204,30 +8157,60 @@ mod tests {
 
         assert!(worktree_path.exists());
 
-        // Introduce an untracked change so the git removal path falls back to manual cleanup.
+        // An untracked user file: 0.13 deleted it through a remove_dir_all fallback (BUG-04).
         fs::write(worktree_path.join("dirty.txt"), "local changes").unwrap();
 
-        let summary = workflow
-            .teardown(TeardownRequest {
-                work_feature: "dirty".to_string(),
-                branch_prefix: None,
-                delete_branch: true,
-                force_delete_branch: false,
-                force_remove: false,
-                force_remove_modules: false,
-                complete_spec: false,
-                telemetry: false,
-            })
-            .unwrap();
+        let request = TeardownRequest {
+            work_feature: "dirty".to_string(),
+            branch_prefix: None,
+            delete_branch: true,
+            force_delete_branch: false,
+            force_remove: false,
+            force_remove_modules: false,
+            complete_spec: false,
+            telemetry: false,
+        };
+        let err = workflow
+            .teardown(request.clone())
+            .expect_err("teardown must refuse to delete the untracked file");
+        match err {
+            Error::TeardownRefused {
+                plan,
+                changed_anything,
+                ..
+            } => {
+                assert!(!changed_anything);
+                let user: Vec<&str> = plan
+                    .changes
+                    .user
+                    .iter()
+                    .map(|change| change.path.as_str())
+                    .collect();
+                assert_eq!(user, ["dirty.txt"]);
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+        assert_eq!(
+            fs::read_to_string(worktree_path.join("dirty.txt")).unwrap(),
+            "local changes"
+        );
 
+        // Discarding is explicit; the stale git registration goes with the worktree.
+        let summary = workflow
+            .teardown_with_options(
+                request,
+                TeardownOptions {
+                    discard_changes: true,
+                    require_mergeable_branch: true,
+                },
+            )
+            .unwrap();
+        assert!(summary.worktree_removed);
         assert!(summary
             .warnings
             .iter()
-            .any(|w| w.contains("Failed to remove worktree")));
-        assert!(summary
-            .warnings
-            .iter()
-            .any(|w| w.contains("Worktree directory removed manually")));
+            .all(|warning| !warning.contains("removed manually")));
+        assert_eq!(summary.discarded_changes.len(), 1);
         assert!(!worktree_path.exists());
 
         let git = GitWorktree::new(repo_path).unwrap();
@@ -7270,15 +8253,21 @@ mod tests {
             .expect_err("expected teardown to block on dirty module files");
 
         match err {
-            Error::WorktreeDirty { files, .. } => {
-                assert!(
-                    files.iter().any(|entry| entry.contains(".devcontainer")),
-                    "expected dirty entry to reference .devcontainer, got {:?}",
-                    files
-                );
+            Error::TeardownRefused { plan, .. } => {
+                assert!(plan.blocks_on_uncommitted_changes());
+                assert!(plan.has_module_area_changes());
+                let change = plan
+                    .changes
+                    .user
+                    .iter()
+                    .find(|change| change.path == ".devcontainer/compose.yaml")
+                    .unwrap_or_else(|| panic!("compose.yaml not listed: {:?}", plan.changes));
+                assert_eq!(change.area, ChangeArea::Devcontainer);
+                assert_eq!(change.kind, ChangeKind::Untracked);
             }
             other => panic!("unexpected error variant: {other:?}"),
         }
+        assert!(dev_dir.join("compose.yaml").exists());
 
         // Force removal to cleanup for test completion.
         workflow
@@ -7293,6 +8282,592 @@ mod tests {
                 telemetry: false,
             })
             .unwrap();
+    }
+
+    /// A repository at `<temp>/main` without a `.gitignore`, so feature worktrees land inside
+    /// the temp dir and BranchBox's own files show up as untracked.
+    fn nested_test_repo() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("main");
+        fs::create_dir(&repo).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "test@example.com"],
+            &["config", "user.name", "Test User"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            git_in(&repo, args);
+        }
+        fs::write(repo.join("README.md"), "# Test Repo\n").unwrap();
+        git_in(&repo, &["add", "README.md"]);
+        git_in(&repo, &["commit", "-q", "-m", "Initial commit"]);
+        fs::write(repo.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+        std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+        (temp, repo)
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn start_minimal(workflow: &FeatureWorkflow, name: &str, prefix: Option<&str>) -> PathBuf {
+        workflow
+            .start(StartRequest {
+                name: Some(name.to_string()),
+                branch_prefix: prefix.map(str::to_string),
+                mode: StartMode::Minimal,
+                ..StartRequest::default()
+            })
+            .unwrap()
+            .worktree_path
+    }
+
+    fn delete_request(name: &str) -> TeardownRequest {
+        TeardownRequest {
+            work_feature: name.to_string(),
+            branch_prefix: None,
+            delete_branch: true,
+            force_delete_branch: false,
+            force_remove: false,
+            force_remove_modules: false,
+            complete_spec: false,
+            telemetry: false,
+        }
+    }
+
+    fn strict_options() -> TeardownOptions {
+        TeardownOptions {
+            discard_changes: false,
+            require_mergeable_branch: true,
+        }
+    }
+
+    fn branch_exists(repo: &Path, branch: &str) -> bool {
+        Command::new("git")
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn refused_teardown_changes_nothing() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "eta", None);
+        fs::write(worktree.join("README.md"), "edited\n").unwrap();
+        fs::write(worktree.join("notes.txt"), "notes\n").unwrap();
+        let registry_before = fs::read(repo.join(".branchbox/registry.json")).unwrap();
+
+        let err = workflow.teardown(delete_request("eta")).unwrap_err();
+        let Error::TeardownRefused {
+            plan,
+            changed_anything,
+            completed_steps,
+            message,
+            ..
+        } = err
+        else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(!changed_anything && completed_steps.is_empty());
+        assert!(
+            message.contains("README.md (modified), notes.txt (untracked)"),
+            "{message}"
+        );
+        assert!(plan
+            .changes
+            .generated
+            .iter()
+            .any(|file| file.path == ".env"));
+        assert_eq!(plan.changes.preserved.len(), 1);
+
+        assert_eq!(
+            fs::read_to_string(worktree.join("notes.txt")).unwrap(),
+            "notes\n"
+        );
+        assert!(worktree.join("docs/features/in-progress/eta.md").exists());
+        assert!(!repo.join("docs/features/backlog/eta.md").exists());
+        assert_eq!(
+            fs::read(repo.join(".branchbox/registry.json")).unwrap(),
+            registry_before,
+            "the registry is untouched"
+        );
+        assert!(branch_exists(&repo, "feature/eta"));
+
+        let summary = workflow
+            .teardown_with_options(
+                delete_request("eta"),
+                TeardownOptions {
+                    discard_changes: true,
+                    require_mergeable_branch: true,
+                },
+            )
+            .unwrap();
+        assert!(summary.worktree_removed && summary.branch_deleted && summary.registry_updated);
+        assert_eq!(summary.branch_action, BranchAction::Delete);
+        let discarded: Vec<&str> = summary
+            .discarded_changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect();
+        assert_eq!(discarded, ["README.md", "notes.txt"]);
+        assert_eq!(
+            summary.preserved,
+            [PreservedFile {
+                path: "docs/features/in-progress/eta.md".to_string(),
+                destination: "docs/features/backlog/eta.md".to_string(),
+            }]
+        );
+        assert!(repo.join("docs/features/backlog/eta.md").exists());
+        assert!(!branch_exists(&repo, "feature/eta"));
+    }
+
+    #[test]
+    fn a_fresh_feature_tears_down_without_discarding_anything() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "fresh", None);
+        let plan = workflow
+            .plan_teardown(&delete_request("fresh"), &strict_options())
+            .unwrap();
+        assert!(!plan.is_blocked(), "{:?}", plan.blockers);
+        assert!(plan.changes.user.is_empty(), "{:?}", plan.changes.user);
+        assert!(plan.registered);
+        assert_eq!(plan.branch.as_ref().unwrap().source, BranchSource::Registry);
+
+        let summary = workflow
+            .teardown_with_options(delete_request("fresh"), strict_options())
+            .unwrap();
+        assert!(summary.worktree_removed && summary.branch_deleted && summary.registry_updated);
+        assert!(summary.discarded_changes.is_empty());
+        assert!(!worktree.exists());
+        assert!(!DevcontainerModule::baseline_path(&repo, "fresh").exists());
+    }
+
+    #[test]
+    fn new_user_changes_during_teardown_stop_it_before_removal() {
+        let (_temp, repo) = nested_test_repo();
+        let mut workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "late", None);
+        workflow.before_worktree_removal = Some(|worktree: &Path| {
+            fs::write(worktree.join("late.txt"), "written during teardown").unwrap();
+        });
+
+        let err = workflow.teardown(delete_request("late")).unwrap_err();
+        let Error::TeardownRefused {
+            plan,
+            changed_anything,
+            completed_steps,
+            message,
+            ..
+        } = err
+        else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(changed_anything);
+        assert!(
+            completed_steps.iter().any(|step| step.contains("runtime")),
+            "{completed_steps:?}"
+        );
+        assert!(
+            message.starts_with("Stopped tearing down 'late'"),
+            "{message}"
+        );
+        assert!(message.contains("late.txt"), "{message}");
+        assert!(plan.blocks_on_uncommitted_changes());
+        assert!(worktree.join("late.txt").exists());
+        let entry = workflow.state.get_feature("late").unwrap().unwrap();
+        assert_eq!(
+            entry.status,
+            FeatureStatus::Active,
+            "the registry entry is kept"
+        );
+        assert!(branch_exists(&repo, "feature/late"));
+    }
+
+    #[test]
+    fn files_written_to_adapter_cache_dirs_during_teardown_stop_it_and_survive() {
+        let (_temp, repo) = nested_test_repo();
+        let mut workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "cache", None);
+        // The generic adapter cleanup deletes tmp/; it runs only after the last check, so work
+        // written there after the plan stops the teardown instead of being deleted unseen.
+        workflow.before_worktree_removal = Some(|worktree: &Path| {
+            fs::create_dir_all(worktree.join("tmp")).unwrap();
+            fs::write(worktree.join("tmp/agent-output.txt"), "late work\n").unwrap();
+        });
+        let err = workflow.teardown(delete_request("cache")).unwrap_err();
+        let Error::TeardownRefused {
+            changed_anything,
+            completed_steps,
+            ..
+        } = err
+        else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(changed_anything);
+        assert!(
+            !completed_steps
+                .iter()
+                .any(|step| step.contains("adapter cleanup")),
+            "{completed_steps:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(worktree.join("tmp/agent-output.txt")).unwrap(),
+            "late work\n"
+        );
+    }
+
+    #[test]
+    fn deleting_tracked_files_during_teardown_does_not_stop_it() {
+        let (_temp, repo) = nested_test_repo();
+        let mut workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "cleanup", None);
+        // Adapter cleanups delete directories such as tmp/; a deleted tracked file loses nothing.
+        workflow.before_worktree_removal = Some(|worktree: &Path| {
+            fs::remove_file(worktree.join("README.md")).unwrap();
+        });
+        let summary = workflow.teardown(delete_request("cleanup")).unwrap();
+        assert!(summary.worktree_removed);
+        assert!(!worktree.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_git_removal_keeps_the_worktree_without_force() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp, repo) = nested_test_repo();
+        let mut workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "stuck", None);
+        // Generated files git cannot delete: removal fails after the re-check passed.
+        workflow.before_worktree_removal = Some(|worktree: &Path| {
+            fs::set_permissions(worktree.join(".vscode"), fs::Permissions::from_mode(0o555))
+                .unwrap();
+        });
+
+        let err = workflow.teardown(delete_request("stuck")).unwrap_err();
+        fs::set_permissions(worktree.join(".vscode"), fs::Permissions::from_mode(0o755)).unwrap();
+        let Error::TeardownRefused {
+            plan,
+            changed_anything,
+            ..
+        } = err
+        else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(changed_anything);
+        assert!(
+            matches!(plan.blockers.as_slice(), [Blocker::WorktreeRemovalFailed { cause, .. }] if cause.contains("Permission denied")),
+            "{:?}",
+            plan.blockers
+        );
+        assert!(
+            worktree.exists(),
+            "no remove_dir_all fallback without --force"
+        );
+        let entry = workflow.state.get_feature("stuck").unwrap().unwrap();
+        assert_eq!(entry.status, FeatureStatus::Active);
+
+        workflow.before_worktree_removal = None;
+        let mut forced = delete_request("stuck");
+        forced.force_remove = true;
+        assert!(workflow.teardown(forced).unwrap().worktree_removed);
+    }
+
+    #[test]
+    fn a_status_failure_at_the_recheck_stops_teardown() {
+        let (_temp, repo) = nested_test_repo();
+        let mut workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "unreadable", None);
+        workflow.before_worktree_removal = Some(|worktree: &Path| {
+            fs::write(
+                worktree.join(".git"),
+                "gitdir: /nonexistent/worktrees/unreadable\n",
+            )
+            .unwrap();
+        });
+
+        let err = workflow.teardown(delete_request("unreadable")).unwrap_err();
+        let Error::TeardownRefused {
+            plan,
+            changed_anything,
+            ..
+        } = err
+        else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(changed_anything);
+        assert!(!plan.changes.status_available);
+        assert!(
+            matches!(plan.blockers.as_slice(), [Blocker::StatusUnavailable { cause, .. }] if cause.contains("/nonexistent/worktrees/unreadable")),
+            "{:?}",
+            plan.blockers
+        );
+        assert!(worktree.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_teardown_keeps_the_registry_entry_when_the_directory_survives() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp, repo) = nested_test_repo();
+        let mut workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "survivor", None);
+        workflow.before_worktree_removal = Some(|worktree: &Path| {
+            fs::set_permissions(worktree.join(".vscode"), fs::Permissions::from_mode(0o555))
+                .unwrap();
+        });
+        let mut forced = delete_request("survivor");
+        forced.force_remove = true;
+        let summary = workflow.teardown(forced.clone()).unwrap();
+        fs::set_permissions(worktree.join(".vscode"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(!summary.worktree_removed);
+        assert!(!summary.registry_updated);
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Failed to remove worktree directory manually")));
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Kept the registry entry of 'survivor'")));
+        assert!(summary.discarded_changes.is_empty());
+        let entry = workflow.state.get_feature("survivor").unwrap().unwrap();
+        assert_eq!(entry.status, FeatureStatus::Active);
+
+        workflow.before_worktree_removal = None;
+        assert!(workflow.teardown(forced).unwrap().registry_updated);
+    }
+
+    #[test]
+    fn unreadable_settings_files_become_plan_warnings() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        start_minimal(&workflow, "warned", None);
+        fs::write(repo.join(".branchbox/config.json"), "{ not json").unwrap();
+        fs::create_dir_all(repo.join(".branchbox/devcontainer-sync")).unwrap();
+        fs::write(repo.join(".branchbox/devcontainer-sync/warned.json"), "[]").unwrap();
+
+        let plan = workflow
+            .plan_teardown(&delete_request("warned"), &strict_options())
+            .unwrap();
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.starts_with("Using default teardown settings")),
+            "{:?}",
+            plan.warnings
+        );
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Ignoring the devcontainer sync baseline")));
+        assert!(plan.defaults.delete_branch_by_default);
+        assert!(!plan.is_blocked());
+    }
+
+    #[test]
+    fn discarding_more_changes_than_are_listed_says_so() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "many", None);
+        fs::create_dir(worktree.join("many")).unwrap();
+        for index in 0..=MAX_CLASSIFIED_ENTRIES {
+            fs::write(worktree.join(format!("many/{index}.txt")), "x").unwrap();
+        }
+        let summary = workflow
+            .teardown_with_options(
+                delete_request("many"),
+                TeardownOptions {
+                    discard_changes: true,
+                    require_mergeable_branch: true,
+                },
+            )
+            .unwrap();
+        assert!(summary.worktree_removed);
+        assert!(summary.discarded_changes.len() < MAX_CLASSIFIED_ENTRIES + 1);
+        assert!(summary
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Discarded more uncommitted changes")));
+    }
+
+    #[test]
+    fn teardown_deletes_the_branch_the_registry_recorded() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        start_minimal(&workflow, "zeta", Some("spike"));
+        assert!(branch_exists(&repo, "spike/zeta"));
+
+        let summary = workflow
+            .teardown_with_options(delete_request("zeta"), strict_options())
+            .unwrap();
+        assert_eq!(summary.branch_name, "spike/zeta");
+        assert!(summary.branch_deleted);
+        assert!(!branch_exists(&repo, "spike/zeta"));
+    }
+
+    #[test]
+    fn a_missing_branch_is_skipped_with_a_warning() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        start_minimal(&workflow, "nobranch", None);
+        let mut request = delete_request("nobranch");
+        request.branch_prefix = Some("other".to_string());
+        let summary = workflow
+            .teardown_with_options(request, strict_options())
+            .unwrap();
+        assert_eq!(summary.branch_name, "other/nobranch");
+        assert!(!summary.branch_deleted);
+        assert_eq!(summary.branch_delete_error, None);
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|warning| warning == "Branch 'other/nobranch' not found; nothing to delete"),
+            "{:?}",
+            summary.warnings
+        );
+        // The feature's own branch is untouched.
+        assert!(branch_exists(&repo, "feature/nobranch"));
+    }
+
+    #[test]
+    fn force_names_the_unmerged_commits_it_deleted() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        let worktree = start_minimal(&workflow, "unmerged", None);
+        fs::write(worktree.join("work.txt"), "work").unwrap();
+        git_in(&worktree, &["add", "work.txt"]);
+        git_in(&worktree, &["commit", "-q", "-m", "work"]);
+
+        let err = workflow
+            .teardown_with_options(delete_request("unmerged"), strict_options())
+            .unwrap_err();
+        assert!(err.to_string().contains("--force-delete-branch"), "{err}");
+        assert!(worktree.exists());
+
+        let mut forced = delete_request("unmerged");
+        forced.force_remove = true;
+        let summary = workflow.teardown(forced).unwrap();
+        assert_eq!(summary.branch_action, BranchAction::ForceDelete);
+        assert!(summary.branch_deleted);
+        assert!(summary.warnings.iter().any(|warning| {
+            warning
+            == "Force-deleted unmerged branch feature/unmerged (1 commit); use --discard-changes \
+                to discard files without deleting unmerged commits"
+        }));
+    }
+
+    #[test]
+    fn plan_teardown_reports_unregistered_and_invalid_features() {
+        let (_temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        let plan = workflow
+            .plan_teardown(&delete_request("ghost"), &strict_options())
+            .unwrap();
+        assert!(!plan.registered && !plan.worktree.exists);
+        assert_eq!(plan.status, None);
+        let branch = plan.branch.as_ref().unwrap();
+        assert_eq!(branch.source, BranchSource::ConfigPrefix);
+        assert_eq!(branch.name, "feature/ghost");
+        assert!(!branch.exists);
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("needs --force")));
+
+        let err = workflow
+            .plan_teardown(&delete_request("Bad Name"), &strict_options())
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidFeatureName(_)));
+        let err = workflow
+            .teardown_with_options(delete_request("Bad Name"), strict_options())
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidFeatureName(_)));
+        let err = workflow
+            .teardown_with_options(delete_request("ghost"), strict_options())
+            .unwrap_err();
+        assert!(matches!(err, Error::WorktreeMissing { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn teardown_branch_resolution_prefers_explicit_then_registry_then_config() {
+        let config = BranchBoxConfig::default();
+        let mut warnings = Vec::new();
+        let explicit = resolve_teardown_branch(Some("spike/"), None, &config, "eta", &mut warnings);
+        assert_eq!(
+            explicit,
+            ResolvedBranch {
+                name: "spike/eta".to_string(),
+                source: BranchSource::ExplicitPrefix
+            }
+        );
+
+        let mut metadata: FeatureMetadata = serde_json::from_value(serde_json::json!({
+            "work_feature": "eta", "branch_name": "custom/eta", "worktree_path": "/r/eta",
+            "status": "active", "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let recorded =
+            resolve_teardown_branch(None, Some(&metadata), &config, "eta", &mut warnings);
+        assert_eq!(recorded.name, "custom/eta");
+        assert_eq!(recorded.source, BranchSource::Registry);
+        assert!(warnings.is_empty());
+
+        for unsafe_name in ["-D", "a..b", "a b", "x/"] {
+            metadata.branch_name = unsafe_name.to_string();
+            let fallback =
+                resolve_teardown_branch(None, Some(&metadata), &config, "eta", &mut warnings);
+            assert_eq!(fallback.name, "feature/eta", "{unsafe_name}");
+            assert_eq!(fallback.source, BranchSource::ConfigPrefix);
+        }
+        assert_eq!(warnings.len(), 4);
+
+        metadata.branch_name = String::new();
+        let empty = resolve_teardown_branch(None, Some(&metadata), &config, "eta", &mut warnings);
+        assert_eq!(empty.source, BranchSource::ConfigPrefix);
+        assert_eq!(
+            warnings.len(),
+            4,
+            "an empty recorded name is not worth a warning"
+        );
+    }
+
+    #[test]
+    fn error_causes_drop_the_command_failed_prefix() {
+        assert_eq!(error_cause(&Error::git("git said no\n")), "git said no");
+        assert_eq!(
+            error_cause(&Error::validation("bad")),
+            "Validation error: bad"
+        );
+    }
+
+    #[test]
+    fn record_teardown_reports_whether_an_entry_was_updated() {
+        let (_temp, repo) = nested_test_repo();
+        let store = FeatureStateStore::new(&repo);
+        assert!(!store.record_teardown("nobody").unwrap());
     }
 
     #[test]
@@ -8996,6 +10571,49 @@ volumes:
     }
 
     #[test]
+    fn setup_vscode_workspace_writes_only_managed_settings_over_jsonc() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("jsonc-feature");
+        let vscode_dir = worktree_path.join(".vscode");
+        fs::create_dir_all(&vscode_dir).unwrap();
+        fs::write(
+            vscode_dir.join("settings.json"),
+            "{\n  // the team's settings\n  \"editor.tabSize\": 2,\n}\n",
+        )
+        .unwrap();
+
+        let workflow = FeatureWorkflow::new(repo_path).unwrap();
+        workflow
+            .setup_vscode_workspace(
+                &worktree_path,
+                "jsonc-feature",
+                &Some("#3498db".to_string()),
+                Some("app.example.com"),
+            )
+            .unwrap();
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(vscode_dir.join("settings.json")).unwrap())
+                .unwrap();
+        let settings = settings.as_object().unwrap();
+        assert_eq!(
+            settings["editor.tabSize"], 2,
+            "settings with comments are kept"
+        );
+        for key in settings.keys().filter(|key| *key != "editor.tabSize") {
+            assert!(
+                crate::workflows::teardown_plan::VSCODE_MANAGED_SETTINGS.contains(&key.as_str()),
+                "{key} is written by start but not recognized by teardown"
+            );
+        }
+        assert_eq!(
+            settings.len(),
+            1 + crate::workflows::teardown_plan::VSCODE_MANAGED_SETTINGS.len()
+        );
+    }
+
+    #[test]
     fn test_setup_vscode_workspace_preserves_existing_settings() {
         let temp_dir = setup_test_repo();
         let repo_path = temp_dir.path();
@@ -9083,6 +10701,870 @@ volumes:
             };
             let result = workflow.resolve_work_feature(&request).unwrap();
             assert_eq!(result, expected, "Failed on input: {}", input);
+        }
+    }
+
+    /// Registry integrity (DESIGN §10.1, S2), the write-ahead start record (D-14) and list
+    /// reconciliation (C10d).
+    mod registry_integrity {
+        use super::*;
+        use std::sync::{Arc, Barrier};
+        use std::time::Instant;
+
+        fn sample_metadata(repo: &Path, name: &str) -> FeatureMetadata {
+            let now = Utc::now();
+            FeatureMetadata {
+                work_feature: name.to_string(),
+                branch_name: format!("feature/{name}"),
+                worktree_path: repo.join(name),
+                base_branch: None,
+                feature_url: None,
+                compose_project_name: None,
+                env_path: None,
+                status: FeatureStatus::Active,
+                created_at: now,
+                updated_at: now,
+                removed_at: None,
+                tunnel: None,
+                color: None,
+                pr_number: None,
+                last_commit: None,
+                devcontainer_outdated: false,
+                last_sync_at: None,
+                sync_strategy: None,
+                start_mode: StartMode::Minimal,
+                prompt_seed: None,
+                module_outcomes: Vec::new(),
+                last_summary_rendered_at: None,
+                adapter: None,
+                runtime: RuntimeMetadata::default(),
+                setup: None,
+            }
+        }
+
+        fn setup_by(pid: u32) -> SetupRecord {
+            SetupRecord {
+                state: SetupState::InProgress,
+                pid,
+                started_at: Utc::now(),
+            }
+        }
+
+        /// The pid of a process that has exited and been reaped.
+        #[cfg(unix)]
+        fn dead_pid() -> u32 {
+            let mut child = Command::new("true").spawn().unwrap();
+            let pid = child.id();
+            child.wait().unwrap();
+            pid
+        }
+
+        fn names(store: &FeatureStateStore) -> Vec<String> {
+            let mut names: Vec<String> = store
+                .list_features()
+                .unwrap()
+                .into_iter()
+                .map(|feature| feature.work_feature)
+                .collect();
+            names.sort();
+            names
+        }
+
+        /// A repository at `<temp>/main`, so feature worktrees land inside the temp dir.
+        fn nested_test_repo(temp: &TempDir) -> PathBuf {
+            let repo = temp.path().join("main");
+            fs::create_dir(&repo).unwrap();
+            for args in [
+                vec!["init", "-b", "main"],
+                vec!["config", "user.email", "test@example.com"],
+                vec!["config", "user.name", "Test User"],
+            ] {
+                assert!(Command::new("git")
+                    .args(&args)
+                    .current_dir(&repo)
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            fs::write(repo.join("README.md"), "# Test Repo\n").unwrap();
+            fs::write(
+                repo.join(".gitignore"),
+                ".env\n.devcontainer/.branchbox.env\n.branchbox/\n",
+            )
+            .unwrap();
+            for args in [
+                vec!["add", "README.md", ".gitignore"],
+                vec!["commit", "-q", "-m", "Initial commit"],
+            ] {
+                assert!(Command::new("git")
+                    .args(&args)
+                    .current_dir(&repo)
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            repo
+        }
+
+        #[test]
+        fn two_stores_holding_the_lock_both_persist_their_entries() {
+            let temp = TempDir::new().unwrap();
+            let repo = temp.path().to_path_buf();
+            let barrier = Arc::new(Barrier::new(2));
+            let started = Instant::now();
+            let handles: Vec<_> = ["alpha", "beta"]
+                .into_iter()
+                .map(|name| {
+                    let repo = repo.clone();
+                    let barrier = Arc::clone(&barrier);
+                    thread::spawn(move || {
+                        let mut store = FeatureStateStore::new(&repo);
+                        // Both read the registry, then sleep before writing: without the lock
+                        // each would write back a registry missing the other's entry.
+                        store.hold_while_locked = Some(Duration::from_millis(200));
+                        barrier.wait();
+                        store.record_start(sample_metadata(&repo, name)).unwrap();
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+
+            assert!(
+                started.elapsed() >= Duration::from_millis(400),
+                "the two read-modify-write cycles must not overlap"
+            );
+            assert_eq!(names(&FeatureStateStore::new(&repo)), ["alpha", "beta"]);
+        }
+
+        #[test]
+        fn a_held_lock_times_out_with_registry_locked_naming_the_path() {
+            let temp = TempDir::new().unwrap();
+            let repo = temp.path().to_path_buf();
+            let held = atomic_fs::lock_state_dir(&repo.join(".branchbox"), atomic_fs::LOCK_TIMEOUT)
+                .unwrap();
+
+            let contender = repo.clone();
+            let err = thread::spawn(move || {
+                let mut store = FeatureStateStore::new(&contender);
+                store.lock_timeout = Duration::from_millis(100);
+                store
+                    .record_start(sample_metadata(&contender, "alpha"))
+                    .unwrap_err()
+            })
+            .join()
+            .unwrap();
+
+            assert!(matches!(err, Error::RegistryLocked { .. }), "{err:?}");
+            assert_eq!(err.code(), "registry_locked");
+            assert!(err.to_string().contains(".branchbox"), "{err}");
+            assert!(!repo.join(".branchbox/registry.json").exists());
+            drop(held);
+
+            FeatureStateStore::new(&repo)
+                .record_start(sample_metadata(&repo, "alpha"))
+                .unwrap();
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn registry_writes_are_atomic_and_keep_the_file_mode() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mode = || fs::metadata(&store.path).unwrap().permissions().mode() & 0o777;
+
+            store
+                .record_start(sample_metadata(temp.path(), "alpha"))
+                .unwrap();
+            assert_eq!(mode(), 0o644);
+
+            fs::set_permissions(&store.path, fs::Permissions::from_mode(0o600)).unwrap();
+            store.record_teardown("alpha").unwrap();
+            assert_eq!(mode(), 0o600);
+
+            let leftovers: Vec<_> = fs::read_dir(&store.state_dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(leftovers, ["registry.json"]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn registry_refuses_to_write_through_a_symlink() {
+            let temp = TempDir::new().unwrap();
+            let outside = temp.path().join("outside.json");
+            let original = "{\"version\":\"1\",\"features\":[]}";
+            fs::write(&outside, original).unwrap();
+            fs::create_dir_all(temp.path().join(".branchbox")).unwrap();
+            std::os::unix::fs::symlink(&outside, temp.path().join(".branchbox/registry.json"))
+                .unwrap();
+
+            let store = FeatureStateStore::new(temp.path());
+            let err = store
+                .record_start(sample_metadata(temp.path(), "alpha"))
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Refusing to write through symlink"),
+                "{err}"
+            );
+            assert_eq!(fs::read_to_string(&outside).unwrap(), original);
+        }
+
+        #[test]
+        fn a_failed_change_writes_nothing_and_names_the_registry() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+
+            let err = store.update_feature("missing", |_| {}).unwrap_err();
+            match &err {
+                Error::FeatureNotFound { name, registry } => {
+                    assert_eq!(name, "missing");
+                    assert_eq!(registry, &temp.path().join(".branchbox/registry.json"));
+                }
+                other => panic!("expected FeatureNotFound, got {other:?}"),
+            }
+            assert_eq!(err.code(), "feature_not_found");
+            assert!(!store.path.exists());
+        }
+
+        #[test]
+        fn write_ahead_entry_for_a_new_feature_is_discarded_with_its_worktree() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            store
+                .record_start(sample_metadata(temp.path(), "other"))
+                .unwrap();
+
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(setup_by(4242));
+            assert!(store.record_setup_started(provisional).unwrap().is_none());
+            let recorded = store.get_feature("alpha").unwrap().unwrap();
+            assert_eq!(recorded.status, FeatureStatus::Active);
+            assert_eq!(recorded.setup.as_ref().map(|setup| setup.pid), Some(4242));
+
+            // Someone else's marker is left alone.
+            store.discard_setup("alpha", 1, None).unwrap();
+            assert!(store.get_feature("alpha").unwrap().is_some());
+
+            store.discard_setup("alpha", 4242, None).unwrap();
+            assert_eq!(names(&store), ["other"]);
+        }
+
+        #[test]
+        fn write_ahead_on_a_live_entry_keeps_its_runtime_identity() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mut live = sample_metadata(temp.path(), "alpha");
+            live.status = FeatureStatus::FailedRetained;
+            live.feature_url = Some("alpha.example.com".to_string());
+            live.runtime.provider = RuntimeProviderKind::Sbx;
+            live.runtime.runtime_id = Some("sbx-alpha".to_string());
+            store.record_start(live).unwrap();
+            let before = store.get_feature("alpha").unwrap().unwrap();
+
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.runtime.provider = RuntimeProviderKind::Sbx;
+            provisional.setup = Some(setup_by(4242));
+            let previous = store.record_setup_started(provisional).unwrap();
+
+            let during = store.get_feature("alpha").unwrap().unwrap();
+            assert_eq!(during.status, FeatureStatus::FailedRetained);
+            assert_eq!(during.runtime.runtime_id.as_deref(), Some("sbx-alpha"));
+            assert_eq!(during.feature_url.as_deref(), Some("alpha.example.com"));
+            assert_eq!(during.setup.as_ref().map(|setup| setup.pid), Some(4242));
+
+            store.discard_setup("alpha", 4242, previous).unwrap();
+            let after = store.get_feature("alpha").unwrap().unwrap();
+            assert!(after.setup.is_none());
+            assert_eq!(after.updated_at, before.updated_at);
+            assert_eq!(after.runtime.runtime_id.as_deref(), Some("sbx-alpha"));
+        }
+
+        #[test]
+        fn write_ahead_records_the_prepared_runtime_of_its_own_start_only() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.runtime.provider = RuntimeProviderKind::Sbx;
+            provisional.setup = Some(setup_by(4242));
+            store.record_setup_started(provisional).unwrap();
+
+            let prepared = RuntimeMetadata {
+                provider: RuntimeProviderKind::Sbx,
+                runtime_id: Some("branchbox-alpha".to_string()),
+                ..RuntimeMetadata::default()
+            };
+            // Another start's marker: nothing changes.
+            store.record_setup_runtime("alpha", 1, &prepared).unwrap();
+            assert!(store
+                .get_feature("alpha")
+                .unwrap()
+                .unwrap()
+                .runtime
+                .runtime_id
+                .is_none());
+
+            store
+                .record_setup_runtime("alpha", 4242, &prepared)
+                .unwrap();
+            let recorded = store.get_feature("alpha").unwrap().unwrap();
+            assert_eq!(
+                recorded.runtime.runtime_id.as_deref(),
+                Some("branchbox-alpha")
+            );
+            assert_eq!(recorded.setup.as_ref().map(|setup| setup.pid), Some(4242));
+            assert_eq!(
+                recorded.setup.as_ref().map(|setup| setup.state),
+                Some(SetupState::InProgress)
+            );
+
+            // A runtime destroyed again after a failed environment start is forgotten.
+            let gone = RuntimeMetadata {
+                provider: RuntimeProviderKind::Sbx,
+                ..RuntimeMetadata::default()
+            };
+            store.record_setup_runtime("alpha", 4242, &gone).unwrap();
+            assert!(store
+                .get_feature("alpha")
+                .unwrap()
+                .unwrap()
+                .runtime
+                .runtime_id
+                .is_none());
+
+            // No entry at all (the write-ahead record failed): nothing is created.
+            store.record_setup_runtime("beta", 4242, &prepared).unwrap();
+            assert!(store.get_feature("beta").unwrap().is_none());
+        }
+
+        #[test]
+        fn write_ahead_runtime_on_a_live_entry_keeps_its_recorded_identity() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mut live = sample_metadata(temp.path(), "alpha");
+            live.status = FeatureStatus::FailedRetained;
+            live.runtime.provider = RuntimeProviderKind::Sbx;
+            live.runtime.runtime_id = Some("branchbox-alpha".to_string());
+            live.runtime.container_id = Some("container-1".to_string());
+            store.record_start(live).unwrap();
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(setup_by(4242));
+            store.record_setup_started(provisional).unwrap();
+
+            // `--reuse-runtime` woke the same sandbox: what the entry recorded stays.
+            let prepared = RuntimeMetadata {
+                provider: RuntimeProviderKind::Sbx,
+                runtime_id: Some("branchbox-alpha".to_string()),
+                ..RuntimeMetadata::default()
+            };
+            store
+                .record_setup_runtime("alpha", 4242, &prepared)
+                .unwrap();
+            let recorded = store.get_feature("alpha").unwrap().unwrap();
+            assert_eq!(
+                recorded.runtime.container_id.as_deref(),
+                Some("container-1")
+            );
+            assert_eq!(recorded.status, FeatureStatus::FailedRetained);
+        }
+
+        #[test]
+        fn write_ahead_replaces_a_removed_entry_and_restores_it_on_discard() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mut removed = sample_metadata(temp.path(), "alpha");
+            removed.created_at = Utc::now() - chrono::Duration::days(3);
+            removed.runtime.runtime_id = Some("stale".to_string());
+            store.record_start(removed.clone()).unwrap();
+            store.record_teardown("alpha").unwrap();
+
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(setup_by(4242));
+            let previous = store.record_setup_started(provisional).unwrap();
+            assert_eq!(
+                previous.as_ref().map(|entry| entry.status.clone()),
+                Some(FeatureStatus::Removed)
+            );
+
+            let during = store.get_feature("alpha").unwrap().unwrap();
+            assert_eq!(during.status, FeatureStatus::Active);
+            assert!(during.removed_at.is_none());
+            assert!(
+                during.runtime.runtime_id.is_none(),
+                "stale runtime is dropped"
+            );
+            assert_eq!(during.created_at, removed.created_at);
+
+            store.discard_setup("alpha", 4242, previous).unwrap();
+            assert_eq!(
+                store.get_feature("alpha").unwrap().unwrap().status,
+                FeatureStatus::Removed
+            );
+        }
+
+        #[test]
+        fn the_final_start_record_and_teardown_clear_the_setup_marker() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(setup_by(4242));
+            store.record_setup_started(provisional).unwrap();
+
+            store
+                .record_start(sample_metadata(temp.path(), "alpha"))
+                .unwrap();
+            assert!(store.get_feature("alpha").unwrap().unwrap().setup.is_none());
+
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(setup_by(4242));
+            store.record_setup_started(provisional).unwrap();
+            store.record_teardown("alpha").unwrap();
+            let removed = store.get_feature("alpha").unwrap().unwrap();
+            assert_eq!(removed.status, FeatureStatus::Removed);
+            assert!(removed.setup.is_none());
+        }
+
+        #[test]
+        fn setup_state_is_interrupted_once_the_process_is_gone_or_the_start_is_stale() {
+            let now = Utc::now();
+            let ours = SetupRecord::begin();
+            assert_eq!(ours.pid, std::process::id());
+            assert_eq!(ours.observed_state(now), SetupState::InProgress);
+
+            let stale = SetupRecord {
+                started_at: now - chrono::Duration::hours(25),
+                ..ours.clone()
+            };
+            assert_eq!(stale.observed_state(now), SetupState::Interrupted);
+
+            for pid in [0, u32::MAX] {
+                assert_eq!(
+                    setup_by(pid).observed_state(now),
+                    SetupState::Interrupted,
+                    "pid {pid}"
+                );
+            }
+            let recorded = SetupRecord {
+                state: SetupState::Interrupted,
+                ..ours
+            };
+            assert_eq!(recorded.observed_state(now), SetupState::Interrupted);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn setup_by_an_exited_process_is_interrupted() {
+            assert_eq!(
+                setup_by(dead_pid()).observed_state(Utc::now()),
+                SetupState::Interrupted
+            );
+        }
+
+        #[test]
+        fn registries_without_setup_still_load_and_omit_the_key() {
+            let registry: FeatureRegistry = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "features": [{
+                    "work_feature": "alpha",
+                    "branch_name": "feature/alpha",
+                    "worktree_path": "/r/alpha",
+                    "base_branch": null,
+                    "feature_url": null,
+                    "compose_project_name": null,
+                    "env_path": null,
+                    "status": "active",
+                    "created_at": "2026-10-01T22:50:29.222458Z",
+                    "updated_at": "2026-10-01T22:50:29.222458Z",
+                    "removed_at": null
+                }]
+            }))
+            .unwrap();
+            assert!(registry.features[0].setup.is_none());
+
+            let written = serde_json::to_value(&registry).unwrap();
+            assert!(written["features"][0].get("setup").is_none(), "{written}");
+        }
+
+        /// `FeatureMetadata` exactly as BranchBox 0.13.4 declared it, before `setup` existed.
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        struct FeatureMetadataV0134 {
+            work_feature: String,
+            branch_name: String,
+            worktree_path: PathBuf,
+            base_branch: Option<String>,
+            feature_url: Option<String>,
+            compose_project_name: Option<String>,
+            env_path: Option<PathBuf>,
+            status: FeatureStatus,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+            removed_at: Option<DateTime<Utc>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tunnel: Option<FeatureTunnelState>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            color: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pr_number: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            last_commit: Option<String>,
+            #[serde(default)]
+            devcontainer_outdated: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            last_sync_at: Option<DateTime<Utc>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sync_strategy: Option<String>,
+            #[serde(default)]
+            start_mode: StartMode,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            prompt_seed: Option<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            module_outcomes: Vec<ModuleOutcomeRecord>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            last_summary_rendered_at: Option<DateTime<Utc>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            adapter: Option<AdapterSummary>,
+            #[serde(default)]
+            runtime: RuntimeMetadata,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct FeatureRegistryV0134 {
+            #[serde(deserialize_with = "deserialize_registry_version")]
+            #[allow(dead_code)]
+            version: String,
+            features: Vec<FeatureMetadataV0134>,
+        }
+
+        #[test]
+        fn a_registry_with_setup_loads_in_0_13_4() {
+            let temp = TempDir::new().unwrap();
+            let store = FeatureStateStore::new(temp.path());
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(setup_by(48211));
+            store.record_setup_started(provisional).unwrap();
+
+            let written = fs::read_to_string(&store.path).unwrap();
+            let raw: Value = serde_json::from_str(&written).unwrap();
+            assert_eq!(raw["features"][0]["setup"]["state"], "in_progress");
+            assert_eq!(raw["features"][0]["setup"]["pid"], 48211);
+
+            let legacy: FeatureRegistryV0134 = serde_json::from_str(&written).unwrap();
+            assert_eq!(legacy.features[0].work_feature, "alpha");
+            assert_eq!(legacy.features[0].status, FeatureStatus::Active);
+        }
+
+        #[test]
+        fn unreadable_setup_records_never_break_the_registry() {
+            let entry = |setup: Value| {
+                serde_json::json!({
+                    "work_feature": "alpha",
+                    "branch_name": "feature/alpha",
+                    "worktree_path": "/r/alpha",
+                    "base_branch": null,
+                    "feature_url": null,
+                    "compose_project_name": null,
+                    "env_path": null,
+                    "status": "active",
+                    "created_at": "2026-10-01T22:50:29Z",
+                    "updated_at": "2026-10-01T22:50:29Z",
+                    "removed_at": null,
+                    "setup": setup
+                })
+            };
+            let parse = |setup: Value| -> Option<SetupRecord> {
+                serde_json::from_value::<FeatureMetadata>(entry(setup))
+                    .unwrap()
+                    .setup
+            };
+
+            let newer = parse(serde_json::json!({
+                "state": "resuming", "pid": 7, "started_at": "2026-10-01T22:50:29Z"
+            }))
+            .expect("an unknown state still reads");
+            assert_eq!(newer.state, SetupState::InProgress);
+            assert_eq!(newer.pid, 7);
+            assert!(parse(serde_json::json!({"state": "in_progress"})).is_none());
+            assert!(parse(serde_json::json!("in_progress")).is_none());
+            assert!(parse(Value::Null).is_none());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn list_reconciles_missing_worktrees_and_unfinished_starts() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            let store = FeatureStateStore::new(&repo);
+            let record =
+                |name: &str, status: FeatureStatus, present: bool, setup: Option<SetupRecord>| {
+                    let mut metadata = sample_metadata(temp.path(), name);
+                    if present {
+                        fs::create_dir_all(&metadata.worktree_path).unwrap();
+                    }
+                    metadata.status = status;
+                    metadata.setup = setup;
+                    store.record_start(metadata).unwrap();
+                };
+            record("healthy", FeatureStatus::Active, true, None);
+            record("gone", FeatureStatus::Active, false, None);
+            record("retained-gone", FeatureStatus::FailedRetained, false, None);
+            record("removed", FeatureStatus::Removed, false, None);
+            record(
+                "starting",
+                FeatureStatus::Active,
+                true,
+                Some(SetupRecord::begin()),
+            );
+            record(
+                "crashed",
+                FeatureStatus::Active,
+                true,
+                Some(setup_by(dead_pid())),
+            );
+
+            let listed: BTreeMap<String, FeatureMetadata> = workflow
+                .list_features()
+                .unwrap()
+                .into_iter()
+                .map(|feature| (feature.work_feature.clone(), feature))
+                .collect();
+            let status = |name: &str| listed[name].status.clone();
+            let setup_state = |name: &str| listed[name].setup.as_ref().map(|setup| setup.state);
+
+            assert_eq!(status("healthy"), FeatureStatus::Active);
+            assert_eq!(status("gone"), FeatureStatus::Orphaned);
+            assert_eq!(status("retained-gone"), FeatureStatus::Orphaned);
+            assert_eq!(status("removed"), FeatureStatus::Removed);
+            assert_eq!(status("starting"), FeatureStatus::Active);
+            assert_eq!(setup_state("starting"), Some(SetupState::InProgress));
+            assert_eq!(status("crashed"), FeatureStatus::Active);
+            assert_eq!(setup_state("crashed"), Some(SetupState::Interrupted));
+            assert_eq!(setup_state("healthy"), None);
+
+            // Reconciliation is computed at list time, never written back.
+            let stored = store.get_feature("crashed").unwrap().unwrap();
+            assert_eq!(stored.status, FeatureStatus::Active);
+            assert_eq!(stored.setup.unwrap().state, SetupState::InProgress);
+            assert_eq!(
+                store.get_feature("gone").unwrap().unwrap().status,
+                FeatureStatus::Active
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn a_start_that_fails_after_creating_its_worktree_stays_registered() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            // A committed `.env` symlink makes the worktree's env provisioning refuse to write
+            // through it: a failure after the worktree exists that leaves the worktree behind.
+            std::os::unix::fs::symlink("README.md", repo.join(".env")).unwrap();
+            for args in [
+                vec!["add", "-f", ".env"],
+                vec!["commit", "-q", "-m", "Link .env"],
+            ] {
+                assert!(Command::new("git")
+                    .args(&args)
+                    .current_dir(&repo)
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            let err = workflow
+                .start(StartRequest {
+                    name: Some("half-done".to_string()),
+                    mode: StartMode::Minimal,
+                    ..StartRequest::default()
+                })
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Refusing to write through symlink"),
+                "{err}"
+            );
+
+            let worktree = temp.path().join("half-done");
+            assert!(worktree.exists());
+            let listed = workflow.list_features().unwrap();
+            assert_eq!(listed.len(), 1);
+            let entry = &listed[0];
+            assert_eq!(entry.work_feature, "half-done");
+            assert_eq!(entry.status, FeatureStatus::Active);
+            assert_eq!(
+                entry.worktree_path.canonicalize().unwrap(),
+                worktree.canonicalize().unwrap()
+            );
+            let setup = entry.setup.as_ref().expect("write-ahead marker kept");
+            assert_eq!(setup.pid, std::process::id());
+            // This process is still alive; once it exits the start lists as interrupted.
+            assert_eq!(setup.state, SetupState::InProgress);
+            assert_eq!(
+                setup.observed_state(Utc::now() + chrono::Duration::hours(25)),
+                SetupState::Interrupted
+            );
+        }
+
+        #[test]
+        fn a_completed_start_leaves_no_setup_marker() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            fs::write(repo.join(".env"), "APP_URL=dev.example.com\n").unwrap();
+            std::env::set_var("BRANCHBOX_SKIP_HOST_VALIDATION", "1");
+
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            workflow
+                .start(StartRequest {
+                    name: Some("done".to_string()),
+                    mode: StartMode::Minimal,
+                    skip_modules: vec!["tunnel".to_string()],
+                    ..StartRequest::default()
+                })
+                .unwrap();
+
+            let entry = workflow.state.get_feature("done").unwrap().unwrap();
+            assert_eq!(entry.status, FeatureStatus::Active);
+            assert!(entry.setup.is_none());
+            assert!(entry.last_summary_rendered_at.is_some());
+            let raw: Value =
+                serde_json::from_str(&fs::read_to_string(&workflow.state.path).unwrap()).unwrap();
+            assert!(raw["features"][0].get("setup").is_none());
+        }
+
+        #[test]
+        fn failed_in_guest_cleanup_discards_the_write_ahead_entry_with_the_worktree() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            let worktree = temp.path().join("guest");
+            workflow
+                .git
+                .create(&worktree, "feature/guest", None)
+                .unwrap();
+
+            let mut provisional = sample_metadata(temp.path(), "guest");
+            provisional.setup = Some(SetupRecord::begin());
+            let mut warnings = Vec::new();
+            let recorded = workflow
+                .record_provisional_start(provisional, &mut warnings)
+                .expect("write-ahead entry recorded");
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert!(workflow.state.get_feature("guest").unwrap().is_some());
+
+            workflow.cleanup_failed_in_guest_worktree(&worktree, "feature/guest", Some(&recorded));
+            assert!(!worktree.exists());
+            assert!(workflow.state.get_feature("guest").unwrap().is_none());
+        }
+
+        #[test]
+        fn failed_cleanup_of_a_repository_workspace_keeps_the_write_ahead_entry() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            let mut provisional = sample_metadata(temp.path(), "in-place");
+            provisional.worktree_path = repo.clone();
+            provisional.setup = Some(SetupRecord::begin());
+            let recorded = workflow
+                .record_provisional_start(provisional, &mut Vec::new())
+                .unwrap();
+
+            let root = workflow.repo_root.clone();
+            workflow.cleanup_failed_in_guest_worktree(&root, "feature/in-place", Some(&recorded));
+            assert!(repo.exists());
+            assert!(workflow.state.get_feature("in-place").unwrap().is_some());
+        }
+
+        #[test]
+        fn an_unrecordable_write_ahead_entry_only_warns() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            fs::create_dir_all(repo.join(".branchbox")).unwrap();
+            fs::write(repo.join(".branchbox/registry.json"), "{ not json").unwrap();
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+
+            let mut provisional = sample_metadata(temp.path(), "alpha");
+            provisional.setup = Some(SetupRecord::begin());
+            let mut warnings = Vec::new();
+            assert!(workflow
+                .record_provisional_start(provisional, &mut warnings)
+                .is_none());
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].contains("Failed to record the in-progress start"),
+                "{warnings:?}"
+            );
+            assert!(warnings[0].contains("Failed to parse feature registry"));
+            // Discarding nothing is a no-op.
+            workflow.discard_provisional_start(None);
+        }
+
+        #[test]
+        fn tunnel_commands_name_the_registry_for_an_unregistered_feature() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            let registry = workflow.repo_root.join(".branchbox/registry.json");
+
+            let errors = [
+                workflow
+                    .tunnel_open(TunnelOpenRequest {
+                        work_feature: "nope".to_string(),
+                    })
+                    .unwrap_err(),
+                workflow
+                    .tunnel_remove(TunnelRemoveRequest {
+                        work_feature: "nope".to_string(),
+                        force: false,
+                    })
+                    .unwrap_err(),
+            ];
+            for err in errors {
+                assert_eq!(err.code(), "feature_not_found", "{err:?}");
+                assert_eq!(
+                    err.to_string(),
+                    format!("Feature 'nope' is not registered in {}", registry.display())
+                );
+            }
+        }
+
+        #[test]
+        fn tunnel_open_names_the_env_file_it_could_not_read() {
+            let temp = TempDir::new().unwrap();
+            let repo = nested_test_repo(&temp);
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            workflow
+                .state
+                .record_start(sample_metadata(temp.path(), "alpha"))
+                .unwrap();
+
+            let err = workflow
+                .tunnel_open(TunnelOpenRequest {
+                    work_feature: "alpha".to_string(),
+                })
+                .unwrap_err();
+            let env_path = workflow.repo_root.join(".env");
+            let message = err.to_string();
+            assert!(
+                message.starts_with(&format!(
+                    "Validation error: Cannot derive a tunnel hostname for 'alpha' from {}: \
+                     Failed to read .env file:",
+                    env_path.display()
+                )),
+                "{message}"
+            );
+            assert!(
+                message.ends_with("Set APP_URL in that file and retry."),
+                "{message}"
+            );
         }
     }
 }

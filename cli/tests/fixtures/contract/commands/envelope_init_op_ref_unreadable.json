@@ -1,0 +1,9 @@
+{
+  "error": {
+    "causes": [],
+    "code": "validation_failed",
+    "details": null,
+    "message": "Validation error: 1Password reference --op-github-ref 'op://dev/missing/token' could not be read: `op read` failed: [ERROR] could not read secret 'op://dev/missing/token': isn't an item. Nothing was changed. Check the reference and that the 1Password CLI is signed in (`op signin`), or pass --no-verify-op-refs to save it unverified."
+  },
+  "schema_version": 1
+}

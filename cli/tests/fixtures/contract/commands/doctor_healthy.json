@@ -1,0 +1,129 @@
+{
+  "checks": [
+    {
+      "detail": null,
+      "id": "git",
+      "path": "<repo>/bin/git",
+      "remediation": null,
+      "required": true,
+      "status": "ok",
+      "title": "Git",
+      "version": "<version>"
+    },
+    {
+      "detail": null,
+      "id": "docker.cli",
+      "path": "<repo>/bin/docker",
+      "remediation": null,
+      "required": true,
+      "status": "ok",
+      "title": "Docker CLI",
+      "version": "<version>"
+    },
+    {
+      "detail": null,
+      "id": "docker.daemon",
+      "path": "<repo>/bin/docker",
+      "remediation": null,
+      "required": true,
+      "status": "ok",
+      "title": "Docker daemon",
+      "version": "<version>"
+    },
+    {
+      "detail": null,
+      "id": "docker.compose",
+      "path": "<repo>/bin/docker",
+      "remediation": null,
+      "required": true,
+      "status": "ok",
+      "title": "Docker Compose",
+      "version": "<version>"
+    },
+    {
+      "detail": "Not installed",
+      "id": "devcontainer.cli",
+      "path": null,
+      "remediation": "npm install -g @devcontainers/cli",
+      "required": false,
+      "status": "warn",
+      "title": "Dev Container CLI",
+      "version": null
+    },
+    {
+      "detail": "sbx is not installed",
+      "id": "runtime.sbx",
+      "path": null,
+      "remediation": null,
+      "required": false,
+      "status": "skipped",
+      "title": "Docker Sandboxes",
+      "version": null
+    },
+    {
+      "detail": "<platform>",
+      "id": "runtime.local_vm",
+      "path": "<platform>",
+      "remediation": "<platform>",
+      "required": false,
+      "status": "<platform>",
+      "title": "Local VM (Firecracker)",
+      "version": "<platform>"
+    },
+    {
+      "detail": "op is not installed",
+      "id": "op",
+      "path": null,
+      "remediation": "Install the 1Password CLI (brew install 1password-cli); needed only for 1Password secret references",
+      "required": false,
+      "status": "skipped",
+      "title": "1Password CLI",
+      "version": null
+    },
+    {
+      "detail": "gh is not installed",
+      "id": "gh",
+      "path": null,
+      "remediation": "Install the GitHub CLI (brew install gh)",
+      "required": false,
+      "status": "skipped",
+      "title": "GitHub CLI",
+      "version": null
+    },
+    {
+      "detail": "<platform>",
+      "id": "host.in_container",
+      "path": "<platform>",
+      "remediation": "<platform>",
+      "required": true,
+      "status": "<platform>",
+      "title": "Running on the host",
+      "version": "<platform>"
+    },
+    {
+      "detail": "1 entries: <repo>/bin",
+      "id": "env.path_entries",
+      "path": null,
+      "remediation": null,
+      "required": false,
+      "status": "ok",
+      "title": "PATH",
+      "version": null
+    }
+  ],
+  "cli": {
+    "contract_version": 1,
+    "path": "<branchbox>",
+    "version": "<version>"
+  },
+  "host": {
+    "arch": "<arch>",
+    "os": "<os>"
+  },
+  "schema_version": 1,
+  "summary": {
+    "error": "<n>",
+    "ok": "<n>",
+    "warn": "<n>"
+  }
+}

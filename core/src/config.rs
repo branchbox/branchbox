@@ -2,14 +2,17 @@
 //!
 //! This module centralizes serialization logic for project-level configuration
 //! stored under `.branchbox/config.json`. It currently focuses on tunnel
-//! defaults, leaving room for future workspace metadata.
+//! defaults, leaving room for future workspace metadata. Key-level, format-preserving
+//! edits (`branchbox config`) live in [`crate::config_edit`].
 
+use crate::atomic_fs::{self, LOCK_TIMEOUT};
 use crate::{runtime::RuntimeProviderKind, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CONFIG_VERSION: &str = "1";
+/// The configuration format version BranchBox writes.
+pub(crate) const CONFIG_VERSION: &str = "1";
 
 /// Complete BranchBox configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,16 +89,22 @@ impl BranchBoxConfig {
         Ok(config)
     }
 
-    /// Persist configuration to disk.
+    /// Persist configuration to disk atomically under the `.branchbox` lock. A new file gets the
+    /// whole configuration (mode 0644). An existing file is edited in place, key by key: only
+    /// the settings that differ from what it holds change, and keys this version does not know,
+    /// the file's formatting and its permissions are kept.
     pub fn save(&self, workspace: &Path) -> Result<()> {
         let config_dir = workspace.join(".branchbox");
-        fs::create_dir_all(&config_dir)?;
+        let _lock = atomic_fs::lock_state_dir(&config_dir, LOCK_TIMEOUT)?;
 
-        let path = config_dir.join("config.json");
+        let path = Self::path(workspace);
+        if path.exists() {
+            // Edit only what changed, so keys this version does not know survive (DESIGN
+            // §5.10), as they do `config set`.
+            return crate::config_edit::plan_save(workspace, self)?.commit();
+        }
         let content = serde_json::to_string_pretty(self)?;
-        fs::write(path, content)?;
-
-        Ok(())
+        atomic_fs::write_atomic(&path, content.as_bytes(), 0o644)
     }
 }
 
@@ -313,6 +322,71 @@ mod tests {
 
         let loaded = BranchBoxConfig::load(workspace).unwrap();
         assert_eq!(config, loaded);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_the_file_atomically_keeping_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        BranchBoxConfig::default().save(workspace).unwrap();
+        let path = BranchBoxConfig::path(workspace);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o644);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut config = BranchBoxConfig::default();
+        config.feature.branch_prefix = "spike".to_string();
+        config.save(workspace).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(BranchBoxConfig::load(workspace).unwrap(), config);
+        let leftovers = fs::read_dir(workspace.join(".branchbox"))
+            .unwrap()
+            .filter(|entry| {
+                let name = entry.as_ref().unwrap().file_name();
+                name.to_string_lossy().ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn save_over_an_existing_file_keeps_unknown_keys_and_formatting() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        fs::create_dir_all(workspace.join(".branchbox")).unwrap();
+        let text = "{\n  \"x_team\": {\"keep\": true},\n  \"tunnel\": {\"enabled\": true, \
+                    \"providers\": {\"cloudflared\": {\"account_id\": \"a\", \"x_extra\": 1}}}\n}\n";
+        fs::write(BranchBoxConfig::path(workspace), text).unwrap();
+
+        let mut config = BranchBoxConfig::load(workspace).unwrap();
+        config.feature.branch_prefix = "spike".to_string();
+        config.save(workspace).unwrap();
+        let saved = fs::read_to_string(BranchBoxConfig::path(workspace)).unwrap();
+        assert!(
+            saved.starts_with("{\n  \"x_team\": {\"keep\": true},"),
+            "{saved}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(value["feature"]["branch_prefix"], "spike");
+        assert_eq!(value["tunnel"]["providers"]["cloudflared"]["x_extra"], 1);
+        assert_eq!(BranchBoxConfig::load(workspace).unwrap(), config);
+
+        // Dropping a provider removes its whole section, as saving `None` always did.
+        config.tunnel.enabled = false;
+        config.tunnel.providers.cloudflared = None;
+        config.save(workspace).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(BranchBoxConfig::path(workspace)).unwrap())
+                .unwrap();
+        assert!(
+            value["tunnel"]["providers"].get("cloudflared").is_none(),
+            "{value}"
+        );
+        assert_eq!(value["x_team"]["keep"], true);
+        assert_eq!(BranchBoxConfig::load(workspace).unwrap(), config);
     }
 
     #[test]

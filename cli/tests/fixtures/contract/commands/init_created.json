@@ -1,0 +1,33 @@
+{
+  "adapter": "generic",
+  "devcontainer_status": {
+    "kind": "created"
+  },
+  "modules": [
+    "devcontainer",
+    "compose",
+    "tunnel",
+    "specs"
+  ],
+  "next_steps": [
+    "git add .devcontainer docs/BRANCHBOX.md && git commit -m \"chore: add BranchBox devcontainer configuration\"",
+    "Open in VS Code/Cursor and reopen in container",
+    "branchbox feature start \"feature name\""
+  ],
+  "onepassword": {
+    "status": "not_configured"
+  },
+  "registry_initialized": true,
+  "reorganized": false,
+  "repository_state": {
+    "kind": "regular_clone",
+    "needs_reorganization": false
+  },
+  "schema_version": 1,
+  "stack": "generic",
+  "warnings": [
+    "Cloudflare credentials not provided; BranchBox will emit manual tunnel setup instructions until configured.",
+    "1Password credential references not configured; set OP_GITHUB_REF and OP_SIGNING_KEY_REF in your environment, pass --op-github-ref (or --skip-1password), or run `branchbox init` interactively."
+  ],
+  "workspace_path": "<repo>/main"
+}

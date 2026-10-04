@@ -1,0 +1,33 @@
+[
+  {
+    "base_branch": null,
+    "branch_name": "feature/eta",
+    "color": "#000000",
+    "compose_project_name": null,
+    "created_at": "<ts>",
+    "default_agent": {
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null,
+      "label": null,
+      "status": "disabled"
+    },
+    "devcontainer_outdated": false,
+    "env_path": null,
+    "feature_url": null,
+    "removed_at": null,
+    "runtime": {
+      "provider": "sbx"
+    },
+    "setup": {
+      "pid": 0,
+      "started_at": "<ts>",
+      "state": "interrupted"
+    },
+    "start_mode": "minimal",
+    "status": "active",
+    "updated_at": "<ts>",
+    "work_feature": "eta",
+    "worktree_path": "<repo>/eta"
+  }
+]

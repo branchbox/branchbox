@@ -1,0 +1,11 @@
+{
+  "error": {
+    "causes": [],
+    "code": "config_unknown_key",
+    "details": {
+      "key": "runtime.provder"
+    },
+    "message": "Configuration error: unknown key 'runtime.provder'. Run `branchbox config get` to list the supported keys."
+  },
+  "schema_version": 1
+}

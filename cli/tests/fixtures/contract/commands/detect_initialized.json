@@ -1,0 +1,17 @@
+{
+  "adapter": "generic",
+  "git_repository": true,
+  "has_devcontainer": true,
+  "has_env": true,
+  "initialized": true,
+  "modules": [
+    "devcontainer",
+    "compose",
+    "tunnel",
+    "specs"
+  ],
+  "project": "<repo>/main",
+  "schema_version": 1,
+  "stack": "rust",
+  "warnings": []
+}

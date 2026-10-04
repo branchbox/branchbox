@@ -1,0 +1,70 @@
+{
+  "blockers": [],
+  "branch": {
+    "action": "delete",
+    "ahead": 0,
+    "exists": true,
+    "merged": true,
+    "merged_into_head": true,
+    "name": "feature/fresh",
+    "reference": "HEAD",
+    "reference_name": "main",
+    "source": "registry",
+    "upstream": null
+  },
+  "changes": {
+    "generated": [
+      {
+        "path": ".devcontainer/.branchbox.env",
+        "rule": "reserved_name"
+      },
+      {
+        "path": ".devcontainer/.env",
+        "rule": "devcontainer_env_link"
+      },
+      {
+        "path": ".env",
+        "rule": "env_feature_block"
+      },
+      {
+        "path": ".vscode/settings.json",
+        "rule": "vscode_managed_keys"
+      },
+      {
+        "path": ".vscode/tasks.json",
+        "rule": "vscode_managed_tasks"
+      }
+    ],
+    "preserved": [
+      {
+        "destination": "docs/features/backlog/fresh.md",
+        "path": "docs/features/in-progress/fresh.md"
+      }
+    ],
+    "status_available": true,
+    "truncated": false,
+    "user": []
+  },
+  "defaults": {
+    "delete_branch_by_default": true,
+    "force_delete_unmerged_by_default": false
+  },
+  "registered": true,
+  "runtime": {
+    "provider": "container",
+    "runtime_id": null
+  },
+  "schema_version": 1,
+  "status": "active",
+  "tunnel": {
+    "status": "disabled"
+  },
+  "warnings": [],
+  "work_feature": "fresh",
+  "worktree": {
+    "exists": true,
+    "lock_reason": null,
+    "locked": false,
+    "path": "<repo>/fresh"
+  }
+}

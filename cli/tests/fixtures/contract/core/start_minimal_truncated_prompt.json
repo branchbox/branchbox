@@ -1,0 +1,87 @@
+{
+  "adapter": {
+    "name": "Generic",
+    "service_url": "http://dev:3000",
+    "warnings": []
+  },
+  "branch_name": "feature/eta",
+  "color": "#000000",
+  "compose_project_name": "demo-eta",
+  "default_agent": {
+    "command": null,
+    "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+    "followup": null,
+    "label": null,
+    "status": "disabled"
+  },
+  "env_path": "<repo>/eta/.env",
+  "feature_url": "dev-eta.example.com",
+  "generated_at": "<ts>",
+  "mode": "minimal",
+  "module_outcomes": [
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "devcontainer",
+      "notes": [
+        "Skipped by minimal mode defaults"
+      ],
+      "status": "skipped"
+    },
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "compose",
+      "notes": [
+        "Skipped by minimal mode defaults"
+      ],
+      "status": "skipped"
+    },
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "specs",
+      "notes": [
+        "Skipped by minimal mode defaults"
+      ],
+      "status": "skipped"
+    },
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "tunnel",
+      "notes": [],
+      "status": "skipped"
+    }
+  ],
+  "prompt_bridge_enabled": false,
+  "prompt_seed": "<2000 chars>",
+  "runtime": {
+    "provider": "container"
+  },
+  "skipped_modules": [
+    {
+      "module": "devcontainer",
+      "reason": "Skipped by minimal mode defaults"
+    },
+    {
+      "module": "compose",
+      "reason": "Skipped by minimal mode defaults"
+    },
+    {
+      "module": "specs",
+      "reason": "Skipped by minimal mode defaults"
+    }
+  ],
+  "tunnel": {
+    "last_updated": "<ts>",
+    "notes": "Tunnel provisioning disabled until Cloudflare credentials are configured",
+    "provider": "cloudflared",
+    "status": "disabled"
+  },
+  "warnings": [
+    "Prompt truncated to 2000 characters before storage."
+  ],
+  "work_feature": "eta",
+  "worktree_path": "<repo>/eta"
+}

@@ -1,0 +1,80 @@
+[
+  {
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "base_branch": null,
+    "branch_name": "feature/eta",
+    "color": "#000000",
+    "compose_project_name": "demo-eta",
+    "created_at": "<ts>",
+    "default_agent": {
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null,
+      "label": null,
+      "status": "disabled"
+    },
+    "devcontainer_outdated": true,
+    "env_path": "<repo>/eta/.env",
+    "feature_url": "dev-eta.example.com",
+    "last_commit": "b096389760523a6f1d0716ca74e6d4b56f587e11",
+    "last_summary_rendered_at": "<ts>",
+    "module_outcomes": [
+      {
+        "duration_ms": 0,
+        "forced": false,
+        "module": "devcontainer",
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "recorded_at": "<ts>",
+        "status": "skipped"
+      },
+      {
+        "duration_ms": 0,
+        "forced": false,
+        "module": "compose",
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "recorded_at": "<ts>",
+        "status": "skipped"
+      },
+      {
+        "duration_ms": 0,
+        "forced": false,
+        "module": "specs",
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "recorded_at": "<ts>",
+        "status": "skipped"
+      },
+      {
+        "duration_ms": 0,
+        "forced": false,
+        "module": "tunnel",
+        "recorded_at": "<ts>",
+        "status": "skipped"
+      }
+    ],
+    "removed_at": null,
+    "runtime": {
+      "provider": "container"
+    },
+    "start_mode": "minimal",
+    "status": "orphaned",
+    "tunnel": {
+      "last_updated": "<ts>",
+      "notes": "Tunnel provisioning disabled until Cloudflare credentials are configured",
+      "provider": "cloudflared",
+      "status": "disabled"
+    },
+    "updated_at": "<ts>",
+    "work_feature": "eta",
+    "worktree_path": "<repo>/eta"
+  }
+]

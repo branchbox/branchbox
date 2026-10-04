@@ -1,0 +1,19 @@
+{
+  "dry_run": true,
+  "failed": 0,
+  "results": [
+    {
+      "error": null,
+      "files": [],
+      "registry_updated": false,
+      "skip_reason": null,
+      "status": "would_sync",
+      "work_feature": "eta",
+      "worktree_path": "<repo>/eta"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": 0,
+  "strategy": "copy",
+  "synced": 1
+}

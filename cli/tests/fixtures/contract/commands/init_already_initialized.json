@@ -1,0 +1,25 @@
+{
+  "adapter": "generic",
+  "devcontainer_status": {
+    "kind": "none"
+  },
+  "modules": [
+    "devcontainer",
+    "compose",
+    "tunnel",
+    "specs"
+  ],
+  "next_steps": [],
+  "onepassword": {
+    "status": "not_configured"
+  },
+  "registry_initialized": false,
+  "reorganized": false,
+  "repository_state": {
+    "kind": "already_initialized"
+  },
+  "schema_version": 1,
+  "stack": "generic",
+  "warnings": [],
+  "workspace_path": "<repo>/main"
+}
