@@ -1,0 +1,10 @@
+[2m2026-10-01T22:52:20.291378Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T22:52:20.291468Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T22:52:20.291474Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/alpha/docs/features"
+[2m2026-10-01T22:52:20.291487Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/alpha/docs/features/in-progress/alpha.md" in in-progress
+[2m2026-10-01T22:52:20.291492Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T22:52:20.291498Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/alpha/docs/features/in-progress/alpha.md"
+[2m2026-10-01T22:52:20.291502Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T22:52:20.292035Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T22:52:20.339990Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/alpha
+[2m2026-10-01T22:52:20.441918Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/alpha

@@ -1,0 +1,4 @@
+Error: Failed to initialize devcontainer module
+
+Caused by:
+    Validation error: Devcontainer directory not found: /tmp/bbx/demo/.devcontainer

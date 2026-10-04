@@ -29,6 +29,7 @@ Thumbs.db
 
 # SwiftPM/macOS app artifacts
 macos/.build/
+macos/.swiftpm/
 macos/build/
 macos/.cache/
 *.app

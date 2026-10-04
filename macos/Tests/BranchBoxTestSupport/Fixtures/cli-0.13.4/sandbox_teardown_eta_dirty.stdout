@@ -1,0 +1,14 @@
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: no
+  Runtime cleanup verified: yes (residue free: yes)
+  Branch kept: feature/eta (delete manually with `git branch -d feature/eta` or `git branch -D feature/eta`)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+  - Failed to remove worktree: Command execution failed: Git worktree remove failed: fatal: '/tmp/bbx/eta' contains modified or untracked files, use --force to delete it
+
+  - Worktree directory removed manually after git removal failed

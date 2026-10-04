@@ -1,0 +1,3 @@
+⚠️  Detected devcontainer/compose changes inside /tmp/bbx/alpha:
+    • .devcontainer/
+    (BranchBox refuses to delete dirty module files without --force)

@@ -1,0 +1,10 @@
+[2m2026-10-01T22:51:46.707864Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T22:51:46.708206Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T22:51:46.708215Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/gamma/docs/features"
+[2m2026-10-01T22:51:46.708229Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/gamma/docs/features/in-progress/gamma.md" in in-progress
+[2m2026-10-01T22:51:46.708234Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T22:51:46.708242Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/gamma/docs/features/in-progress/gamma.md"
+[2m2026-10-01T22:51:46.708246Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T22:51:46.711587Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T22:51:46.726039Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/gamma
+[2m2026-10-01T22:51:46.766326Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/gamma

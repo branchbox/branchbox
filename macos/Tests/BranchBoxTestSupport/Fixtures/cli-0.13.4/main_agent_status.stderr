@@ -1,0 +1,4 @@
+Error: failed to connect to BranchBox agent at /Users/dev/.branchbox/agent/branchbox-agent.sock
+
+Caused by:
+    No such file or directory (os error 2)

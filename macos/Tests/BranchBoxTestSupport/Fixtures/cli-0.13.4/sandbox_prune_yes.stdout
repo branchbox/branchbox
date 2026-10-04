@@ -1,0 +1,601 @@
+🧹 Preparing to prune 46 active or retained feature worktree(s):
+  - bulk-45
+  - bulk-44
+  - bulk-43
+  - bulk-42
+  - bulk-41
+  - bulk-40
+  - bulk-39
+  - bulk-38
+  - bulk-37
+  - bulk-36
+  - bulk-35
+  - bulk-34
+  - bulk-33
+  - bulk-32
+  - bulk-31
+  - bulk-30
+  - bulk-29
+  - bulk-28
+  - bulk-27
+  - bulk-26
+  - bulk-25
+  - bulk-24
+  - bulk-23
+  - bulk-22
+  - bulk-21
+  - bulk-20
+  - bulk-19
+  - bulk-18
+  - bulk-17
+  - bulk-16
+  - bulk-15
+  - bulk-14
+  - bulk-13
+  - bulk-12
+  - bulk-11
+  - bulk-10
+  - bulk-09
+  - bulk-08
+  - bulk-07
+  - bulk-06
+  - bulk-05
+  - bulk-04
+  - bulk-03
+  - bulk-02
+  - bulk-01
+  - syncme
+
+→ Pruning bulk-45
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-44
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-43
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-42
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-41
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-40
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-39
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-38
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-37
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-36
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-35
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-34
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-33
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-32
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-31
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-30
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-29
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-28
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-27
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-26
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-25
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-24
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-23
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-22
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-21
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-20
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-19
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-18
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-17
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-16
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-15
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-14
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-13
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-12
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-11
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-10
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-09
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-08
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-07
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-06
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-05
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-04
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-03
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-02
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning bulk-01
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+→ Pruning syncme
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown
+
+✓ Pruned 46 feature(s).

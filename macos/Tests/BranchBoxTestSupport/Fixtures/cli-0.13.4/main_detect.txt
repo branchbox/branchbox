@@ -1,0 +1,11 @@
+📦 BranchBox Configuration
+
+Project: .
+Stack: Rust
+Adapter: Generic
+
+Enabled modules: 4
+  ✓ devcontainer
+  ✓ compose
+  ✓ tunnel
+  ✓ specs

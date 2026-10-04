@@ -1,0 +1,92 @@
+{
+  "adapter": {
+    "name": "Generic",
+    "service_url": "http://dev:3000",
+    "warnings": []
+  },
+  "branch_name": "feature/alpha",
+  "color": "#e67e22",
+  "compose_project_name": "sandbox-alpha",
+  "default_agent": {
+    "command": null,
+    "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+    "followup": null,
+    "label": null,
+    "status": "disabled"
+  },
+  "env_path": null,
+  "feature_url": null,
+  "generated_at": "2026-10-01T22:50:29.320402+00:00",
+  "mode": "minimal",
+  "module_outcomes": [
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "devcontainer",
+      "notes": [
+        "Skipped by minimal mode defaults"
+      ],
+      "status": "skipped"
+    },
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "compose",
+      "notes": [
+        "Skipped by minimal mode defaults"
+      ],
+      "status": "skipped"
+    },
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "specs",
+      "notes": [
+        "Skipped by minimal mode defaults"
+      ],
+      "status": "skipped"
+    },
+    {
+      "duration_ms": 0,
+      "forced": false,
+      "module": "tunnel",
+      "notes": [],
+      "status": "skipped"
+    }
+  ],
+  "prompt_bridge_enabled": false,
+  "prompt_seed": null,
+  "runtime": {
+    "provider": "container"
+  },
+  "skipped_modules": [
+    {
+      "module": "tunnel",
+      "reason": "Skipped via --skip-module"
+    },
+    {
+      "module": "devcontainer",
+      "reason": "Skipped by minimal mode defaults"
+    },
+    {
+      "module": "compose",
+      "reason": "Skipped by minimal mode defaults"
+    },
+    {
+      "module": "specs",
+      "reason": "Skipped by minimal mode defaults"
+    }
+  ],
+  "tunnel": {
+    "last_updated": "2026-10-01T22:50:29.292175Z",
+    "notes": "Tunnel module skipped for this feature",
+    "provider": "manual",
+    "status": "disabled"
+  },
+  "warnings": [
+    "Skipped .env provisioning (source file not found)",
+    "Tunnel provisioning skipped (--skip-module tunnel)"
+  ],
+  "work_feature": "alpha",
+  "worktree_path": "/tmp/bbx/alpha"
+}

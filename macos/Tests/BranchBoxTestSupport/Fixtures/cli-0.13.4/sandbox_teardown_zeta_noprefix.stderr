@@ -1,0 +1,8 @@
+[2m2026-10-01T23:06:49.729841Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:06:49.729932Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:06:49.729938Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/zeta/docs/features"
+[2m2026-10-01T23:06:49.729949Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/zeta/docs/features/in-progress/zeta.md" in in-progress
+[2m2026-10-01T23:06:49.729954Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:06:49.729961Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/zeta/docs/features/in-progress/zeta.md"
+[2m2026-10-01T23:06:49.729965Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:06:49.730169Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files

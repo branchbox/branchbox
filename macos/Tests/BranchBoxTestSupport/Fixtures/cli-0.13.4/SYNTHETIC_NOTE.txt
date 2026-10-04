@@ -1,0 +1,1 @@
+synthetic_*.json are hand-built from core serde types (FeatureMetadata/RuntimeMetadata, cli/src/agent.rs AgentStatus); not real CLI output.

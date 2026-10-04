@@ -1,0 +1,6 @@
+[2m2026-10-01T22:50:29.222458Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Created worktree at /tmp/bbx/alpha
+[2m2026-10-01T22:50:29.243469Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Fixed git worktree path from absolute to relative: ../demo/.git/worktrees/alpha
+[2m2026-10-01T22:50:29.290845Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Detected adapter: Generic
+[2m2026-10-01T22:50:29.290871Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m No secret files found to copy
+[2m2026-10-01T22:50:29.291831Z[0m [33m WARN[0m [2mworktree_core::workflows::feature[0m[2m:[0m No .env found at /tmp/bbx/demo/.env
+[2m2026-10-01T22:50:29.292165Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Using service URL from adapter: http://dev:3000

@@ -1,0 +1,9 @@
+📦 BranchBox Configuration
+
+Project: /tmp/bbx/demo
+Stack: Generic
+Adapter: Generic
+
+Enabled modules: 2
+  ✓ tunnel
+  ✓ specs

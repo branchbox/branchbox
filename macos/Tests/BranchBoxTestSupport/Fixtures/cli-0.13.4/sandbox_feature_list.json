@@ -1,0 +1,215 @@
+[
+  {
+    "work_feature": "gamma",
+    "branch_name": "feature/gamma",
+    "worktree_path": "/tmp/bbx/gamma",
+    "base_branch": null,
+    "feature_url": null,
+    "compose_project_name": "sandbox-gamma",
+    "env_path": null,
+    "status": "active",
+    "created_at": "2026-10-01T22:51:10.903377Z",
+    "updated_at": "2026-10-01T22:51:10.903377Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel module skipped for this feature",
+      "last_updated": "2026-10-01T22:51:10.868231Z"
+    },
+    "color": "#2ecc71",
+    "last_commit": "c1cdf4ddf31104130474e51e828667d1b2ed92aa",
+    "devcontainer_outdated": true,
+    "start_mode": "minimal",
+    "prompt_seed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "skipped",
+        "duration_ms": 0,
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "forced": false,
+        "recorded_at": "2026-10-01T22:51:10.903377Z"
+      },
+      {
+        "module": "compose",
+        "status": "skipped",
+        "duration_ms": 0,
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "forced": false,
+        "recorded_at": "2026-10-01T22:51:10.903377Z"
+      },
+      {
+        "module": "specs",
+        "status": "skipped",
+        "duration_ms": 0,
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "forced": false,
+        "recorded_at": "2026-10-01T22:51:10.903377Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-10-01T22:51:10.903377Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-10-01T22:51:10.903377Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "beta",
+    "branch_name": "feature/beta",
+    "worktree_path": "/tmp/bbx/beta",
+    "base_branch": null,
+    "feature_url": null,
+    "compose_project_name": "sandbox-beta",
+    "env_path": null,
+    "status": "active",
+    "created_at": "2026-10-01T22:50:59.118712Z",
+    "updated_at": "2026-10-01T22:50:59.118712Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel module skipped for this feature",
+      "last_updated": "2026-10-01T22:50:59.010361Z"
+    },
+    "color": "#9b59b6",
+    "last_commit": "c1cdf4ddf31104130474e51e828667d1b2ed92aa",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "prompt_seed": "seed prompt for beta",
+    "module_outcomes": [
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 6,
+        "forced": false,
+        "recorded_at": "2026-10-01T22:50:59.118712Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-10-01T22:50:59.118712Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-10-01T22:50:59.118712Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "alpha",
+    "branch_name": "feature/alpha",
+    "worktree_path": "/tmp/bbx/alpha",
+    "base_branch": null,
+    "feature_url": null,
+    "compose_project_name": "sandbox-alpha",
+    "env_path": null,
+    "status": "active",
+    "created_at": "2026-10-01T22:50:29.320402Z",
+    "updated_at": "2026-10-01T22:50:29.320402Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel module skipped for this feature",
+      "last_updated": "2026-10-01T22:50:29.292175Z"
+    },
+    "color": "#e67e22",
+    "last_commit": "c1cdf4ddf31104130474e51e828667d1b2ed92aa",
+    "devcontainer_outdated": true,
+    "start_mode": "minimal",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "skipped",
+        "duration_ms": 0,
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "forced": false,
+        "recorded_at": "2026-10-01T22:50:29.320402Z"
+      },
+      {
+        "module": "compose",
+        "status": "skipped",
+        "duration_ms": 0,
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "forced": false,
+        "recorded_at": "2026-10-01T22:50:29.320402Z"
+      },
+      {
+        "module": "specs",
+        "status": "skipped",
+        "duration_ms": 0,
+        "notes": [
+          "Skipped by minimal mode defaults"
+        ],
+        "forced": false,
+        "recorded_at": "2026-10-01T22:50:29.320402Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-10-01T22:50:29.320402Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-10-01T22:50:29.320402Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  }
+]
