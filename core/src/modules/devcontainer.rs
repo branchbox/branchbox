@@ -359,7 +359,10 @@ impl DevcontainerModule {
     fn is_excluded(&self, path: &Path) -> bool {
         path.file_name()
             .and_then(|n| n.to_str())
-            .map(|n| self.exclude.iter().any(|e| n == e))
+            .map(|n| {
+                self.exclude.iter().any(|e| n == e)
+                    || n.starts_with(".branchbox-sbx-compose-input-")
+            })
             .unwrap_or(false)
     }
 
@@ -1559,6 +1562,11 @@ mod tests {
 
         std::fs::create_dir_all(main.join(".devcontainer")).unwrap();
         std::fs::write(main.join(".devcontainer/.env"), "SECRET=123").unwrap();
+        std::fs::write(
+            main.join(".devcontainer/.branchbox-sbx-compose-input-0.yaml"),
+            "services: {}\n",
+        )
+        .unwrap();
         std::fs::write(main.join(".devcontainer/devcontainer.json"), "{}").unwrap();
         std::fs::create_dir_all(&feature).unwrap();
 
@@ -1568,6 +1576,9 @@ mod tests {
 
         // .env should be excluded
         assert!(!feature.join(".devcontainer/.env").exists());
+        assert!(!feature
+            .join(".devcontainer/.branchbox-sbx-compose-input-0.yaml")
+            .exists());
         // But other files should sync
         assert!(feature.join(".devcontainer/devcontainer.json").exists());
         assert_eq!(outcome.synced_files.len(), 1);

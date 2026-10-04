@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Reject Compose `provider` services in managed in-guest projects before staging CLI inputs;
+  Compose would otherwise run the repository-selected provider binary on the guest host.
+- Reject ambient variable interpolation left in sanitized or generated in-guest Compose inputs,
+  including dependency environments, service labels, and workspace paths. Value-less dependency
+  environment and build arguments can no longer inherit guest-process variables. Managed Docker
+  and Dev Containers commands now receive only Docker connection settings and basic runtime paths,
+  and Compose ignores a repository `.env`; signed raw project environment remains available.
+- Filter disabled tunnel connectors from each sanitized in-guest Compose file's
+  dependencies before Compose merges the ordered files. Later service overrides
+  that only add a command no longer retain an undefined connector dependency,
+  and dependencies on runnable services from earlier files remain intact.
+- Allow managed in-guest Compose projects to use interpolated volume sources on secondary
+  services. BranchBox now passes sanitized copies of repository Compose files to the Dev
+  Containers CLI, removing repository mounts, env files, publications, discarded primary
+  environment values, entire disabled connector definitions across all Compose input files,
+  and manifest-replaced image/build fields before Compose's per-file interpolation while
+  retaining the signed mount facade.
+  Source inputs are bounded regular files inside the task worktree. For signed workspace
+  consumers, generated CLI inputs live in a private assignment directory outside the writable
+  worktree; unassigned builds fail closed. Stale generated copies are removed when the source
+  list shrinks.
 - Create the in-guest tool-request replay ledger with its owner-only mode in one step. Two
   dispatchers opening the ledger at the same moment could have the second find the directory
   before the first had set its permissions, and refuse it as not owner-only.

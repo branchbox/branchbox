@@ -80,6 +80,15 @@ const RESERVED_NAMES: [&str; 4] = [
     ".devcontainer/.branchbox-sbx-compose.yaml",
 ];
 
+/// Staged sbx Compose inputs (`.branchbox-sbx-compose-input-<n>.yaml`) are generated wherever
+/// they are written, like the reserved names above.
+fn is_sbx_compose_input(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".branchbox-sbx-compose-input-"))
+}
+
 /// Where `feature start` begins the block it appends to a worktree's `.env` (rule R6).
 pub(crate) const ENV_FEATURE_SECTION_MARKER: &str = "# Feature-specific configuration";
 
@@ -693,7 +702,8 @@ pub(crate) fn is_module_managed_path(path: &str) -> bool {
     if matches!(
         path,
         ".devcontainer/.devcontainer.json" | ".devcontainer/.branchbox-sbx-compose.yaml"
-    ) {
+    ) || is_sbx_compose_input(path)
+    {
         return false;
     }
 
@@ -1032,7 +1042,7 @@ fn classify_entry(
     if entry.original_path.is_some() || !is_safe_relative_path(path) {
         return Verdict::User;
     }
-    if RESERVED_NAMES.contains(&path) {
+    if RESERVED_NAMES.contains(&path) || is_sbx_compose_input(path) {
         return Verdict::Generated(GeneratedRule::ReservedName);
     }
     if spec_paths.iter().any(|spec| spec == path)

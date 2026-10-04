@@ -41,6 +41,6 @@ BranchBox owns and ignores these generated files; linked application source rema
 - `.devcontainer/.devcontainer.json`
 - `.devcontainer/.branchbox-sbx-compose.yaml`
 
-The same filenames are used by `in-guest`; its provider-private cleanup record is `.branchbox/runtime/in-guest/<run-id>.json`. See [Agentify In-Guest Devcontainer Provider](in-guest-devcontainer-provider.md) for the signed handoff, sanitizer, and deterministic residue contract.
+The same filenames are used by `in-guest`; its provider-private cleanup record is `.branchbox/runtime/in-guest/<managed-compose-project>.json`, with a worktree-bound project identity. See [Agentify In-Guest Devcontainer Provider](in-guest-devcontainer-provider.md) for the signed handoff, sanitizer, and deterministic residue contract.
 
 They are regenerated on each SBX feature start. If the source devcontainer no longer needs an SBX Compose facade and no `runServices` override is configured, BranchBox removes both stale generated files without editing the source `devcontainer.json` or Compose files. Feature teardown removes them with the BranchBox worktree.
