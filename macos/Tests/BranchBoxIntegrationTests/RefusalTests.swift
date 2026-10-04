@@ -51,7 +51,8 @@ extension RealCLI {
             #expect(!plan.changes.generated.isEmpty, "a project without ignores has untracked generated files")
             let outcome = try await cli.backend.teardownFeature(firstRequest, progress: { _ in })
             #expect(outcome.worktreeGone)
-            #expect(!FileManager.default.fileExists(atPath: try #require(firstSummary.worktreePath)))
+            let firstWorktree = try #require(firstSummary.worktreePath)
+            #expect(!FileManager.default.fileExists(atPath: firstWorktree))
             #expect(!outcome.summary.warnings.contains { $0.contains("removed manually") }, "\(outcome.summary.warnings)")
 
             // 2. 0.13.x's own refusal and the app's recovery from it. Contract CLIs classify generated files

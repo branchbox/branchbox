@@ -650,7 +650,8 @@ fn a_corrupted_git_file_reports_the_git_error_as_status_unavailable() {
     assert_eq!(plan["changes"]["status_available"], false);
     let cause = plan["blockers"][0]["cause"].as_str().unwrap();
     assert!(
-        cause.contains("fatal: not a git repository: /nonexistent/worktrees/broken"),
+        // Some git versions print "(null)" instead of the missing gitdir.
+        cause.contains("fatal: not a git repository"),
         "{cause}"
     );
     assert_eq!(plan["blockers"][0]["override"], "--force");

@@ -1895,7 +1895,8 @@ bare
         .unwrap();
         let err = git.status_entries(&linked).unwrap_err().to_string();
         assert!(err.contains("git status failed"), "{err}");
-        assert!(err.contains("/nonexistent/worktrees/linked"), "{err}");
+        // Git versions differ on whether they name the missing gitdir ("(null)" on some).
+        assert!(err.contains("not a git repository"), "{err}");
 
         fs::remove_file(linked.join(".git")).unwrap();
         let err = git.status_entries(&linked).unwrap_err().to_string();

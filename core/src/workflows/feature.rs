@@ -9652,7 +9652,7 @@ mod tests {
         assert!(changed_anything);
         assert!(!plan.changes.status_available);
         assert!(
-            matches!(plan.blockers.as_slice(), [Blocker::StatusUnavailable { cause, .. }] if cause.contains("/nonexistent/worktrees/unreadable")),
+            matches!(plan.blockers.as_slice(), [Blocker::StatusUnavailable { cause, .. }] if cause.contains("not a git repository")),
             "{:?}",
             plan.blockers
         );

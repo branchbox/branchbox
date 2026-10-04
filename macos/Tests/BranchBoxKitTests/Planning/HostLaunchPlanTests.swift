@@ -187,11 +187,12 @@ import Testing
 
     @Test func devContainerModeOpensTheEditorsRemoteLink() throws {
         let record = Sample.record(worktreePath: "/tmp/x")
-        #expect(HostLaunchPlan.editor(.vscode, mode: .devContainer, record: record).kind
-            == .openURL(try #require(URL(string: "vscode://vscode-remote/dev-container+2f746d702f78/workspaces/x"))))
+        // Swift 6.0 rejects a throwing #require nested inside #expect's autoclosure.
+        let vscodeURL = try #require(URL(string: "vscode://vscode-remote/dev-container+2f746d702f78/workspaces/x"))
+        #expect(HostLaunchPlan.editor(.vscode, mode: .devContainer, record: record).kind == .openURL(vscodeURL))
         let custom = Sample.record(worktreePath: "/tmp/x", workspaceFolder: "/srv/app")
-        #expect(HostLaunchPlan.editor(.cursor, mode: .devContainer, record: custom).kind
-            == .openURL(try #require(URL(string: "cursor://vscode-remote/dev-container+2f746d702f78/srv/app"))))
+        let cursorURL = try #require(URL(string: "cursor://vscode-remote/dev-container+2f746d702f78/srv/app"))
+        #expect(HostLaunchPlan.editor(.cursor, mode: .devContainer, record: custom).kind == .openURL(cursorURL))
         #expect(HostLaunchPlan.editor(.custom(appPath: "/Applications/Zed.app"), mode: .devContainer, record: record).disabledReason
             == "Open in Dev Container needs VS Code or Cursor")
         for provider in [RuntimeProvider.sbx, .localVM, .inGuest] {
