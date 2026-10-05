@@ -2,6 +2,10 @@
 
 This guide covers the development workflow, building, testing, and contributing to BranchBox.
 
+Rust caching measurements and the scoped CI pilot are documented in
+[Rust build cache pilot](docs/internals/rust-build-cache.md). Reproduce the macOS
+comparison with `python3 scripts/benchmark-rust-cache.py --help`.
+
 ## Development Environment Setup
 
 ### Using Devcontainer (Recommended)

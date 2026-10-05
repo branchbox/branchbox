@@ -1,0 +1,1554 @@
+{
+  "metadata": {
+    "revision": "006dab5151a75b0bed89c6ebdb5e73ddab71a4c2",
+    "mbx_version": "mbx 1.22.0",
+    "cargo_version": "cargo 1.90.0 (Homebrew)",
+    "rustc_version": "rustc 1.90.0 (1159e78c4 2025-09-14) (Homebrew)\nbinary: rustc\ncommit-hash: 1159e78c4747b02ef996e55082b704c09b970588\ncommit-date: 2025-09-14\nhost: aarch64-apple-darwin\nrelease: 1.90.0\nLLVM version: 21.1.1",
+    "sdk": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+    "jobs": 2,
+    "trials": 3,
+    "source_sha256": "1bf64796c58ac78ddf70938615a7103f8355b91e0f0d4031c92631f7a479d7b3",
+    "cpu_count": 12,
+    "memory_bytes": 25769803776,
+    "initial_free_bytes": 11058892800,
+    "note": "Sequential source snapshots, distinct empty targets, fresh mbx cache per trial, Cargo incremental default vs mbx learned incremental default; system linker; offline timed builds; existing caches untouched.",
+    "schema_version": 1,
+    "completed_utc": "2026-10-05T01:17:38.740958+00:00",
+    "status": "complete",
+    "timing_source": "/usr/bin/time -l real/user/sys (not polling duration)",
+    "archive_sha256": "e548b5758498cf822a180b6328597e6aded8fe9bb3046cd918399172ae30dde2",
+    "mbx_binary_sha256": "ea4c2ff0fb24c303e6f43467af97d5106f8330ff50a8c517f967ac645430a4ed",
+    "cleanup_note": "First trial completed before read-only directory cleanup failed; its results were preserved, cleanup corrected, and independent trials 2/3 resumed unchanged."
+  },
+  "summary": {
+    "cold": {
+      "cargo": {
+        "median_seconds": 96.21,
+        "minimum_seconds": 95.66,
+        "maximum_seconds": 97.8,
+        "median_cpu_seconds": 154.48
+      },
+      "mbx": {
+        "median_seconds": 121.28,
+        "minimum_seconds": 121.04,
+        "maximum_seconds": 124.86,
+        "median_cpu_seconds": 202.08
+      },
+      "mbx_wall_change_percent": 26.057582371894817
+    },
+    "second-checkout": {
+      "cargo": {
+        "median_seconds": 95.86,
+        "minimum_seconds": 95.82,
+        "maximum_seconds": 96.43,
+        "median_cpu_seconds": 154.64
+      },
+      "mbx": {
+        "median_seconds": 96.33,
+        "minimum_seconds": 96.1,
+        "maximum_seconds": 97.84,
+        "median_cpu_seconds": 143.53
+      },
+      "mbx_wall_change_percent": 0.49029835176299663
+    },
+    "first-edit": {
+      "cargo": {
+        "median_seconds": 2.38,
+        "minimum_seconds": 2.3,
+        "maximum_seconds": 2.72,
+        "median_cpu_seconds": 2.31
+      },
+      "mbx": {
+        "median_seconds": 7.46,
+        "minimum_seconds": 7.4,
+        "maximum_seconds": 7.51,
+        "median_cpu_seconds": 9.78
+      },
+      "mbx_wall_change_percent": 213.4453781512605
+    },
+    "later-edit": {
+      "cargo": {
+        "median_seconds": 1.81,
+        "minimum_seconds": 1.73,
+        "maximum_seconds": 1.82,
+        "median_cpu_seconds": 2.2
+      },
+      "mbx": {
+        "median_seconds": 2.36,
+        "minimum_seconds": 2.26,
+        "maximum_seconds": 2.48,
+        "median_cpu_seconds": 2.5
+      },
+      "mbx_wall_change_percent": 30.386740331491712
+    }
+  },
+  "builds": [
+    {
+      "trial": 1,
+      "tool": "cargo",
+      "stage": "cold",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 11107835904,
+      "minimum_free_bytes": 10164461568,
+      "elapsed_seconds": 96.21,
+      "user_seconds": 120.12,
+      "system_seconds": 33.23,
+      "cpu_seconds": 153.35,
+      "maximum_resident_set_bytes": 715767808,
+      "raw_log_sha256": "bfcafb184c7f0519b3a120448db2ccedf2ed75a54c87c0903c015494796a24c2"
+    },
+    {
+      "trial": 1,
+      "tool": "cargo",
+      "stage": "second-checkout",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 11160563712,
+      "minimum_free_bytes": 10176122880,
+      "elapsed_seconds": 96.43,
+      "user_seconds": 121.65,
+      "system_seconds": 34.09,
+      "cpu_seconds": 155.74,
+      "maximum_resident_set_bytes": 718618624,
+      "raw_log_sha256": "432e1bfc5a603d5bf23ce91d19ac0f85e30918bac6209077d2fe5cebdf507043"
+    },
+    {
+      "trial": 1,
+      "tool": "cargo",
+      "stage": "first-edit",
+      "expected_slug": "alpha-beta-gamma-delta",
+      "smoke_passed": true,
+      "free_bytes_before": 10176106496,
+      "minimum_free_bytes": 10162966528,
+      "elapsed_seconds": 2.3,
+      "user_seconds": 1.46,
+      "system_seconds": 0.79,
+      "cpu_seconds": 2.25,
+      "maximum_resident_set_bytes": 535068672,
+      "raw_log_sha256": "8b6ea6b5c41935ba063a74ff91c0ad4a5cd533f3b82f20de1685efbad4bfafee"
+    },
+    {
+      "trial": 1,
+      "tool": "cargo",
+      "stage": "later-edit",
+      "expected_slug": "alpha-beta-gamma-delta-epsilon",
+      "smoke_passed": true,
+      "free_bytes_before": 10178260992,
+      "minimum_free_bytes": 10165452800,
+      "elapsed_seconds": 1.82,
+      "user_seconds": 1.47,
+      "system_seconds": 0.79,
+      "cpu_seconds": 2.26,
+      "maximum_resident_set_bytes": 527597568,
+      "raw_log_sha256": "24b82d58a0fc0a6c07516b1391e112c003703291a39480689a0c81d3dce80242"
+    },
+    {
+      "trial": 1,
+      "tool": "mbx",
+      "stage": "cold",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 11125960704,
+      "minimum_free_bytes": 10010599424,
+      "elapsed_seconds": 124.86,
+      "user_seconds": 136.96,
+      "system_seconds": 71.3,
+      "cpu_seconds": 208.26,
+      "maximum_resident_set_bytes": 720797696,
+      "raw_log_sha256": "4469c41feb24e35dc52689dfd62f1f475396d4f1a2c5257be2074fbff695ffd2",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 124801654208,
+        "wrapper_phases_ns": {
+          "compiler": 134833452484,
+          "flight_wait": 165926150,
+          "include_scan": 10006050398,
+          "key": 3671603548,
+          "lookup": 44068127,
+          "permit_wait": 1007408013,
+          "predict": 684615142,
+          "startup": 67661117,
+          "store": 23354202505,
+          "unattributed": 116744833225
+        },
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "unconsulted": 1607,
+        "incremental_compilations": 0,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "unconsulted": {
+            "invocations": 1607,
+            "duration_ns": 243986630091
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "openssl-sys build script",
+            "duration_ns": 89277822250
+          },
+          {
+            "crate_name": "libgit2-sys build script",
+            "duration_ns": 11459520667
+          },
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 4708377625
+          },
+          {
+            "crate_name": "syn",
+            "duration_ns": 3426135041
+          },
+          {
+            "crate_name": "ring build script",
+            "duration_ns": 2917462500
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 0,
+        "prefetch_runs": 0,
+        "bypasses": {
+          "cc-compiler-query": 14,
+          "cc-missing-output": 8,
+          "cc-unknown-flag": 2,
+          "compiler-query": 5,
+          "standard-input": 7
+        },
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 751302326,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 2137826088,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 1,
+      "tool": "mbx",
+      "stage": "second-checkout",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10242756608,
+      "minimum_free_bytes": 9778565120,
+      "elapsed_seconds": 97.84,
+      "user_seconds": 89.05,
+      "system_seconds": 57.77,
+      "cpu_seconds": 146.82,
+      "maximum_resident_set_bytes": 715735040,
+      "raw_log_sha256": "1ca3d23c19ba4a87d869b11436ca60655dd8f250626aa36ca398c60ad9462a7e",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 97805303083,
+        "wrapper_phases_ns": {
+          "blob_transfer": 824708735,
+          "compiler": 79043432105,
+          "flight_wait": 118506128,
+          "include_scan": 8967380363,
+          "key": 6378765850,
+          "lookup": 175909793,
+          "permit_wait": 566791680,
+          "predict": 385535373,
+          "restore": 464064915,
+          "startup": 69058834,
+          "store": 18328225550,
+          "unattributed": 90221730782
+        },
+        "lookups": 441,
+        "hits": 409,
+        "misses": 32,
+        "unconsulted": 1134,
+        "incremental_compilations": 0,
+        "compiler_invocations_avoided": 409,
+        "estimated_compiler_duration_avoided_ns": 45790661586,
+        "compiler": {
+          "miss": {
+            "invocations": 32,
+            "duration_ns": 97314950377
+          },
+          "unconsulted": {
+            "invocations": 1134,
+            "duration_ns": 67234488486
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "openssl-sys build script",
+            "duration_ns": 72276552042
+          },
+          {
+            "crate_name": "libgit2-sys build script",
+            "duration_ns": 11136514792
+          },
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 5198162959
+          },
+          {
+            "crate_name": "git2",
+            "duration_ns": 2322474000
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 2031965125
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 1577,
+        "prefetch_runs": 0,
+        "bypasses": {
+          "cc-compiler-query": 8,
+          "cc-missing-output": 5,
+          "cc-unknown-flag": 1,
+          "compiler-query": 2,
+          "standard-input": 1
+        },
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 233636991,
+        "restored_output_files": 767,
+        "restored_output_bytes": 438905850,
+        "reflinked_output_files": 544,
+        "reflinked_output_bytes": 436925494,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 222,
+        "copied_output_bytes": 2477517,
+        "reused_output_files": 1,
+        "reused_output_bytes": 536,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 495075611,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 404481209
+      }
+    },
+    {
+      "trial": 1,
+      "tool": "mbx",
+      "stage": "first-edit",
+      "expected_slug": "alpha-beta-gamma-delta",
+      "smoke_passed": true,
+      "free_bytes_before": 9778032640,
+      "minimum_free_bytes": 9506664448,
+      "elapsed_seconds": 7.46,
+      "user_seconds": 8.86,
+      "system_seconds": 0.98,
+      "cpu_seconds": 9.84,
+      "maximum_resident_set_bytes": 719568896,
+      "raw_log_sha256": "e3e51b349490104c7c5f3a634a82e0413d0c4f037dd5a98962f27d0a984a8d57",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 7447136042,
+        "wrapper_phases_ns": {
+          "compiler": 7092786835,
+          "key": 37870119,
+          "lookup": 314333,
+          "permit_wait": 1007750,
+          "restore": 2667,
+          "startup": 51333,
+          "unattributed": 50596671
+        },
+        "lookups": 1,
+        "hits": 0,
+        "misses": 1,
+        "unconsulted": 1,
+        "incremental_compilations": 2,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "miss": {
+            "invocations": 1,
+            "duration_ns": 5440564375
+          },
+          "unconsulted": {
+            "invocations": 1,
+            "duration_ns": 1642063584
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 5440564375
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 1642063584
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 2691,
+        "prefetch_runs": 0,
+        "bypasses": {},
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 0,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 0,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 1,
+      "tool": "mbx",
+      "stage": "later-edit",
+      "expected_slug": "alpha-beta-gamma-delta-epsilon",
+      "smoke_passed": true,
+      "free_bytes_before": 9506594816,
+      "minimum_free_bytes": 9505550336,
+      "elapsed_seconds": 2.48,
+      "user_seconds": 1.6,
+      "system_seconds": 0.9,
+      "cpu_seconds": 2.5,
+      "maximum_resident_set_bytes": 533741568,
+      "raw_log_sha256": "29a42f52b03dff99f3f13ba5326f9b741289d6ade5313f42707c50e3d0d8979d",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 2463574000,
+        "wrapper_phases_ns": {
+          "compiler": 2100230499,
+          "key": 34687541,
+          "lookup": 316250,
+          "permit_wait": 1121667,
+          "startup": 57458,
+          "unattributed": 54632001
+        },
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "unconsulted": 1,
+        "incremental_compilations": 2,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "unconsulted": {
+            "invocations": 2,
+            "duration_ns": 2090902834
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 1430267042
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 660635792
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 2691,
+        "prefetch_runs": 0,
+        "bypasses": {},
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 0,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 0,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 2,
+      "tool": "mbx",
+      "stage": "cold",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 11115491328,
+      "minimum_free_bytes": 9989529600,
+      "elapsed_seconds": 121.28,
+      "user_seconds": 134.97,
+      "system_seconds": 66.05,
+      "cpu_seconds": 201.02,
+      "maximum_resident_set_bytes": 705937408,
+      "raw_log_sha256": "83e87593d2f73b154d9120ad0f5f61daab102223e97267f1b2336237421e3b5e",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 121240710916,
+        "wrapper_phases_ns": {
+          "compiler": 131975923089,
+          "flight_wait": 180124903,
+          "include_scan": 8757325320,
+          "key": 3482678446,
+          "lookup": 36477685,
+          "permit_wait": 1297670334,
+          "predict": 596775475,
+          "startup": 66643793,
+          "store": 21337149350,
+          "unattributed": 112784203397
+        },
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "unconsulted": 1607,
+        "incremental_compilations": 0,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "unconsulted": {
+            "invocations": 1607,
+            "duration_ns": 239083281796
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "openssl-sys build script",
+            "duration_ns": 86703442959
+          },
+          {
+            "crate_name": "libgit2-sys build script",
+            "duration_ns": 11209431917
+          },
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 4715656292
+          },
+          {
+            "crate_name": "syn",
+            "duration_ns": 3311199583
+          },
+          {
+            "crate_name": "ring build script",
+            "duration_ns": 3194482208
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 0,
+        "prefetch_runs": 0,
+        "bypasses": {
+          "cc-compiler-query": 14,
+          "cc-missing-output": 8,
+          "cc-unknown-flag": 2,
+          "compiler-query": 5,
+          "standard-input": 7
+        },
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 751732604,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 1938793019,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 2,
+      "tool": "mbx",
+      "stage": "second-checkout",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10221355008,
+      "minimum_free_bytes": 9566867456,
+      "elapsed_seconds": 96.33,
+      "user_seconds": 87.89,
+      "system_seconds": 55.64,
+      "cpu_seconds": 143.53,
+      "maximum_resident_set_bytes": 721420288,
+      "raw_log_sha256": "2f21497dbf6acead98af45b967d5fc9d8da0f54f4587c0f6039086528efb9e75",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 96299369708,
+        "wrapper_phases_ns": {
+          "blob_transfer": 888675047,
+          "compiler": 76800284544,
+          "flight_wait": 134663979,
+          "include_scan": 8534609040,
+          "key": 6312210110,
+          "lookup": 183651127,
+          "permit_wait": 572782869,
+          "predict": 352259257,
+          "restore": 461804115,
+          "startup": 67589173,
+          "store": 17852577681,
+          "unattributed": 88849407254
+        },
+        "lookups": 441,
+        "hits": 409,
+        "misses": 32,
+        "unconsulted": 1134,
+        "incremental_compilations": 0,
+        "compiler_invocations_avoided": 409,
+        "estimated_compiler_duration_avoided_ns": 45949249704,
+        "compiler": {
+          "miss": {
+            "invocations": 32,
+            "duration_ns": 95621916497
+          },
+          "unconsulted": {
+            "invocations": 1134,
+            "duration_ns": 65445060721
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "openssl-sys build script",
+            "duration_ns": 70884472750
+          },
+          {
+            "crate_name": "libgit2-sys build script",
+            "duration_ns": 11189808416
+          },
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 5148777875
+          },
+          {
+            "crate_name": "git2",
+            "duration_ns": 2256648750
+          },
+          {
+            "crate_name": "libssh2-sys build script",
+            "duration_ns": 2063346833
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 1582,
+        "prefetch_runs": 0,
+        "bypasses": {
+          "cc-compiler-query": 8,
+          "cc-missing-output": 5,
+          "cc-unknown-flag": 1,
+          "compiler-query": 2,
+          "standard-input": 1
+        },
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 233285601,
+        "restored_output_files": 767,
+        "restored_output_bytes": 438905850,
+        "reflinked_output_files": 544,
+        "reflinked_output_bytes": 436925494,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 222,
+        "copied_output_bytes": 2477517,
+        "reused_output_files": 1,
+        "reused_output_bytes": 536,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 488954721,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 404187430
+      }
+    },
+    {
+      "trial": 2,
+      "tool": "mbx",
+      "stage": "first-edit",
+      "expected_slug": "alpha-beta-gamma-delta",
+      "smoke_passed": true,
+      "free_bytes_before": 9563750400,
+      "minimum_free_bytes": 9292738560,
+      "elapsed_seconds": 7.51,
+      "user_seconds": 8.72,
+      "system_seconds": 0.97,
+      "cpu_seconds": 9.69,
+      "maximum_resident_set_bytes": 719437824,
+      "raw_log_sha256": "80be544b55eac4d2ab37ceeab11942f7bbff1108e652c2c692f2993c1a0dc1ff",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 7493703292,
+        "wrapper_phases_ns": {
+          "compiler": 7083573833,
+          "key": 38989670,
+          "lookup": 285749,
+          "permit_wait": 1251417,
+          "restore": 2376,
+          "startup": 59250,
+          "unattributed": 54165122
+        },
+        "lookups": 1,
+        "hits": 0,
+        "misses": 1,
+        "unconsulted": 1,
+        "incremental_compilations": 2,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "miss": {
+            "invocations": 1,
+            "duration_ns": 5364272167
+          },
+          "unconsulted": {
+            "invocations": 1,
+            "duration_ns": 1702159875
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 5364272167
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 1702159875
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 2694,
+        "prefetch_runs": 0,
+        "bypasses": {},
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 0,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 0,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 2,
+      "tool": "mbx",
+      "stage": "later-edit",
+      "expected_slug": "alpha-beta-gamma-delta-epsilon",
+      "smoke_passed": true,
+      "free_bytes_before": 9293213696,
+      "minimum_free_bytes": 9272287232,
+      "elapsed_seconds": 2.26,
+      "user_seconds": 1.58,
+      "system_seconds": 0.89,
+      "cpu_seconds": 2.47,
+      "maximum_resident_set_bytes": 533872640,
+      "raw_log_sha256": "7aa6f4fbccffbda59b8fd3ad2bd1534f02613e4b3aaa17b891da11ebbdd07be1",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 2245429125,
+        "wrapper_phases_ns": {
+          "compiler": 1878068959,
+          "key": 32165751,
+          "lookup": 278417,
+          "permit_wait": 1165209,
+          "startup": 51167,
+          "unattributed": 53705913
+        },
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "unconsulted": 1,
+        "incremental_compilations": 2,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "unconsulted": {
+            "invocations": 2,
+            "duration_ns": 1863788125
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 1271300583
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 592487542
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 2694,
+        "prefetch_runs": 0,
+        "bypasses": {},
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 0,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 0,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 2,
+      "tool": "cargo",
+      "stage": "cold",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10909024256,
+      "minimum_free_bytes": 9936797696,
+      "elapsed_seconds": 95.66,
+      "user_seconds": 121.03,
+      "system_seconds": 33.45,
+      "cpu_seconds": 154.48,
+      "maximum_resident_set_bytes": 718913536,
+      "raw_log_sha256": "717d8270723d1a86ed4347f0ed0e5bd681dc356726fd3cffd4375dedfd21ab3c"
+    },
+    {
+      "trial": 2,
+      "tool": "cargo",
+      "stage": "second-checkout",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10933010432,
+      "minimum_free_bytes": 9945923584,
+      "elapsed_seconds": 95.86,
+      "user_seconds": 120.27,
+      "system_seconds": 33.27,
+      "cpu_seconds": 153.54,
+      "maximum_resident_set_bytes": 714883072,
+      "raw_log_sha256": "953b245aed65dc6619b365fbd9c1f8ceee846f3e06a3b5aba1cb45aa4e987000"
+    },
+    {
+      "trial": 2,
+      "tool": "cargo",
+      "stage": "first-edit",
+      "expected_slug": "alpha-beta-gamma-delta",
+      "smoke_passed": true,
+      "free_bytes_before": 9945772032,
+      "minimum_free_bytes": 9936809984,
+      "elapsed_seconds": 2.38,
+      "user_seconds": 1.44,
+      "system_seconds": 0.87,
+      "cpu_seconds": 2.31,
+      "maximum_resident_set_bytes": 534609920,
+      "raw_log_sha256": "d73c258814b41e8105339baa520ce8eff35cd85d28d6e5fbb70c45dc123fb915"
+    },
+    {
+      "trial": 2,
+      "tool": "cargo",
+      "stage": "later-edit",
+      "expected_slug": "alpha-beta-gamma-delta-epsilon",
+      "smoke_passed": true,
+      "free_bytes_before": 9947803648,
+      "minimum_free_bytes": 9911943168,
+      "elapsed_seconds": 1.73,
+      "user_seconds": 1.44,
+      "system_seconds": 0.75,
+      "cpu_seconds": 2.19,
+      "maximum_resident_set_bytes": 527745024,
+      "raw_log_sha256": "7c7433efb3e8dfa4da6f8f740fcf9b494a8eedc3c6e04f6405f08cbcb790cb5b"
+    },
+    {
+      "trial": 3,
+      "tool": "cargo",
+      "stage": "cold",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10894508032,
+      "minimum_free_bytes": 9935200256,
+      "elapsed_seconds": 97.8,
+      "user_seconds": 121.61,
+      "system_seconds": 34.15,
+      "cpu_seconds": 155.76,
+      "maximum_resident_set_bytes": 717717504,
+      "raw_log_sha256": "c82b48fd4f445e4b43bbaea5262cb4ba5098d08cd4ba2afb0c45960319bf520b"
+    },
+    {
+      "trial": 3,
+      "tool": "cargo",
+      "stage": "second-checkout",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10931191808,
+      "minimum_free_bytes": 9752481792,
+      "elapsed_seconds": 95.82,
+      "user_seconds": 120.88,
+      "system_seconds": 33.76,
+      "cpu_seconds": 154.64,
+      "maximum_resident_set_bytes": 712130560,
+      "raw_log_sha256": "8c1c0ca56c42c10fe530569bbdbf92cf95fe75e8f0695a5ed22118d0c9b9c28f"
+    },
+    {
+      "trial": 3,
+      "tool": "cargo",
+      "stage": "first-edit",
+      "expected_slug": "alpha-beta-gamma-delta",
+      "smoke_passed": true,
+      "free_bytes_before": 9750683648,
+      "minimum_free_bytes": 9750683648,
+      "elapsed_seconds": 2.72,
+      "user_seconds": 1.47,
+      "system_seconds": 0.9,
+      "cpu_seconds": 2.37,
+      "maximum_resident_set_bytes": 535068672,
+      "raw_log_sha256": "5a3ff35b703ed59ed1a5e3435a67d95104ac452bdf4a924e169223fee4342316"
+    },
+    {
+      "trial": 3,
+      "tool": "cargo",
+      "stage": "later-edit",
+      "expected_slug": "alpha-beta-gamma-delta-epsilon",
+      "smoke_passed": true,
+      "free_bytes_before": 9752186880,
+      "minimum_free_bytes": 9725759488,
+      "elapsed_seconds": 1.81,
+      "user_seconds": 1.43,
+      "system_seconds": 0.77,
+      "cpu_seconds": 2.2,
+      "maximum_resident_set_bytes": 527581184,
+      "raw_log_sha256": "a474e6d0acb565f8d0490556657acbf15cd0884c478da2cd3aa14d35d7c493b7"
+    },
+    {
+      "trial": 3,
+      "tool": "mbx",
+      "stage": "cold",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 10701103104,
+      "minimum_free_bytes": 9570070528,
+      "elapsed_seconds": 121.04,
+      "user_seconds": 135.06,
+      "system_seconds": 67.02,
+      "cpu_seconds": 202.08,
+      "maximum_resident_set_bytes": 712425472,
+      "raw_log_sha256": "39f5718169183893dee4465c3bc78ffed00904a89bc6bd591a36531f699aba52",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 120967589375,
+        "wrapper_phases_ns": {
+          "compiler": 131839193876,
+          "flight_wait": 154307759,
+          "include_scan": 8891828032,
+          "key": 3531711729,
+          "lookup": 35580551,
+          "permit_wait": 884428656,
+          "predict": 590364950,
+          "startup": 67090993,
+          "store": 21586874006,
+          "unattributed": 112490115497
+        },
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "unconsulted": 1607,
+        "incremental_compilations": 0,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "unconsulted": {
+            "invocations": 1607,
+            "duration_ns": 238870072216
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "openssl-sys build script",
+            "duration_ns": 86686993833
+          },
+          {
+            "crate_name": "libgit2-sys build script",
+            "duration_ns": 11238857959
+          },
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 4668431959
+          },
+          {
+            "crate_name": "syn",
+            "duration_ns": 3329049084
+          },
+          {
+            "crate_name": "ring build script",
+            "duration_ns": 2885451250
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 0,
+        "prefetch_runs": 0,
+        "bypasses": {
+          "cc-compiler-query": 14,
+          "cc-missing-output": 8,
+          "cc-unknown-flag": 2,
+          "compiler-query": 5,
+          "standard-input": 7
+        },
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 751902712,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 1983516277,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 3,
+      "tool": "mbx",
+      "stage": "second-checkout",
+      "expected_slug": "alpha-beta-gamma",
+      "smoke_passed": true,
+      "free_bytes_before": 9801908224,
+      "minimum_free_bytes": 9339412480,
+      "elapsed_seconds": 96.1,
+      "user_seconds": 87.82,
+      "system_seconds": 55.01,
+      "cpu_seconds": 142.83,
+      "maximum_resident_set_bytes": 693370880,
+      "raw_log_sha256": "4b7cf0c87582c24ad4d0c0ca8a0dd0e93b3361204b4f3226c5e380dbee25abc1",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 96063596333,
+        "wrapper_phases_ns": {
+          "blob_transfer": 843511671,
+          "compiler": 77129166966,
+          "flight_wait": 122963055,
+          "include_scan": 8474591458,
+          "key": 6251591261,
+          "lookup": 179979217,
+          "permit_wait": 674753133,
+          "predict": 350824127,
+          "restore": 467437636,
+          "startup": 68177969,
+          "store": 17528583643,
+          "unattributed": 88060855568
+        },
+        "lookups": 441,
+        "hits": 409,
+        "misses": 32,
+        "unconsulted": 1134,
+        "incremental_compilations": 0,
+        "compiler_invocations_avoided": 409,
+        "estimated_compiler_duration_avoided_ns": 44992209664,
+        "compiler": {
+          "miss": {
+            "invocations": 32,
+            "duration_ns": 95631659415
+          },
+          "unconsulted": {
+            "invocations": 1134,
+            "duration_ns": 65042016336
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "openssl-sys build script",
+            "duration_ns": 70001533250
+          },
+          {
+            "crate_name": "libgit2-sys build script",
+            "duration_ns": 11288027709
+          },
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 5322125791
+          },
+          {
+            "crate_name": "git2",
+            "duration_ns": 2253011000
+          },
+          {
+            "crate_name": "libssh2-sys build script",
+            "duration_ns": 2144679708
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 1584,
+        "prefetch_runs": 0,
+        "bypasses": {
+          "cc-compiler-query": 8,
+          "cc-missing-output": 5,
+          "cc-unknown-flag": 1,
+          "compiler-query": 2,
+          "standard-input": 1
+        },
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 233173551,
+        "restored_output_files": 767,
+        "restored_output_bytes": 438905850,
+        "reflinked_output_files": 544,
+        "reflinked_output_bytes": 436925494,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 222,
+        "copied_output_bytes": 2477517,
+        "reused_output_files": 1,
+        "reused_output_bytes": 536,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 476268416,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 413105175
+      }
+    },
+    {
+      "trial": 3,
+      "tool": "mbx",
+      "stage": "first-edit",
+      "expected_slug": "alpha-beta-gamma-delta",
+      "smoke_passed": true,
+      "free_bytes_before": 9339342848,
+      "minimum_free_bytes": 9068109824,
+      "elapsed_seconds": 7.4,
+      "user_seconds": 8.69,
+      "system_seconds": 1.09,
+      "cpu_seconds": 9.78,
+      "maximum_resident_set_bytes": 719699968,
+      "raw_log_sha256": "2ede7e14119768f5d033fb57ec1a61a27f4a32388dddfa5642bbe14fe0ec0da0",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 7379803916,
+        "wrapper_phases_ns": {
+          "compiler": 7020046376,
+          "key": 39126793,
+          "lookup": 330543,
+          "permit_wait": 1284666,
+          "restore": 2374,
+          "startup": 53249,
+          "unattributed": 49423998
+        },
+        "lookups": 1,
+        "hits": 0,
+        "misses": 1,
+        "unconsulted": 1,
+        "incremental_compilations": 2,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "miss": {
+            "invocations": 1,
+            "duration_ns": 5368470875
+          },
+          "unconsulted": {
+            "invocations": 1,
+            "duration_ns": 1641966084
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 5368470875
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 1641966084
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 2694,
+        "prefetch_runs": 0,
+        "bypasses": {},
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 0,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 0,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    },
+    {
+      "trial": 3,
+      "tool": "mbx",
+      "stage": "later-edit",
+      "expected_slug": "alpha-beta-gamma-delta-epsilon",
+      "smoke_passed": true,
+      "free_bytes_before": 9067970560,
+      "minimum_free_bytes": 9052573696,
+      "elapsed_seconds": 2.36,
+      "user_seconds": 1.58,
+      "system_seconds": 0.92,
+      "cpu_seconds": 2.5,
+      "maximum_resident_set_bytes": 533774336,
+      "raw_log_sha256": "a1709c269dcada05314da6a5938aa5369a89e1b7ea3a35a3e81ce8ff57dc294a",
+      "mbx_stats": {
+        "version": 5,
+        "session_duration_ns": 2351468416,
+        "wrapper_phases_ns": {
+          "compiler": 1998929250,
+          "key": 31465293,
+          "lookup": 473792,
+          "permit_wait": 1187500,
+          "startup": 56166,
+          "unattributed": 47235082
+        },
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "unconsulted": 1,
+        "incremental_compilations": 2,
+        "compiler_invocations_avoided": 0,
+        "estimated_compiler_duration_avoided_ns": 0,
+        "compiler": {
+          "unconsulted": {
+            "invocations": 2,
+            "duration_ns": 1989811709
+          }
+        },
+        "slow_compilations": [
+          {
+            "crate_name": "worktree_core",
+            "duration_ns": 1365310667
+          },
+          {
+            "crate_name": "branchbox",
+            "duration_ns": 624501042
+          }
+        ],
+        "verifications": 0,
+        "divergences": 0,
+        "prefetched_actions": 0,
+        "predictions_loaded": 2694,
+        "prefetch_runs": 0,
+        "bypasses": {},
+        "downloaded_bytes": 0,
+        "uploaded_bytes": 0,
+        "background_uploads": 0,
+        "background_upload_failures": 0,
+        "remote_blob_pack_uploads": 0,
+        "remote_blob_pack_upload_blobs": 0,
+        "upload_drain_duration_ns": 0,
+        "stored_bytes": 0,
+        "restored_output_files": 0,
+        "restored_output_bytes": 0,
+        "reflinked_output_files": 0,
+        "reflinked_output_bytes": 0,
+        "hardlinked_output_files": 0,
+        "hardlinked_output_bytes": 0,
+        "copied_output_files": 0,
+        "copied_output_bytes": 0,
+        "reused_output_files": 0,
+        "reused_output_bytes": 0,
+        "remote_failures": 0,
+        "remote_manifest_lookups": 0,
+        "remote_action_lookups": 0,
+        "remote_blob_requests": 0,
+        "remote_blob_pack_requests": 0,
+        "remote_blob_pack_blobs": 0,
+        "remote_manifest_lookup_duration_ns": 0,
+        "remote_action_lookup_duration_ns": 0,
+        "remote_blob_transfer_duration_ns": 0,
+        "local_cas_write_duration_ns": 0,
+        "prefetch_duration_ns": 0,
+        "materialization_duration_ns": 0
+      }
+    }
+  ],
+  "prior_ci": {
+    "run_id": 37248005821,
+    "head_sha": "006dab5151a75b0bed89c6ebdb5e73ddab71a4c2",
+    "jobs": [
+      {
+        "completed_at": "2026-10-05T00:44:22Z",
+        "conclusion": "success",
+        "name": "Manual CLI Harness (rails)",
+        "started_at": "2026-10-05T00:36:59Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completed_at": "2026-10-05T00:39:39Z",
+            "conclusion": "success",
+            "name": "Build CLI",
+            "started_at": "2026-10-05T00:37:29Z"
+          },
+          {
+            "completed_at": "2026-10-05T00:44:10Z",
+            "conclusion": "success",
+            "name": "Run manual CLI harness",
+            "started_at": "2026-10-05T00:39:39Z"
+          }
+        ]
+      },
+      {
+        "completed_at": "2026-10-05T00:43:44Z",
+        "conclusion": "success",
+        "name": "Manual CLI Harness (node)",
+        "started_at": "2026-10-05T00:36:59Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completed_at": "2026-10-05T00:39:39Z",
+            "conclusion": "success",
+            "name": "Build CLI",
+            "started_at": "2026-10-05T00:37:29Z"
+          },
+          {
+            "completed_at": "2026-10-05T00:43:36Z",
+            "conclusion": "success",
+            "name": "Run manual CLI harness",
+            "started_at": "2026-10-05T00:39:39Z"
+          }
+        ]
+      },
+      {
+        "completed_at": "2026-10-05T00:42:57Z",
+        "conclusion": "success",
+        "name": "Manual CLI Harness (rust)",
+        "started_at": "2026-10-05T00:36:59Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completed_at": "2026-10-05T00:39:36Z",
+            "conclusion": "success",
+            "name": "Build CLI",
+            "started_at": "2026-10-05T00:37:24Z"
+          },
+          {
+            "completed_at": "2026-10-05T00:42:49Z",
+            "conclusion": "success",
+            "name": "Run manual CLI harness",
+            "started_at": "2026-10-05T00:39:36Z"
+          }
+        ]
+      },
+      {
+        "completed_at": "2026-10-05T00:42:24Z",
+        "conclusion": "success",
+        "name": "Manual CLI Harness (generic)",
+        "started_at": "2026-10-05T00:36:59Z",
+        "status": "completed",
+        "steps": [
+          {
+            "completed_at": "2026-10-05T00:39:34Z",
+            "conclusion": "success",
+            "name": "Build CLI",
+            "started_at": "2026-10-05T00:37:25Z"
+          },
+          {
+            "completed_at": "2026-10-05T00:42:17Z",
+            "conclusion": "success",
+            "name": "Run manual CLI harness",
+            "started_at": "2026-10-05T00:39:34Z"
+          }
+        ]
+      }
+    ]
+  }
+}
