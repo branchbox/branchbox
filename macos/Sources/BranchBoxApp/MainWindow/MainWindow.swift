@@ -26,10 +26,12 @@ struct MainWindow: View {
             EnvironmentGate {
                 DetailColumn(selection: router.selection, router: router)
             }
-            .inspector(isPresented: $router.isInspectorPresented) {
-                ActivityInspector(target: router.selection?.operationTarget)
-                    .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
-            }
+        }
+        // Keep the inspector around the split view: nesting it in the detail leaves an opaque
+        // horizontal band over project and feature content in a live macOS 26 window.
+        .inspector(isPresented: $router.isInspectorPresented) {
+            ActivityInspector(target: router.selection?.operationTarget)
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
         }
         .navigationTitle(title)
         .navigationSubtitle(subtitle)
