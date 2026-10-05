@@ -15,7 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    cache-mode: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -26,6 +25,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: manual-cli-e2e
+          save-if: 'false'
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -41,31 +46,11 @@ jobs:
       - name: Set up Docker
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up Mr Boxington pilot
-        id: mbx
-        uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
-        with:
-          version: '1.22.0'
-          backend: github
-          github-cache-mode: target
-          cache-generation: branchbox-manual-cli-v1
-          cache-key-suffix: ${{ matrix.stack }}
-
-      - name: Verify read-only cache policy
-        if: steps.mbx.outputs.cache-save-eligible != 'false'
-        run: |
-          echo '::error::A reader job must not be eligible to save the cache.'
-          exit 1
-
       - name: Build CLI
-        run: mbx build -p branchbox-cli
+        run: cargo build -p branchbox-cli
 
       - name: Run manual CLI harness
         env:
           BRANCHBOX_SKIP_HOST_VALIDATION: 1
           STACK: ${{ matrix.stack }}
-        run: |
-          # This wrapper covers the unchanged harness's current cargo build command.
-          cargo() { mbx "$@"; }
-          export -f cargo
-          scripts/manual-cli-e2e.sh
+        run: scripts/manual-cli-e2e.sh
