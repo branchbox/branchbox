@@ -13,6 +13,8 @@ jobs:
   manual_cli_e2e:
     name: Manual CLI Harness (${{ matrix.stack }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -38,11 +40,35 @@ jobs:
       - name: Set up Docker
         uses: docker/setup-buildx-action@v3
 
+      - name: Restrict non-Rust cache writes
+        if: matrix.stack != 'rust'
+        shell: bash
+        run: |
+          cache_mode="$(printf '%s' "${ACTIONS_CACHE_MODE:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          case "$cache_mode" in
+            none|write-only) cache_mode=none ;;
+            *) cache_mode=read ;;
+          esac
+          printf 'ACTIONS_CACHE_MODE=%s\n' "$cache_mode" >> "$GITHUB_ENV"
+
+      - name: Set up Mr Boxington pilot
+        uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
+        with:
+          version: '1.22.0'
+          backend: github
+          github-cache-mode: target
+          cache-generation: branchbox-manual-cli-v1
+          cache-key-suffix: ${{ matrix.stack }}
+
       - name: Build CLI
-        run: cargo build -p branchbox-cli
+        run: mbx build -p branchbox-cli
 
       - name: Run manual CLI harness
         env:
           BRANCHBOX_SKIP_HOST_VALIDATION: 1
           STACK: ${{ matrix.stack }}
-        run: scripts/manual-cli-e2e.sh
+        run: |
+          # This wrapper covers the unchanged harness's current cargo build command.
+          cargo() { mbx "$@"; }
+          export -f cargo
+          scripts/manual-cli-e2e.sh

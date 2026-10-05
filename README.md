@@ -449,6 +449,10 @@ After updating, your next `docker compose up` or "Reopen in Container" will pull
 
 ## Manual Release Harnesses
 
+The manual CLI CI jobs use a scoped Rust cache pilot. See the
+[measurements and reproduction guide](docs/docs/internals/rust-build-cache.md)
+for its build-cost results and cache policy.
+
 Before tagging a release, run the CLI smoke matrix:
 
 ```bash
