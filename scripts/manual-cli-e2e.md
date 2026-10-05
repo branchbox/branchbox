@@ -5,8 +5,8 @@
 | Mode     | Description                                                                 |
 |----------|-----------------------------------------------------------------------------|
 | regular  | Full Docker/devcontainer execution. Builds the CLI, spawns containers, and performs real worktree operations. |
-| verbose  | Same as regular but with `set -x` plus component logs to make debugging easier. |
-| pretend  | Dry-run mode. Logs every step without touching Docker/git so you can sanity check control flow. |
+| verbose  | Same as regular with `set -x` shell tracing; command output is retained in the harness logs. |
+| pretend  | Logs the workflow without invoking BranchBox or Docker; still seeds and commits a temporary Git repository. |
 
 ```bash
 # Always run all three before marking a PR ready
@@ -48,7 +48,7 @@ Document pass/fail status in the release PR. If you change or add an adapter, ex
 
 | Tip | Details |
 |-----|---------|
-| Preserve artifacts | `KEEP_E2E_TMP=1 ./scripts/manual-cli-e2e.sh` prevents cleanup so you can inspect workspace logs, configs, and worktrees under `/tmp/branchbox-cli-e2e-*`. |
+| Preserve artifacts | `KEEP_E2E_TMP=1 ./scripts/manual-cli-e2e.sh` keeps workspace logs, configs, and worktrees under `/tmp/branchbox-cli-e2e-*`; owned container cleanup still runs. |
 | Custom binaries | Set `BRANCHBOX_BIN=/path/to/custom/branchbox` to reuse a prebuilt CLI. |
 | Feature names | Override `FEATURE_NAME`, `SECONDARY_FEATURE_NAME`, or `FALLBACK_FEATURE_NAME` if you need deterministic names while debugging. |
 | Logs | All key command logs land in `$TMP/logs/` (init/start/teardown, devcontainer sync, etc.). Tail them instead of rerunning when possible. |

@@ -238,7 +238,9 @@ historical, with the fresh Swift result recorded below.
 ### Automated and documentation checks
 
 The warnings-as-errors build passed. With `BRANCHBOX_IT=1` and the reviewed contract CLI (binary SHA-256
-starting `213d01d4`), `swift-final-tests.log` reports 701 tests in 93 suites passing after 24.379 seconds.
+starting `213d01d4`), the latest `swift-cancel-copy-final-tests.log` reports 701 tests in 93 suites
+passing after 26.028 seconds, including the Stop confirmation wording correction. The earlier
+`swift-final-tests.log` reports the same count at `c526066` after 24.379 seconds.
 That reported count includes gated skips; render and live-fixture suites were not enabled in this invocation.
 The combined website/docs build also passed. No new public media was added.
 
@@ -262,6 +264,25 @@ These are synthetic-fixture checks, not use of the live Rails checkout or comple
 Tools → Locate switched to the reviewed contract CLI and removed the legacy warning. Native project settings
 Review/Apply changed the prefix from `feature` to `review`, verified in the file and reopened UI, then restored
 `feature` through Apply; tunnels remained off. Native menu Quit while idle passed.
+
+Further contract-CLI checks on build 450 verified Stop and quit during Run Command using an owned Python
+sleep in the disposable Legacy feature. Keep Running preserved the command; Return in the quit alert
+also chose Keep Running. Explicit Stop removed the exact CLI and Python process group, and the UI
+reported "Stopped. No output was captured." A separate running command followed by Cancel and Quit
+removed the app and both exact child PIDs. Before/after process receipts are retained as
+`cancel-process-{before,after}.json` and `quit-process-{before,after}.json`. This verifies command
+cancellation and termination, not cancellation during feature creation or recovery of a partial worktree.
+After relaunch, Activity retained both cancelled commands as Stopped with their completion timestamps.
+
+The Stop confirmation incorrectly promised that the command's output so far would be kept. The native
+counterexample flushed stdout before sleeping, but the CLI had not returned its completed JSON result.
+The copy now explains that interrupted commands may not return output. Twelve existing presentation,
+Stop-flow and process-group cancellation tests passed with warnings as errors after the copy correction.
+
+On the fresh Contract fixture, another native settings Review/Apply changed `feature` to `audit`.
+`config get feature.branch_prefix --json` independently returned `audit` from the file; reopening the
+sheet matched. Native Review/Apply restored `feature`, and the same CLI read-back confirmed restoration
+with tunnels still off. This completes the contract-mode branch-prefix loop.
 
 Build 450 also initialized a fresh Git-only Contract fixture with shared agent settings, Sharing and
 1Password off and the layout kept. Preview left only `.git`/README and a clean Git status. Apply completed
@@ -314,6 +335,16 @@ The final receipt records about 6 GB free, but Rust/Rails/Node regular and verbo
 on capacity. A complete real agent/control-plane harness and final workflow-event/ack receipt are still
 pending. These later results do not erase the original infrastructure failure.
 
+A subsequent source review found that the agent wrapper sets its socket and unsets `BRANCHBOX_CLI_DIRECT`,
+but the current CLI feature start/teardown commands execute the workflows directly. The wrapper does not
+send those operations to agent IPC. Its stub check only prints the acknowledgement cursor, without
+waiting for or asserting workflow-event delivery. Thus another successful CLI harness run alone would
+not establish agent workflow-event coverage. This is a harness-routing gap; the retained heartbeat
+receipt does not demonstrate that the agent's IPC workflows are broken. Exercise IPC explicitly and
+verify delivered start/teardown events and their final acknowledgement before completing this gate.
+The current CI coverage step reports the percentage without enforcing the repository's 90% target;
+a green workflow does not establish that coverage requirement has been met.
+
 The host 1Password PAT/signing failure-path gate applies to PR #105 because it changes initialization's
 op-reference persistence. It remains pending a reachable SSH origin and configured GitHub/signing references.
 The real matrix, control-plane stub, credential gate and remaining native checklist must be completed
@@ -352,8 +383,8 @@ path and `branchbox --version` for each run.
 | 8 | Prune with 3 features, one dirty → the dirty row is unchecked → per-feature results | partial: dirty row unchecked and Keep selection checked; UI execution pending | pending |
 | 9 | Sleeping `post-checkout` hook → start → cancel → confirmation copy → Unregistered worktree row → Remove (see finding 1: contract CLIs also show a stray here, not Interrupted) | pending | pending |
 | 10 | Close the main window → menu bar Open BranchBox reopens it; menu bar Tear Down… opens the window and the sheet | partial: native Close independently verified; observation reactivated it, Dock/menu-bar actions unverified | pending |
-| 11 | Quit during a start → prompt → Cancel and Quit → `pgrep branchbox` prints nothing | pending | pending |
-| 12 | Project Settings branch prefix → `branchbox config get feature.branch_prefix --json --repo …` shows it | partial: native Review/Apply, file/reopened UI, and restoration verified; separate CLI-get loop pending | n/a |
+| 11 | Quit during a start → prompt → Cancel and Quit → `pgrep branchbox` prints nothing | partial: native quit during Run Command removed app and exact CLI/Python children; start-specific case pending | pending |
+| 12 | Project Settings branch prefix → `branchbox config get feature.branch_prefix --json --repo …` shows it | ✅ native Review/Apply, reopened UI and CLI get verified change and restoration | n/a |
 | 13 | `cd macos && swift run BranchBox` starts a feature without crashing (no notifications) | pending | pending |
 
 Additional manual checks handed over by waves 3 and 4 (record each once, with either CLI):

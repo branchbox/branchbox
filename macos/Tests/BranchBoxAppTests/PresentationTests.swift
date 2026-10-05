@@ -392,7 +392,10 @@ private func refused(_ cause: RefusalCause, message: String = "Refusing to tear 
         #expect(confirmation.message.contains(".branchbox/registry.json") == warns)
         #expect(confirmation.stopLabel == "Stop")
         #expect(confirmation.keepLabel == "Keep Running")
-        if kind == .exec { #expect(confirmation.message == "The command is interrupted; its output so far is kept.") }
+        if kind == .exec {
+            #expect(confirmation.message == "The command is interrupted. Any output already captured is kept, "
+                + "but interrupted commands may not return output.")
+        }
     }
 
     private static let lines = [

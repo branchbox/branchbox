@@ -148,7 +148,8 @@ struct CancelConfirmation: Sendable, Hashable {
             message = "This BranchBox CLI can't be stopped safely mid-way: stopping now may leave a partial worktree behind "
                 + "and corrupt the project's feature registry (.branchbox/registry.json). Stop only if it is stuck."
         } else if kind == .exec {
-            message = "The command is interrupted; its output so far is kept."
+            message = "The command is interrupted. Any output already captured is kept, "
+                + "but interrupted commands may not return output."
         } else if kind == .start {
             message = "BranchBox interrupts the command, waits for its processes to exit, then refreshes. "
                 + "Stopping during worktree creation may leave a partial worktree behind; check Needs attention after stopping. "

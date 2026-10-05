@@ -105,6 +105,7 @@ Choose **Feature › Run Command…** (⌥⌘R). The command runs in the feature
 
 - **Run through shell** uses `/bin/sh -lc`, so pipes, globs, and shell operators work. Turn it off to run parsed arguments directly.
 - Output appears **after the command finishes**, with stdout, stderr, exit code, and duration. A nonzero command exit is shown with its output, so you can inspect the failure. Use **Open in Terminal Instead** when you need live output or an interactive command.
+- **Stop** interrupts the command and its child processes. Interrupted commands may not return output; any output already captured remains available.
 - Save common commands as project Quick Commands or reuse the feature's recent command history.
 
 <figure className="mac-app-capture">
