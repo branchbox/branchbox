@@ -247,13 +247,46 @@
                 </div>
                 <a href="/docs/guides/mac-app" class="cta-btn cta-btn-primary">Explore the Mac app</a>
             </div>
-            <figure class="mac-app-media">
-                <video controls playsinline preload="metadata" width="1600" height="1048" poster="/docs/img/mac-app/start-feature.png" aria-label="Silent walkthrough of a real BranchBox Mac app session">
-                    <source src="/docs/media/mac-app-walkthrough.mp4" type="video/mp4">
-                    Your browser does not support embedded video. <a href="/docs/media/mac-app-walkthrough.mp4">Download the silent walkthrough</a>.
+            <figure class="mac-app-media mac-app-film mac-app-film-primary">
+                <h3>One feature. Its own workspace.</h3>
+                <video controls preload="none" playsinline loop poster="/docs/img/mac-app/branchbox-launch-poster.png" width="1440" height="1440" aria-label="Silent 27-second feature tour" aria-describedby="launch-film-description">
+                    <source src="/docs/media/branchbox-launch.mp4" type="video/mp4">
+                    <a href="/docs/media/branchbox-launch.mp4">Watch the feature tour</a>.
                 </video>
-                <figcaption>Silent recording of a real CLI session in a disposable project: feature overview, Quick start and result, unmerged-branch safety review, Activity, and a devcontainer command. No teardown is performed; some sections are accelerated. The DEV badge marks the development build.</figcaption>
+                <figcaption id="launch-film-description">Silent, 27-second motion tour using genuine app captures. Animated shapes and cursor explain setup, a recorded Python result, and teardown-plan review.</figcaption>
+                <details class="mac-app-film-text">
+                    <summary>Read the feature tour</summary>
+                    <p>BranchBox creates a feature branch with its own worktree folder. The film unfolds that workspace into setup, dev container, and review cards. The actual Start Feature form is shown with Full selected. Quick defaults skip devcontainer, compose, and specs setup modules; workflow tunnel provisioning is controlled separately and other enabled or enforced modules may still run. Full runs the project&#x27;s enabled setup modules except those skipped in Advanced. A successful feature setup is not proof that its dev container is running; start the dev container separately.</p>
+                    <p>The actual Run command window then shows a Python command targeted to the dev container. The recorded output is “Hello from the dev container” with Exit 0. Container startup happened before that capture. The final scene shows the actual teardown plan with Keep branch selected, reported changes, generated files, a preserved specification, and an ignored-files warning. It is a plan preview; the film does not execute teardown. Keeping a branch does not preserve Git-ignored files in a worktree that is removed.</p>
+                </details>
             </figure>
+            <p class="mac-app-recording-link">See real operations in the separate <a href="/docs/guides/mac-app#walkthrough">24-second recorded walkthrough</a>. The devcontainer was started between its two clips.</p>
+            <div class="mac-app-film-grid">
+            <figure class="mac-app-media mac-app-film">
+                <h3>Quick and Full setup</h3>
+                <video controls preload="none" playsinline poster="/docs/img/mac-app/branchbox-setup-poster.png" width="1440" height="1440" aria-label="Silent 14-second setup explanation" aria-describedby="setup-film-description">
+                    <source src="/docs/media/branchbox-setup.mp4" type="video/mp4">
+                    <a href="/docs/media/branchbox-setup.mp4">Watch the setup explanation</a>.
+                </video>
+                <figcaption id="setup-film-description">Silent, 14-second motion explanation. Quick skips devcontainer, Compose, and specs by default; Full runs enabled modules except those skipped in Advanced.</figcaption>
+                <details class="mac-app-film-text">
+                    <summary>Read the setup explanation</summary>
+                    <p>The actual Full setup form anchors a motion explanation of the two setup choices. Quick defaults skip three modules: devcontainer, compose, and specs. Workflow tunnel provisioning is controlled separately by request/configuration and policy; other enabled or enforced modules may still run. Full runs enabled modules except those skipped in Advanced. Start a dev container separately after setup; registry Active or setup Ready does not prove that a container is running.</p>
+                </details>
+            </figure>
+            <figure class="mac-app-media mac-app-film">
+                <h3>Review teardown</h3>
+                <video controls preload="none" playsinline poster="/docs/img/mac-app/branchbox-teardown-poster.png" width="1440" height="1440" aria-label="Silent 14-second teardown explanation" aria-describedby="teardown-film-description">
+                    <source src="/docs/media/branchbox-teardown.mp4" type="video/mp4">
+                    <a href="/docs/media/branchbox-teardown.mp4">Watch the teardown explanation</a>.
+                </video>
+                <figcaption id="teardown-film-description">Silent, 14-second motion explanation of the plan and ownership rule. Keeping a branch does not preserve ignored worktree files; no cleanup is executed in this film.</figcaption>
+                <details class="mac-app-film-text">
+                    <summary>Read the teardown explanation</summary>
+                    <p>The actual teardown plan shows Keep branch selected. “No user changes reported” refers to the changes Git reports. Git-ignored files are not listed and are removed with the worktree even when keeping the branch. The film enlarges this warning and explains the separately verified ownership rule: managed Compose identity is bound to the canonical workspace, and a copied or ambiguous identity refuses before Docker mutation. Ownership is established from managed identity, registry, exact workspace labels, and validated retained history. A differently named Compose group needs its history after all its labeled containers disappear. The animation shows a plan and rule; it does not claim successful deletion or a backup of files.</p>
+                </details>
+            </figure>
+            </div>
             <div class="mac-app-capabilities">
                 <article>
                     <h3>Manage projects and features</h3>

@@ -66,7 +66,9 @@ CLIs:
 
 ## Latest component audit and live review: 2026-10-04
 
-App/runtime source: `f637b8f` on `feature/mac-app-revamp`; website and audit-record changes are documented separately.
+App source: `f63f2c0`; runtime source: `ee39d94` on `feature/mac-app-revamp`. The ignored Compose lifecycle
+fixture was corrected at `40027ae`; this changes test setup only. Website and audit-record changes are
+documented separately.
 
 The packaged **BranchBox Dev** app was exercised with the branch-built 0.13.4 CLI (contract version 1,
 13 capabilities), using a disposable Git repository and an image-only `python:3.12-alpine` devcontainer.
@@ -78,7 +80,7 @@ bundle's signature passed `codesign --verify --deep --strict`.
 |---|---|---|
 | Add project / detection | Git repository appeared in the sidebar with the Generic stack; a tracked Rails source snapshot detected Rails | Native UI + real CLI |
 | Initialize project | Preview left `git status` empty; Apply created setup files and kept the existing folder layout | Native UI |
-| Start feature | Quick resolved the title to a feature name/branch/folder, created the worktree, and reported four skipped modules | Native UI + CLI list |
+| Start feature | Quick resolved the title to a feature name/branch/folder, created the worktree, and reported four skips for the selected configuration | Native UI + CLI list; minimal defaults are devcontainer, compose and specs, with tunnel provisioning controlled separately |
 | Devcontainer sync | Preview listed one workspace; Apply updated it and cleared the outdated-config warning | Native UI |
 | Container lifecycle | Start showed Running; Stop, restart and confirmed Rebuild succeeded; Docker inspection verified the new container IDs | Native UI + real Docker, disposable container |
 | Command runner | Python ran in **Dev container** and returned stdout/exit 0; a shell command returned exit 3 and its stderr without a transport-error alert | Native UI + real Docker |
@@ -105,6 +107,9 @@ Separate final real-CLI runs reported 24 declarations each: contract executed 23
 executed 21 (one gated fixture and two capability early returns). Each includes two support cases. The new
 cleanup regressions include 21 host/feature declarations (16 cleanup cases and five shared helper cases), ten
 Down declarations with failure variants, and five runtime unit cases.
+After the full Swift run, a copy-only follow-up clarified that teardown/prune do not list Git-ignored files and
+that keeping a branch does not keep its worktree files. A warnings-as-errors build, all 11 focused flow tests,
+and both existing flow render cases passed; 22 additional private light/dark PNGs were inspected for fit.
 The final health integration exercised three real Git scenarios with each CLI: missing administrative metadata,
 missing `commondir`, and a healthy unborn/orphan branch that must remain usable. The last scenario prevents a
 false warning based only on Git's zero HEAD hash. Sync Preview remains available on damaged rows, while Apply
@@ -133,16 +138,25 @@ make remaining volumes undiscoverable. The live legacy case uses the exact recor
 Formatting, Clippy with warnings as errors, nextest, doc tests, debug/release builds, coverage generation,
 and rustdoc with warnings as errors passed. The final full gate also passed with the developer's Docker
 engine blocked through PATH; clean-receipt fixtures use checked, command-scoped empty inventory probes.
+Isolated CI then exposed an ignored Compose lifecycle fixture that called the module directly without the
+workspace-bound identity written by production's feature workflow. The corrected unique-project fixture
+passed a strict fake engine (12 checked calls) and the single real-Docker ignored test. All 14 ordinary
+Compose unit cases, scoped Clippy and formatting passed; production ownership validation is unchanged.
+On `40027ae`, isolated CI passed all 27 ignored Docker integration cases, the normal four-stack CLI
+harnesses (Rust, Generic, Node and Rails), signed Compose live/config checks, Swift tests, both CLI
+compatibility modes, package verification and the build/quality/coverage jobs. The optional Firecracker
+run was still pending when this record was prepared; these results do not complete the local release
+matrix or native manual loop below.
 Local line coverage is **79.18%**, below the repository's 90% target.
 The guardrail preflight and pretend harness passed. The destructive ignored database/container suite was not
 run against the developer's live Docker engine; isolated CI owns that check. Local regular/verbose stack
 harnesses and the full agent control-plane stub harness remain unrun, so this is a component audit rather
-than release sign-off. The combined website/docs build passed; 340 local references and 171 anchors across
+than release sign-off. The combined website/docs build passed; 341 local references and 179 anchors across
 five reviewed pages resolved without errors.
 
-Earlier native package: `BranchBox-0.13.4-429-f637b8f.zip` (arm64), with its same-source release CLI
+Final native package: `BranchBox-0.13.4-434-f63f2c0.zip` (arm64), with the reviewed release CLI
 embedded. Bundle and helper signature checks passed; ZIP SHA-256:
-`200ba98879c0dc8dce2900e0eae88fbed9b886a8dbde5e4546f12992163f3daf`. It is ad hoc signed,
+`704f964c34f8a715cd496b7a19227316422a4152fe2797d6bc9b52ecfee31651`. It is ad hoc signed,
 without notarization. The locator still prefers an explicitly selected or installed CLI over the embedded fallback.
 
 The existing Rails checkout was not initialized, repaired or used to launch application services. Its pre-existing
@@ -150,21 +164,58 @@ schema modification, BranchBox configuration and registry hashes were unchanged.
 tracked HEAD was tested separately through detect, init preview, minimal start, exec and keep-branch teardown.
 That command ran in the host worktree; the Python devcontainer check above supplied the actual Docker test.
 
-Public media use only the disposable workspace and contain no customer source or credentials:
+Public media were captured by window ID in the disposable workspace and visually checked:
 
-- [Feature overview](../docs/static/img/mac-app/feature-overview.png)
-- [Start feature](../docs/static/img/mac-app/start-feature.png)
-- [Teardown plan](../docs/static/img/mac-app/teardown-plan.png)
+- [Start Full form](../docs/static/img/mac-app/start-feature.png)
 - [Command execution](../docs/static/img/mac-app/run-command.png)
-- [Silent walkthrough](../docs/static/media/mac-app-walkthrough.mp4): actual screen capture; main sequence at 2×,
-command execution at normal speed; H.264, 1600×1048, 30 fps, 60 seconds. Full decode completed without errors.
+- [Teardown plan](../docs/static/img/mac-app/teardown-plan.png): Keep selected, planning only
+- [Activity setup log](../docs/static/img/mac-app/activity-log.png)
+- [Diagnostics identity](../docs/static/img/mac-app/diagnostics.png)
+- [Silent walkthrough](../docs/static/media/mac-app-walkthrough.mp4): 24 seconds, H.264, 1600×1100, 30 fps.
+  It shows Full setup and Python command execution. A caption explicitly explains that the container was
+  started between the recorded clips; that action is not shown. Full decode and browser playback passed.
 
-**Media quality follow-up:** native captures contain a persistent translucent horizontal band across the feature
-detail, obscuring part of the Overview and Environment cards. The standalone overview figure is withheld from
-the guide; the recording remains review evidence, not a polished release asset. Feature-only offscreen renders
-at 820 pt and 1180 pt widths are clean. This suggests native hosting/material composition, but the cause has not
-been established. The Mac locked before resize/scroll/inspector comparisons and the remaining Activity and
-Diagnostics captures; those require a manual unlock. No compositor fix is claimed by this audit.
+Three additional silent motion explainers use those actual captures with an original 2D treatment:
+
+- [Launch film](../docs/static/media/branchbox-launch.mp4): 27 seconds, 1,620 frames; opening/closing loop
+  mean grayscale difference 0.029/255.
+- [Quick and Full setup](../docs/static/media/branchbox-setup.mp4): 14 seconds, 840 frames. Quick's three
+  default setup skips are distinguished from separately controlled tunnel provisioning in the text equivalent.
+- [Teardown review](../docs/static/media/branchbox-teardown.mp4): 14 seconds, 840 frames; planning only.
+  Keeping the branch does not preserve Git-ignored files in its removed worktree.
+
+All three are 1440×1440 H.264 at 60 fps with four deterministic subframes per output frame. Full decode,
+seek-order purity, every beat contact sample and asset hashes passed; no isolated frame-difference spikes
+were found. Focused films have different endpoints and are not loops. The website/docs provide controls,
+posters and text equivalents. Captures came from app `1e51154` and runtime `ee39d94`; the subsequent LogView
+copy change at `f63f2c0` does not change these sheet/Run pixels.
+
+The reusable [.claude/skills/branchbox-release-videos](../.claude/skills/branchbox-release-videos/SKILL.md)
+was activated by a dedicated video subagent and installed in the user's Codex skills folder. Independent
+forward-testing caught and corrected the Quick-default claim before the final setup render. The installed
+skill validates; changed relevant assets refuse before browser/output creation, and a setup-only proof
+works without unrelated Run/teardown captures. Release and launch instructions now request this workflow
+for affected features while retaining valid unchanged media. Font licenses, capture/claim provenance,
+source hashes and the current production QA receipt travel with the skill. Media preparation is separate
+from tagging, deployment and announcements.
+
+**Native review and media follow-up:** Tools → Locate selected the reviewed 14-capability CLI; a fresh Quick
+feature, three-workspace sync and Python command succeeded. Its subsequent CLI Keep teardown was independently
+checked: worktree/container gone and branch retained. A later Full feature reported three successful modules,
+one skipped tunnel, no failed modules and an absent `.env` warning. Separate container startup succeeded and
+Python returned stdout/exit 0. Activity's warning filter, message search and timestamps worked; Diagnostics
+refresh updated its timestamp. The current ignored-file warning rendered in native teardown planning.
+Activity intentionally stores command output in the Run result rather than progress logs; its misleading empty
+log placeholder was changed to “No log messages” and compiled with warnings as errors.
+
+The attempted rectangle-captured video and two screenshots showed the foreground Codex window; they were
+quarantined and excluded. Corrected window-specific media replaced them. The older 60-second film is retained
+privately. A horizontal band still obscures part of the main feature/project content in repeated native captures.
+A one-line scroll-edge-effect experiment compiled and passed three targeted renders (26 private PNGs), but did
+not remove the band in the verified current native executable and was reverted. Overview is withheld from
+public media; tightly cropped sheet/command footage remains unobscured. No compositor fix is claimed.
+Computer Use denies access to macOS Terminal; native Open Shell interaction remains unverified, although the
+exact Docker shell launch plan passed a real PTY check.
 
 Remaining live checks: real Rails/Postgres/Sidekiq application behavior, external database cleanup, public tunnels,
 1Password credential acquisition, SBX/Local VM/in-guest provisioning, OS notification delivery, and the additional
@@ -186,13 +237,13 @@ path and `branchbox --version` for each run.
 |---|---|---|---|
 | 0 | `cargo build -p branchbox-cli`; `scripts/package-macos-app.sh --native --zip`; quarantine removed if from CI | pending | pending |
 | 1 | Launch from Finder (launchd PATH): onboarding finds the CLI (Locate… for the branch CLI); Diagnostics lists the CLI, capabilities, doctor rows | pending | pending |
-| 2 | Add a disposable `git init` repo → Set Up BranchBox (`init -y`, layout kept) → project appears; repo not moved | pending | pending |
-| 3 | Start a minimal feature → live log → result shows the resolved name; `branchbox feature list --json --repo …` lists it | pending | pending |
-| 4 | Start a feature from Terminal → the app shows it within about 1 s | pending | pending |
-| 5 | Run Command `echo hi`, then `sh -c 'exit 3'` → exit 3 shown, no alert | pending | pending |
-| 6 | `touch notes.txt` in a worktree → Tear Down → refusal card names notes.txt, nothing removed → Discard (confirm) → removed; branch per policy (`git branch --list`) | pending | pending |
-| 7 | Commit in a worktree → Delete if merged is blocked → Force-delete (confirm) → branch deleted | pending | pending |
-| 8 | Prune with 3 features, one dirty → the dirty row is unchecked → per-feature results | pending | pending |
+| 2 | Add a disposable `git init` repo → Set Up BranchBox (`init -y`, layout kept) → project appears; repo not moved | ✅ Dev bundle, live backend | pending |
+| 3 | Start a minimal feature → live log → result shows the resolved name; `branchbox feature list --json --repo …` lists it | ✅ Quick and Full, repeated with 14-capability CLI | pending |
+| 4 | Start a feature from Terminal → the app shows it within about 1 s | ✅ direct CLI creation appeared without Refresh | pending |
+| 5 | Run Command `echo hi`, then `sh -c 'exit 3'` → exit 3 shown, no alert | ✅ stdout/exit 0 and stderr/exit 3; Docker Python repeated | pending |
+| 6 | `touch notes.txt` in a worktree → Tear Down → refusal card names notes.txt, nothing removed → Discard (confirm) → removed; branch per policy (`git branch --list`) | partial: dirty README refusal, source/container preserved; UI discard pending | pending |
+| 7 | Commit in a worktree → Delete if merged is blocked → Force-delete (confirm) → branch deleted | partial: unmerged branch blocks Delete-if-merged; UI Force-delete pending | pending |
+| 8 | Prune with 3 features, one dirty → the dirty row is unchecked → per-feature results | partial: dirty row unchecked and Keep selection checked; UI execution pending | pending |
 | 9 | Sleeping `post-checkout` hook → start → cancel → confirmation copy → Unregistered worktree row → Remove (see finding 1: contract CLIs also show a stray here, not Interrupted) | pending | pending |
 | 10 | Close the main window → menu bar Open BranchBox reopens it; menu bar Tear Down… opens the window and the sheet | pending | pending |
 | 11 | Quit during a start → prompt → Cancel and Quit → `pgrep branchbox` prints nothing | pending | pending |
@@ -207,9 +258,9 @@ Additional manual checks handed over by waves 3 and 4 (record each once, with ei
 | Dock reopen, and menu bar Open BranchBox with the main window closed and with the menu bar icon hidden | pending |
 | ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | pending |
 | Log auto-scroll, scroll-up pause and Jump to Latest with a 2,000-line operation; Run Command with multi-MB output | pending |
-| Project toolbar at the 1100 pt default width (icon-only secondary actions, overflow) and primary-button prominence / red destructive styling in a key window | pending |
+| Project toolbar at the 1100 pt default width (icon-only secondary actions, overflow) and primary-button prominence / red destructive styling in a key window | partial: default, inspector and maximized layout inspected; full key-window styling pending |
 | Dev container Start/Stop on a compose repository updates the Environment card; Diagnostics with Docker stopped | pending |
-| Settings › Tools › Locate… switches the CLI live (legacy ↔ contract); legacy project settings are read-only with Open config.json | pending |
+| Settings › Tools › Locate… switches the CLI live (legacy ↔ contract); legacy project settings are read-only with Open config.json | partial: Locate switched installed legacy CLI to reviewed 14-capability CLI and cleared warning; legacy settings UI pending |
 | Composed main-window screenshots for the PR from `scripts/macos-dev.sh --open --preview showcase` | pending |
 
 ### Real-window preview check: 2026-10-04

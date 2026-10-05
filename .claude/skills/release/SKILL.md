@@ -72,7 +72,11 @@ Add a new row to the version history table:
 | X.Y.Z | YYYY-MM-DD | Minor/Patch/Major | Brief description of release highlights |
 ```
 
-#### 3c. Commit Documentation Updates
+#### 3c. Prepare Changed-Feature Videos
+
+Delegate a video producer using [branchbox-release-videos](../branchbox-release-videos/SKILL.md) alongside the documentation agent. The producer verifies current feature claims and capture provenance, shows the beat map and four proof stills, then renders the launch film and focused documentation clips. The documentation agent embeds reviewed media, posters, and text equivalents and checks the combined site. Keep valid unchanged media; record an unavailable capture or licensed audio as a limitation. Media preparation does not authorize tags, deployment, or announcements.
+
+#### 3d. Commit Documentation Updates
 
 ```bash
 git add CHANGELOG.md RELEASING.md

@@ -16,16 +16,37 @@ The app uses your installed `branchbox` CLI. Its project and feature data comes 
 The Mac app currently ships as a development/CI build. It requires **macOS 26 or later** and **BranchBox CLI 0.13.4 or later**. See [installation](../getting-started/installation.md#mac-app-preview) for building or obtaining an app bundle and opening it on macOS.
 :::
 
+## Motion tour
+
+This silent 27-second film explains the feature workflow with animation around genuine app captures from a disposable project. The shapes and cursor illustrate the flow; they are not recorded clicks. The separately recorded [walkthrough](#walkthrough) shows real operations.
+
+<figure className="mac-app-capture mac-app-film">
+  <video controls preload="none" playsInline loop poster={useBaseUrl('/img/mac-app/branchbox-launch-poster.png')} width="1440" height="1440" aria-label="Silent 27-second feature tour" aria-describedby="launch-film-description">
+    <source src={useBaseUrl('/media/branchbox-launch.mp4')} type="video/mp4" />
+    <a href={useBaseUrl('/media/branchbox-launch.mp4')}>Watch the feature tour</a>.
+  </video>
+  <figcaption id="launch-film-description">Motion explanation: feature setup → a recorded Python result → teardown-plan review. The film does not execute teardown.</figcaption>
+</figure>
+
+<details className="mac-app-film-text">
+  <summary>Read the feature tour</summary>
+
+BranchBox creates a feature branch with its own worktree folder. The film unfolds that workspace into setup, dev container, and review cards. The actual Start Feature form is shown with Full selected. Quick defaults skip devcontainer, compose, and specs setup modules; workflow tunnel provisioning is controlled separately and other enabled or enforced modules may still run. Full runs the project's enabled setup modules except those skipped in Advanced. A successful feature setup is not proof that its dev container is running; start the dev container separately.
+
+The actual Run command window then shows a Python command targeted to the dev container. The recorded output is “Hello from the dev container” with Exit 0. Container startup happened before that capture. The final scene shows the actual teardown plan with Keep branch selected, reported changes, generated files, a preserved specification, and an ignored-files warning. It is a plan preview; the film does not execute teardown. Keeping a branch does not preserve Git-ignored files in a worktree that is removed.
+
+</details>
+
 ## Walkthrough
 
-This silent screen recording shows a real CLI session in a disposable project using a development app build. It opens a feature, starts a Quick feature, reviews the result and an unmerged branch's teardown choices, opens Activity, and runs a command in a devcontainer. It does not perform teardown. Some sections are accelerated.
+This silent 24-second recording shows real CLI operations in a disposable project: Full feature setup and its result, followed by Python completing with Exit 0 in the devcontainer. The devcontainer was started separately between the two recorded clips. Captured using a development app build.
 
 <figure className="mac-app-capture">
-  <video controls playsInline preload="metadata" width="1600" height="1048" poster={useBaseUrl('/img/mac-app/start-feature.png')} aria-label="Silent walkthrough of a real BranchBox Mac app session">
+  <video controls preload="none" playsInline poster={useBaseUrl('/img/mac-app/run-command.png')} width="1600" height="1100" aria-label="Silent walkthrough of Full feature setup and a Python command in the devcontainer">
     <source src={useBaseUrl('/media/mac-app-walkthrough.mp4')} type="video/mp4" />
-    Your browser does not support embedded video. <a href={useBaseUrl('/media/mac-app-walkthrough.mp4')}>Download the silent walkthrough</a>.
+    <a href={useBaseUrl('/media/mac-app-walkthrough.mp4')}>Watch the Mac app walkthrough</a>.
   </video>
-  <figcaption>Real CLI workflow: feature overview → Quick start and result → unmerged-branch review → blocked safe deletion → Activity → devcontainer command. The DEV badge identifies the development build.</figcaption>
+  <figcaption>Full setup prepares the workspace. Container startup happens between clips; the second clip runs Python and shows its output and exit status.</figcaption>
 </figure>
 
 ## Add a project
@@ -58,13 +79,30 @@ For a Quick feature that needs current devcontainer configuration later, use **U
 The sheet shows progress and the result. **Run in Background** closes it while the operation continues in Activity. **Stop…** cancels the running process; an interrupted start may leave a partial feature that needs review or recovery.
 
 <figure className="mac-app-capture">
-  <img src={useBaseUrl('/img/mac-app/start-feature.png')} alt="Start Feature form in a real disposable BranchBox project" width="2200" height="1440" loading="lazy" />
-  <figcaption>The start form previews the feature name, branch, and folder before the CLI runs.</figcaption>
+  <img src={useBaseUrl('/img/mac-app/start-feature.png')} alt="Start a Feature form with Full setup selected and the generated feature slug, branch, and folder" width="2200" height="1440" loading="lazy" />
+  <figcaption>The Full setup form previews the feature slug, branch, folder, and setup options before the CLI runs. Captured in a disposable project using a development app build.</figcaption>
 </figure>
 
 :::note Feature setup and container startup
 For the container runtime, a Full feature prepares its workspace and configured devcontainer setup. Quick mode skips that sync by default. Start the devcontainer separately from the feature's **Environment** card when you need it.
 :::
+
+### Quick and Full setup in motion
+
+<figure className="mac-app-capture mac-app-film">
+  <video controls preload="none" playsInline poster={useBaseUrl('/img/mac-app/branchbox-setup-poster.png')} width="1440" height="1440" aria-label="Silent 14-second setup explanation" aria-describedby="setup-film-description">
+    <source src={useBaseUrl('/media/branchbox-setup.mp4')} type="video/mp4" />
+    <a href={useBaseUrl('/media/branchbox-setup.mp4')}>Watch the setup explanation</a>.
+  </video>
+  <figcaption id="setup-film-description">Silent 14-second motion explanation using the real Full setup form. Quick skips three default modules; Full runs enabled modules except those skipped in Advanced.</figcaption>
+</figure>
+
+<details className="mac-app-film-text">
+  <summary>Read the setup explanation</summary>
+
+The actual Full setup form anchors a motion explanation of the two setup choices. Quick defaults skip three modules: devcontainer, compose, and specs. Workflow tunnel provisioning is controlled separately by request/configuration and policy; other enabled or enforced modules may still run. Full runs enabled modules except those skipped in Advanced. Start a dev container separately after setup; registry Active or setup Ready does not prove that a container is running.
+
+</details>
 
 ## Work in a feature
 
@@ -102,7 +140,7 @@ Choose **Feature › Run Command…** (⌥⌘R). The command runs in the feature
 
 <figure className="mac-app-capture">
   <img src={useBaseUrl('/img/mac-app/run-command.png')} alt="Run Command result showing the command's output and exit status" width="1800" height="944" loading="lazy" />
-  <figcaption>A Python command in a feature's devcontainer returns its output and Exit 0.</figcaption>
+  <figcaption>Real CLI result in a disposable project: Python runs in the devcontainer and completes with Exit 0. Captured using a development app build.</figcaption>
 </figure>
 
 ### Share a feature
@@ -119,6 +157,11 @@ The initial teardown attempt checks the reported Git changes before removing the
 
 The current plan does not list Git-ignored files. Worktree removal also deletes those files, so copy any ignored local data you need before teardown. **Select Safe** uses the reported Git status and branch checks; it is not a backup. **Keep** retains the branch's commits, but does not preserve ignored files or Compose volumes.
 
+<figure className="mac-app-capture">
+  <img src={useBaseUrl('/img/mac-app/teardown-plan.png')} alt="Teardown plan with No user changes reported, the ignored-files warning, and Keep the branch selected" width="2200" height="1440" loading="lazy" />
+  <figcaption>Reviewing a teardown plan before removal. Keep retains the branch; ignored files are not listed and would be removed with the worktree.</figcaption>
+</figure>
+
 In the current CLI source build, feature teardown targets devcontainers with the worktree's exact workspace label, including standalone image/Dockerfile containers. The Compose module separately removes owned Compose containers, networks, and volumes. The standalone container check does not remove volumes or custom networks. This differs from **Stop** in the Environment card, which keeps volumes unless you explicitly choose to delete them.
 
 Review the result's runtime cleanup status and warnings. Failed or unverified cleanup of a possibly provisioned environment keeps the worktree for retry unless removal is forced. Compose cleanup retains project identity before removing containers, so a retry can still find remaining networks or volumes. Keep the retained workspace and its managed configuration for that retry. Missing or changed Compose configuration can require restoration or manual inspection; it does not produce a clean receipt. The newer cleanup behavior is identified by the CLI's `host-container-teardown-verified` capability in Diagnostics. Older CLI builds can leave standalone devcontainers behind after feature teardown; use **Stop** first and check Docker separately when using those builds.
@@ -127,10 +170,22 @@ New managed Compose identity is bound to the canonical workspace. Older managed 
 
 Keep cleanup history when the running Compose project uses a different name from the recorded managed project. Once its containers are gone, deleting that history can leave its networks or volumes undiscoverable; the cleanup receipt covers the owned projects whose identities were established.
 
-<figure className="mac-app-capture">
-  <img src={useBaseUrl('/img/mac-app/teardown-plan.png')} alt="Teardown review with worktree changes and branch choices" width="2200" height="1440" loading="lazy" />
-  <figcaption>The review shows what blocks removal and lets you retain an unmerged branch.</figcaption>
+### Teardown review in motion
+
+<figure className="mac-app-capture mac-app-film">
+  <video controls preload="none" playsInline poster={useBaseUrl('/img/mac-app/branchbox-teardown-poster.png')} width="1440" height="1440" aria-label="Silent 14-second teardown explanation" aria-describedby="teardown-film-description">
+    <source src={useBaseUrl('/media/branchbox-teardown.mp4')} type="video/mp4" />
+    <a href={useBaseUrl('/media/branchbox-teardown.mp4')}>Watch the teardown explanation</a>.
+  </video>
+  <figcaption id="teardown-film-description">Silent 14-second motion explanation using the real teardown plan. It illustrates the ignored-files warning and ownership rule; it does not show cleanup being executed.</figcaption>
 </figure>
+
+<details className="mac-app-film-text">
+  <summary>Read the teardown explanation</summary>
+
+The actual teardown plan shows Keep branch selected. “No user changes reported” refers to the changes Git reports. Git-ignored files are not listed and are removed with the worktree even when keeping the branch. The film enlarges this warning and explains the separately verified ownership rule: managed Compose identity is bound to the canonical workspace, and a copied or ambiguous identity refuses before Docker mutation. Ownership is established from managed identity, registry, exact workspace labels, and validated retained history. A differently named Compose group needs its history after all its labeled containers disappear. The animation shows a plan and rule; it does not claim successful deletion or a backup of files.
+
+</details>
 
 **Project › Prune…** reviews multiple features and tears them down sequentially. **Select Safe** excludes reported user changes, invalid worktrees, and unsafe branch deletion under the chosen policy. An unmerged branch can remain selected when its policy is **Keep**. A refused teardown is recorded and the batch continues with the remaining features. The app uses individual teardowns rather than running `branchbox prune`.
 
@@ -147,6 +202,11 @@ After changing the main project's devcontainer configuration, choose **Project �
 ## Activity, menu bar, and refresh
 
 **Window › Activity** (⌥⌘L) lists queued, running, and finished operations with their logs. The main window's inspector (⌥⌘I) shows the selected operation and its progress.
+
+<figure className="mac-app-capture">
+  <img src={useBaseUrl('/img/mac-app/activity-log.png')} alt="Activity showing a completed Full feature start, the missing .env warning, and timestamped CLI logs" width="1800" height="1104" loading="lazy" />
+  <figcaption>Activity preserves the real Full setup result and its missing .env warning. Search, warning filters, and timestamps help inspect the CLI log.</figcaption>
+</figure>
 
 The menu bar icon indicates idle, working, attention, or CLI-unavailable state. Its menu opens projects and features, starts a feature, refreshes, and shows recent activity. Closing the main window can leave BranchBox running in the menu bar. Quitting with an operation running offers **Keep Running** or **Cancel and Quit**.
 
@@ -165,6 +225,11 @@ The app selects the first usable CLI from:
 5. An embedded CLI, if the app was explicitly packaged with one.
 
 Use **Window › Diagnostics** to see the selected executable, version, capability list, login-shell environment, tool checks, project health, and recent operations. **Run Checks Again** refreshes checks; **Copy Report** produces a report with known secrets redacted. Review paths and command output before sharing a report publicly.
+
+<figure className="mac-app-capture">
+  <img src={useBaseUrl('/img/mac-app/diagnostics.png')} alt="Diagnostics showing the selected CLI, version, contract version, and advertised capabilities" width="1800" height="1024" loading="lazy" />
+  <figcaption>Diagnostics identifies the CLI selected for this development build, including the capabilities that determine available actions.</figcaption>
+</figure>
 
 The released CLI 0.13.4 uses **legacy mode**. A development build can report that same version while advertising newer capabilities, so the version number alone does not determine available actions. Core feature workflows have compatibility fallbacks, including app-side teardown checks and host-tool diagnostics. Project configuration editing, tunnel credential editing, and some newer setup options require specific CLI capabilities. An executable that responds to `version --json` does not automatically support every action: the app checks its advertised capabilities individually.
 

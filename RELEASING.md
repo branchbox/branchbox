@@ -99,7 +99,13 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
    - If CLI flags changed, regenerate `docs/docs/reference/cli.md` using `branchbox --help`
    - Commit documentation updates before tagging
 
-4. **Run the manual CLI smoke harness (recommended):**
+4. **Prepare release media when features or UI changed:**
+   - Delegate a video producer using [.claude/skills/branchbox-release-videos/SKILL.md](.claude/skills/branchbox-release-videos/SKILL.md), alongside the implementation and documentation agents.
+   - Review the feature evidence, beat map, and four proof stills before the full launch film. Refresh affected documentation clips from the packaged app in a disposable repository.
+   - Record capture/source revisions, licenses, audio status, claim boundaries, and render QA. Integrate reviewed MP4s, posters, and text equivalents; check the combined docs/website at desktop and mobile sizes.
+   - Media preparation does not tag, deploy, or announce a release. Keep valid unchanged clips, and withhold a stale or failed capture rather than using it as current evidence.
+
+5. **Run the manual CLI smoke harness (recommended):**
    ```bash
    # Quick pretend-mode validation (no Docker required)
    ./scripts/manual-cli-e2e.sh --mode pretend
@@ -111,7 +117,7 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
 
    The harness exercises init → feature lifecycle → tunnel permutations → teardown. See `docs/docs/getting-started/manual-cli-e2e.md` for details. For major releases, run all stack/mode combinations.
 
-5. **Changelog preview (optional):**
+6. **Changelog preview (optional):**
    ```bash
    git-cliff --unreleased
    ```
@@ -353,6 +359,8 @@ Scoop support is planned for a future milestone. When implemented, it will follo
 
 ### 3. Announce the Release
 
+Before announcing, compare prepared videos and screenshots with the shipped version and its verified behavior. Use the release-video skill for changed features; attach only reviewed media with its text equivalent. The launch authorization governs publication and messages.
+
 - Post to project communication channels
 - Update documentation site (if applicable)
 - Social media announcements
@@ -444,6 +452,7 @@ Use this checklist for each release:
 - [ ] Build docs: `cargo doc --no-deps && cd docs && npm run build`
 - [ ] Update `CHANGELOG.md` with release highlights
 - [ ] Update docs if CLI behavior changed
+- [ ] Refresh affected launch/docs media through the video producer; verify shipped claims, capture provenance, licenses, accessibility, and responsive playback
 - [ ] Run E2E harness: `./scripts/manual-cli-e2e.sh --mode pretend`
 - [ ] Dry-run: `cargo release --workspace --dry-run`
 - [ ] Execute: `cargo release --workspace --execute`

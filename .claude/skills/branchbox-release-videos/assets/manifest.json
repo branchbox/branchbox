@@ -1,0 +1,66 @@
+{
+  "brand": "BranchBox",
+  "edition": "silent",
+  "source_revision": {
+    "app": "1e51154",
+    "runtime": "ee39d94"
+  },
+  "canvas": [
+    1440,
+    1440
+  ],
+  "fps": 60,
+  "subframes": 4,
+  "films": {
+    "launch": 27,
+    "setup": 14,
+    "teardown": 14
+  },
+  "provenance": {
+    "setup-full": "Actual Start Feature sheet, Full selection, disposable Workspace/Window Review; screenshot proves form only.",
+    "run-command": "Actual Window Review Python execution in dev container; stdout Hello from the dev container, Exit 0, 477 ms. Startup occurred before this capture.",
+    "teardown-plan": "Actual Window Review teardown plan, Keep branch selection, current ignored-files warning. Confirmation was not clicked in this capture."
+  },
+  "fonts": [
+    {
+      "name": "Archivo",
+      "source": "https://github.com/google/fonts/tree/main/ofl/archivo",
+      "license": "SIL Open Font License 1.1",
+      "file": "assets/fonts/Archivo.ttf"
+    },
+    {
+      "name": "Geist",
+      "source": "https://github.com/google/fonts/tree/main/ofl/geist",
+      "license": "SIL Open Font License 1.1",
+      "file": "assets/fonts/Geist.ttf"
+    }
+  ],
+  "audio": {
+    "status": "none",
+    "reason": "No licensed song or downloaded SFX supplied. No synthesized sound."
+  },
+  "claims": {
+    "Quick": "By default skips devcontainer, compose and specs setup modules. Workflow tunnel provisioning is separately request/configuration/policy controlled; other enabled or policy-enforced modules can still run.",
+    "Full": "Runs enabled setup modules except those skipped in Advanced; setup readiness is not a running container.",
+    "Run": "Commands can target the feature runtime or a running dev container; this capture is an actual dev container result.",
+    "Teardown": "Review reported changes, generated files, preserved spec and branch choice before removal. Keeping the branch does not keep Git-ignored worktree files.",
+    "Ownership": "Managed Compose identity is bound to the canonical workspace; ambiguous/copied identity refuses before Docker mutation. Verified separately by core/live audit, not established by this plan screenshot."
+  },
+  "hashes": {
+    "assets/captures/run-command.png": "0d5b314562640436dd54655207a3f516d82d6632f889d527e1ebb9ffac120d65",
+    "assets/captures/setup-full.png": "a3048021424aeb173f16b576f52f8659badd13236d5066590d8b5f89d6925c34",
+    "assets/captures/teardown-plan.png": "4e8ea65f0623a7893420dbe8d92b3b03fc90b2be5d75dafb3cedfeaf4a09533c",
+    "assets/film.html": "5b1f13f3624d6445ddb8f7b93203797bbe037de092261e5c686b9782534a1773",
+    "assets/fonts/Archivo-OFL.txt": "1778201b7bd33e8c08a2eda32a4ad2f69bc38ced9731b01cc3fc47f268c8ef3c",
+    "assets/fonts/Archivo.ttf": "0e094a7d3c7c4c25cf1310c4b30014f1dae9332220b1c2c88f4fa996f0b05053",
+    "assets/fonts/Geist-OFL.txt": "f12f59163d92084b0473315ae4566cde0c1233d940ae464f5225a69c347cc691",
+    "assets/fonts/Geist.ttf": "73894e0448cae90a92b6c2f8732b7bb9acb7b94c418bff559dad4a18e1de9659"
+  },
+  "first_invocation": "Producer read SKILL.md and production.md from disk, adapted three actual captures, rendered proof then 27s/14s/14s films. Forward-test corrected module-count claim against core/src/workflows/feature.rs787/814.",
+  "reviewed_current_source": {
+    "app": "f63f2c0",
+    "runtime": "ee39d94",
+    "ci_test_fixture_followup": "40027ae",
+    "difference": "Captures preceded LogView empty-placeholder copy change. Full/Run/teardown sheet pixels and runtime behavior shown here are unchanged. CI followup modifies test fixtures only."
+  }
+}
