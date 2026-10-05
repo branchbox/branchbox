@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    cache-mode: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -40,18 +41,8 @@ jobs:
       - name: Set up Docker
         uses: docker/setup-buildx-action@v3
 
-      - name: Restrict non-Rust cache writes
-        if: matrix.stack != 'rust'
-        shell: bash
-        run: |
-          cache_mode="$(printf '%s' "${ACTIONS_CACHE_MODE:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-          case "$cache_mode" in
-            none|write-only) cache_mode=none ;;
-            *) cache_mode=read ;;
-          esac
-          printf 'ACTIONS_CACHE_MODE=%s\n' "$cache_mode" >> "$GITHUB_ENV"
-
       - name: Set up Mr Boxington pilot
+        id: mbx
         uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
         with:
           version: '1.22.0'
@@ -59,6 +50,12 @@ jobs:
           github-cache-mode: target
           cache-generation: branchbox-manual-cli-v1
           cache-key-suffix: ${{ matrix.stack }}
+
+      - name: Verify read-only cache policy
+        if: steps.mbx.outputs.cache-save-eligible != 'false'
+        run: |
+          echo '::error::A reader job must not be eligible to save the cache.'
+          exit 1
 
       - name: Build CLI
         run: mbx build -p branchbox-cli
