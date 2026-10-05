@@ -253,6 +253,12 @@ Docker control socket. Teardown deletes the VM, TAP, proxies, key, and writable 
 account-free and never mounts the host Docker socket or persistent human credential directories.
 See the local-vm setup and image build instructions in
 [How It Works](https://branchbox.dev/docs/how-it-works#account-free-firecracker-local-vm).
+Current source builds also support signed workspace topology for the managed `in-guest` provider:
+a version-3 assignment can pin the container workspace path and reviewed connector omissions.
+`branchbox runtime-capabilities` reports whether a staged binary implements the contract. See the
+[managed-runtime manifest](https://branchbox.dev/docs/internals/managed-runtime-manifest-v2#signed-workspace-topology-in-version-3)
+for assignment fields and refusal conditions.
+
 See [How It Works](https://branchbox.dev/docs/how-it-works) for runtime topology,
 configuration, port publication, and lifecycle details.
 

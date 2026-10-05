@@ -245,8 +245,19 @@ jobs:
             echo "Waiting for Docker..."
             sleep 2
           done
+      - name: Preload Alpine conformance image
+        # Test setup only; managed provider startup itself remains build-free and pull-free.
+        run: docker pull alpine:3.22
       - name: Run integration suite
-        run: cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fast
+        # The bind proof needs the same filesystem as its daemon; DinD cannot see runner /tmp.
+        run: cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fast -E 'not test(managed_workspace_bind_reaches_the_reviewed_host_worktree)'
+      - name: Verify managed workspace bind on runner Docker
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          docker info
+          docker pull alpine:3.22
+          cargo nextest run --lib --all-features --run-ignored ignored-only -E 'test(managed_workspace_bind_reaches_the_reviewed_host_worktree)'
 
   signed_v3_compose_cli_config:
     name: Signed v3 Compose CLI config

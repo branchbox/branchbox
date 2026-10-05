@@ -16,22 +16,37 @@ Isolated development environments for every feature
 Usage: branchbox <COMMAND>
 
 Commands:
-  init          Initialize project with devcontainer and BranchBox registry
-  devcontainer  Manage devcontainer configuration
-  agent         Agent and control-plane helpers
-  detect        Detect project configuration
-  name          Feature name utilities
-  feature       Manage feature worktrees
-  prune         Tear down all active feature worktrees
-  tunnel        Manage tunnels for existing features
-  version       Show the BranchBox version and, with --json, its contract capabilities
-  doctor        Check the host (and optionally a repository) for BranchBox prerequisites
-  config        Read and change project configuration (.branchbox/config.json)
-  help          Print this message or the help of the given subcommand(s)
+  runtime-capabilities  Print managed-runtime capabilities as JSON for the staged binary
+  init                  Initialize project with devcontainer and BranchBox registry
+  devcontainer          Manage devcontainer configuration
+  agent                 Agent and control-plane helpers
+  detect                Detect project configuration
+  name                  Feature name utilities
+  feature               Manage feature worktrees
+  prune                 Tear down all active feature worktrees
+  tunnel                Manage tunnels for existing features
+  version               Show the BranchBox version and, with --json, its contract capabilities
+  doctor                Check the host (and optionally a repository) for BranchBox prerequisites
+  config                Read and change project configuration (.branchbox/config.json)
+  help                  Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
   -V, --version  Print version
+```
+
+## branchbox runtime-capabilities
+
+This compatibility probe always prints one versioned JSON document and needs no repository or
+Docker access. See the [managed-runtime capability payload](./json-contract.md#runtime-capabilities).
+
+```text
+Print managed-runtime capabilities as JSON for the staged binary
+
+Usage: branchbox runtime-capabilities
+
+Options:
+  -h, --help  Print help
 ```
 
 ## branchbox init

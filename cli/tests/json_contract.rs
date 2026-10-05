@@ -268,6 +268,46 @@ fn exec_failure_prints_only_the_in_band_payload() {
 }
 
 #[test]
+fn runtime_capabilities_is_one_json_document_and_matches_the_version_contract() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let output = branchbox_cmd!(temp.path())
+        .arg("runtime-capabilities")
+        .output()
+        .expect("run runtime-capabilities outside a repository");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let payload = assert_single_json(&output);
+    assert_eq!(
+        payload,
+        json!({
+            "schema_version": 1,
+            "managed_workspace_contract_v1": true,
+            "preloaded_compose_sanitization_v1": true,
+        })
+    );
+    assert_fixture(AREA, "runtime_capabilities", &payload);
+
+    let version = branchbox_cmd!(temp.path())
+        .args(["version", "--json"])
+        .output()
+        .unwrap();
+    assert!(version.status.success(), "{}", stderr_of(&version));
+    let version = assert_single_json(&version);
+    let capabilities = version["capabilities"].as_array().unwrap();
+    for (key, capability) in [
+        (
+            "managed_workspace_contract_v1",
+            "managed-workspace-contract",
+        ),
+        (
+            "preloaded_compose_sanitization_v1",
+            "preloaded-compose-sanitization",
+        ),
+    ] {
+        assert_eq!(payload[key], capabilities.contains(&json!(capability)));
+    }
+}
+
+#[test]
 fn version_json_reports_the_contract_and_capabilities() {
     let temp = tempfile::TempDir::new().unwrap();
     let output = branchbox_cmd!(temp.path())
@@ -294,7 +334,13 @@ fn version_json_reports_the_contract_and_capabilities() {
         .map(|capability| capability.as_str().unwrap())
         .collect();
     assert_eq!(capabilities.first(), Some(&"json-error-envelope"));
-    for expected in ["json-error-envelope", "registry-lock", "write-ahead-start"] {
+    for expected in [
+        "json-error-envelope",
+        "registry-lock",
+        "write-ahead-start",
+        "managed-workspace-contract",
+        "preloaded-compose-sanitization",
+    ] {
         assert!(capabilities.contains(&expected), "{capabilities:?}");
     }
 
