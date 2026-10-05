@@ -27,10 +27,12 @@
       "flagged_spikes": [],
       "loop_mean_grayscale_difference": 0.029236111789941788,
       "visual_review": {
-        "status": "approved",
+        "status": "withheld_after_user_creative_rejection",
         "date": "2026-10-04",
         "producer": "Inspected source captures, individual proof/poster frames and all beat-contact samples; genuine crops clean, captions preserve setup/run/plan boundaries.",
-        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration."
+        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration.",
+        "prior_internal_status": "approved",
+        "scope": "Producer/root comments record the prior internal visual QA. User creative rejection supersedes that integration approval; technical results remain unchanged."
       },
       "loop_requirement": "launch only; mean grayscale difference0.029/255 passed",
       "filename": "branchbox-launch.mp4",
@@ -51,10 +53,12 @@
       "flagged_spikes": [],
       "loop_mean_grayscale_difference": 178.4755401611328,
       "visual_review": {
-        "status": "approved",
+        "status": "withheld_after_user_creative_rejection",
         "date": "2026-10-04",
         "producer": "Inspected source captures, individual proof/poster frames and all beat-contact samples; genuine crops clean, captions preserve setup/run/plan boundaries.",
-        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration."
+        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration.",
+        "prior_internal_status": "approved",
+        "scope": "Producer/root comments record the prior internal visual QA. User creative rejection supersedes that integration approval; technical results remain unchanged."
       },
       "loop_requirement": "Not applicable: focused films are one-shot, with intentionally different endpoints.",
       "filename": "branchbox-setup.mp4",
@@ -75,10 +79,12 @@
       "flagged_spikes": [],
       "loop_mean_grayscale_difference": 174.680908203125,
       "visual_review": {
-        "status": "approved",
+        "status": "withheld_after_user_creative_rejection",
         "date": "2026-10-04",
         "producer": "Inspected source captures, individual proof/poster frames and all beat-contact samples; genuine crops clean, captions preserve setup/run/plan boundaries.",
-        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration."
+        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration.",
+        "prior_internal_status": "approved",
+        "scope": "Producer/root comments record the prior internal visual QA. User creative rejection supersedes that integration approval; technical results remain unchanged."
       },
       "loop_requirement": "Not applicable: focused films are one-shot, with intentionally different endpoints.",
       "filename": "branchbox-teardown.mp4",
@@ -118,7 +124,7 @@
     "scripts/verify-assets.mjs": "a1c08d04fdc6ea5c4ae3f14a511af9a281fc788d6bea54fd58f42d79fe2f9bad"
   },
   "limitations": [
-    "Native main Overview capture withheld due rendering band; current films use clean attached sheets and Run window.",
+    "At film capture time, the native main Overview was withheld due a rendering band; the rejected films use clean attached sheets and Run window. A later clean Overview is documented in documentation_capture_followup.",
     "Teardown screenshot is a plan only; ownership rule comes from separate core/live validation.",
     "No cloud tunnel, coding agent, real Rails database, OS notification, release publication, or successful deletion is established by these films."
   ],
@@ -135,7 +141,44 @@
       "Skill validator passes with existing cached PyYAML.",
       "All3movie hashes match this receipt; all beat-contact sheets and corrected Quick frame visually reviewed."
     ],
-    "issues_remaining": "none in assigned video/skill scope"
+    "issues_remaining": "Creative reference caliber was not met; all three films are withheld following user rejection. Technical checks are retained.",
+    "scope": "Technical correctness, feature claims, asset gates, and skill behavior; this pass does not establish user creative approval.",
+    "prior_issues_remaining": "none in assigned video/skill scope"
   },
-  "nonvisual_packaging_followup": "Removed trailing whitespace from bundled OFL licenses for git diff --check; all license words unchanged. Refreshed only those reviewed asset hashes. Fonts, captures, visual source and final movies are unchanged."
+  "nonvisual_packaging_followup": "Removed trailing whitespace from bundled OFL licenses for git diff --check; all license words unchanged. Refreshed only those reviewed asset hashes. Fonts, captures, visual source and final movies are unchanged.",
+  "delivery_status": "withheld_after_user_creative_rejection",
+  "creative_review": {
+    "status": "rejected_by_user",
+    "date": "2026-10-04",
+    "reference": "Supplied Claude session Agentify Apple-style launch film",
+    "benchmark": [
+      "Large connected geometric morphs",
+      "Glass effects and depth",
+      "Purposeful camera movement",
+      "Synchronized licensed music and SFX"
+    ],
+    "observed_gap": "The three BranchBox films mostly framed screenshots and moved labels; the user rejected them as below the supplied reference caliber.",
+    "technical_qa_boundary": "Existing internal visual and technical passes do not establish user creative approval. Decode, dimensions, timing, hashes, claim checks, and provenance below remain valid technical evidence.",
+    "audio_limit": "The films are silent because no licensed music/SFX was supplied; the complete audiovisual reference benchmark was not established.",
+    "user_direction": "Return to the original app work; do not re-render these films.",
+    "integration_status": "Motion embeds and disclosures removed from public website/docs sources. The genuine 24-second recording and original five screenshots remain, with a later clean Overview capture bringing the guide to six screenshots.",
+    "draft_directory": "docs/drafts/mac-app-motion/",
+    "publication_status": "Rejected movie/poster files preserved outside docs/static and absent from the public builds; no new publication authorized."
+  },
+  "documentation_capture_followup": {
+    "public_screenshot_count": 6,
+    "overview": {
+      "filename": "feature-overview.png",
+      "app_source_revision": "87e0f93",
+      "runtime_revision": "ee39d94",
+      "window_id": 54786,
+      "dimensions": [
+        2424,
+        1664
+      ],
+      "sha256": "96039d54169ec0f02389ba6e5a73cce660b75fa2377a7bff5bb6ef68f67240fc",
+      "observed_state": "Real disposable add-search Quick feature: registry Active, devcontainer Not created, recorded branch and commit visible. Clean Overview confirmed by root and documentation pixel review."
+    },
+    "capture_scope": "The new Overview uses the updated main-window layout. Original five screenshots and genuine 24-second recording retain their earlier capture provenance and identical bytes. Rejected motion films remain withheld outside public static assets."
+  }
 }

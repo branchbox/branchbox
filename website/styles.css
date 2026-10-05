@@ -1036,56 +1036,12 @@ strong {
     margin-top: var(--space-sm);
 }
 
-.mac-app-film-primary {
-    max-width: 760px;
-    margin-inline: auto;
-}
-
-.mac-app-film h3 {
-    font-size: 1.15rem;
-    margin-bottom: var(--space-md);
-}
-
-.mac-app-film-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
-    gap: var(--space-xl);
-    margin: var(--space-xl) 0;
-}
-
-.mac-app-film video {
-    aspect-ratio: 1;
-}
-
-.mac-app-film-text {
-    margin-top: var(--space-md);
-    color: var(--color-text-secondary);
-    font-size: 0.9rem;
-}
-
-.mac-app-film-text summary {
-    cursor: pointer;
-    color: var(--color-accent-bright);
-}
-
-.mac-app-film-text p {
-    margin-top: var(--space-md);
-}
-
-.mac-app-recording-link {
-    text-align: center;
-    color: var(--color-text-secondary);
-    margin-bottom: var(--space-xl);
-}
-
 @media (max-width: 800px) {
     .mac-app-heading {
         flex-direction: column;
         align-items: flex-start;
     }
-    .mac-app-capabilities,
-    .mac-app-film-grid {
+    .mac-app-capabilities {
         grid-template-columns: 1fr;
     }
 }

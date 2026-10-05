@@ -23,23 +23,6 @@
   font-size: 0.9rem;
 }
 
-.mac-app-film {
-  max-width: 720px;
-  margin-inline: auto;
-}
-
-.mac-app-film video {
-  aspect-ratio: 1;
-}
-
-.mac-app-film-text {
-  margin: 1rem 0 1.5rem;
-}
-
-.mac-app-film-text summary {
-  cursor: pointer;
-}
-
 /* ============================================================================
    Color Palette (matching website/styles.css)
    ============================================================================ */

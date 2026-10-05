@@ -145,18 +145,19 @@ Compose unit cases, scoped Clippy and formatting passed; production ownership va
 On `40027ae`, isolated CI passed all 27 ignored Docker integration cases, the normal four-stack CLI
 harnesses (Rust, Generic, Node and Rails), signed Compose live/config checks, Swift tests, both CLI
 compatibility modes, package verification and the build/quality/coverage jobs. The optional Firecracker
-run was still pending when this record was prepared; these results do not complete the local release
+run on `0ba79f6` subsequently passed; these results do not complete the local release
 matrix or native manual loop below.
+On `0ba79f6`, isolated CI again passed all 27 ignored Docker cases, the four normal stack harnesses, signed Compose checks and Swift/CLI integrations. Its coverage tests and LCOV generation passed, but the Codecov action failed during an external TLS handshake, including one retry. The `c5d24f9` follow-up retains LCOV and the JSON summary as CI artifacts before the optional upload, and applies the existing nonblocking upload policy to bootstrap errors. Test and report failures still block the job.
 Local line coverage is **79.18%**, below the repository's 90% target.
 The guardrail preflight and pretend harness passed. The destructive ignored database/container suite was not
 run against the developer's live Docker engine; isolated CI owns that check. Local regular/verbose stack
 harnesses and the full agent control-plane stub harness remain unrun, so this is a component audit rather
-than release sign-off. The combined website/docs build passed; 341 local references and 179 anchors across
+than release sign-off. The combined website/docs build passed; 320 local references and 172 anchors across
 five reviewed pages resolved without errors.
 
-Final native package: `BranchBox-0.13.4-434-f63f2c0.zip` (arm64), with the reviewed release CLI
+Final native package: `BranchBox-0.13.4-438-87e0f93.zip` (arm64), with the reviewed release CLI
 embedded. Bundle and helper signature checks passed; ZIP SHA-256:
-`704f964c34f8a715cd496b7a19227316422a4152fe2797d6bc9b52ecfee31651`. It is ad hoc signed,
+`e9608d15fbe19169590ead73e949b3829feb9928e20a4f89a3518738924ab457`. It is ad hoc signed,
 without notarization. The locator still prefers an explicitly selected or installed CLI over the embedded fallback.
 
 The existing Rails checkout was not initialized, repaired or used to launch application services. Its pre-existing
@@ -166,6 +167,8 @@ That command ran in the host worktree; the Python devcontainer check above suppl
 
 Public media were captured by window ID in the disposable workspace and visually checked:
 
+- [Feature overview](../docs/static/img/mac-app/feature-overview.png): repaired native inspector placement,
+  Quick feature recorded as Active while its dev container is Not created; app `87e0f93`, runtime `ee39d94`.
 - [Start Full form](../docs/static/img/mac-app/start-feature.png)
 - [Command execution](../docs/static/img/mac-app/run-command.png)
 - [Teardown plan](../docs/static/img/mac-app/teardown-plan.png): Keep selected, planning only
@@ -175,26 +178,25 @@ Public media were captured by window ID in the disposable workspace and visually
   It shows Full setup and Python command execution. A caption explicitly explains that the container was
   started between the recorded clips; that action is not shown. Full decode and browser playback passed.
 
-Three additional silent motion explainers use those actual captures with an original 2D treatment:
+Three silent motion drafts were produced from those captures. The user rejected their creative quality against the Claude “Apple-style launch film” reference. They are withheld from the public website/docs build and preserved only as drafts:
 
-- [Launch film](../docs/static/media/branchbox-launch.mp4): 27 seconds, 1,620 frames; opening/closing loop
+- [Launch film](../docs/drafts/mac-app-motion/branchbox-launch.mp4): 27 seconds, 1,620 frames; opening/closing loop
   mean grayscale difference 0.029/255.
-- [Quick and Full setup](../docs/static/media/branchbox-setup.mp4): 14 seconds, 840 frames. Quick's three
+- [Quick and Full setup](../docs/drafts/mac-app-motion/branchbox-setup.mp4): 14 seconds, 840 frames. Quick's three
   default setup skips are distinguished from separately controlled tunnel provisioning in the text equivalent.
-- [Teardown review](../docs/static/media/branchbox-teardown.mp4): 14 seconds, 840 frames; planning only.
+- [Teardown review](../docs/drafts/mac-app-motion/branchbox-teardown.mp4): 14 seconds, 840 frames; planning only.
   Keeping the branch does not preserve Git-ignored files in its removed worktree.
 
 All three are 1440×1440 H.264 at 60 fps with four deterministic subframes per output frame. Full decode,
 seek-order purity, every beat contact sample and asset hashes passed; no isolated frame-difference spikes
-were found. Focused films have different endpoints and are not loops. The website/docs provide controls,
-posters and text equivalents. Captures came from app `1e51154` and runtime `ee39d94`; the subsequent LogView
+were found. Focused films have different endpoints and are not loops. These technical checks do not establish creative approval. Public embeds, posters and their motion-specific text were removed; the genuine walkthrough and five app screenshots remain. Captures came from app `1e51154` and runtime `ee39d94`; the subsequent LogView
 copy change at `f63f2c0` does not change these sheet/Run pixels.
 
 The reusable [.claude/skills/branchbox-release-videos](../.claude/skills/branchbox-release-videos/SKILL.md)
 was activated by a dedicated video subagent and installed in the user's Codex skills folder. Independent
 forward-testing caught and corrected the Quick-default claim before the final setup render. The installed
 skill validates; changed relevant assets refuse before browser/output creation, and a setup-only proof
-works without unrelated Run/teardown captures. Release and launch instructions now request this workflow
+works without unrelated Run/teardown captures. The skill now records the creative rejection and requires comparison against the actual reference for connected morphs, depth, camera movement and licensed sound when available. Release and launch instructions now request this workflow
 for affected features while retaining valid unchanged media. Font licenses, capture/claim provenance,
 source hashes and the current production QA receipt travel with the skill. Media preparation is separate
 from tagging, deployment and announcements.
@@ -210,10 +212,16 @@ log placeholder was changed to “No log messages” and compiled with warnings 
 
 The attempted rectangle-captured video and two screenshots showed the foreground Codex window; they were
 quarantined and excluded. Corrected window-specific media replaced them. The older 60-second film is retained
-privately. A horizontal band still obscures part of the main feature/project content in repeated native captures.
-A one-line scroll-edge-effect experiment compiled and passed three targeted renders (26 private PNGs), but did
-not remove the band in the verified current native executable and was reverted. Overview is withheld from
-public media; tightly cropped sheet/command footage remains unobscured. No compositor fix is claimed.
+privately. A scroll-edge-effect experiment did not remove the horizontal band over native project/feature
+content and was reverted. A later isolated A/B test identified the nested Activity inspector: restoring its
+original detail-column placement reproduced the band in the same feature, while moving it around the complete
+NavigationSplitView cleared the band. The functional fix at `87e0f93` preserves the binding, selected target and
+column widths. Native checks passed for project/feature selection, scrolling, inspector toolbar and keyboard
+toggle, target changes, default/zoomed sizes, Start Feature sheets and Quick Open. Restoring the fixed build
+again cleared the band; the new Overview capture is public. Focused warnings-as-errors Swift checks passed
+36 cases in eight suites, including router, enablement, Activity and four render cases (36 private PNGs).
+Close/reopen was attempted but not established by the returned accessibility state. Further native checks
+paused when the Mac locked; Computer Use requires a manual unlock.
 Computer Use denies access to macOS Terminal; native Open Shell interaction remains unverified, although the
 exact Docker shell launch plan passed a real PTY check.
 
