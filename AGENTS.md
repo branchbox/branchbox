@@ -12,6 +12,9 @@ Run workspace builds with `cargo build` and optimize releases via `cargo build -
 ## Coding Style & Naming Conventions
 Rust files follow `rustfmt` defaults (4-space indentation, 100-column soft limit). Modules and files use `snake_case`; types are `UpperCamelCase`; constants are `SCREAMING_SNAKE_CASE`. Prefer explicit `Result<T, Error>` aliases plus the `?` operator for flow control, and leverage `thiserror` for rich domain errors. Branch names should stay action-oriented, e.g., `feature/bootstrap-cleanup` or `fix/git-lock-race`.
 
+## Rust Build Cache Pilot
+The `manual_cli_e2e` jobs in `ci.yml` and `manual-cli-e2e.yml` pin Mr. Boxington 1.22.0 and action commit `d0825fbaf3cc36ca2609aa38e71046265a1f1e37`, using GitHub target caching. Only the Rust matrix stack may save; other stacks restore compatible entries with `ACTIONS_CACHE_MODE=read` (preserving stricter inherited modes). Main CI opts Rust into same-repository PR-scoped saves; forks never save, and schedule/dispatch remain restore-only. Keep the CLI at `target/debug/branchbox` and review the Bash-only Cargo wrapper if harness Cargo calls change. Do not stack another cache action on these paths or extend the pilot to coverage/release jobs without new measurements. `scripts/benchmark-rust-cache.py` runs the isolated macOS comparison; methodology and results live in `docs/docs/internals/rust-build-cache.md`.
+
 ## Testing Guidelines
 Unit tests live beside their modules under `#[cfg(test)]`; grow integration coverage in a `core/tests/` harness when cross-cutting behaviour warrants it. Run `cargo nextest run --all-features --no-fail-fast` for the default gate, `cargo test --doc` to validate examples, and `cargo nextest run --all-features --run-ignored ignored-only` when you need parity with CI’s integration configuration. CI enforces 90% line coverage via `cargo llvm-cov`, so periodically run `cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info` to catch regressions.
 

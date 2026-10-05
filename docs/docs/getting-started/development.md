@@ -6,6 +6,8 @@ sidebar_position: 2
 
 This guide covers the development workflow, building, testing, and contributing to BranchBox.
 
+For Rust build costs, see the [build cache pilot and reproducible benchmark](../internals/rust-build-cache.md).
+
 ## Development Environment Setup
 
 ### Using Devcontainer (Recommended)
