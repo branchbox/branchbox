@@ -2,9 +2,10 @@
 
 This guide covers the development workflow, building, testing, and contributing to BranchBox.
 
-Rust caching measurements and the scoped CI pilot are documented in
-[Rust build cache pilot](docs/internals/rust-build-cache.md). Reproduce the macOS
-comparison with `python3 scripts/benchmark-rust-cache.py --help`.
+Build with plain Cargo. CI uses an ordinary dependency cache; the mbx experiment
+is withdrawn. Its historical measurements and current cache policy are documented
+in [Rust build caching](docs/internals/rust-build-cache.md). The retained
+`scripts/benchmark-rust-cache.py` helper reproduces the historical comparison.
 
 ## Development Environment Setup
 

@@ -6,7 +6,7 @@ sidebar_position: 2
 
 This guide covers the development workflow, building, testing, and contributing to BranchBox.
 
-For Rust build costs, see the [build cache pilot and reproducible benchmark](../internals/rust-build-cache.md).
+Build with plain Cargo. CI uses an ordinary dependency cache; the mbx experiment is withdrawn. See [Rust build caching](../internals/rust-build-cache.md) for the current policy and historical benchmark evidence.
 
 ## Development Environment Setup
 

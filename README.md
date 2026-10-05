@@ -449,9 +449,11 @@ After updating, your next `docker compose up` or "Reopen in Container" will pull
 
 ## Manual Release Harnesses
 
-The manual CLI CI jobs use a scoped Rust cache pilot. See the
+The manual CLI CI jobs use plain Cargo with an ordinary dependency cache and one
+Rust cache writer on main-branch pushes. The mbx experiment is withdrawn; see the
 [measurements and reproduction guide](docs/docs/internals/rust-build-cache.md)
-for its build-cost results and cache policy.
+for historical results and the current cache policy. Replacement performance has
+not yet been measured.
 
 Before tagging a release, run the CLI smoke matrix:
 
