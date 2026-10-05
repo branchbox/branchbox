@@ -174,12 +174,6 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./lcov.info
-          disable_search: true
-          fail_ci_if_error: false
       - name: Report coverage
         run: |
           cargo llvm-cov report --json --summary-only > coverage-summary.json
@@ -200,6 +194,22 @@ jobs:
           else
             echo "::notice title=Code Coverage::Coverage: ${coverage}%"
           fi
+      - name: Save coverage evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-evidence-${{ github.run_attempt }}
+          path: |
+            lcov.info
+            coverage-summary.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload coverage to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./lcov.info
+          disable_search: true
+          fail_ci_if_error: false
 
   integration_tests:
     name: Integration Tests
