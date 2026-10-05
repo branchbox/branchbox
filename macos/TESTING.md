@@ -264,12 +264,35 @@ Additional manual checks handed over by waves 3 and 4 (record each once, with ei
 |---|---|
 | Finder launch with a stripped PATH through `scripts/macos-dev.sh --open` (launchd environment; notifications appear in a real bundle) | pending |
 | Dock reopen, and menu bar Open BranchBox with the main window closed and with the menu bar icon hidden | pending |
-| ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | pending |
+| ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | ✅ Dev bundle with contract CLI, 2026-10-05; packaged loop remains pending |
 | Log auto-scroll, scroll-up pause and Jump to Latest with a 2,000-line operation; Run Command with multi-MB output | pending |
 | Project toolbar at the 1100 pt default width (icon-only secondary actions, overflow) and primary-button prominence / red destructive styling in a key window | partial: default, inspector and maximized layout inspected; full key-window styling pending |
 | Dev container Start/Stop on a compose repository updates the Environment card; Diagnostics with Docker stopped | pending |
 | Settings › Tools › Locate… switches the CLI live (legacy ↔ contract); legacy project settings are read-only with Open config.json | partial: Locate switched installed legacy CLI to reviewed 14-capability CLI and cleared warning; legacy settings UI pending |
 | Composed main-window screenshots for the PR from `scripts/macos-dev.sh --open --preview showcase` | pending |
+
+### Native review resumed: 2026-10-05
+
+Inspected the packaged app `0.13.4 / 438 / 87e0f93`: onboarding found the installed legacy
+CLI at `/opt/homebrew/bin/branchbox`, showed the older-capability warning and reported Git/Docker ready.
+No project was added to the production app. Quit through its native menu completed; a process check
+found only the separate Dev bundle still running. This covers launch discovery and idle quit, not the
+full packaged two-mode checklist or quit during an operation.
+
+The Dev bundle `0.13.4 / 437 / c5d24f9` used the reviewed 14-capability CLI and the disposable Workspace
+fixture. Its component code matches `87e0f93` except for the later Inspector placement fix. Verified:
+
+- ⌘K opened Quick Open; ↓ changed the highlighted result, and ↑ then Return selected the expected feature.
+- ⌘⌫ cleared a focused sidebar filter without opening Tear Down.
+- ⌘N opened Start a Feature with its title focused and empty Start disabled; Cancel returned to the feature.
+- Three new features created by the CLI appeared without a manual Refresh.
+- A dirty worktree named `notes.txt` in the refusal and reported “Nothing was removed”. Its file and worktree remained.
+- A branch with one unmerged commit showed that count; Delete if merged disabled Tear Down and requested Keep or Force-delete.
+
+Discard, Force-delete and Prune execution remain pending explicit cleanup confirmation. The fixtures
+retain a byte-identical notes backup and a recovery Git ref for the unmerged commit. Close/reopen remains
+unverified because observing the app brought the window back; this does not establish a lifecycle defect.
+Private fixture and result receipts remain outside the repository. No live Amidship runtime was changed.
 
 ### Real-window preview check: 2026-10-04
 
