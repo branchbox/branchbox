@@ -100,9 +100,9 @@ struct LegacyCLIBanner: View {
             Image(systemName: "info.circle.fill")
                 .foregroundStyle(.blue)
                 .accessibilityHidden(true)
+            // Let the split view constrain the banner; an ideal-height override can expand its native host offscreen.
             Text(Self.text(version: version))
                 .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             CopyButton(text: Self.upgradeCommand, label: "Copy Upgrade Command", showsTitle: true)
                 .controlSize(.small)

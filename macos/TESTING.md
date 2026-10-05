@@ -64,7 +64,7 @@ CLIs:
 | `./scripts/review-preflight.sh` | ✅ | |
 | `scripts/package-macos-app.sh --native --zip` + `codesign --verify --deep --strict` | ✅ | `BranchBox-0.13.4-390-a00b3ee.zip` (arm64, ad hoc, hardened runtime); valid on disk, satisfies its Designated Requirement |
 
-## Latest component audit and live review: 2026-10-04
+## Component audit and live review: 2026-10-04
 
 App source: `f63f2c0`; runtime source: `ee39d94` on `feature/mac-app-revamp`. The ignored Compose lifecycle
 fixture was corrected at `40027ae`; this changes test setup only. Website and audit-record changes are
@@ -151,11 +151,11 @@ On `0ba79f6`, isolated CI again passed all 27 ignored Docker cases, the four nor
 Local line coverage is **79.18%**, below the repository's 90% target.
 The guardrail preflight and pretend harness passed. The destructive ignored database/container suite was not
 run against the developer's live Docker engine; isolated CI owns that check. Local regular/verbose stack
-harnesses and the full agent control-plane stub harness remain unrun, so this is a component audit rather
+harnesses and the full agent control-plane stub harness were unrun at this snapshot, so this is a component audit rather
 than release sign-off. The combined website/docs build passed; 320 local references and 172 anchors across
 five reviewed pages resolved without errors.
 
-Final native package: `BranchBox-0.13.4-438-87e0f93.zip` (arm64), with the reviewed release CLI
+Native package at this snapshot: `BranchBox-0.13.4-438-87e0f93.zip` (arm64), with the reviewed release CLI
 embedded. Bundle and helper signature checks passed; ZIP SHA-256:
 `e9608d15fbe19169590ead73e949b3829feb9928e20a4f89a3518738924ab457`. It is ad hoc signed,
 without notarization. The locator still prefers an explicitly selected or installed CLI over the embedded fallback.
@@ -189,8 +189,8 @@ Three silent motion drafts were produced from those captures. The user rejected 
 
 All three are 1440×1440 H.264 at 60 fps with four deterministic subframes per output frame. Full decode,
 seek-order purity, every beat contact sample and asset hashes passed; no isolated frame-difference spikes
-were found. Focused films have different endpoints and are not loops. These technical checks do not establish creative approval. Public embeds, posters and their motion-specific text were removed; the genuine walkthrough and five app screenshots remain. Captures came from app `1e51154` and runtime `ee39d94`; the subsequent LogView
-copy change at `f63f2c0` does not change these sheet/Run pixels.
+were found. Focused films have different endpoints and are not loops. These technical checks do not establish creative approval. Public embeds, posters and their motion-specific text were removed; the genuine walkthrough and six app screenshots remain. The five sheet/utility captures came from app `1e51154` and runtime `ee39d94`; the Overview uses `87e0f93` as recorded above. The subsequent LogView
+copy change at `f63f2c0` does not change the sheet/Run pixels.
 
 The reusable [.claude/skills/branchbox-release-videos](../.claude/skills/branchbox-release-videos/SKILL.md)
 was activated by a dedicated video subagent and installed in the user's Codex skills folder. Independent
@@ -225,13 +225,111 @@ paused when the Mac locked; Computer Use requires a manual unlock.
 Computer Use denies access to macOS Terminal; native Open Shell interaction remains unverified, although the
 exact Docker shell launch plan passed a real PTY check.
 
-Remaining live checks: real Rails/Postgres/Sidekiq application behavior, external database cleanup, public tunnels,
+Remaining live checks include broader Rails business/authentication workflows, external database cleanup, public tunnels,
 1Password credential acquisition, SBX/Local VM/in-guest provisioning, OS notification delivery, and the additional
 manual-window behaviors below. Registry module outcomes and recorded tunnel state do not establish those results.
 
+## Resumed audit: 2026-10-05 — partial
+
+The resumed audit uses draft base `6d321eb`. This remains a bounded component audit, not merge or release
+sign-off. Private receipts are retained outside the repository; the existing automated counts above are
+historical, with the fresh Swift result recorded below.
+
+### Automated and documentation checks
+
+The warnings-as-errors build passed. With `BRANCHBOX_IT=1` and the reviewed contract CLI (binary SHA-256
+starting `213d01d4`), `swift-final-tests.log` reports 701 tests in 93 suites passing after 24.379 seconds.
+That reported count includes gated skips; render and live-fixture suites were not enabled in this invocation.
+The combined website/docs build also passed. No new public media was added.
+
+### Packaged native checks
+
+`packaged-native-2026-10-05/results.json` records the initial four legacy-mode checks on package
+`0.13.4 / 438 / 87e0f93`: initialization Preview left the disposable repository clean, Apply kept its
+layout and created BranchBox/devcontainer configuration, unsupported project settings were disabled with
+Open config.json/Done available, and ⌘N focused the Start title with empty Start disabled.
+
+Later native review exposed blank/offscreen split content in legacy mode. Removing the legacy banner
+Text's `fixedSize` modifier in `EnvironmentGate.swift` restored visible content in build 449 at
+1100×720 and 1800×1130. Native review verified initialization Preview/Apply, capability gating, Start/Done,
+sidebar navigation, and Run Command with echo/exit 0 and an intentional exit 3. A 3 MB synthetic command
+also completed with exit 0 and a 256 KB output preview. `large-output-export.json` verifies that its export
+contains all 3,000,000 bytes with exact expected content. Copy Upgrade Command was verified by pasting
+`brew upgrade branchbox` into an unexecuted optional Start prompt; Cancel left the features unchanged.
+Banner dismissal preserved visible content. Sidebar filtering and ⌘⌫ clearing passed without opening teardown.
+These are synthetic-fixture checks, not use of the live Rails checkout or completion of every native step.
+
+Tools → Locate switched to the reviewed contract CLI and removed the legacy warning. Native project settings
+Review/Apply changed the prefix from `feature` to `review`, verified in the file and reopened UI, then restored
+`feature` through Apply; tunnels remained off. Native menu Quit while idle passed.
+
+Build 450 also initialized a fresh Git-only Contract fixture with shared agent settings, Sharing and
+1Password off and the layout kept. Preview left only `.git`/README and a clean Git status. Apply completed
+in the same folder, created devcontainer/project configuration, left tunnels disabled with no op references,
+and Done returned to the Contract sidebar row. A Quick Open `followup` query followed by Return also
+selected the expected feature.
+
+Quick Open opened with ⌘K and its arrows changed the highlighted row, but Return activated the initial row
+in two native reproductions. A stale native TextField `onSubmit` callback was fixed; 31 focused Quick Open,
+router and shell cases passed with warnings as errors. Packaged build 450 (`6d321eb` plus the working-tree
+banner/Quick Open fixes) then passed native verification in contract mode: ⌘K → Down highlighted the second
+feature, and Return selected it in the window heading and sidebar. Bundle and embedded-helper signatures
+passed; the bundle is ad hoc signed with the hardened runtime and is not notarized.
+The 800×520 minimum-size check remains inconclusive: resize attempts failed and the window remained 1100×720.
+The native Close button hid the exact main window according to an independent Core Graphics read-back.
+Accessibility observation then reactivated/reopened it; explicit Dock and menu-bar reopen actions remain unverified.
+
+### Real Rails workflow
+
+`rails-real-workflow/rails-compatibility.json` records a CLI-driven, isolated tracked-source fixture with
+Ruby 4.0.1, Rails 8.1.2, PostgreSQL 16.12, Redis 7.4.7 and Sidekiq 8.1.0. Schema loading produced 117
+tables, 366 recorded migration versions and zero pending migrations; one existing reversible migration
+passed down/up. pgvector and Redis round trips passed. Development `/up`, `/` and `/en/users/sign_in`
+returned 200, with a sign-in form. One source `CleanupUnconfirmedUsersJob` was queued and processed with
+zero failures, deleting the old unconfirmed synthetic user while retaining the two control users.
+
+The test profile returned 500 for `/` and sign-in because `application.js` was absent from the source's
+declared precompiled assets; `/up` still returned 200. This source-profile limitation is retained, not
+counted as a passing test. The fixture used an internal network without host ports, test mail, no cron
+jobs and no external integrations. It did not replay all historical migrations or test tenant business
+flows or authentication. This runtime proof is separate from native app initialization.
+
+Feature teardown and independent read-back found no owned containers, networks or volumes; the unique
+app image and private fixture/temporary credentials were removed. Original checkout hashes and existing
+live containers were unchanged. This cleanup result applies to the Rails fixture, not the failed manual
+harness attempt below.
+
+### Manual gate status
+
+`manual-resume-2026-10-05/gate-status.json` is **incomplete**. Review preflight and the source CLI build
+passed, as did all four pretend stack runs. Generic regular failed on infrastructure capacity: BuildKit
+reported a read-only metadata database, then a host move reported no space left. Docker health and exact
+resource queries stalled. At that failed snapshot the other seven regular/verbose runs and the canonical
+agent control-plane stub harness were not run. Later Docker info succeeded with ServerVersion 29.8.0;
+exact failed-fixture cleanup was verified, and Generic regular retry plus verbose passed. The Generic
+control-plane attempt then aborted at the capacity gate (less than 2 GiB free). Its retained database and
+owned stub log prove one heartbeat delivery and ack cursor 1; this is partial evidence, not completion of
+the workflow-event drain. Both failed fixtures subsequently passed exact ownership cleanup/read-back.
+The final receipt records about 6 GB free, but Rust/Rails/Node regular and verbose runs remain blocked
+on capacity. A complete real agent/control-plane harness and final workflow-event/ack receipt are still
+pending. These later results do not erase the original infrastructure failure.
+
+The host 1Password PAT/signing failure-path gate applies to PR #105 because it changes initialization's
+op-reference persistence. It remains pending a reachable SSH origin and configured GitHub/signing references.
+The real matrix, control-plane stub, credential gate and remaining native checklist must be completed
+before merge/release sign-off; earlier CI results do not complete this resumed local gate.
+
+### Media boundary
+
+The six genuine app screenshots and silent 24-second walkthrough remain unchanged. The private
+10-second silent study based on the actual September 27 Claude “Apple-style launch film” reference passed
+technical decode/frame/hash checks (`study-qa-receipt.json`). It uses explicitly dated older capture
+placeholders, not fresh `6d321eb` captures. Creative review is pending; it is not embedded or published,
+and the three previously rejected films remain withheld drafts.
+
 ## Mac App ↔ CLI Loop (manual) — partial live coverage
 
-**Status: the live component pass above covers part of the contract-CLI loop.** The original VER-1 checklist
+**Status: bounded native checks cover parts of both CLI modes.** The original VER-1 checklist
 below remains a record of the full two-mode loop, including destructive confirmation and quit/cancellation
 steps that have not all been performed through the native UI. Run the remaining steps as written in
 `docs/docs/getting-started/manual-cli-e2e.md` ("Mac App ↔ CLI Loop", steps 0–13) on the packaged app, once with
@@ -245,17 +343,17 @@ path and `branchbox --version` for each run.
 |---|---|---|---|
 | 0 | `cargo build -p branchbox-cli`; `scripts/package-macos-app.sh --native --zip`; quarantine removed if from CI | pending | pending |
 | 1 | Launch from Finder (launchd PATH): onboarding finds the CLI (Locate… for the branch CLI); Diagnostics lists the CLI, capabilities, doctor rows | pending | pending |
-| 2 | Add a disposable `git init` repo → Set Up BranchBox (`init -y`, layout kept) → project appears; repo not moved | ✅ Dev bundle, live backend | pending |
-| 3 | Start a minimal feature → live log → result shows the resolved name; `branchbox feature list --json --repo …` lists it | ✅ Quick and Full, repeated with 14-capability CLI | pending |
+| 2 | Add a disposable `git init` repo → Set Up BranchBox (`init -y`, layout kept) → project appears; repo not moved | ✅ fresh packaged build 450 Preview/Apply/Done; layout kept, sharing/1Password off | ✅ packaged Preview/Apply, synthetic fixture; layout kept |
+| 3 | Start a minimal feature → live log → result shows the resolved name; `branchbox feature list --json --repo …` lists it | ✅ Quick and Full, repeated with 14-capability CLI | partial: Start/Done and sidebar verified; full log/list loop pending |
 | 4 | Start a feature from Terminal → the app shows it within about 1 s | ✅ direct CLI creation appeared without Refresh | pending |
-| 5 | Run Command `echo hi`, then `sh -c 'exit 3'` → exit 3 shown, no alert | ✅ stdout/exit 0 and stderr/exit 3; Docker Python repeated | pending |
+| 5 | Run Command `echo hi`, then `sh -c 'exit 3'` → exit 3 shown, no alert | ✅ stdout/exit 0 and stderr/exit 3; Docker Python repeated | ✅ packaged echo/exit 0 and intentional exit 3 |
 | 6 | `touch notes.txt` in a worktree → Tear Down → refusal card names notes.txt, nothing removed → Discard (confirm) → removed; branch per policy (`git branch --list`) | partial: dirty README refusal, source/container preserved; UI discard pending | pending |
 | 7 | Commit in a worktree → Delete if merged is blocked → Force-delete (confirm) → branch deleted | partial: unmerged branch blocks Delete-if-merged; UI Force-delete pending | pending |
 | 8 | Prune with 3 features, one dirty → the dirty row is unchecked → per-feature results | partial: dirty row unchecked and Keep selection checked; UI execution pending | pending |
 | 9 | Sleeping `post-checkout` hook → start → cancel → confirmation copy → Unregistered worktree row → Remove (see finding 1: contract CLIs also show a stray here, not Interrupted) | pending | pending |
-| 10 | Close the main window → menu bar Open BranchBox reopens it; menu bar Tear Down… opens the window and the sheet | pending | pending |
+| 10 | Close the main window → menu bar Open BranchBox reopens it; menu bar Tear Down… opens the window and the sheet | partial: native Close independently verified; observation reactivated it, Dock/menu-bar actions unverified | pending |
 | 11 | Quit during a start → prompt → Cancel and Quit → `pgrep branchbox` prints nothing | pending | pending |
-| 12 | Project Settings branch prefix → `branchbox config get feature.branch_prefix --json --repo …` shows it | pending | n/a |
+| 12 | Project Settings branch prefix → `branchbox config get feature.branch_prefix --json --repo …` shows it | partial: native Review/Apply, file/reopened UI, and restoration verified; separate CLI-get loop pending | n/a |
 | 13 | `cd macos && swift run BranchBox` starts a feature without crashing (no notifications) | pending | pending |
 
 Additional manual checks handed over by waves 3 and 4 (record each once, with either CLI):
@@ -263,19 +361,20 @@ Additional manual checks handed over by waves 3 and 4 (record each once, with ei
 | Check | Result |
 |---|---|
 | Finder launch with a stripped PATH through `scripts/macos-dev.sh --open` (launchd environment; notifications appear in a real bundle) | pending |
-| Dock reopen, and menu bar Open BranchBox with the main window closed and with the menu bar icon hidden | pending |
-| ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | ✅ Dev bundle with contract CLI, 2026-10-05; packaged loop remains pending |
-| Log auto-scroll, scroll-up pause and Jump to Latest with a 2,000-line operation; Run Command with multi-MB output | pending |
+| Dock reopen, and menu bar Open BranchBox with the main window closed and with the menu bar icon hidden | pending: independent Close check passed, but observation reactivated the window rather than testing these actions |
+| ⌘N in the key window; ↑/↓ in Quick Open's field (⌘K); ⌘⌫ in the sidebar filter clears the line instead of opening Tear Down | packaged legacy ⌘N, arrows and filter clearing passed; Return defect fixed and verified natively in contract build 450 |
+| Log auto-scroll, scroll-up pause and Jump to Latest with a 2,000-line operation; Run Command with multi-MB output | partial: 3 MB Run completed, 256 KB preview, exact 3,000,000-byte export verified; log scrolling pending |
 | Project toolbar at the 1100 pt default width (icon-only secondary actions, overflow) and primary-button prominence / red destructive styling in a key window | partial: default, inspector and maximized layout inspected; full key-window styling pending |
 | Dev container Start/Stop on a compose repository updates the Environment card; Diagnostics with Docker stopped | pending |
-| Settings › Tools › Locate… switches the CLI live (legacy ↔ contract); legacy project settings are read-only with Open config.json | partial: Locate switched installed legacy CLI to reviewed 14-capability CLI and cleared warning; legacy settings UI pending |
+| Settings › Tools › Locate… switches the CLI live (legacy ↔ contract); legacy project settings are read-only with Open config.json | partial: packaged Locate switched legacy to contract and cleared warning; legacy settings read-only, contract prefix round trip passed; full two-mode loop pending |
 | Composed main-window screenshots for the PR from `scripts/macos-dev.sh --open --preview showcase` | pending |
 
 ### Native review resumed: 2026-10-05
 
 Inspected the packaged app `0.13.4 / 438 / 87e0f93`: onboarding found the installed legacy
 CLI at `/opt/homebrew/bin/branchbox`, showed the older-capability warning and reported Git/Docker ready.
-No project was added to the production app. Quit through its native menu completed; a process check
+At this initial snapshot no project was added to the production app; the later packaged checks above used
+only a synthetic fixture. Quit through its native menu completed; a process check
 found only the separate Dev bundle still running. This covers launch discovery and idle quit, not the
 full packaged two-mode checklist or quit during an operation.
 

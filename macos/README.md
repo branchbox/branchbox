@@ -59,7 +59,7 @@ swift run BranchBox
 | Target | What it holds |
 |---|---|
 | `BranchBoxKit` | Foundation only: the backend protocol, models decoded from the CLI's JSON, pure planning (teardown drafts, recoveries, prune selection, remediation). |
-| `BranchBoxCLI` | The process runner, login-shell environment, CLI locator and `CLIBackend`, the only backend. |
+| `BranchBoxCLI` | The process runner, login-shell environment, CLI locator and `CLIBackend`, the production backend. |
 | `BranchBoxStores` | `@MainActor @Observable` state: projects, refresh, operations and their queueing. Depends on Kit only. |
 | `BranchBoxPreview` | `PreviewBackend`, a scriptable fake backend for previews, tests and screenshots. |
 | `BranchBoxApp` | The SwiftUI/AppKit app (product `BranchBox`), and the only place a `CLIBackend` is created. |
@@ -125,7 +125,7 @@ BranchBox has to run `branchbox`, `git`, `docker` and your editor, and read and 
 
 - **"BranchBox CLI not found".** Install it (`brew install branchbox/tap/branchbox`) or choose it in Settings › Tools › Locate…. Diagnostics lists every path the app tried.
 - **The app finds a different CLI than Terminal.** The app captures your login shell's `PATH` at launch. Click **Re-capture** in Settings › Tools after changing your shell profile, or choose the CLI there with Locate….
-- **"Some features need a newer CLI".** You are on 0.13.x (legacy mode). Upgrade with `brew upgrade branchbox`; the app picks it up when it next becomes active.
+- **"Some features need a newer CLI".** The selected CLI lacks the required capabilities. Check Diagnostics, then choose a compatible CLI in Settings › Tools › Locate…. Development builds can report 0.13.4 while exposing newer capabilities.
 - **Docker checks fail.** Start Docker Desktop (or your Docker engine), then click **Run Checks Again** in Diagnostics.
 - **A teardown was refused.** Read the result card: a safety refusal names the files or branch that blocked it and offers the matching recovery. Other failures may have partial results; inspect Activity and the refreshed feature before retrying.
 - **A start was interrupted** (cancelled or the app quit). The feature shows as Interrupted with **Resume Setup** and **Tear Down…**; an unregistered worktree shows **Review Worktree…**.

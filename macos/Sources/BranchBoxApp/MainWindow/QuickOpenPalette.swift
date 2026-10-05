@@ -148,8 +148,11 @@ struct QuickOpenPalette: View {
     @State private var highlighted: QuickOpenItem.ID?
     @FocusState private var fieldFocused: Bool
 
+    private var results: [QuickOpenItem] {
+        QuickOpenIndex.grouped(QuickOpenIndex.filter(QuickOpenIndex.items(model: model), query: query))
+    }
+
     var body: some View {
-        let results = QuickOpenIndex.grouped(QuickOpenIndex.filter(QuickOpenIndex.items(model: model), query: query))
         ZStack(alignment: .top) {
             Color.black.opacity(0.12)
                 .ignoresSafeArea()
@@ -158,6 +161,7 @@ struct QuickOpenPalette: View {
             QuickOpenPanel(query: $query, results: results, highlighted: currentHighlight(in: results),
                            fieldFocused: $fieldFocused,
                            onMove: { move($0, in: results) },
+                           onSubmit: performHighlighted,
                            onPerform: { perform($0) },
                            onClose: { router.closeQuickOpen() })
                 .padding(.top, 72)
@@ -175,6 +179,14 @@ struct QuickOpenPalette: View {
         guard !results.isEmpty else { return }
         let current = results.firstIndex { $0.id == currentHighlight(in: results) } ?? 0
         highlighted = results[min(max(current + delta, 0), results.count - 1)].id
+    }
+
+    private func performHighlighted() {
+        // The native field can retain its original submit handler while the panel's highlight changes.
+        // Resolve the current state here instead of capturing the panel's highlighted value in that handler.
+        let currentResults = results
+        let current = currentHighlight(in: currentResults)
+        perform(currentResults.first { $0.id == current })
     }
 
     private func perform(_ item: QuickOpenItem?) {
@@ -211,6 +223,7 @@ struct QuickOpenPanel: View {
     let highlighted: QuickOpenItem.ID?
     var fieldFocused: FocusState<Bool>.Binding
     var onMove: (Int) -> Void = { _ in }
+    var onSubmit: () -> Void = {}
     var onPerform: (QuickOpenItem?) -> Void = { _ in }
     var onClose: () -> Void = {}
 
@@ -227,7 +240,7 @@ struct QuickOpenPanel: View {
                     .textFieldStyle(.plain)
                     .font(.title3)
                     .focused(fieldFocused)
-                    .onSubmit { onPerform(results.first { $0.id == highlighted }) }
+                    .onSubmit(onSubmit)
                     .onKeyPress(.upArrow) { onMove(-1); return .handled }
                     .onKeyPress(.downArrow) { onMove(1); return .handled }
                     .onKeyPress(.escape) { onClose(); return .handled }

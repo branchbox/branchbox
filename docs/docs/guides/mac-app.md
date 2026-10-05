@@ -168,7 +168,7 @@ Notifications are configurable in Settings. They report qualifying completed or 
 
 ## CLI compatibility and diagnostics
 
-The app selects the first usable CLI from:
+The app selects the first executable CLI candidate from:
 
 1. `BRANCHBOX_CLI_PATH`.
 2. **Settings › Tools › Locate…**.
