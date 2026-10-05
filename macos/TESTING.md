@@ -4,6 +4,10 @@ How the Mac app is tested, and the record of the latest verification run. Update
 "Mac App ↔ CLI Loop" sections whenever you run them (AGENTS.md asks for this before a PR that touches the
 app, the CLI's `--json` output, teardown, prune, `config`, `init` or the registry).
 
+Readiness is measured by [user outcomes and E2E evidence](../docs/docs/getting-started/release-readiness.md).
+The merged-PR record below is the current sign-off. Earlier dated snapshots retain their original failures,
+pending checks and former numeric targets; they are historical evidence rather than current blockers.
+
 ## Test layers
 
 | Layer | Command | Runs |
@@ -39,7 +43,47 @@ Each test reads the CLI's identity and asserts what that mode must do.
 | `SandboxRemediationTests` | fake `sbx`: failed_retained → Retry + Copy Inspect Command (`sbx exec <id> bash`) → Retry reuses the sandbox → active | ✓ | ✓ |
 | `LiveFixtureDecodeTests` | gated on `BRANCHBOX_LIVE_FIXTURES`; plus an ungated self-test of the key recorder | n/a | n/a |
 
-## Latest review follow-up: 2026-10-05
+## Latest sign-off: PR #105 merged on 2026-10-05
+
+Owner authorized [PR #105](https://github.com/branchbox/branchbox/pull/105) with the documented live credential
+and optional native-check limitations. It merged as `872e1bde4fefa31c554c8bf3b972f9c3a42aa3ec` from reviewed
+head `80a29ab4f3aeb537240c42ee892aaee3ab4fffc7`. CI's tested PR merge `573896a` had the same tree as that head.
+This sign-off supersedes the pending-gate interpretation in earlier snapshots; it does not turn their
+unrun cases into passing results. The [readiness matrix](../docs/docs/getting-started/release-readiness.md#pr-105-evidence-snapshot-2026-10-05)
+records the outcome scopes and follow-up gaps.
+
+- All 18 [standard CI jobs](https://github.com/branchbox/branchbox/actions/runs/37355026718), four
+  [Mac test/integration/package jobs](https://github.com/branchbox/branchbox/actions/runs/37355026654), and four
+  [verbose stack jobs](https://github.com/branchbox/branchbox/actions/runs/37355087512) passed. This includes
+  the 27 ignored Docker cases, regular and verbose Rust/Generic/Node/Rails harnesses, both CLI compatibility
+  modes, and the full generic agent/control-plane harness. The optional
+  [Firecracker lifecycle](https://github.com/branchbox/branchbox/actions/runs/37355026653) also passed.
+- The agent proof asserts real IPC start event 2, teardown event 3, the unchanged batch/metadata after an
+  initial HTTP 503, delivered SQLite rows and durable acknowledgement 3. Independent cleanup verifies its
+  owned processes, socket and disposable worktree are gone. A heartbeat alone does not satisfy this outcome.
+- Native review of build 452 verified the empty-project/sidebar/Activity layout repair, Quick Open navigation,
+  removed-branch action refresh, Discard, explicitly approved Force-delete and one-row Prune. Independent
+  Git/path read-back confirms branch policy, preserved neighbors and the exact recovery commit.
+- Native start cancellation removed all four observed CLI/Git/hook/sleep processes, exposed the clean
+  unregistered worktree and removed it through recovery while keeping its branch. **Start used the older
+  `6d321eb` audit CLI; recovery used `80a29ab`.** This is not a complete current-source native start/cancel
+  proof. Current-source automated cancellation coverage is recorded separately in the integration suites.
+- Downloaded universal CI build 453 matched its published checksum and passed deep/strict signature
+  checks for arm64 and x86_64. The Mac app remains an ad hoc signed, unnotarized preview; merge is not a
+  new tagged binary release.
+- Live host 1Password PAT/signing failure-path verification remains **unverified and explicitly accepted
+  for this merge**. Offline reference/argv and safe-write regressions are separate evidence. Optional native
+  notifications, explicit Dock/menu-bar reopening, minimum-size interaction and native Terminal access
+  remain unverified, as do public tunnels and broader optional-provider provisioning claims.
+
+The owner chose outcomes and E2E coverage as the primary readiness measure. Comparable Rust LLVM line
+reports rose from **73.32%** on pre-PR main (`d1dcca0`, [CI run](https://github.com/branchbox/branchbox/actions/runs/37304286512))
+to **80.66%** on the reviewed PR tree ([CI run](https://github.com/branchbox/branchbox/actions/runs/37355026718)).
+That percentage is informational and replaces the former 90% shipping target; it excludes separately run
+Swift, ignored Docker and manual/native evidence. Reported case counts below remain inventory, not an
+outcome-coverage percentage. No new film was published; media production remains paused.
+
+## Review follow-up snapshot: 2026-10-05, before final CI/sign-off
 
 Two fresh independent reviews of `44be15b` found three Swift defects and two Rust defects.
 The repairs preserve exact stray-worktree discard consent, block truncated prune plans, refresh
