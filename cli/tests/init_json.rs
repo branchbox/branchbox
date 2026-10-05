@@ -21,8 +21,8 @@ use support::{assert_fixture, assert_single_json, init_test_repo, normalize_json
 const AREA: &str = "commands";
 
 /// References the fake `op` resolves; anything else fails like 1Password does.
-const GITHUB_REF: &str = "op://dev/github/token";
-const SIGNING_REF: &str = "op://dev/ssh/signing-key";
+const GITHUB_REF: &str = "op://Development vault/GitHub account/token";
+const SIGNING_REF: &str = "op://Development vault/Git signing/private key";
 
 fn stderr_of(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -38,7 +38,7 @@ fn fake_op(repo: &TestRepo) -> PathBuf {
          # Fake 1Password CLI: op read --no-newline -- REF\n\
          echo \"$4\" >> '{log}'\n\
          case \"$4\" in\n\
-           {GITHUB_REF}|{SIGNING_REF}) printf 'secret-value' ;;\n\
+           '{GITHUB_REF}'|'{SIGNING_REF}') printf 'secret-value' ;;\n\
            *) echo \"[ERROR] could not read secret '$4': isn't an item\" >&2; exit 1 ;;\n\
          esac\n",
         log = bin.join("op.log").display()
@@ -224,7 +224,7 @@ fn malformed_references_are_refused_even_unverified() {
 fn no_verify_saves_references_without_calling_op() {
     let repo = init_test_repo();
     let bin = fake_op(&repo);
-    let unverified = "op://elsewhere/github/token";
+    let unverified = "op://Elsewhere vault/GitHub account/token";
     let output = init(
         &repo,
         &bin,
@@ -232,13 +232,15 @@ fn no_verify_saves_references_without_calling_op() {
             "--json",
             "--op-github-ref",
             unverified,
+            "--op-signing-key-ref",
+            SIGNING_REF,
             "--no-verify-op-refs",
         ],
     );
     assert!(output.status.success(), "{}", stderr_of(&output));
     assert_eq!(
         devcontainer_env(&repo),
-        format!("OP_GITHUB_REF={unverified}\n")
+        format!("OP_GITHUB_REF={unverified}\nOP_SIGNING_KEY_REF={SIGNING_REF}\n")
     );
     assert!(op_log(&bin).is_empty());
 }

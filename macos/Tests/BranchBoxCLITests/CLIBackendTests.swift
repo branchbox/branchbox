@@ -566,7 +566,7 @@ private func fixture(_ name: String) throws -> String { try Fixtures.string("cli
         #expect(backend.previewCommandLine(.deleteBranch("feature/eta", Scripted.project, force: true))
                 == "git -C /r/main branch -D feature/eta")
         #expect(backend.previewCommandLine(.removeStray(StrayWorktree(path: "/r/my stray", branch: nil, head: nil), Scripted.project,
-                                                        discardChanges: true))
+                                                        discard: DiscardConsent(userFiles: [])))
                 == "git -C /r/main worktree remove --force '/r/my stray'")
         #expect(backend.previewCommandLine(.exec(ExecRequest(feature: Scripted.eta, command: ["echo", "sk_live_abcdef"])))
                 == "/opt/homebrew/bin/branchbox feature exec --repo /r/main --json eta -- echo '<redacted>'")

@@ -44,7 +44,7 @@ public enum PreviewCall: Sendable, Hashable {
     case openTunnel(FeatureRef)
     case removeTunnel(FeatureRef, force: Bool)
     case deleteBranch(String, ProjectRef, force: Bool)
-    case removeStray(StrayWorktree, ProjectRef, discardChanges: Bool)
+    case removeStray(StrayWorktree, ProjectRef, discard: DiscardConsent?)
 
     public var method: PreviewMethod {
         switch self {
@@ -444,8 +444,8 @@ public actor PreviewBackend: BranchBoxBackend {
         try await perform(.deleteBranch(branch, project, force: force)) {}
     }
 
-    public func removeStray(_ stray: StrayWorktree, in project: ProjectRef, discardChanges: Bool) async throws {
-        try await perform(.removeStray(stray, project, discardChanges: discardChanges)) {
+    public func removeStray(_ stray: StrayWorktree, in project: ProjectRef, discard: DiscardConsent?) async throws {
+        try await perform(.removeStray(stray, project, discard: discard)) {
             let listing = listing(for: project)
             listings[project.path] = FeatureListing(features: listing.features, strays: listing.strays.filter { $0 != stray },
                                                     droppedRecords: listing.droppedRecords, warnings: listing.warnings)

@@ -132,6 +132,9 @@ import Observation
         guard let feature = features.first(where: { $0.workFeature == name }) else { return "Unknown feature" }
         if feature.setup?.state == .inProgress { return "Still being set up" }
         if let issue = feature.worktreeIssue { return "Git worktree needs repair: \(issue)" }
+        if plans[name]?.changes.truncated == true {
+            return "Too many changes to list safely; review this feature in Tear Down instead"
+        }
         if plans[name] != nil { return nil }
         if let error = planErrors[name] { return "Couldn't check it: \(error)" }
         return "Checking for unsaved work…"
@@ -161,6 +164,7 @@ import Observation
     func confirmConsent() {
         guard let name = pendingConsent else { return }
         pendingConsent = nil
+        guard unselectableReason(name) == nil else { return }
         consents[name] = DiscardConsent(userFiles: consentFiles(name).map(\.path))
         selected.insert(name)
     }

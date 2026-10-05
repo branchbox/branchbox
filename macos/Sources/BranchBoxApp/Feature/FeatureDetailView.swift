@@ -174,6 +174,7 @@ struct FeatureDetailContent: View {
         if devcontainer.status == nil { devcontainer = .loading }
         do {
             let status = try await model.backend().devcontainerStatus(for: feature)
+            guard !Task.isCancelled else { return }
             devcontainer = .loaded(status)
         } catch {
             if Task.isCancelled { return }
@@ -189,15 +190,18 @@ struct FeatureDetailContent: View {
             if case .deleteBranch(let name, _, _) = $0.context { return name == branch && !$0.isCancellable }
             return false
         }.count
-        return "\(record.status)#\(finished)"
+        return "\(feature.project.path)#\(feature.name)#\(branch)#\(record.status)#\(finished)"
     }
 
     private func loadBranchExists() async {
         guard pinnedBranchExists == nil, record.status == .removed, !record.branchName.isEmpty else { return }
+        branchExists = nil
         do {
             let branches = try await model.backend().listBranches(in: feature.project)
+            guard !Task.isCancelled else { return }
             branchExists = branches.local.contains(record.branchName)
         } catch {
+            guard !Task.isCancelled else { return }
             branchExists = nil
         }
     }

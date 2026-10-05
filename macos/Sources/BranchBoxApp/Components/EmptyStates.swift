@@ -34,7 +34,6 @@ struct EmptyStateLayout<Description: View, Actions: View>: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { actions }

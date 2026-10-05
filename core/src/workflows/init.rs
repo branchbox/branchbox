@@ -1864,12 +1864,13 @@ impl InitWorkflow {
 
     /// Whether `reference` looks like a 1Password secret reference (`op://vault/item/field`).
     fn is_op_reference(reference: &str) -> bool {
-        reference
-            .strip_prefix("op://")
-            .is_some_and(|rest| !rest.is_empty())
-            && !reference
-                .chars()
-                .any(|ch| ch.is_whitespace() || ch.is_control())
+        reference.strip_prefix("op://").is_some_and(|rest| {
+            let components: Vec<_> = rest.split('/').collect();
+            components.len() >= 3
+                && components
+                    .iter()
+                    .all(|component| !component.trim().is_empty())
+        }) && !reference.chars().any(char::is_control)
     }
 
     /// The 1Password status `.devcontainer/.env` records for the workspace.
@@ -3679,12 +3680,19 @@ mod tests {
     #[test]
     fn op_references_must_be_op_urls_on_one_line() {
         assert!(InitWorkflow::is_op_reference("op://vault/item/field"));
+        assert!(InitWorkflow::is_op_reference(
+            "op://Development vault/Git signing/private key"
+        ));
         for reference in [
             "",
             "op://",
             "vault/item",
             "op://vault/item field",
             "op://a\nb",
+            "op://vault/item/private\rkey",
+            "op://vault/item/private\tkey",
+            "op://vault/ /field",
+            "op://vault/item/",
         ] {
             assert!(!InitWorkflow::is_op_reference(reference), "{reference:?}");
         }
@@ -3702,6 +3710,12 @@ mod tests {
         assert!(workflow("op://v/i/f", Some("op://v/k/f"))
             .check_onepassword_references()
             .is_ok());
+        assert!(workflow(
+            "op://Development vault/GitHub account/token",
+            Some("op://Development vault/Git signing/private key")
+        )
+        .check_onepassword_references()
+        .is_ok());
         let err = workflow("op://v/i/f", Some("ssh-key"))
             .check_onepassword_references()
             .unwrap_err();

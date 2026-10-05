@@ -151,7 +151,7 @@ private let remotion = feature("remotion")
             == "Checking BranchBox in app")
         #expect(actions.title(for: .applyConfig(ConfigPatch(changes: []), sampleProject)) == "Saving settings for branchbox")
         #expect(actions.title(for: .deleteBranch("feature/x", sampleProject, force: false)) == "Deleting branch feature/x")
-        #expect(actions.title(for: .removeStray(PreviewSamples.stray, sampleProject, discardChanges: false))
+        #expect(actions.title(for: .removeStray(PreviewSamples.stray, sampleProject, discard: nil))
             == "Removing worktree spike-search")
     }
 

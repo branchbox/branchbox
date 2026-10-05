@@ -55,8 +55,9 @@ public enum RecoveryPlanner {
         case (.uncommittedChanges(let files), .teardown(let request)?):
             return [discardAndTearDown(request, files: files, truncated: refusal.plan?.changes.truncated == true)]
                 + reveal(refusal)
-        case (.uncommittedChanges(let files), .removeStray(let stray, let project, discardChanges: false)?):
-            return [discardAndRemoveStray(stray, project: project, files: files), .revealInFinder(path: stray.path)]
+        case (.uncommittedChanges(let files), .removeStray(let stray, let project, let earlier)?):
+            return [discardAndRemoveStray(stray, project: project, files: files, earlier: earlier),
+                    .revealInFinder(path: stray.path)]
         case (.moduleFilesDirty(let generated, let userChanges), .teardown(let request)?):
             if userChanges.isEmpty { return [discardGeneratedAndTearDown(request, generated: generated)] }
             return [discardAndTearDown(request, files: userChanges, truncated: refusal.plan?.changes.truncated == true)]
@@ -123,7 +124,8 @@ public enum RecoveryPlanner {
     private static func discardAndTearDown(_ request: TeardownRequest, files: [ChangedFile],
                                            truncated: Bool = false) -> RecoveryAction {
         var retry = request
-        retry.discard = DiscardConsent(userFiles: consentedPaths(request.discard, adding: files.map(\.path)))
+        retry.discard = DiscardConsent(userFiles: consentedPaths(request.discard, adding: files.map(\.path)),
+                                       includesUnlistedChanges: truncated || request.discard?.includesUnlistedChanges == true)
         let label: String
         if truncated {
             label = "Discard more than \(files.count) changes and tear down…"
@@ -157,11 +159,17 @@ public enum RecoveryPlanner {
         return previous + paths.filter { !previous.contains($0) }
     }
 
-    private static func discardAndRemoveStray(_ stray: StrayWorktree, project: ProjectRef, files: [ChangedFile]) -> RecoveryAction {
+    private static func discardAndRemoveStray(_ stray: StrayWorktree, project: ProjectRef, files: [ChangedFile],
+                                              earlier: DiscardConsent?) -> RecoveryAction {
         let label = files.count == 1 ? "Discard 1 change and remove the worktree…"
             : "Discard \(files.count) changes and remove the worktree…"
-        return .retry(.removeStray(stray, project, discardChanges: true), label: label, destructive: true,
-                      confirmation: "These changes in \(stray.path) will be permanently deleted:\n" + fileList(files))
+        let consent = DiscardConsent(userFiles: consentedPaths(earlier, adding: files.map(\.path)))
+        var confirmation = "These changes in \(stray.path) will be permanently deleted:\n" + fileList(files)
+        if let earlier, !earlier.userFiles.isEmpty {
+            confirmation += "\n…along with the \(earlier.userFiles.count) changes you confirmed before."
+        }
+        return .retry(.removeStray(stray, project, discard: consent), label: label, destructive: true,
+                      confirmation: confirmation)
     }
 
     private static func forcedRemoval(_ request: TeardownRequest, label: String, destructive: Bool,
@@ -245,7 +253,7 @@ public enum RecoveryPlanner {
         case .devcontainer(.down(let removeVolumes), _): removeVolumes
         case .tunnelRemove(_, let force): force
         case .deleteBranch(_, _, let force): force
-        case .removeStray(_, _, let discardChanges): discardChanges
+        case .removeStray(_, _, let discard): discard != nil
         case .initProject(let request): request.reorganize
         case .start, .exec, .devcontainer, .syncDevcontainers, .tunnelOpen, .applyConfig, .tunnelCredentials: false
         }
@@ -264,4 +272,3 @@ public enum RecoveryPlanner {
         }
     }
 }
-

@@ -39,6 +39,46 @@ Each test reads the CLI's identity and asserts what that mode must do.
 | `SandboxRemediationTests` | fake `sbx`: failed_retained → Retry + Copy Inspect Command (`sbx exec <id> bash`) → Retry reuses the sandbox → active | ✓ | ✓ |
 | `LiveFixtureDecodeTests` | gated on `BRANCHBOX_LIVE_FIXTURES`; plus an ungated self-test of the key recorder | n/a | n/a |
 
+## Latest review follow-up: 2026-10-05
+
+Two fresh independent reviews of `44be15b` found three Swift defects and two Rust defects.
+The repairs preserve exact stray-worktree discard consent, block truncated prune plans, refresh
+removed-feature branch state, accept valid 1Password references containing spaces, and record
+generated devcontainer symlink ownership. Unrecorded or retargeted links remain user work.
+
+- Warnings-as-errors Swift build and ordinary split suite: 703 reported tests in 93 suites passed.
+  Environment-gated integrations and renders were not executed by that ordinary run. Five final
+  prune-flow tests passed after the consent UI guards. The final devcontainer cancellation guard
+  compiled in the package and real-CLI run below.
+- Current-source real CLI integration: 24 tests in 14 suites passed in 23.449 seconds, using private
+  disposable Git repositories and the existing caches. The released legacy CLI remains covered
+  by earlier runs; the fresh CI floor job will verify the final tree.
+- Rust focused regression suites: 121 unique no-Docker tests passed, including real symlink
+  sync/clean-plan/retarget-refusal lifecycle and verified reference argv preservation. Formatting
+  and review preflight passed. Broad current-source Rust/stack CI remains pending at this snapshot.
+- Packaged arm64 debug build 452 (`44be15b-reviewfixes`) embeds the current-source debug CLI and
+  passes deep/strict signature checks. It is ad hoc signed and is a local QA bundle.
+- Native empty Contract project: opening and closing Activity leaves the sidebar visible; Quick
+  Open stays inside the window and its Workspace button navigates successfully. This repeats the
+  original blank/offscreen reproduction after removing the empty-description vertical fixed size.
+- Native removed-feature switching: deleted `ui-force-check` has no Delete Branch action; switching
+  to retained `ui-prune-check` exposes it; switching back removes it. Git read-back matches both.
+- Native Discard, explicitly approved Force-delete, and one-row Prune all executed successfully.
+  Independent read-back verifies worktree deletion, the requested branch policy, preserved neighboring
+  worktrees, and the force fixture's exact commit on its recovery ref. Tear Down reports its missing
+  tunnel descriptor warning; Prune reports 1 torn down, 0 partial, 0 failed.
+- Repaired agent gate: current-source daemon receives a disposable start and teardown over Unix IPC.
+  Workflow events 2/3, metadata-preserving first-503 retry, delivered SQLite rows and durable ack 3
+  are asserted. Owned agent/stub processes and socket are gone. Nine helper regressions pass,
+  including external-repository preservation under inherited Git overrides; CI now runs them.
+
+The original heartbeat-only/capacity failures below remain historical evidence. The new `--ipc-only`
+proof covers real agent routing and delivery, but the full agent wrapper's Docker workflow remains a
+separate gate. Optional Manual CLI workflow dispatch now supports verbose mode and a generic full
+agent `--cp-stub` run on disposable runners. Host 1Password/signing references are still awaited, and
+the recorded line coverage remains below the unchanged 90% target. Remaining native checklist items
+retain their individual pending/partial status. No new film was published.
+
 ## Earlier baseline: 2026-10-04 (VER-1, automated)
 
 Machine: Apple M4 Pro, macOS 26.5.1 (25F80), Xcode 26.3, Swift 6.2.4, rustc 1.90.0, cargo-nextest 0.9.111,

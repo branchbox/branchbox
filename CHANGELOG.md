@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Initialization accepts valid 1Password references with spaces in vault, item and field names,
+  including `private key`, while still rejecting control characters and incomplete references.
+- Devcontainer symlink sync records link ownership so unchanged BranchBox-created links no longer
+  block teardown. Changed targets and links without recorded ownership remain protected; older
+  symlink features need another sync to record their baseline.
+- The manual agent gate now starts and tears down a private minimal feature through Unix IPC,
+  then requires matching workflow events, metadata, retry delivery and a durable final control-plane
+  acknowledgement. Its loopback stub uses an available port; `--ipc-only` provides a small real
+  lifecycle check and prebuilt agent binaries avoid unnecessary rebuilds.
 - Feature teardown removes standalone image/Dockerfile devcontainers bearing the exact worktree's
   workspace label, and discovers owned Compose resources through verified lexical and canonical
   workspace labels. Discovered Compose identities survive partial cleanup for safe retries.
@@ -145,6 +154,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### macOS app
 
+- Stray-worktree removal rechecks the exact paths confirmed for discard and refuses new changes.
+  A second confirmation retains earlier consent. Prune blocks truncated change lists; ordinary
+  Tear Down requires explicit confirmation before removing changes omitted from a truncated list.
+- Removed-feature branch actions refresh when the project, feature or branch changes and ignore
+  cancelled lookups. Empty-project descriptions respect the window height so the sidebar and
+  Quick Open remain visible after closing Activity.
 - Open Shell uses the configured container user and workspace, and falls back from Bash to `sh`
   for images that do not provide Bash.
 - The macOS app finds the `branchbox` CLI when it is launched from Finder or the Dock, and the CLI it runs finds

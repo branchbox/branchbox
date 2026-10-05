@@ -405,6 +405,77 @@ fn tracked_vscode_settings_count_as_user_work_only_once_edited() {
     assert!(settings_path.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn synced_symlinks_are_generated_but_retargeted_links_remain_user_work() {
+    use std::os::unix::fs::symlink;
+
+    let repo = init_test_repo();
+    fs::create_dir(repo.path().join(".devcontainer")).unwrap();
+    fs::write(
+        repo.path().join(".devcontainer/devcontainer.json"),
+        "{\"image\": \"alpine:3.19\"}\n",
+    )
+    .unwrap();
+    repo.git(&["add", ".devcontainer"]);
+    repo.git(&["commit", "-q", "-m", "Add devcontainer"]);
+    let worktree = start_minimal(&repo, "dc-link");
+    assert_ok_json(&branchbox(
+        &repo,
+        &[
+            "devcontainer",
+            "sync",
+            "--strategy",
+            "symlink",
+            "--feature",
+            "dc-link",
+            "--json",
+        ],
+    ));
+    let link = worktree.join(".devcontainer/devcontainer.json");
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let plan = assert_ok_json(&branchbox(
+        &repo,
+        &[
+            "feature",
+            "teardown",
+            "dc-link",
+            "--keep-branch",
+            "--dry-run",
+            "--json",
+        ],
+    ));
+    assert!(user_paths(&plan).is_empty(), "{plan:#}");
+    assert!(plan["changes"]["generated"].as_array().unwrap().contains(
+        &json!({"path": ".devcontainer/devcontainer.json", "rule": "devcontainer_baseline"})
+    ));
+
+    let outside = repo.root().join("user-config.json");
+    fs::write(&outside, "user config\n").unwrap();
+    fs::remove_file(&link).unwrap();
+    symlink(&outside, &link).unwrap();
+    let refused = assert_envelope(
+        &branchbox(
+            &repo,
+            &["feature", "teardown", "dc-link", "--keep-branch", "--json"],
+        ),
+        "teardown_refused",
+    );
+    assert_eq!(
+        user_paths(&refused["error"]["details"]["plan"]),
+        [".devcontainer/devcontainer.json"]
+    );
+    assert_eq!(fs::read_link(&link).unwrap(), outside);
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "user config\n");
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".devcontainer/devcontainer.json")).unwrap(),
+        "{\"image\": \"alpine:3.19\"}\n"
+    );
+}
+
 /// A full-mode feature syncs and rewrites `.devcontainer/devcontainer.json`; the sync baseline
 /// marks that as generated. The manual harness then edits it, and text mode must keep the 0.13
 /// banner on stdout before the scripted `--force` retry.

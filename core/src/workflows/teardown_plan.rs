@@ -18,7 +18,9 @@
 
 use super::feature::{FeatureMetadata, FeatureStatus, FeatureTunnelStatus, TeardownRequest};
 use crate::git::BranchMergeState;
-use crate::modules::devcontainer::{baseline_digest, DevcontainerBaseline};
+use crate::modules::devcontainer::{
+    baseline_digest, baseline_symlink_digest, DevcontainerBaseline,
+};
 use crate::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -812,6 +814,11 @@ pub trait ChangeContext {
     fn head_file(&self, path: &str) -> Option<Vec<u8>>;
     /// The devcontainer sync baseline digest of `relative` (a path inside `.devcontainer/`).
     fn baseline_digest(&self, relative: &str) -> Option<String>;
+    /// Whether a link points exactly to the main-worktree source that symlink sync would use.
+    /// A matching recorded digest is required separately; arbitrary links remain user work.
+    fn is_devcontainer_sync_link(&self, _path: &str, _target: &Path) -> bool {
+        false
+    }
 }
 
 /// The [`ChangeContext`] of a real feature worktree and its main worktree.
@@ -871,6 +878,21 @@ impl ChangeContext for FsChangeContext {
 
     fn baseline_digest(&self, relative: &str) -> Option<String> {
         self.baseline.as_ref()?.get(relative).cloned()
+    }
+
+    fn is_devcontainer_sync_link(&self, path: &str, target: &Path) -> bool {
+        if !path.starts_with(".devcontainer/") || !is_safe_relative_path(path) {
+            return false;
+        }
+        let destination = self.worktree.join(path);
+        let Some(parent) = destination.parent() else {
+            return false;
+        };
+        pathdiff::diff_paths(self.main.join(path), parent).as_deref() == Some(target)
+            && matches!(
+                self.main_file(path),
+                FileProbe::File(_) | FileProbe::Symlink(_)
+            )
     }
 }
 
@@ -1087,8 +1109,15 @@ fn generated_rule(
     file: &FileProbe,
     context: &dyn ChangeContext,
 ) -> Option<GeneratedRule> {
-    if let (Some(relative), FileProbe::File(bytes)) = (path.strip_prefix(".devcontainer/"), file) {
-        if context.baseline_digest(relative).as_deref() == Some(baseline_digest(bytes).as_str()) {
+    if let Some(relative) = path.strip_prefix(".devcontainer/") {
+        let digest = match file {
+            FileProbe::File(bytes) => Some(baseline_digest(bytes)),
+            FileProbe::Symlink(target) if context.is_devcontainer_sync_link(path, target) => {
+                Some(baseline_symlink_digest(target))
+            }
+            _ => None,
+        };
+        if digest.is_some() && context.baseline_digest(relative) == digest {
             return Some(GeneratedRule::DevcontainerBaseline);
         }
     }
@@ -2396,6 +2425,58 @@ mod tests {
         );
         let no_baseline = FsChangeContext::new(repo.path(), repo.path(), None);
         assert_eq!(no_baseline.baseline_digest("devcontainer.json"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_baseline_requires_the_recorded_exact_main_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let main = temp.path().join("main");
+        let worktree = temp.path().join("eta");
+        let path = ".devcontainer/devcontainer.json";
+        fs::create_dir_all(main.join(".devcontainer")).unwrap();
+        fs::create_dir_all(worktree.join(".devcontainer")).unwrap();
+        fs::write(main.join(path), "main config").unwrap();
+        let owned_target = PathBuf::from("../../main/.devcontainer/devcontainer.json");
+        symlink(&owned_target, worktree.join(path)).unwrap();
+        let mut baseline = DevcontainerBaseline::new();
+        baseline.insert(
+            "devcontainer.json".to_string(),
+            baseline_symlink_digest(&owned_target),
+        );
+        let classify = |baseline| {
+            classify_changes(
+                &[entry(" T", path)],
+                &FsChangeContext::new(&worktree, &main, baseline),
+                "eta",
+                false,
+                None,
+            )
+            .changes
+        };
+        let clean = classify(Some(baseline.clone()));
+        assert!(clean.user.is_empty());
+        assert_eq!(clean.generated[0].rule, GeneratedRule::DevcontainerBaseline);
+        assert_eq!(
+            classify(None).user[0].path,
+            path,
+            "a link needs recorded ownership"
+        );
+
+        fs::remove_file(worktree.join(path)).unwrap();
+        let outside = temp.path().join("user-config.json");
+        fs::write(&outside, "user config").unwrap();
+        symlink(&outside, worktree.join(path)).unwrap();
+        assert_eq!(classify(Some(baseline.clone())).user[0].path, path);
+        // Even a baseline made from an arbitrary link cannot vouch for a non-main target.
+        baseline.insert(
+            "devcontainer.json".to_string(),
+            baseline_symlink_digest(&outside),
+        );
+        assert_eq!(classify(Some(baseline)).user[0].path, path);
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "user config");
     }
 
     // ---- plan decisions ----------------------------------------------------------------

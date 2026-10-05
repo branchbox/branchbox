@@ -265,8 +265,8 @@ public enum DispatchResult { case started(OperationRecord), queued(OperationReco
             case .deleteBranch(let branch, let project, let force):
                 try await backend.deleteBranch(branch, in: project, force: force)
                 result = .message("Deleted branch \(branch)")
-            case .removeStray(let stray, let project, let discardChanges):
-                try await backend.removeStray(stray, in: project, discardChanges: discardChanges)
+            case .removeStray(let stray, let project, let discard):
+                try await backend.removeStray(stray, in: project, discard: discard)
                 result = .message("Removed the worktree at \(stray.path)")
             }
             return outcome(for: result)

@@ -215,6 +215,10 @@ Options:
 
 With `--json`, the per-worktree results are printed as one document. A failed worktree makes the command exit 1, in text and JSON mode alike. A sync with worktrees to update refuses with `devcontainer_source_missing` when the main worktree has no `.devcontainer/`; `--dry-run` does not need it.
 
+Symlink sync records the exact generated link targets in the feature's sync baseline. Teardown treats
+an unchanged recorded link to the main configuration as generated work; changed targets and unrecorded
+links remain user work. For a feature synced with an older CLI, sync it again to record link ownership.
+
 ```text
 Sync devcontainer configuration to all feature worktrees
 

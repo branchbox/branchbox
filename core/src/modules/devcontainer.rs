@@ -78,7 +78,7 @@ fn stable_content_hash(bytes: &[u8]) -> u64 {
 }
 
 /// A feature's devcontainer sync baseline: each synced `.devcontainer` file (path relative to
-/// `.devcontainer`, `/`-separated) mapped to its [`baseline_digest`] as of the last sync.
+/// `.devcontainer`, `/`-separated) mapped to its content or link-target digest as of the last sync.
 pub type DevcontainerBaseline = BTreeMap<String, String>;
 
 /// The digest a baseline records for a file's bytes: FNV-1a 64 as 16 lowercase hex digits.
@@ -86,6 +86,15 @@ pub type DevcontainerBaseline = BTreeMap<String, String>;
 /// equals the baseline's.
 pub fn baseline_digest(bytes: &[u8]) -> String {
     format!("{:016x}", stable_content_hash(bytes))
+}
+
+/// A link target recorded by a sync, distinguished from regular-file content digests.
+/// The link is never followed, and its destination must also be checked before teardown.
+pub(crate) fn baseline_symlink_digest(target: &Path) -> String {
+    format!(
+        "symlink:{}",
+        baseline_digest(target.as_os_str().as_encoded_bytes())
+    )
 }
 
 /// Name of a feature worktree's baseline: its directory name, as recorded at start.
@@ -205,18 +214,19 @@ impl DevcontainerModule {
             let entry = entry.map_err(|err| {
                 Error::validation(format!("Failed to inspect devcontainer files: {err}"))
             })?;
-            if !entry.file_type().is_file() {
+            if !entry.file_type().is_file() && !entry.file_type().is_symlink() {
                 continue;
             }
             let relative = entry
                 .path()
                 .strip_prefix(&devcontainer)
                 .map_err(|err| Error::validation(format!("Path strip failed: {err}")))?;
-            let bytes = std::fs::read(entry.path())?;
-            manifest.insert(
-                relative.to_string_lossy().replace('\\', "/"),
-                baseline_digest(&bytes),
-            );
+            let digest = if entry.file_type().is_symlink() {
+                baseline_symlink_digest(&std::fs::read_link(entry.path())?)
+            } else {
+                baseline_digest(&std::fs::read(entry.path())?)
+            };
+            manifest.insert(relative.to_string_lossy().replace('\\', "/"), digest);
         }
         Ok(manifest)
     }
@@ -2952,6 +2962,49 @@ volumes:
         assert_eq!(baseline, module.current_manifest(&feature).unwrap());
         assert!(module.divergence(&feature).unwrap().is_empty());
         assert_eq!(sync_dir_entries(&main), ["alpha.json"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_baseline_records_targets_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let _guard = env_guard();
+        let temp = TempDir::new().unwrap();
+        let (main, feature) = baseline_fixture(&temp);
+        let mut module = DevcontainerModule::new();
+        module.init(&main, &feature).unwrap();
+        module.strategy = SyncStrategy::Symlink;
+        module.setup(&main, &feature).unwrap();
+
+        let baseline = DevcontainerModule::read_baseline(&main, "alpha")
+            .unwrap()
+            .expect("symlink setup records its baseline");
+        assert_eq!(baseline.len(), 2);
+        let link = feature.join(".devcontainer/devcontainer.json");
+        let target = fs::read_link(&link).unwrap();
+        assert_eq!(
+            baseline["devcontainer.json"],
+            baseline_symlink_digest(&target)
+        );
+        assert!(module.divergence(&feature).unwrap().is_empty());
+
+        // Main edits propagate through the owned link, without changing its ownership.
+        fs::write(main.join(".devcontainer/devcontainer.json"), "updated main").unwrap();
+        assert!(module.divergence(&feature).unwrap().is_empty());
+
+        // A dangling replacement still changes the baseline: its target is read, not followed.
+        fs::remove_file(&link).unwrap();
+        symlink("../../missing/user-config.json", &link).unwrap();
+        assert_eq!(module.divergence(&feature).unwrap(), ["devcontainer.json"]);
+        assert_eq!(
+            module.current_manifest(&feature).unwrap()["devcontainer.json"],
+            baseline_symlink_digest(Path::new("../../missing/user-config.json"))
+        );
+        assert_eq!(
+            fs::read_to_string(main.join(".devcontainer/devcontainer.json")).unwrap(),
+            "updated main"
+        );
     }
 
     #[test]

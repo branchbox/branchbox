@@ -59,7 +59,7 @@ extension RealCLI {
                     "a cancelled start is never listed as a finished feature")
             let stray = try #require(listing.strays.first { URL(fileURLWithPath: $0.path).lastPathComponent == "slow" },
                                      "no stray reported after the cancel (\(cli.mode)): \(listing.strays)")
-            try await cli.backend.removeStray(stray, in: repo.project, discardChanges: false)
+            try await cli.backend.removeStray(stray, in: repo.project, discard: nil)
             let after = try await cli.backend.listFeatures(in: repo.project, includeRemoved: true)
             #expect(after.strays.isEmpty)
             #expect(!FileManager.default.fileExists(atPath: repo.worktree("slow").path))

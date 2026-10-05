@@ -36,10 +36,10 @@ import Observation
 
     var canRemove: Bool { record == nil }
 
-    /// The first attempt: never discards (`discardChanges: false`).
+    /// The first attempt: never discards (`discard: nil`).
     @discardableResult func remove() -> Bool {
         guard canRemove else { return false }
-        return adopt(FlowDispatch.record(of: model.actions.dispatch(.removeStray(stray, project, discardChanges: false))))
+        return adopt(FlowDispatch.record(of: model.actions.dispatch(.removeStray(stray, project, discard: nil))))
     }
 
     /// A recovery's retry (the confirmed "Discard N changes and remove") replaces the attempt.

@@ -384,7 +384,7 @@ struct ConsentPopover: View {
                 .foregroundStyle(.secondary)
             FlowPathList(lines: files.map { $0.kind.isEmpty ? $0.path : "\($0.path)  (\($0.kind))" }, visibleLines: 8)
             if flow.plans[name]?.changes.truncated == true {
-                Text("The list is truncated. If there are more changes, this feature's teardown stops and is skipped.")
+                Text("The list is truncated. Review this feature in Tear Down before deleting any changes.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -396,6 +396,7 @@ struct ConsentPopover: View {
                 Button("Delete Files and Tear Down", role: .destructive) { flow.confirmConsent() }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
+                    .disabled(flow.unselectableReason(name) != nil)
             }
         }
         .padding(16)

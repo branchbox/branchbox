@@ -83,7 +83,7 @@ func uncommitted(_ paths: [String]) -> BackendError {
 private func discardRetry(_ recoveries: [RecoveryAction]) -> RecoveryAction? {
     recoveries.first { action in
         if case .retry(.teardown(let request), _, true, _) = action { return request.discard != nil }
-        if case .retry(.removeStray(_, _, true), _, true, _) = action { return true }
+        if case .retry(.removeStray(_, _, let discard), _, true, _) = action { return discard != nil }
         return false
     }
 }
@@ -509,7 +509,7 @@ private func discardRetry(_ recoveries: [RecoveryAction]) -> RecoveryAction? {
         try await flowWaitUntilFinished(flow.branchRecord)
 
         let removals = await harness.backend.calls(to: .removeStray).compactMap { call -> Bool? in
-            if case .removeStray(_, _, let discard) = call { return discard }
+            if case .removeStray(_, _, let discard) = call { return discard != nil }
             return nil
         }
         #expect(removals == [false, true])

@@ -76,6 +76,9 @@ public struct PrunePlanner: Sendable {
             return "BranchBox reported a problem this app version can't read"
         }
         if plan.worktree.exists {
+            if plan.changes.truncated {
+                return "Too many changes to list safely; review this feature in Tear Down instead"
+            }
             if plan.worktree.locked {
                 return plan.worktree.lockReason.map { "The worktree is locked: \($0)" } ?? "The worktree is locked"
             }

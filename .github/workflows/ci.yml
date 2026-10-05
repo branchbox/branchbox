@@ -22,6 +22,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run review preflight checks
         run: scripts/review-preflight.sh
+      - name: Run agent harness regressions
+        run: python3 -B -I scripts/tests/test_agent_e2e.py -v
 
   quality_checks:
     name: Quality Checks
@@ -235,7 +237,7 @@ jobs:
           tool: cargo-nextest
       - name: Wait for Docker
         run: |
-          for i in {1..30}; do
+          for _ in {1..30}; do
             if docker info > /dev/null 2>&1; then
               echo "Docker is ready"
               break

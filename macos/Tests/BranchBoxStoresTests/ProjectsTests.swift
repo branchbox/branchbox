@@ -457,7 +457,7 @@ import Testing
             #expect(kind.isMutating == (kind != .exec), "\(kind)")
         }
         #expect(OperationRequestContext.deleteBranch("b", sampleProject, force: false).operationTarget == .project(sampleProject))
-        #expect(OperationRequestContext.removeStray(PreviewSamples.stray, sampleProject, discardChanges: true).operationKind
+        #expect(OperationRequestContext.removeStray(PreviewSamples.stray, sampleProject, discard: DiscardConsent(userFiles: [])).operationKind
             == .removeStray)
         #expect(OperationTarget.global.project == nil)
     }

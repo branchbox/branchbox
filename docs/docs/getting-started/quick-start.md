@@ -75,6 +75,9 @@ If `branchbox init` **creates** `.devcontainer/` from BranchBox templates, it al
 
 With `OP_GITHUB_REF` / `OP_SIGNING_KEY_REF` set, opening the container can auto-refresh token/key from 1Password, configure git HTTPS credentials, and enable SSH commit signing (when key material is valid).
 
+References may contain spaces in vault, item and field names. Quote the whole reference when passing
+it to the CLI, for example `--op-signing-key-ref 'op://Development/Git signing/private key'`.
+
 Important: if your repo already has a custom `.devcontainer/`, `branchbox init` currently updates workspace compatibility but does **not** automatically retrofit these 1Password/git hooks into your existing files.
 
 ## Start Your First Feature

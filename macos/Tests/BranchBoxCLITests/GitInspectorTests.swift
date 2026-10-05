@@ -256,13 +256,22 @@ private func record(_ name: String, branch: String, path: String?, status: Featu
         let stray = StrayWorktree(path: zeta, branch: "feature/zeta", head: nil)
 
         let refusal = await backendError {
-            try await backend.removeStray(stray, in: sandbox.mainRef, discardChanges: false)
+            try await backend.removeStray(stray, in: sandbox.mainRef, discard: nil)
         }?.refusal
         #expect(refusal?.cause == .uncommittedChanges(files: [ChangedFile(path: "notes.txt", kind: "untracked", area: "other")]))
         #expect(refusal?.message.contains("notes.txt") == true)
         #expect(sandbox.exists(Paths.join(zeta, "notes.txt")))
 
-        try await backend.removeStray(stray, in: sandbox.mainRef, discardChanges: true)
+        // A file appeared while the listed-path confirmation was open or its retry was queued.
+        try sandbox.write("new-work.txt", "not confirmed\n", in: zeta)
+        let changed = await backendError {
+            try await backend.removeStray(stray, in: sandbox.mainRef, discard: DiscardConsent(userFiles: ["notes.txt"]))
+        }?.refusal
+        #expect(changed?.cause == .uncommittedChanges(files: [ChangedFile(path: "new-work.txt", kind: "untracked", area: "other")]))
+        #expect(sandbox.exists(Paths.join(zeta, "notes.txt")) && sandbox.exists(Paths.join(zeta, "new-work.txt")))
+
+        try await backend.removeStray(stray, in: sandbox.mainRef,
+                                     discard: DiscardConsent(userFiles: ["notes.txt", "new-work.txt"]))
         #expect(!sandbox.exists(zeta))
         #expect(try await sandbox.inspector().worktrees(in: sandbox.main).count == 1)
     }
@@ -292,9 +301,9 @@ private func record(_ name: String, branch: String, path: String?, status: Featu
                                  gitExecutable: GitSandbox.git)
 
         try await backend.removeStray(StrayWorktree(path: clean, branch: "feature/clean", head: nil), in: sandbox.mainRef,
-                                      discardChanges: false)
+                                      discard: nil)
         try await backend.removeStray(StrayWorktree(path: gone, branch: "feature/gone", head: nil, prunable: true),
-                                      in: sandbox.mainRef, discardChanges: false)
+                                      in: sandbox.mainRef, discard: nil)
         #expect(try await sandbox.inspector().worktrees(in: sandbox.main).count == 1)
         // Branches are left alone.
         #expect(try await sandbox.inspector().branchExists("feature/clean", in: sandbox.main))

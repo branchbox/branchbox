@@ -89,9 +89,27 @@ Usage:
 
 `--mode verbose` enables `set -x` shell tracing; BranchBox invocations are otherwise the same as regular mode, and command output remains in the harness logs. `--mode pretend` logs each workflow action without invoking BranchBox or Docker, but still seeds and commits a temporary Git repository under `/tmp`. `--stack` selects the generated template and the harness resolves the matching Compose service from `devcontainer.json`. Combine any mode with `KEEP_E2E_TMP=1` to preserve the temporary workspace for manual inspection. The script avoids Bash-4-only case-conversion syntax so the same commands work with the Bash version shipped by macOS.
 
-`--cp-stub` starts a disposable Python HTTP server on loopback in the environment running the harness, points the agent’s `BRANCHBOX_CP_ENDPOINT` at it, and prints the stub log's path and the `control_plane_status.last_ack_event_id` cursor once the CLI harness finishes. Inspect the retained log and database to verify delivered events. The current CLI feature commands execute directly, so this wrapper does not establish start/teardown event delivery through agent IPC; a heartbeat acknowledgement alone is partial drain evidence.
+## Agent IPC and control-plane gate
 
-Need a quick health check without rerunning the harness? Use `branchbox agent status --json`—it reports whether the drain is configured/connected and when the last delivery or failure occurred so you can diagnose token/endpoint issues.
+```bash
+# Full agent gate, followed by the direct-CLI Docker regression harness
+./scripts/manual-agent-e2e.sh --cp-stub --stack generic
+
+# Small real IPC/drain check, without Docker (not a substitute for the full gate)
+./scripts/manual-agent-e2e.sh --cp-stub --ipc-only
+
+# Reuse existing binaries and retain private diagnostic receipts
+KEEP_AGENT_TMP=1 BRANCHBOX_AGENT_BIN=/path/to/branchbox-agent \
+BRANCHBOX_BIN=/path/to/branchbox ./scripts/manual-agent-e2e.sh --cp-stub --stack generic
+```
+
+The agent harness creates its own small Git repository, owner-only state directory and Unix socket under `/tmp/branchbox-agent-e2e.*`. It supplies a private agent config with gRPC disabled and a one-second event flush. A minimal feature is started, listed and torn down through the existing agent IPC protocol; the test confirms the feature worktree and branch are removed. This path does not launch a devcontainer or use real project credentials. The CLI's ordinary feature commands still execute directly, so the subsequent Docker CLI harness is reported separately.
+
+`--cp-stub` binds a Python HTTP server to an available loopback port (set `BRANCHBOX_CP_STUB_PORT` only when a fixed port is needed). The stub rejects the first feature-start batch with HTTP 503 and then acknowledges subsequent batches. Within a 30-second delivery deadline, the gate requires matching `feature_start` and `feature_teardown` payloads, start metadata, unchanged retry events, agent identity metadata, delivered SQLite rows and a persisted `last_ack_event_id` at or beyond teardown. A heartbeat acknowledgement alone cannot pass. IPC requests also have a 30-second deadline.
+
+`--ipc-only` skips the Docker CLI harness but still performs the real disposable IPC lifecycle. Forwarded `--mode pretend` affects only the separate CLI harness; it does not make the agent fixture a dry run. `BRANCHBOX_AGENT_BIN` reuses a prebuilt agent; otherwise the script builds the release binary. `KEEP_AGENT_TMP=1` retains the small JSON receipts, stub log and database. Failures retain diagnostics automatically; successful runs otherwise remove their state. Only the harness's two child processes are stopped, and its socket is removed. Without `--cp-stub`, the fixture clears inherited control-plane credentials and endpoint settings rather than sending its events to a real service.
+
+Run `python3 -I scripts/tests/test_agent_e2e.py -v` for the small IPC/deadline/delivery regressions. This requires Python 3 and Unix sockets, not Rust or Docker. For a quick read-only check of an existing agent, use `branchbox agent status --json` to inspect drain configuration, connection and delivery/failure timestamps.
 
 Run the script locally before publishing releases (or wire it into CI once Docker is available). When it fails, use the manual checklist above to dig into the exact stage and file detailed bug reports.
 
@@ -145,3 +163,13 @@ Run it twice when the change affects both modes: once with the branch-built CLI 
 13. **Unbundled dev loop.** `cd macos && swift run BranchBox` starts a feature without crashing. Notifications are switched off there.
 
 Clean up the disposable repository and its sibling worktrees afterwards. File any divergence (the app and `branchbox feature list` disagreeing, a refusal without a recovery, a leftover `branchbox` process) before marking the PR ready.
+
+### Isolated manual gate dispatch
+
+The Manual CLI E2E workflow accepts `mode=verbose` for all four supported stacks. Its optional
+`agent_cp_stub=true` input adds the full agent control-plane harness to the generic job, using the
+CLI and agent built from the dispatched branch. Scheduled runs retain regular mode. The agent step
+asserts a real IPC start/teardown, matching event metadata, retry delivery and durable acknowledgement,
+then runs the separate direct-CLI Docker lifecycle. An `--ipc-only` pass alone does not complete that
+full wrapper gate. Dispatch this workflow when local capacity is insufficient; retain the exact tested
+commit and job results in the review record.

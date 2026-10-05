@@ -37,7 +37,7 @@ import Testing
                 policy: .keep, selected: false, reason: "1 uncommitted change"),
         RowCase(name: "truncated changes", record: Sample.record(),
                 plan: Sample.plan(truncated: true, user: [Sample.changed("a"), Sample.changed("b")]), policy: .keep,
-                selected: false, reason: "More than 2 uncommitted changes"),
+                selected: false, reason: "Too many changes to list safely; review this feature in Tear Down instead"),
         RowCase(name: "unchecked", record: Sample.record(), plan: nil, policy: .keep, selected: false,
                 reason: "Not checked for unsaved work yet"),
         RowCase(name: "status unreadable", record: Sample.record(),

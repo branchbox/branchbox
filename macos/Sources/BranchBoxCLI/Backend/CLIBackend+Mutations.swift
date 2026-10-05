@@ -185,20 +185,21 @@ extension CLIBackend {
         try await git(.mutation).deleteBranch(branch, in: project.path, force: force)
     }
 
-    /// Refuses a dirty stray unless `discardChanges`; then `git worktree remove [--force]` from the main root.
-    public func removeStray(_ stray: StrayWorktree, in project: ProjectRef, discardChanges: Bool) async throws {
+    /// Rechecks the stray and refuses user paths not covered by consent before `git worktree remove [--force]`.
+    public func removeStray(_ stray: StrayWorktree, in project: ProjectRef, discard: DiscardConsent?) async throws {
         let git = await git(.mutation)
         let exists = fileSystem.kind(at: stray.path) == .directory
-        if exists, !discardChanges {
+        if exists {
             let changes = try await git.status(of: stray.path).map(\.changedFile)
-            if !changes.isEmpty {
-                let message = "Refusing to remove \(stray.path): \(LegacyTeardown.count(changes.count, "uncommitted change")) would be lost (\(LegacyTeardown.list(changes.map(\.path)))); nothing was removed"
-                throw BackendError.refused(Refusal(cause: .uncommittedChanges(files: changes), message: message,
+            let uncovered = LegacyTeardown.uncovered(changes, by: discard)
+            if !uncovered.isEmpty {
+                let message = "Refusing to remove \(stray.path): \(LegacyTeardown.count(uncovered.count, "uncommitted change")) would be lost (\(LegacyTeardown.list(uncovered.map(\.path)))); nothing was removed"
+                throw BackendError.refused(Refusal(cause: .uncommittedChanges(files: uncovered), message: message,
                                                    diagnostics: Diagnostics(summary: message)))
             }
         }
         // A worktree whose folder is already gone only has git's bookkeeping left, which `--force` clears.
-        try await git.removeWorktree(stray.path, in: project.path, force: discardChanges || !exists)
+        try await git.removeWorktree(stray.path, in: project.path, force: discard != nil || !exists)
     }
 
     // MARK: - Copy as Command
@@ -236,7 +237,7 @@ extension CLIBackend {
         case .deleteBranch(let branch, let project, let force):
             return render(["git", "-C", project.path, "branch", force ? "-D" : "-d", branch])
         case .removeStray(let stray, let project, let discard):
-            return render(["git", "-C", project.path, "worktree", "remove"] + (discard ? ["--force"] : []) + [stray.path])
+            return render(["git", "-C", project.path, "worktree", "remove"] + (discard != nil ? ["--force"] : []) + [stray.path])
         }
     }
 

@@ -42,9 +42,21 @@ public struct StartFeatureRequest: Sendable, Hashable, Codable {
 public struct DiscardConsent: Sendable, Hashable, Codable {
     public let userFiles: [String]                   // exact paths confirmed; empty = BranchBox-generated files only
     public let confirmedAt: Date
-    public init(userFiles: [String], confirmedAt: Date = .now) {
+    /// Only an explicit confirmation that the truncated list omits other changes permits their removal.
+    public let includesUnlistedChanges: Bool
+    public init(userFiles: [String], confirmedAt: Date = .now, includesUnlistedChanges: Bool = false) {
         self.userFiles = userFiles
         self.confirmedAt = confirmedAt
+        self.includesUnlistedChanges = includesUnlistedChanges
+    }
+
+    private enum CodingKeys: String, CodingKey { case userFiles, confirmedAt, includesUnlistedChanges }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        userFiles = try c.decode([String].self, forKey: .userFiles)
+        confirmedAt = try c.decode(Date.self, forKey: .confirmedAt)
+        includesUnlistedChanges = try c.decodeIfPresent(Bool.self, forKey: .includesUnlistedChanges) ?? false
     }
 }
 
@@ -235,5 +247,5 @@ public enum OperationRequestContext: Sendable, Hashable {
     case applyConfig(ConfigPatch, ProjectRef)
     case tunnelCredentials(TunnelCredentialsRequest, ProjectRef)
     case deleteBranch(String, ProjectRef, force: Bool)
-    case removeStray(StrayWorktree, ProjectRef, discardChanges: Bool)
+    case removeStray(StrayWorktree, ProjectRef, discard: DiscardConsent?)
 }

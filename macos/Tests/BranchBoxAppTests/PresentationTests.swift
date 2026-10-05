@@ -189,7 +189,7 @@ private func refused(_ cause: RefusalCause, message: String = "Refusing to tear 
             context: .teardown(TeardownRequest(feature: feature, recordedBranch: nil, branch: .keep)), style: .refusal,
             title: "Teardown stopped: uncommitted changes would be lost"),
         Row(name: "dirty stray", error: refused(.uncommittedChanges(files: [])),
-            context: .removeStray(StrayWorktree(path: "/tmp/s", branch: nil, head: nil), project, discardChanges: false),
+            context: .removeStray(StrayWorktree(path: "/tmp/s", branch: nil, head: nil), project, discard: nil),
             style: .refusal, title: "Removal stopped: uncommitted changes would be lost"),
         Row(name: "generated files", error: refused(.moduleFilesDirty(files: [".devcontainer/"], userChanges: [])), context: nil,
             style: .refusal, title: "Teardown stopped: BranchBox-generated files changed"),

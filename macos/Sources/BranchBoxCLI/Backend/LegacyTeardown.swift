@@ -146,6 +146,11 @@ enum LegacyTeardown {
         }
         let overridable = plan.blockers.contains { $0.kind == "worktree_locked" || $0.kind == "status_unavailable" }
 
+        if plan.changes.truncated, request.discard?.includesUnlistedChanges != true {
+            return refuse(.uncommittedChanges(files: user),
+                          "Refusing to tear down '\(name)': the change list is truncated, so additional changes would be lost without your confirmation; nothing was removed")
+        }
+
         if request.forceRemoval, plan.worktree.exists, !overridable, !uncoveredChanges.isEmpty {
             return refuse(.uncommittedChanges(files: uncoveredChanges),
                           "Refusing to force the removal of '\(name)': \(count(uncoveredChanges.count, "uncommitted change")) would be lost without your confirmation (\(list(uncoveredChanges.map(\.path)))); nothing was removed")

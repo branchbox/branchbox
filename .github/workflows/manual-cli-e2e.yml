@@ -2,6 +2,16 @@ name: Manual CLI E2E
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Manual CLI harness mode
+        type: choice
+        options: [regular, verbose]
+        default: regular
+      agent_cp_stub:
+        description: Also run the full agent control-plane harness on the generic stack
+        type: boolean
+        default: false
   schedule:
     - cron: "0 6 * * *" # daily at 06:00 UTC
 
@@ -53,4 +63,18 @@ jobs:
         env:
           BRANCHBOX_SKIP_HOST_VALIDATION: 1
           STACK: ${{ matrix.stack }}
-        run: scripts/manual-cli-e2e.sh
+          HARNESS_MODE: ${{ inputs.mode || 'regular' }}
+        run: scripts/manual-cli-e2e.sh --mode "$HARNESS_MODE"
+
+      - name: Build agent for control-plane harness
+        if: ${{ inputs.agent_cp_stub && matrix.stack == 'generic' }}
+        run: cargo build -p branchbox-agent
+
+      - name: Run full agent control-plane harness
+        if: ${{ inputs.agent_cp_stub && matrix.stack == 'generic' }}
+        env:
+          BRANCHBOX_SKIP_HOST_VALIDATION: 1
+        run: |
+          BRANCHBOX_AGENT_BIN="$GITHUB_WORKSPACE/target/debug/branchbox-agent" \
+          BRANCHBOX_BIN="$GITHUB_WORKSPACE/target/debug/branchbox" \
+          scripts/manual-agent-e2e.sh --cp-stub --stack generic

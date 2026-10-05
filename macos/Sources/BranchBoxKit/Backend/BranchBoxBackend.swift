@@ -34,7 +34,7 @@ public protocol BranchBoxBackend: Sendable {
     func openTunnel(_ feature: FeatureRef, progress: @escaping ProgressSink) async throws -> TunnelChange
     func removeTunnel(_ feature: FeatureRef, force: Bool, progress: @escaping ProgressSink) async throws -> TunnelChange
     func deleteBranch(_ branch: String, in project: ProjectRef, force: Bool) async throws
-    func removeStray(_ stray: StrayWorktree, in project: ProjectRef, discardChanges: Bool) async throws
+    func removeStray(_ stray: StrayWorktree, in project: ProjectRef, discard: DiscardConsent?) async throws
 
     /// Shell-escaped, redacted command line for "Copy as Command"; nil for non-CLI backends.
     func previewCommandLine(_ request: OperationRequestContext) -> String?

@@ -109,12 +109,31 @@ import Testing
 
     @Test func dirtyStrayRemovalAsksToDiscard() throws {
         let error = Sample.refused(.uncommittedChanges(files: Self.dirtyFiles))
-        let actions = RecoveryPlanner.recoveries(for: error, after: .removeStray(Self.stray, Sample.project, discardChanges: false))
+        let actions = RecoveryPlanner.recoveries(for: error, after: .removeStray(Self.stray, Sample.project, discard: nil))
         let retry = try #require(retries(actions).first)
-        #expect(retry.context == .removeStray(Self.stray, Sample.project, discardChanges: true))
+        guard case .removeStray(_, _, let consent) = retry.context else {
+            Issue.record("expected stray removal")
+            return
+        }
+        #expect(consent?.userFiles == Self.dirtyFiles.map(\.path))
         #expect(retry.label == "Discard 2 changes and remove the worktree…")
         #expect(retry.destructive)
         #expect(actions.last == .revealInFinder(path: Self.stray.path))
+    }
+
+    @Test func newStrayChangesRequireAnotherConfirmationAndKeepEarlierConsent() throws {
+        let earlier = DiscardConsent(userFiles: ["old.txt"])
+        let error = Sample.refused(.uncommittedChanges(files: [Sample.changed("new.txt")]))
+        let actions = RecoveryPlanner.recoveries(for: error,
+            after: .removeStray(Self.stray, Sample.project, discard: earlier))
+        let retry = try #require(retries(actions).first)
+        guard case .removeStray(_, _, let consent) = retry.context else {
+            Issue.record("expected a retry for newly refused stray changes")
+            return
+        }
+        #expect(consent?.userFiles == ["old.txt", "new.txt"])
+        #expect(retry.confirmation?.contains("new.txt") == true)
+        #expect(retry.confirmation?.contains("you confirmed before") == true)
     }
 
     // MARK: Branches
@@ -289,7 +308,7 @@ import Testing
             .prune(PruneSelection(project: Sample.project, rows: [Sample.teardown(), discarding])),
             .devcontainer(.down(removeVolumes: true), Sample.feature), .tunnelRemove(Sample.feature, force: true),
             .deleteBranch("feature/eta", Sample.project, force: true),
-            .removeStray(Self.stray, Sample.project, discardChanges: true),
+            .removeStray(Self.stray, Sample.project, discard: DiscardConsent(userFiles: [])),
             .initProject(InitRequest(folder: Sample.project.root, reorganize: true)),
         ]
         for context in destructive {
@@ -319,8 +338,6 @@ import Testing
         MismatchCase(name: "dirty without context", error: Sample.refused(.uncommittedChanges(files: dirtyFiles)), context: nil),
         MismatchCase(name: "dirty after start", error: Sample.refused(.uncommittedChanges(files: dirtyFiles)),
                      context: .start(StartFeatureRequest(project: Sample.project, name: "eta", runtime: .container))),
-        MismatchCase(name: "dirty stray already discarding", error: Sample.refused(.uncommittedChanges(files: dirtyFiles)),
-                     context: .removeStray(stray, Sample.project, discardChanges: true)),
         MismatchCase(name: "unmerged after start", error: Sample.refused(.unmergedBranch(branch: "feature/eta", ahead: 1)),
                      context: .start(StartFeatureRequest(project: Sample.project, name: "eta", runtime: .container))),
         MismatchCase(name: "unmerged forced deletion", error: Sample.refused(.unmergedBranch(branch: "feature/eta", ahead: 1)),

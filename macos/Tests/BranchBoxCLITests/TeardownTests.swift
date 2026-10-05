@@ -67,6 +67,26 @@ private func backend(_ scripted: ScriptedProcessRunner, identity: BackendIdentit
 
     // MARK: - Refusals before any spawn (§6.5 steps 1–4)
 
+    @Test func truncatedReplanRequiresExplicitConsentToUnlistedChanges() throws {
+        let changes = [ChangedFile(path: "notes.txt", kind: "untracked", area: "other")]
+        let plan = TeardownPlanDocument(workFeature: "eta", registered: true,
+            worktree: .init(path: "/r/eta", exists: true),
+            changes: .init(statusAvailable: true, truncated: true, user: changes))
+        var attempt = request(discard: ["notes.txt"])
+        let refusal = try #require(LegacyTeardown.refusal(for: attempt, plan: plan, cliVersion: "0.14.0"))
+        #expect(refusal.plan?.changes.truncated == true)
+        #expect(refusal.message.contains("additional changes would be lost"))
+        let recovery = try #require(RecoveryPlanner.recoveries(for: .refused(refusal), after: .teardown(attempt)).first)
+        guard case .retry(.teardown(let confirmed), _, true, let warning?) = recovery else {
+            Issue.record("expected a confirmation that names unlisted changes")
+            return
+        }
+        #expect(warning.contains("other changes in this folder are deleted too"))
+        #expect(confirmed.discard?.includesUnlistedChanges == true)
+        attempt = confirmed
+        #expect(LegacyTeardown.refusal(for: attempt, plan: plan, cliVersion: "0.14.0") == nil)
+    }
+
     @Test func legacyTeardownWithAnUntrackedUserFileRefusesWithoutSpawningTheCLI() async throws {
         let runner = ScriptedProcessRunner(Scripted.preflight(status: "?? notes.txt\0"))
         let error = await backendError { try await backend(runner).teardownFeature(request(), progress: { _ in }) }
