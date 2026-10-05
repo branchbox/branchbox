@@ -72,6 +72,8 @@ Pre-releases are marked with the `prerelease` flag on GitHub and don't update th
    ```
 
 2. **Run all quality checks:**
+   Release readiness is measured by verified user outcomes and end-to-end workflows. Complete the [readiness matrix](docs/docs/getting-started/release-readiness.md) for the changed behavior, including applicable refusal, recovery, cancellation, persistence and cleanup paths. Link evidence to the tested source and name the runtime and test layer. A critical failed outcome blocks shipping; record any unverified scope and its accepted limitation before sign-off. Rust line coverage remains a diagnostic report without a numeric release threshold.
+
    ```bash
    # Format check
    cargo fmt --all -- --check
@@ -448,6 +450,7 @@ git push --follow-tags
 Use this checklist for each release:
 
 - [ ] Checkout main branch and pull latest changes
+- [ ] Complete the outcome/E2E readiness matrix with source-linked evidence and explicit accepted gaps
 - [ ] Run quality checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
 - [ ] Build docs: `cargo doc --no-deps && cd docs && npm run build`
 - [ ] Update `CHANGELOG.md` with release highlights
@@ -465,6 +468,8 @@ Use this checklist for each release:
 
 | Version | Date | Type | Notes |
 |---------|------|------|-------|
+| [0.13.4](https://github.com/branchbox/branchbox/releases/tag/v0.13.4) | 2026-09-10 | Patch | Create the in-guest replay ledger with owner-only permissions atomically; restore non-Unix builds |
+| 0.13.3 | 2026-09-09 | Patch | Consolidated 0.13.0–0.13.3 notes: managed in-guest runtime, signed leases and provider credential handling |
 | 0.12.1 | 2026-08-20 | Patch | Keep CLI diagnostics on stderr so machine-readable JSON stdout remains valid |
 | 0.12.0 | 2026-08-20 | Minor | Add account-free Firecracker local VM isolation with full devcontainer and Compose lifecycle support |
 | 0.11.1 | 2026-08-12 | Patch | Remove devcontainer CLI Compose containers, networks, and volumes reliably during feature teardown |
