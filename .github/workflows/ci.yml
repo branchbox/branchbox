@@ -245,6 +245,9 @@ jobs:
             echo "Waiting for Docker..."
             sleep 2
           done
+      - name: Preload Alpine conformance image
+        # Test setup only; managed provider startup itself remains build-free and pull-free.
+        run: docker pull alpine:3.22
       - name: Run integration suite
         run: cargo nextest run --tests --all-features --run-ignored ignored-only --no-fail-fast
 

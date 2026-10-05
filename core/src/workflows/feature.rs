@@ -12218,33 +12218,27 @@ volumes:
                 effective["services"]["database"]["environment"]["POSTGRES_USER"],
                 "kept-for-dependency"
             );
-
-            let source = fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
-            fs::write(
-                devcontainer_dir.join("compose.yaml"),
-                source.replace(
-                    "kept-for-dependency",
-                    "'${UNSAFE_REQUIRED:?retained-field}'",
-                ),
-            )
-            .unwrap();
-            prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan).unwrap();
-            let mut command = Command::new("docker");
-            command.arg("compose");
-            for reference in references {
-                command
-                    .arg("-f")
-                    .arg(devcontainer_dir.join(reference.as_str().unwrap()));
-            }
-            let rejected = command
-                .args(["config", "--format", "json"])
-                .env("COMPOSE_PROJECT_NAME", "branchbox-retained-field-test")
-                .env_remove("UNSAFE_REQUIRED")
-                .output()
-                .unwrap();
-            assert!(!rejected.status.success());
-            assert!(String::from_utf8_lossy(&rejected.stderr).contains("UNSAFE_REQUIRED"));
         }
+        let source = fs::read_to_string(devcontainer_dir.join("compose.yaml")).unwrap();
+        fs::write(
+            devcontainer_dir.join("compose.yaml"),
+            source.replace(
+                "kept-for-dependency",
+                "'${UNSAFE_REQUIRED:?retained-field}'",
+            ),
+        )
+        .unwrap();
+        let refusal = prepare_in_guest_devcontainer_config(repo_path, &worktree_path, &plan)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("rejects ambient variable interpolation"),
+            "{refusal}"
+        );
+        assert!(
+            !refusal.contains("UNSAFE_REQUIRED"),
+            "untrusted values stay private"
+        );
     }
 
     #[test]

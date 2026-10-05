@@ -32,6 +32,12 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+/// Managed-runtime guarantees advertised by the exact linked core implementation.
+pub(crate) const CAPABILITIES: &[&str] = &[
+    "managed-workspace-contract",
+    "preloaded-compose-sanitization",
+];
+
 const LEGACY_MANIFEST_VERSION: &str = "1";
 const MANAGED_MANIFEST_VERSION: &str = "2";
 const WORKSPACE_CONSUMER_MANIFEST_VERSION: &str = "3";
@@ -7074,6 +7080,107 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn managed_workspace_assignment_requires_paired_reviewed_topology_and_preloaded_images() {
+        let (_root, manifest, _provider_secret) = managed_assignment_fixture();
+        let mut assignment: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        assignment["version"] = serde_json::json!("3");
+        assignment["workspace_consumer"] = serde_json::json!({"uid": 1001, "gid": 1001});
+        assignment["published_ports"] = serde_json::json!([]);
+        assignment["leases"] = serde_json::json!([]);
+        assignment["service_images"] = serde_json::json!({
+            "app": format!("registry.example/team/app@sha256:{}", "b".repeat(64))
+        });
+        assignment["workspace_folder"] = serde_json::json!("/workspaces/team/reviewed-project");
+        assignment["omitted_services"] = serde_json::json!(["proxy"]);
+        private_write(&manifest, &serde_json::to_vec(&assignment).unwrap());
+        let loaded = load_assignment(&manifest).unwrap();
+        assert_eq!(
+            loaded.manifest.workspace_folder.as_deref(),
+            Some("/workspaces/team/reviewed-project")
+        );
+        assert_eq!(
+            loaded.manifest.omitted_services,
+            Some(BTreeSet::from(["proxy".to_string()]))
+        );
+
+        for (patch, expected) in [
+            (
+                serde_json::json!({"workspace_folder": null}),
+                "Omitted-service set requires",
+            ),
+            (
+                serde_json::json!({"omitted_services": null}),
+                "requires an explicit omitted-service set",
+            ),
+            (
+                serde_json::json!({"version": "2", "workspace_consumer": null}),
+                "requires version 3 preloaded-image assignment",
+            ),
+            (
+                serde_json::json!({"service_images": {}}),
+                "requires version 3 preloaded-image assignment",
+            ),
+            (
+                serde_json::json!({"workspace_folder": "/workspaces/main"}),
+                "overlaps the reserved main Git mount",
+            ),
+            (
+                serde_json::json!({"omitted_services": [""]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": ["_proxy"]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": ["proxy/sidecar"]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": ["x".repeat(65)]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": (0..33).map(|index| format!("proxy-{index}")).collect::<Vec<_>>()}),
+                "omitted-service names are invalid",
+            ),
+        ] {
+            let mut invalid = assignment.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                invalid[key] = value.clone();
+            }
+            private_write(&manifest, &serde_json::to_vec(&invalid).unwrap());
+            let refusal = load_assignment(&manifest).unwrap_err().to_string();
+            assert!(refusal.contains(expected), "{patch}: {refusal}");
+        }
+
+        assignment["omitted_services"] = serde_json::json!([]);
+        private_write(&manifest, &serde_json::to_vec(&assignment).unwrap());
+        assert_eq!(
+            load_assignment(&manifest)
+                .unwrap()
+                .manifest
+                .omitted_services,
+            Some(BTreeSet::new()),
+            "a reviewed topology can explicitly omit no connectors"
+        );
+        assignment
+            .as_object_mut()
+            .unwrap()
+            .remove("workspace_folder");
+        assignment
+            .as_object_mut()
+            .unwrap()
+            .remove("omitted_services");
+        private_write(&manifest, &serde_json::to_vec(&assignment).unwrap());
+        let legacy_topology = load_assignment(&manifest).unwrap();
+        assert!(legacy_topology.manifest.workspace_folder.is_none());
+        assert!(legacy_topology.manifest.omitted_services.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn managed_manifest_exposes_preloaded_service_image_bindings() {
         let (_root, manifest, _provider_secret) = managed_assignment_fixture();
         let mut value: serde_json::Value =
@@ -8564,6 +8671,154 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
         ensure_compose_override_version("2.30.0").unwrap();
         ensure_compose_override_version("v2.40.3").unwrap();
         assert!(ensure_compose_override_version("2.29.9").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires Docker and a preloaded Alpine conformance image"]
+    fn managed_workspace_bind_reaches_the_reviewed_host_worktree() {
+        // Bound every Docker invocation, including failure cleanup. This proof does not
+        // build or pull images, or exercise the complete managed-provider lifecycle.
+        fn docker(args: &[&str]) -> std::io::Result<Output> {
+            let mut child = Command::new("docker")
+                .args(args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                if child.try_wait()?.is_some() {
+                    return child.wait_with_output();
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Docker workspace conformance command exceeded 30 seconds",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        struct OwnedContainer(String);
+        impl Drop for OwnedContainer {
+            fn drop(&mut self) {
+                let _ = docker(&["rm", "--force", &self.0]);
+            }
+        }
+
+        let root = tempfile::Builder::new()
+            .prefix("branchbox-workspace-bind-")
+            .tempdir()
+            .unwrap();
+        let worktree = root.path().join("task-worktree");
+        fs::create_dir(&worktree).unwrap();
+        let worktree = fs::canonicalize(worktree).unwrap();
+        let other_worktree = root.path().join("other-worktree");
+        fs::create_dir(&other_worktree).unwrap();
+        let name = root
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .replace(['_', '.'], "-");
+        let exact_filter = format!("name=^/{name}$");
+        let before = docker(&["ps", "--all", "--quiet", "--filter", &exact_filter]).unwrap();
+        assert!(before.status.success());
+        assert!(
+            before.stdout.is_empty(),
+            "unique test container already exists"
+        );
+        let cleanup = OwnedContainer(name.clone());
+        let folder = "/workspaces/team/reviewed-project";
+        validate_managed_workspace_folder(folder).unwrap();
+        let mount = format!("type=bind,src={},dst={folder}", worktree.display());
+        // Use the test owner's identity so this bind-only proof changes no host modes.
+        // Distinct workspace-consumer delegation has its own conformance coverage.
+        let user = format!("{}:{}", unsafe { libc::geteuid() }, unsafe {
+            libc::getegid()
+        });
+        let image = std::env::var("BRANCHBOX_CONFORMANCE_IMAGE")
+            .unwrap_or_else(|_| "alpine:3.22".to_string());
+        let started = docker(&[
+            "run",
+            "--detach",
+            "--pull=never",
+            "--name",
+            &name,
+            "--label",
+            "branchbox.conformance=managed-workspace-bind",
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            REQUIRED_SECCOMP_SECURITY_OPTION,
+            "--user",
+            &user,
+            "--mount",
+            &mount,
+            "--workdir",
+            folder,
+            &image,
+            "sleep",
+            "120",
+        ])
+        .unwrap();
+        assert!(
+            started.status.success(),
+            "{}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        let inspected = docker(&["inspect", &name]).unwrap();
+        assert!(inspected.status.success());
+        validate_container_inspection(&inspected.stdout, &BTreeMap::new(), &BTreeSet::new())
+            .unwrap();
+        validate_managed_workspace_runtime(folder, Some(folder), &inspected.stdout, &worktree)
+            .unwrap();
+        assert!(validate_managed_workspace_runtime(
+            folder,
+            Some("/workspaces/other"),
+            &inspected.stdout,
+            &worktree,
+        )
+        .is_err());
+        assert!(
+            validate_workspace_bind(&inspected.stdout, &worktree, "/workspaces/other").is_err()
+        );
+        assert!(validate_workspace_bind(&inspected.stdout, &other_worktree, folder).is_err());
+
+        let written = docker(&[
+            "exec",
+            "--workdir",
+            folder,
+            &name,
+            "sh",
+            "-c",
+            "printf 'branchbox-reviewed-workspace\\n' > proof.txt && pwd",
+        ])
+        .unwrap();
+        assert!(
+            written.status.success(),
+            "{}",
+            String::from_utf8_lossy(&written.stderr)
+        );
+        assert_eq!(String::from_utf8(written.stdout).unwrap().trim(), folder);
+        assert_eq!(
+            fs::read(worktree.join("proof.txt")).unwrap(),
+            b"branchbox-reviewed-workspace\n"
+        );
+        assert!(!other_worktree.join("proof.txt").exists());
+
+        drop(cleanup);
+        let remaining = docker(&["ps", "--all", "--quiet", "--filter", &exact_filter]).unwrap();
+        assert!(remaining.status.success());
+        assert!(
+            remaining.stdout.is_empty(),
+            "owned conformance container remained"
+        );
     }
 
     #[test]

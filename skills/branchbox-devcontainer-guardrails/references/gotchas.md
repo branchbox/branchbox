@@ -23,6 +23,7 @@
 | Compose command works on one host but fails on another | Plugin-style compose unavailable | Support `docker compose` with `docker-compose` fallback |
 | Managed in-guest startup fails on a secondary volume `${VAR:?}` even though a facade clears the volume | Compose interpolates each source file before merging `!override` | Give the Dev Containers CLI private sanitized copies of every Compose input, with repository mounts and publications removed before interpolation; keep signed mounts only in the final facade |
 | Managed in-guest dependency env or service label copies a runtime-process variable | Compose interpolates retained fields before the signed facade merges, and the CLI inherits its process environment | Reject ambient `$VAR` or `${VAR}` in every retained sanitized field; preserve static dependency env and use `$$` for container-side shell expansion |
+| Managed provider starts in a folder different from the reviewed repository path | Dynamic repository workspace folders or connector omissions diverge from the outer assignment | Bind both version-3 `workspace_folder` and `omitted_services`, refuse reserved Git-mount paths, compare the resolved connector set, and verify the exact inspected writable task bind plus provider cwd |
 | Managed in-guest Compose executes a repository-selected host binary | Compose `provider.type` runs outside containers during lifecycle commands | Reject every Compose `provider` service before staging CLI inputs, including services with signed preloaded images |
 
 ## Feature workflow + harness reliability

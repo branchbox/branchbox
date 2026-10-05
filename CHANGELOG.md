@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Managed in-guest assignments can bind a reviewed workspace path and an explicit set of omitted
+  Compose connectors. Generated configuration, the writable task bind and provider working directory
+  must match the assignment; mismatches refuse startup or execution. Version-3 preloaded images are
+  required. `runtime-capabilities` and `version --json` advertise these guarantees for staged binaries.
 - Initialization accepts valid 1Password references with spaces in vault, item and field names,
   including `private key`, while still rejecting control characters and incomplete references.
 - Devcontainer symlink sync records link ownership so unchanged BranchBox-created links no longer

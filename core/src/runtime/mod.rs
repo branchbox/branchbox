@@ -26,6 +26,7 @@ pub(crate) use in_guest::recover_runtime_metadata as recover_in_guest_runtime_me
 pub(crate) use in_guest::validate_managed_workspace_folder;
 pub(crate) use in_guest::validate_private_compose_stage_git_mount;
 use in_guest::InGuestRuntimeProvider;
+pub(crate) use in_guest::CAPABILITIES;
 pub use in_guest::{
     load_in_guest_facade_plan, require_secure_in_guest_launch_assignment, InGuestFacadePlan,
     InGuestLeaseRecord, InGuestRuntimeMetadata, InGuestTunnelPlacement,

@@ -80,11 +80,14 @@ also cannot be automatically torn down; the outer VM owner must clean it up sepa
 
 For a reviewed preloaded-image repository, version 3 can additionally carry
 `workspace_folder` (a literal normalized path below `/workspaces/`) and
-`omitted_services` (an explicit sorted set of source Compose connector names).
+`omitted_services` (an explicit set of source Compose connector names).
 Both fields must be present together, including an empty omission set. The
 outer operator signs these values with the source commit and image roles;
 `branchbox runtime-capabilities` reports whether a staged binary implements
-`managed_workspace_contract_v1` and `preloaded_compose_sanitization_v1`.
+`managed_workspace_contract_v1` and `preloaded_compose_sanitization_v1` in its
+versioned JSON payload. `branchbox version --json` advertises the same guarantees
+as `managed-workspace-contract` and `preloaded-compose-sanitization` capabilities.
+The reserved `/workspaces/main` path is refused because it overlaps the Git projection.
 BranchBox replaces a source `${localWorkspaceFolderBasename}` folder with the
 signed path, installs the canonical task worktree bind there, checks that its
 own connector classification exactly equals the signed omission set, and
@@ -157,8 +160,9 @@ Version 3 stages sanitized Compose files in a private runner directory.
 Compose's automatic `.env` lookup therefore no longer reads a repository
 `.devcontainer/.env`. A repository needing values from that ambient file is
 not yet admitted by this contract; it must use an explicit reviewed input or
-wait for a separately defined interpolation authority. Required interpolation
-in a field that BranchBox retains still fails at Compose evaluation.
+provide it through the signed raw `project-environment` lane. BranchBox rejects
+ambient variable interpolation in retained fields before Compose evaluation;
+static values and Compose-escaped `$$` remain available.
 
 Project Docker is deliberately `disabled`. Projects that require Docker must later use a task-scoped rootless/nested daemon that cannot see supervisor containers, volumes, assignment state, or credential bundles.
 

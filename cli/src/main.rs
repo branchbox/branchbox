@@ -33,7 +33,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Print the managed-runtime capabilities implemented by this exact binary.
+    /// Print managed-runtime capabilities as JSON for the staged binary
     RuntimeCapabilities,
 
     /// Initialize project with devcontainer and BranchBox registry
@@ -78,8 +78,8 @@ enum Commands {
 }
 
 impl Commands {
-    /// Whether this invocation asked for machine (`--json`) output. Each command module answers
-    /// for its own flags, so adding one never touches this file.
+    /// Whether this invocation needs machine output (`--json` or the compatibility runtime probe).
+    /// Each command module answers for its own flags.
     fn wants_json(&self) -> bool {
         match self {
             Commands::RuntimeCapabilities => true,
@@ -144,10 +144,15 @@ fn main() -> ExitCode {
 
 fn run(command: Commands) -> Result<()> {
     match command {
-        Commands::RuntimeCapabilities => output::emit_json(&serde_json::json!({
-            "managed_workspace_contract_v1": true,
-            "preloaded_compose_sanitization_v1": true,
-        })).map_err(Into::into),
+        Commands::RuntimeCapabilities => {
+            let capabilities = worktree_core::capabilities();
+            output::emit_json(&serde_json::json!({
+                "schema_version": 1,
+                "managed_workspace_contract_v1": capabilities.contains(&"managed-workspace-contract"),
+                "preloaded_compose_sanitization_v1": capabilities.contains(&"preloaded-compose-sanitization"),
+            }))?;
+            Ok(())
+        }
         Commands::Init(args) => init::execute(args),
         Commands::Devcontainer(devcontainer_cmd) => devcontainer::execute(devcontainer_cmd),
         Commands::Agent(agent_cmd) => agent_commands::execute(agent_cmd),
@@ -264,6 +269,7 @@ mod tests {
             &["agent", "status", "--json"],
             &["detect", "--json"],
             &["version", "--json"],
+            &["runtime-capabilities"],
             &["doctor", "--json"],
             &["config", "get", "--json"],
             &["config", "apply", "--file", "-", "--json"],

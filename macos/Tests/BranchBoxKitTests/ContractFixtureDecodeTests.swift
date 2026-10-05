@@ -46,6 +46,20 @@ private struct PruneExecutePayload: Decodable {
     let results: [Result]
 }
 
+/// The staged-runtime compatibility probe is not part of the Mac app's backend, but its
+/// Rust golden fixture still participates in the shared contract gate.
+private struct ManagedRuntimeCapabilitiesPayload: Decodable {
+    let schemaVersion: UInt32
+    let managedWorkspaceContractV1: Bool
+    let preloadedComposeSanitizationV1: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case managedWorkspaceContractV1 = "managed_workspace_contract_v1"
+        case preloadedComposeSanitizationV1 = "preloaded_compose_sanitization_v1"
+    }
+}
+
 @Suite struct ContractFixtureDecodeTests {
     /// What the app decodes a fixture as, by area and name; nil for a fixture with no mapping.
     static func decoder(for path: String) -> ((Data) throws -> Void)? {
@@ -54,6 +68,12 @@ private struct PruneExecutePayload: Decodable {
         if name.hasPrefix("envelope_") { return decodeEnvelope }
         if name.hasPrefix("version") { return { _ = try CLIJSON.decode(VersionInfo.self, from: $0) } }
         switch (area, name) {
+        case ("core", "runtime_capabilities"):
+            return { data in
+                let payload = try CLIJSON.decode(ManagedRuntimeCapabilitiesPayload.self, from: data).value
+                #expect(payload.schemaVersion == 1)
+                #expect(payload.managedWorkspaceContractV1 && payload.preloadedComposeSanitizationV1)
+            }
         case ("core", "exec_inband_failure"):
             return { data in
                 let result = try CLIJSON.decode(ExecResult.self, from: data).value
