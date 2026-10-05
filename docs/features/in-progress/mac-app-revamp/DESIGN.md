@@ -1,5 +1,7 @@
 # BranchBox for Mac: revamp design (final)
 
+**Implementation status, 2026-10-05:** [PR #105](https://github.com/branchbox/branchbox/pull/105) merged as `872e1bd`. This document and its work packages retain the original design and audit history. Current behavior and requirements are in the [Mac guide](../../../docs/guides/mac-app.md), [testing record](../../../../macos/TESTING.md) and [outcome/E2E readiness matrix](../../../docs/getting-started/release-readiness.md). The preview requires macOS 26/Xcode 26 and remains ad hoc signed and unnotarized. Earlier macOS 14/Xcode 16 and 90% line-coverage requirements below are superseded; they are not current release gates.
+
 Branch: `feature/mac-app-revamp` (from `main` @ v0.13.4). Worktree: `~/projects/branchbox-suite/branchbox/mac-app-revamp`.
 Status: the final design for implementation. It merges the "Incremental Salvage" winner, every compatible must-graft from the two judges, all of their critical corrections, the UX/IA spec, and the core/CLI change spec.
 

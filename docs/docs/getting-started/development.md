@@ -8,6 +8,8 @@ This guide covers the development workflow, building, testing, and contributing 
 
 Build with plain Cargo. CI uses an ordinary dependency cache; the mbx experiment is withdrawn. See [Rust build caching](../internals/rust-build-cache.md) for the current policy and historical benchmark evidence.
 
+Measure readiness by [verified user outcomes and end-to-end workflows](./release-readiness.md). Keep Rust line coverage as a diagnostic, and record the scope and limitations of each test layer.
+
 ## Development Environment Setup
 
 ### Using Devcontainer (Recommended)

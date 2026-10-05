@@ -7,6 +7,8 @@ This document tracks the implementation progress of the BranchBox distributed sy
 **Created**: 2025-10-21
 **Status**: 🟢 Milestone 2 (agent daemon + drain) completed; the macOS app was rebuilt on the CLI's `--json` contract (mac-app-revamp, 2026-10); control-plane work queued
 
+**Latest verified change, 2026-10-05**: [PR #105](https://github.com/branchbox/branchbox/pull/105) merged as `872e1bd`. The [Mac guide](docs/guides/mac-app.md) documents the preview, and the [readiness matrix](docs/getting-started/release-readiness.md) records verified outcomes, evidence scope and accepted gaps. Historical completion estimates below are not an E2E coverage measure. The latest tagged binary release remains v0.13.4.
+
 ## Project Structure
 
 ```

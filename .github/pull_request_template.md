@@ -11,6 +11,14 @@
 
 ## Validation
 
+Describe the changed user outcomes using the [release readiness matrix](https://github.com/branchbox/branchbox/blob/main/docs/docs/getting-started/release-readiness.md):
+
+| Outcome | Expected and observed result | Evidence / source commit | Status / limitation |
+| --- | --- | --- | --- |
+| | | | |
+
+Include refusal, recovery, cancellation, persistence and cleanup where relevant. Identify real CLI, Docker and native-app runs separately from fixtures or mocks. Record accepted gaps explicitly; test counts and line percentages do not establish E2E coverage.
+
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo nextest run --all-features --no-fail-fast`

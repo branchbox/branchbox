@@ -63,11 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumers, generated CLI inputs live in a private assignment directory outside the writable
   worktree; unassigned builds fail closed. Stale generated copies are removed when the source
   list shrinks.
-- Create the in-guest tool-request replay ledger with its owner-only mode in one step. Two
-  dispatchers opening the ledger at the same moment could have the second find the directory
-  before the first had set its permissions, and refuse it as not owner-only.
-- Build on non-Unix targets again: the consumer-readable check on a `provider-credential`
-  source reads Unix file modes and is now gated to Unix like the private-file check beside it.
 - Concurrent BranchBox processes no longer lose each other's registry updates. Every change to
   `.branchbox/registry.json` is a read-modify-write under an exclusive lock on the `.branchbox`
   directory (released when the holder exits), and the file is replaced atomically, so a reader
@@ -206,6 +201,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `feature exec` shows a failing command's exit code and output instead of an error.
 
 ### Changed
+
+- Release readiness now uses named user outcomes and E2E evidence, with refusal, recovery,
+  cancellation, persistence and cleanup paths where applicable. Contributor and release guidance
+  retain Rust line coverage as a diagnostic instead of a numeric threshold, and require explicit
+  evidence scope and accepted gaps. Published 0.13.4 fixes are recorded under that version.
 
 #### CLI and core
 
@@ -639,6 +639,16 @@ Text-mode output and the manual harness:
 - `macos/README.md` is rewritten for the CLI-backed app (requirements, how the CLI is found,
   dev loops, packaging, installing a CI build past Gatekeeper, troubleshooting), and the manual
   E2E guide's "Mac App ↔ CLI Loop" replaces the old agent loop.
+
+## [0.13.4] - 2026-09-10
+
+### Fixed
+
+- Create the in-guest tool-request replay ledger with its owner-only mode in one step. Two
+  dispatchers opening the ledger at the same moment could have the second find the directory
+  before the first had set its permissions, and refuse it as not owner-only.
+- Build on non-Unix targets again: the consumer-readable check on a `provider-credential`
+  source reads Unix file modes and is now gated to Unix like the private-file check beside it.
 
 ## [0.13.3] - 2026-09-09
 

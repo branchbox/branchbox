@@ -98,7 +98,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 - **Unit tests**: Test individual functions and modules
 - **Integration tests**: Test component interactions
 - **Doc tests**: Ensure examples in documentation work
-- **Coverage**: Maintain >90% code coverage
+- **Outcome coverage**: Verify the affected user workflows, including failure/refusal, recovery and cleanup where applicable. Record real E2E evidence and remaining gaps using the [release readiness checklist](docs/docs/getting-started/release-readiness.md).
+- **Line coverage**: Retain Rust coverage reports as a diagnostic; there is no numeric shipping threshold.
 
 ```bash
 # Run all tests (uses cargo-nextest for parity with CI)
@@ -307,9 +308,13 @@ All pull requests must pass:
    - Integration tests
    - Doc tests
 
-3. **Coverage**:
-   - Maintain >90% code coverage
-   - Coverage report uploaded to Codecov
+3. **Outcome and E2E readiness**:
+   - Record the source revision, CLI mode, stack/provider and observed result for affected outcomes
+   - Block on failed critical outcomes; document unverified cases and any explicit owner acceptance
+   - Distinguish real services from mocks, skipped tests and presentation-only checks
+   - Retain LCOV/JSON artifacts and the optional Codecov upload as diagnostics, with no numeric coverage threshold
+
+   See [Release readiness](docs/docs/getting-started/release-readiness.md) for the evidence matrix and acceptance rules.
 
 4. **Build**:
    - Build on Linux, macOS, Windows
