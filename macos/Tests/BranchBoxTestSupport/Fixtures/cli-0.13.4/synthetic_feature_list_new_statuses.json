@@ -1,0 +1,119 @@
+[
+  {
+    "work_feature": "sbx-demo",
+    "branch_name": "feature/sbx-demo",
+    "worktree_path": "/tmp/x/sbx-demo",
+    "base_branch": "main",
+    "feature_url": "dev-sbx-demo.localhost",
+    "compose_project_name": "x-sbx-demo",
+    "env_path": "/tmp/x/sbx-demo/.env",
+    "status": "degraded",
+    "created_at": "2026-09-30T10:00:00.123456789Z",
+    "updated_at": "2026-09-30T10:05:00.5Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "cloudflared",
+      "hostname": "sbx-demo.example.dev",
+      "service_url": "http://app:3000",
+      "status": "active",
+      "last_updated": "2026-09-30T10:04:00.1Z"
+    },
+    "color": "#3498db",
+    "pr_number": 42,
+    "last_commit": "abc123",
+    "devcontainer_outdated": true,
+    "last_sync_at": "2026-09-30T10:03:00.25Z",
+    "sync_strategy": "copy",
+    "start_mode": "full",
+    "prompt_seed": "do the thing",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "failed",
+        "duration_ms": 1200,
+        "notes": [
+          "devcontainer up failed"
+        ],
+        "forced": false,
+        "recorded_at": "2026-09-30T10:05:00.5Z"
+      }
+    ],
+    "adapter": {
+      "name": "Rails",
+      "service_url": "http://app:3000",
+      "warnings": [
+        "w1"
+      ]
+    },
+    "runtime": {
+      "provider": "sbx",
+      "runtime_id": "branchbox-sbx-demo",
+      "published_ports": [
+        {
+          "host": 49152,
+          "runtime": 3000
+        }
+      ],
+      "container_id": "deadbeef",
+      "workspace_folder": "/workspaces/sbx-demo",
+      "container_user": "vscode"
+    },
+    "default_agent": {
+      "status": "waiting",
+      "label": "claude",
+      "command": "claude",
+      "detail": "Devcontainer module not detected; launch deferred",
+      "followup": "..."
+    }
+  },
+  {
+    "work_feature": "retained",
+    "branch_name": "feature/retained",
+    "worktree_path": "/tmp/x/retained",
+    "base_branch": null,
+    "feature_url": null,
+    "compose_project_name": null,
+    "env_path": null,
+    "status": "failed_retained",
+    "created_at": "2026-09-30T10:00:00Z",
+    "updated_at": "2026-09-30T10:00:00Z",
+    "removed_at": null,
+    "devcontainer_outdated": false,
+    "start_mode": "minimal",
+    "runtime": {
+      "provider": "local-vm"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "x",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "orphan",
+    "branch_name": "feature/orphan",
+    "worktree_path": "/tmp/x/orphan",
+    "base_branch": null,
+    "feature_url": null,
+    "compose_project_name": null,
+    "env_path": null,
+    "status": "orphaned",
+    "created_at": "2026-09-30T10:00:00Z",
+    "updated_at": "2026-09-30T10:00:00Z",
+    "removed_at": null,
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "runtime": {
+      "provider": "in-guest"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "x",
+      "followup": null
+    }
+  }
+]

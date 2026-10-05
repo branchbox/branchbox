@@ -2,12 +2,19 @@
 //!
 //! Provides functionality for creating, managing, and removing git worktrees.
 
+use crate::atomic_fs::{self, StateDirLock};
+use crate::workflows::teardown_plan::{parse_porcelain_z, StatusEntry};
 use crate::{Error, Result};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::time::Duration;
+
+/// How long a worktree change waits for another BranchBox process to finish its own. Generous,
+/// because the holder may be checking out a large tree or running a slow post-checkout hook.
+const WORKTREE_LOCK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Resolve the shared Git directory, including repositories that use a linked
 /// worktree or an external `--separate-git-dir` location.
@@ -170,13 +177,52 @@ impl GitWorktree {
         // Verify it's a git repository
         let git_dir = repo_path.join(".git");
         if !git_dir.exists() {
-            return Err(Error::validation(format!(
-                "Not a git repository: {}",
-                repo_path.display()
-            )));
+            return Err(Error::NotAGitRepository(repo_path));
         }
 
         Ok(Self { repo_path })
+    }
+
+    /// Serialize the commands that change worktrees or delete branches across BranchBox
+    /// processes (and threads). Git cannot run them concurrently in one repository:
+    /// `worktree add` writes `.git/worktrees/<id>/` file by file, and a concurrent command that
+    /// scans the worktrees (another add, a remove, `branch -D`) dies reading a file that is still
+    /// empty (`failed to read .git/worktrees/<id>/commondir`). The lock is taken on the shared
+    /// git directory, apart from the registry lock, so a slow checkout never holds up registry
+    /// updates.
+    fn lock_worktree_admin(&self) -> Result<StateDirLock> {
+        let common_dir = self.common_dir()?;
+        atomic_fs::lock_state_dir(&common_dir, WORKTREE_LOCK_TIMEOUT).map_err(|err| match err {
+            Error::RegistryLocked { path, waited_secs } => Error::git(format!(
+                "Timed out after {waited_secs}s waiting for another branchbox process to finish \
+                 changing the worktrees of {}. The lock is released when that process exits; \
+                 retry once it has finished.",
+                path.display()
+            )),
+            other => other,
+        })
+    }
+
+    /// The repository's shared git directory (the main `.git`, also for a linked worktree).
+    fn common_dir(&self) -> Result<PathBuf> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--git-common-dir"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to execute git rev-parse: {err}")))?;
+        if !output.status.success() {
+            return Err(Error::git(format!(
+                "Failed to resolve the shared git directory of {}: {}",
+                self.repo_path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let raw = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        Ok(if raw.is_absolute() {
+            raw
+        } else {
+            self.repo_path.join(raw)
+        })
     }
 
     /// Create a new worktree
@@ -263,6 +309,12 @@ impl GitWorktree {
         if path.exists() {
             return Err(Error::WorktreeExists(path.to_path_buf()));
         }
+        let _lock = self.lock_worktree_admin()?;
+        // Check again under the lock: a concurrent start of the same feature may have created the
+        // worktree while this one waited, and git's own refusal would lose the worktree_exists code.
+        if path.exists() {
+            return Err(Error::WorktreeExists(path.to_path_buf()));
+        }
 
         let mut cmd = Command::new("git");
         cmd.current_dir(&self.repo_path);
@@ -323,6 +375,12 @@ impl GitWorktree {
         if path.exists() {
             return Err(Error::WorktreeExists(path.to_path_buf()));
         }
+        let _lock = self.lock_worktree_admin()?;
+        // Check again under the lock: a concurrent start of the same feature may have created the
+        // worktree while this one waited, and git's own refusal would lose the worktree_exists code.
+        if path.exists() {
+            return Err(Error::WorktreeExists(path.to_path_buf()));
+        }
 
         // Ensure any stale worktree registrations are removed before attempting to attach.
         if let Err(err) = self.prune_with_metadata_policy(!allow_hooks) {
@@ -371,25 +429,37 @@ impl GitWorktree {
     /// * `path` - Path to the worktree to remove
     /// * `force` - Force removal even if worktree has uncommitted changes
     pub fn remove(&self, path: &Path, force: bool) -> Result<()> {
+        let level = if force {
+            RemovalForce::DiscardChanges
+        } else {
+            RemovalForce::Clean
+        };
+        self.remove_worktree(path, level)
+    }
+
+    /// Remove a worktree with `git worktree remove`, passing `--force` as often as `force`
+    /// says: once discards modified and untracked files, twice also removes a locked worktree.
+    pub fn remove_worktree(&self, path: &Path, force: RemovalForce) -> Result<()> {
         self.remove_with_metadata_policy(path, force, false)
     }
 
     /// Forced removal avoids Git's dirty-worktree scan, which can execute a consumer-configured
     /// clean filter. Used only after managed in-guest access delegation.
     pub fn remove_consumer_writable(&self, path: &Path) -> Result<()> {
-        self.remove_with_metadata_policy(path, true, true)
+        self.remove_with_metadata_policy(path, RemovalForce::DiscardChanges, true)
     }
 
     fn remove_with_metadata_policy(
         &self,
         path: &Path,
-        force: bool,
+        force: RemovalForce,
         consumer_writable: bool,
     ) -> Result<()> {
+        let _lock = self.lock_worktree_admin()?;
         let mut cmd = self.metadata_command(consumer_writable);
         cmd.arg("worktree").arg("remove");
 
-        if force {
+        for _ in 0..force.flag_count() {
             cmd.arg("--force");
         }
 
@@ -423,6 +493,7 @@ impl GitWorktree {
     }
 
     fn prune_with_metadata_policy(&self, consumer_writable: bool) -> Result<()> {
+        let _lock = self.lock_worktree_admin()?;
         let mut cmd = self.metadata_command(consumer_writable);
         cmd.arg("worktree").arg("prune");
 
@@ -461,6 +532,240 @@ impl GitWorktree {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_worktree_list(&stdout)
+    }
+
+    /// How `path` relates to this repository's worktrees, as `git worktree list` reports
+    /// them: a linked worktree (with its lock), the main working tree, or neither.
+    pub fn worktree_registration(&self, path: &Path) -> Result<WorktreeRegistration> {
+        let wanted = comparable_path(path);
+        let listed = self.list()?;
+        let Some((position, info)) = listed
+            .iter()
+            .enumerate()
+            .find(|(_, info)| comparable_path(&info.path) == wanted)
+        else {
+            return Ok(WorktreeRegistration::NotListed);
+        };
+        // `git worktree list` prints the main working tree (or the bare repository) first.
+        if position == 0 || info.is_bare {
+            return Ok(WorktreeRegistration::Main);
+        }
+        Ok(WorktreeRegistration::Linked {
+            lock: info.locked.then(|| WorktreeLock {
+                reason: info.lock_reason.clone(),
+            }),
+        })
+    }
+
+    /// Whether the worktree at `path` is locked (`git worktree lock`), and why. A path git does
+    /// not list as a worktree is not locked.
+    pub fn worktree_lock(&self, path: &Path) -> Result<Option<WorktreeLock>> {
+        let wanted = comparable_path(path);
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|info| comparable_path(&info.path) == wanted)
+            .filter(|info| info.locked)
+            .map(|info| WorktreeLock {
+                reason: info.lock_reason,
+            }))
+    }
+
+    /// The uncommitted changes of the worktree at `worktree`, as `git status` reports them:
+    /// staged, unstaged and untracked (every untracked file listed), renames as a deletion
+    /// plus an addition, and changes inside submodules. Ignored files are not reported.
+    ///
+    /// Read-only: `--no-optional-locks` keeps git from refreshing the index, and repository
+    /// discovery stops at `worktree`, so a worktree whose `.git` file is broken fails instead
+    /// of reporting the status of an enclosing repository.
+    pub fn status_entries(&self, worktree: &Path) -> Result<Vec<StatusEntry>> {
+        let mut cmd = Command::new("git");
+        cmd.current_dir(worktree)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .args([
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--no-renames",
+                "--ignore-submodules=none",
+            ]);
+        if let Some(parent) = worktree.parent() {
+            cmd.env("GIT_CEILING_DIRECTORIES", parent);
+        }
+        let output = cmd.output().map_err(|err| {
+            Error::git(format!(
+                "Failed to run git status in {}: {err}",
+                worktree.display()
+            ))
+        })?;
+        if !output.status.success() {
+            return Err(Error::git(format!(
+                "git status failed: {}",
+                stderr_text(&output)
+            )));
+        }
+        parse_porcelain_z(&output.stdout).map_err(|err| {
+            Error::git(format!(
+                "Unexpected git status output in {}: {err}",
+                worktree.display()
+            ))
+        })
+    }
+
+    /// Whether `refs/heads/<branch>` exists. Unlike [`Self::branch_exists`] the name is never
+    /// read as a pattern.
+    pub fn local_branch_exists(&self, branch: &str) -> Result<bool> {
+        let output = self.git_output(&[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(Error::git(format!(
+                "git show-ref failed for branch '{branch}': {}",
+                stderr_text(&output)
+            ))),
+        }
+    }
+
+    /// How `branch` relates to the commit `git branch -d` would compare it with: its upstream
+    /// when one is configured and resolves, otherwise `HEAD` of this repository's worktree.
+    /// `merged` is what decides whether `git branch -d` deletes it.
+    ///
+    /// Merge state comes from `git merge-base --is-ancestor`, never from parsing
+    /// `git branch --merged`, whose `+` marker for branches checked out in other worktrees
+    /// defeats a name comparison.
+    pub fn branch_merge_state(&self, branch: &str) -> Result<BranchMergeState> {
+        let head_name = self.head_name()?;
+        if !self.local_branch_exists(branch)? {
+            return Ok(BranchMergeState {
+                exists: false,
+                upstream: None,
+                reference: "HEAD".to_string(),
+                reference_name: head_name,
+                merged: false,
+                merged_into_head: false,
+                ahead: 0,
+            });
+        }
+
+        let branch_ref = format!("refs/heads/{branch}");
+        let upstream = self.resolved_upstream(branch)?;
+        let (reference, reference_name) = match &upstream {
+            Some((full, short)) => (full.clone(), short.clone()),
+            None => ("HEAD".to_string(), head_name),
+        };
+        let merged = self.is_ancestor(&branch_ref, &reference)?;
+        let merged_into_head = if upstream.is_some() {
+            self.is_ancestor(&branch_ref, "HEAD")?
+        } else {
+            merged
+        };
+        let ahead = self.count_commits(&format!("{reference}..{branch_ref}"))?;
+        Ok(BranchMergeState {
+            exists: true,
+            upstream: upstream.map(|(_, short)| short),
+            reference,
+            reference_name,
+            merged,
+            merged_into_head,
+            ahead,
+        })
+    }
+
+    /// The branch checked out in this worktree, or `HEAD` when it is detached.
+    fn head_name(&self) -> Result<String> {
+        let output = self.git_output(&["symbolic-ref", "--short", "-q", "HEAD"])?;
+        match output.status.code() {
+            Some(0) => Ok(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            Some(1) => Ok("HEAD".to_string()),
+            _ => Err(Error::git(format!(
+                "git symbolic-ref HEAD failed: {}",
+                stderr_text(&output)
+            ))),
+        }
+    }
+
+    /// The upstream of `branch` as (full ref, short name), when one is configured and the
+    /// ref it names exists.
+    fn resolved_upstream(&self, branch: &str) -> Result<Option<(String, String)>> {
+        // `<branch>@{upstream}` takes a branch name, not a full ref; a name git would read as
+        // an option has no usable upstream.
+        if branch.starts_with('-') {
+            return Ok(None);
+        }
+        let spec = format!("{branch}@{{upstream}}");
+        let full = self.git_output(&["rev-parse", "--symbolic-full-name", &spec])?;
+        if !full.status.success() {
+            return Ok(None);
+        }
+        let full = String::from_utf8_lossy(&full.stdout).trim().to_string();
+        if full.is_empty() {
+            return Ok(None);
+        }
+        let resolves = self.git_output(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{full}^{{commit}}"),
+        ])?;
+        if !resolves.status.success() {
+            return Ok(None);
+        }
+        let short = self.git_output(&["rev-parse", "--abbrev-ref", &spec])?;
+        let short = String::from_utf8_lossy(&short.stdout).trim().to_string();
+        let short = if short.is_empty() {
+            full.clone()
+        } else {
+            short
+        };
+        Ok(Some((full, short)))
+    }
+
+    fn is_ancestor(&self, commit: &str, of: &str) -> Result<bool> {
+        let output = self.git_output(&["merge-base", "--is-ancestor", commit, of])?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(Error::git(format!(
+                "git merge-base --is-ancestor {commit} {of} failed: {}",
+                stderr_text(&output)
+            ))),
+        }
+    }
+
+    fn count_commits(&self, range: &str) -> Result<u32> {
+        let output = self.git_output(&["rev-list", "--count", range])?;
+        if !output.status.success() {
+            return Err(Error::git(format!(
+                "git rev-list --count {range} failed: {}",
+                stderr_text(&output)
+            )));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.trim().parse().map_err(|err| {
+            Error::git(format!(
+                "git rev-list --count {range} printed '{}': {err}",
+                text.trim()
+            ))
+        })
+    }
+
+    /// Run a read-only git command in the repository and return its output, whatever its exit
+    /// status.
+    fn git_output(&self, args: &[&str]) -> Result<Output> {
+        Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(args)
+            .output()
+            .map_err(|err| Error::git(format!("Failed to execute git {}: {err}", args.join(" "))))
     }
 
     /// Check if a branch exists
@@ -573,6 +878,7 @@ impl GitWorktree {
         force: bool,
         consumer_writable: bool,
     ) -> Result<()> {
+        let _lock = self.lock_worktree_admin()?;
         let mut cmd = self.metadata_command(consumer_writable);
         cmd.arg("branch");
 
@@ -617,6 +923,8 @@ fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
                 branch: String::new(),
                 is_bare: false,
                 is_detached: false,
+                locked: false,
+                lock_reason: None,
             });
         } else if line.starts_with("branch ") {
             if let Some(ref mut wt) = current_worktree {
@@ -633,6 +941,15 @@ fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
         } else if line == "detached" {
             if let Some(ref mut wt) = current_worktree {
                 wt.is_detached = true;
+            }
+        } else if line == "locked" || line.starts_with("locked ") {
+            if let Some(ref mut wt) = current_worktree {
+                wt.locked = true;
+                wt.lock_reason = line
+                    .strip_prefix("locked ")
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_string);
             }
         }
     }
@@ -652,6 +969,89 @@ pub struct WorktreeInfo {
     pub branch: String,
     pub is_bare: bool,
     pub is_detached: bool,
+    /// Locked with `git worktree lock`; plain removal and pruning skip it.
+    pub locked: bool,
+    pub lock_reason: Option<String>,
+}
+
+/// A `git worktree lock` on a worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeLock {
+    pub reason: Option<String>,
+}
+
+/// How a directory relates to a repository's worktrees ([`GitWorktree::worktree_registration`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeRegistration {
+    /// A linked worktree (`git worktree add`), with its `git worktree lock` if it has one.
+    Linked { lock: Option<WorktreeLock> },
+    /// The repository's main working tree (or its bare repository).
+    Main,
+    /// Not listed by `git worktree list`.
+    NotListed,
+}
+
+/// How hard [`GitWorktree::remove_worktree`] may push `git worktree remove`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalForce {
+    /// No `--force`: git refuses a worktree with modified or untracked files, or a lock.
+    Clean,
+    /// `--force` once: modified and untracked files are discarded; a locked worktree is still
+    /// refused.
+    DiscardChanges,
+    /// `--force --force`: a locked worktree is removed too.
+    IncludingLocked,
+}
+
+impl RemovalForce {
+    fn flag_count(self) -> usize {
+        match self {
+            RemovalForce::Clean => 0,
+            RemovalForce::DiscardChanges => 1,
+            RemovalForce::IncludingLocked => 2,
+        }
+    }
+}
+
+/// Where a branch stands against the commit `git branch -d` compares it with
+/// ([`GitWorktree::branch_merge_state`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchMergeState {
+    pub exists: bool,
+    /// The configured upstream (e.g. `origin/feature/eta`), when it resolves.
+    pub upstream: Option<String>,
+    /// The ref the branch is compared with: the upstream's full ref, or `HEAD`.
+    pub reference: String,
+    /// `reference` for people: the upstream's short name, the checked-out branch, or `HEAD`
+    /// when detached.
+    pub reference_name: String,
+    /// Every commit of the branch is in `reference`, so `git branch -d` deletes it.
+    pub merged: bool,
+    /// Every commit of the branch is in `HEAD`.
+    pub merged_into_head: bool,
+    /// Commits on the branch that `reference` does not have.
+    pub ahead: u32,
+}
+
+/// A command's stderr, trimmed, for error messages.
+fn stderr_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+/// `path` in the form `git worktree list` prints it: canonical when it exists (git records
+/// resolved paths, e.g. `/private/var/…` for `/var/…`), else its canonical parent joined with
+/// its name, else as given.
+fn comparable_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => parent
+            .canonicalize()
+            .map(|parent| parent.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -1261,5 +1661,357 @@ bare
 
         // Branch should now exist locally
         assert!(git.branch_exists("feature-branch").unwrap());
+    }
+
+    #[test]
+    fn test_common_dir_is_shared_by_linked_worktrees() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let shared = temp_dir.path().join(".git").canonicalize().unwrap();
+        assert_eq!(git.common_dir().unwrap().canonicalize().unwrap(), shared);
+
+        let linked_path = temp_dir.path().join("linked");
+        git.create(&linked_path, "feature/linked", None).unwrap();
+        let linked = GitWorktree::new(&linked_path).unwrap();
+        assert_eq!(linked.common_dir().unwrap().canonicalize().unwrap(), shared);
+    }
+
+    #[test]
+    fn test_worktree_changes_wait_for_another_holder() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let holder = git.lock_worktree_admin().unwrap();
+        // The lock leaves nothing behind in the shared git directory on Unix.
+        #[cfg(unix)]
+        assert!(!temp_dir.path().join(".git/.lock").exists());
+
+        let repo = temp_dir.path().to_path_buf();
+        let started = std::time::Instant::now();
+        let waiter = std::thread::spawn(move || {
+            let git = GitWorktree::new(&repo).unwrap();
+            git.create(&repo.join("waiting"), "feature/waiting", None)
+                .unwrap();
+            started.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !temp_dir.path().join("waiting").exists(),
+            "the worktree was added while another process held the lock"
+        );
+        drop(holder);
+
+        assert!(waiter.join().unwrap() >= Duration::from_millis(300));
+        assert!(temp_dir.path().join("waiting").exists());
+    }
+
+    /// Run git in `dir` and require success.
+    fn run(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn commit_file(dir: &Path, name: &str, contents: &str) {
+        fs::write(dir.join(name), contents).unwrap();
+        run(dir, &["add", name]);
+        run(dir, &["commit", "-q", "-m", &format!("Add {name}")]);
+    }
+
+    #[test]
+    fn merge_state_of_a_branch_without_new_commits_is_merged() {
+        let temp_dir = setup_test_repo();
+        run(temp_dir.path(), &["branch", "feature/done"]);
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let state = git.branch_merge_state("feature/done").unwrap();
+        assert_eq!(
+            state,
+            BranchMergeState {
+                exists: true,
+                upstream: None,
+                reference: "HEAD".to_string(),
+                reference_name: "main".to_string(),
+                merged: true,
+                merged_into_head: true,
+                ahead: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn merge_state_counts_commits_head_lacks() {
+        let temp_dir = setup_test_repo();
+        let repo = temp_dir.path();
+        run(repo, &["checkout", "-q", "-b", "feature/wip"]);
+        commit_file(repo, "wip.txt", "wip");
+        run(repo, &["checkout", "-q", "main"]);
+        let git = GitWorktree::new(repo).unwrap();
+        let state = git.branch_merge_state("feature/wip").unwrap();
+        assert!(state.exists);
+        assert!(!state.merged && !state.merged_into_head);
+        assert_eq!(state.ahead, 1);
+        assert_eq!(state.reference_name, "main");
+    }
+
+    #[test]
+    fn merge_state_of_a_missing_branch() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let state = git.branch_merge_state("feature/nope").unwrap();
+        assert!(!state.exists && !state.merged);
+        assert_eq!(state.ahead, 0);
+        assert_eq!(state.reference, "HEAD");
+    }
+
+    #[test]
+    fn merge_state_follows_a_pushed_upstream_like_git_branch_d() {
+        let temp_dir = setup_test_repo();
+        let repo = temp_dir.path();
+        let remote = TempDir::new().unwrap();
+        run(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        run(
+            repo,
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        run(repo, &["checkout", "-q", "-b", "feature/pushed"]);
+        commit_file(repo, "pushed.txt", "pushed");
+        run(repo, &["push", "-q", "-u", "origin", "feature/pushed"]);
+        run(repo, &["checkout", "-q", "main"]);
+
+        let git = GitWorktree::new(repo).unwrap();
+        let state = git.branch_merge_state("feature/pushed").unwrap();
+        assert_eq!(state.upstream.as_deref(), Some("origin/feature/pushed"));
+        assert_eq!(state.reference, "refs/remotes/origin/feature/pushed");
+        assert_eq!(state.reference_name, "origin/feature/pushed");
+        assert!(
+            state.merged,
+            "merged into its upstream, so `git branch -d` deletes it"
+        );
+        assert!(!state.merged_into_head);
+        assert_eq!(state.ahead, 0);
+
+        // An upstream that no longer resolves falls back to HEAD, as git does.
+        run(
+            repo,
+            &["update-ref", "-d", "refs/remotes/origin/feature/pushed"],
+        );
+        let state = git.branch_merge_state("feature/pushed").unwrap();
+        assert_eq!(state.upstream, None);
+        assert_eq!(state.reference, "HEAD");
+        assert!(!state.merged);
+        assert_eq!(state.ahead, 1);
+    }
+
+    #[test]
+    fn merge_state_with_a_detached_head() {
+        let temp_dir = setup_test_repo();
+        let repo = temp_dir.path();
+        run(repo, &["branch", "feature/here"]);
+        run(repo, &["checkout", "-q", "--detach", "HEAD"]);
+        let git = GitWorktree::new(repo).unwrap();
+        let state = git.branch_merge_state("feature/here").unwrap();
+        assert_eq!(state.reference_name, "HEAD");
+        assert!(state.merged);
+    }
+
+    #[test]
+    fn merge_state_of_a_branch_checked_out_in_a_linked_worktree() {
+        // `git branch --merged` prints such a branch as "+ feature/linked", which the 0.13 name
+        // comparison never matched.
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let linked = temp_dir.path().join("linked");
+        git.create(&linked, "feature/linked", None).unwrap();
+        let state = git.branch_merge_state("feature/linked").unwrap();
+        assert!(state.merged);
+        assert_eq!(state.ahead, 0);
+
+        commit_file(&linked, "linked.txt", "linked");
+        let state = git.branch_merge_state("feature/linked").unwrap();
+        assert!(!state.merged);
+        assert_eq!(state.ahead, 1);
+    }
+
+    #[test]
+    fn local_branch_exists_never_matches_a_pattern() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        assert!(git.local_branch_exists("main").unwrap());
+        assert!(!git.local_branch_exists("ma*").unwrap());
+        assert!(git.branch_exists("ma*").unwrap(), "branch --list globs");
+    }
+
+    #[test]
+    fn status_entries_list_every_kind_of_change() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let linked = temp_dir.path().join("linked");
+        git.create(&linked, "feature/linked", None).unwrap();
+        assert!(git.status_entries(&linked).unwrap().is_empty());
+
+        fs::write(linked.join("README.md"), "changed").unwrap();
+        fs::create_dir_all(linked.join("deep/dir")).unwrap();
+        fs::write(linked.join("deep/dir/new file.txt"), "new").unwrap();
+        fs::write(linked.join("staged.txt"), "staged").unwrap();
+        run(&linked, &["add", "staged.txt"]);
+        fs::write(linked.join(".gitignore"), "ignored.log\n").unwrap();
+        fs::write(linked.join("ignored.log"), "ignored").unwrap();
+
+        let entries = git.status_entries(&linked).unwrap();
+        let listed: Vec<(char, char, &str)> = entries
+            .iter()
+            .map(|entry| (entry.index, entry.worktree, entry.path.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (' ', 'M', "README.md"),
+                ('A', ' ', "staged.txt"),
+                ('?', '?', ".gitignore"),
+                ('?', '?', "deep/dir/new file.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn status_entries_fail_on_a_broken_worktree_instead_of_reading_its_parent() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        // The linked worktree lives inside the main repository, so without a ceiling git would
+        // fall back to the main repository's status.
+        let linked = temp_dir.path().join("linked");
+        git.create(&linked, "feature/linked", None).unwrap();
+        fs::write(
+            linked.join(".git"),
+            "gitdir: /nonexistent/worktrees/linked\n",
+        )
+        .unwrap();
+        let err = git.status_entries(&linked).unwrap_err().to_string();
+        assert!(err.contains("git status failed"), "{err}");
+        // Git versions differ on whether they name the missing gitdir ("(null)" on some).
+        assert!(err.contains("not a git repository"), "{err}");
+
+        fs::remove_file(linked.join(".git")).unwrap();
+        let err = git.status_entries(&linked).unwrap_err().to_string();
+        assert!(err.contains("not a git repository"), "{err}");
+    }
+
+    #[test]
+    fn worktree_registration_tells_linked_main_and_unrelated_directories_apart() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let linked = temp_dir.path().join("linked");
+        git.create(&linked, "feature/linked", None).unwrap();
+        assert_eq!(
+            git.worktree_registration(&linked).unwrap(),
+            WorktreeRegistration::Linked { lock: None }
+        );
+        assert_eq!(
+            git.worktree_registration(temp_dir.path()).unwrap(),
+            WorktreeRegistration::Main
+        );
+        let unrelated = temp_dir.path().join("unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        assert_eq!(
+            git.worktree_registration(&unrelated).unwrap(),
+            WorktreeRegistration::NotListed
+        );
+
+        run(temp_dir.path(), &["worktree", "lock", "linked"]);
+        assert_eq!(
+            git.worktree_registration(&linked).unwrap(),
+            WorktreeRegistration::Linked {
+                lock: Some(WorktreeLock { reason: None })
+            }
+        );
+    }
+
+    #[test]
+    fn worktree_lock_reports_the_lock_and_its_reason() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let linked = temp_dir.path().join("linked");
+        git.create(&linked, "feature/linked", None).unwrap();
+        assert_eq!(git.worktree_lock(&linked).unwrap(), None);
+
+        run(
+            temp_dir.path(),
+            &["worktree", "lock", "--reason", "on a usb disk", "linked"],
+        );
+        assert_eq!(
+            git.worktree_lock(&linked).unwrap(),
+            Some(WorktreeLock {
+                reason: Some("on a usb disk".to_string())
+            })
+        );
+        run(temp_dir.path(), &["worktree", "unlock", "linked"]);
+        run(temp_dir.path(), &["worktree", "lock", "linked"]);
+        assert_eq!(
+            git.worktree_lock(&linked).unwrap(),
+            Some(WorktreeLock { reason: None })
+        );
+        assert_eq!(
+            git.worktree_lock(&temp_dir.path().join("unknown")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn removal_levels_escalate_from_clean_to_locked() {
+        let temp_dir = setup_test_repo();
+        let git = GitWorktree::new(temp_dir.path()).unwrap();
+        let linked = temp_dir.path().join("linked");
+        git.create(&linked, "feature/linked", None).unwrap();
+        fs::write(linked.join("untracked.txt"), "work").unwrap();
+
+        let err = git
+            .remove_worktree(&linked, RemovalForce::Clean)
+            .unwrap_err();
+        assert!(err.to_string().contains("untracked"), "{err}");
+        assert!(linked.join("untracked.txt").exists());
+
+        run(temp_dir.path(), &["worktree", "lock", "linked"]);
+        git.remove_worktree(&linked, RemovalForce::DiscardChanges)
+            .unwrap_err();
+        assert!(linked.exists(), "--force once keeps a locked worktree");
+
+        git.remove_worktree(&linked, RemovalForce::IncludingLocked)
+            .unwrap();
+        assert!(!linked.exists());
+    }
+
+    #[test]
+    fn test_parse_worktree_list_locks() {
+        let output = "worktree /r/main\nHEAD abc\nbranch refs/heads/main\n\n\
+                      worktree /r/eta\nHEAD def\nbranch refs/heads/feature/eta\nlocked on usb\n\n\
+                      worktree /r/zeta\nHEAD 123\nbranch refs/heads/feature/zeta\nlocked\n";
+        let worktrees = parse_worktree_list(output).unwrap();
+        assert!(!worktrees[0].locked);
+        assert!(worktrees[1].locked);
+        assert_eq!(worktrees[1].lock_reason.as_deref(), Some("on usb"));
+        assert!(worktrees[2].locked);
+        assert_eq!(worktrees[2].lock_reason, None);
+    }
+
+    #[test]
+    fn comparable_paths_resolve_missing_leaves_through_their_parent() {
+        let temp_dir = TempDir::new().unwrap();
+        let canonical = temp_dir.path().canonicalize().unwrap();
+        assert_eq!(comparable_path(temp_dir.path()), canonical);
+        assert_eq!(
+            comparable_path(&temp_dir.path().join("missing")),
+            canonical.join("missing")
+        );
+        assert_eq!(
+            comparable_path(Path::new("/nonexistent/a/b")),
+            PathBuf::from("/nonexistent/a/b")
+        );
     }
 }

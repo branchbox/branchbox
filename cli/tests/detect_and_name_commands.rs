@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::disallowed_macros))]
+
 #[macro_use]
 extern crate assert_cmd;
 

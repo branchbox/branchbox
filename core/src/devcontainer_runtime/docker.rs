@@ -190,12 +190,76 @@ impl Docker {
 
     /// Remove a container
     pub fn remove_container(&self, container_id: &str, force: bool) -> Result<DockerOutput> {
+        self.remove_container_with_volumes(container_id, force, false)
+    }
+
+    /// Remove attached anonymous volumes only when the caller explicitly requests them.
+    pub(crate) fn remove_container_with_volumes(
+        &self,
+        container_id: &str,
+        force: bool,
+        volumes: bool,
+    ) -> Result<DockerOutput> {
         let mut args = vec!["rm".to_string()];
         if force {
             args.push("-f".to_string());
         }
+        if volumes {
+            args.push("-v".to_string());
+        }
         args.push(container_id.to_string());
         self.run_command(&args)
+    }
+
+    /// Read only the Compose ownership label, without exposing container environment values.
+    pub(crate) fn container_compose_project(&self, container_id: &str) -> Result<Option<String>> {
+        let output = self.run_command(&[
+            "inspect".to_string(),
+            "--format".to_string(),
+            "{{index .Config.Labels \"com.docker.compose.project\"}}".to_string(),
+            container_id.to_string(),
+        ])?;
+        if !output.success {
+            anyhow::bail!(
+                "Cannot inspect Compose ownership for container {container_id}: {}",
+                output.stderr.trim()
+            );
+        }
+        let project = output.stdout.trim();
+        Ok((!project.is_empty() && project != "<no value>").then(|| project.to_string()))
+    }
+
+    /// List only resources with an exact Compose project label using this Docker invocation.
+    pub(crate) fn compose_project_resource_ids(
+        &self,
+        kind: &str,
+        project: &str,
+    ) -> Result<Vec<String>> {
+        if !crate::modules::ComposeModule::is_compose_project_name(project) {
+            anyhow::bail!("Invalid Compose ownership project name");
+        }
+        let filter = format!("label=com.docker.compose.project={project}");
+        let args = match kind {
+            "container" => vec!["ps", "-a", "--filter", &filter, "--format", "{{.ID}}"],
+            "network" => vec!["network", "ls", "--filter", &filter, "--format", "{{.ID}}"],
+            "volume" => vec!["volume", "ls", "--filter", &filter, "--format", "{{.Name}}"],
+            _ => anyhow::bail!("Unknown Docker resource: {kind}"),
+        };
+        let output =
+            self.run_command(&args.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>())?;
+        if !output.success {
+            anyhow::bail!(
+                "Cannot list {kind}s for Compose project '{project}': {}",
+                output.stderr.trim()
+            );
+        }
+        Ok(output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
     }
 
     /// Execute a command in a running container

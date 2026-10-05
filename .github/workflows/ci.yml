@@ -22,6 +22,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run review preflight checks
         run: scripts/review-preflight.sh
+      - name: Run agent harness regressions
+        run: python3 -B -I scripts/tests/test_agent_e2e.py -v
 
   quality_checks:
     name: Quality Checks
@@ -174,12 +176,6 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./lcov.info
-          disable_search: true
-          fail_ci_if_error: false
       - name: Report coverage
         run: |
           cargo llvm-cov report --json --summary-only > coverage-summary.json
@@ -200,6 +196,22 @@ jobs:
           else
             echo "::notice title=Code Coverage::Coverage: ${coverage}%"
           fi
+      - name: Save coverage evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-evidence-${{ github.run_attempt }}
+          path: |
+            lcov.info
+            coverage-summary.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload coverage to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./lcov.info
+          disable_search: true
+          fail_ci_if_error: false
 
   integration_tests:
     name: Integration Tests
@@ -225,7 +237,7 @@ jobs:
           tool: cargo-nextest
       - name: Wait for Docker
         run: |
-          for i in {1..30}; do
+          for _ in {1..30}; do
             if docker info > /dev/null 2>&1; then
               echo "Docker is ready"
               break
@@ -328,26 +340,6 @@ jobs:
         run: cd docs && npm ci
       - name: Build Docusaurus
         run: cd docs && npm run build
-
-  macos_swift:
-    name: macOS App (Swift)
-    runs-on: macos-latest
-    needs: quality_checks
-    defaults:
-      run:
-        working-directory: macos
-    steps:
-      - uses: actions/checkout@v4
-      - name: Select latest Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-      - name: Print Swift version
-        run: swift --version
-      - name: Build macOS app
-        run: swift build -v
-      - name: Run Swift tests
-        run: swift test -v
 
   manual_cli_e2e:
     name: Manual CLI Harness (${{ matrix.stack }})

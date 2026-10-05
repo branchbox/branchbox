@@ -1,0 +1,460 @@
+[2m2026-10-01T23:08:46.799912Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:46.800158Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:46.800167Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-45/docs/features"
+[2m2026-10-01T23:08:46.800185Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-45/docs/features/in-progress/bulk-45.md" in in-progress
+[2m2026-10-01T23:08:46.800192Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:46.800201Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-45/docs/features/in-progress/bulk-45.md"
+[2m2026-10-01T23:08:46.800204Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:46.801626Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:46.853493Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-45
+[2m2026-10-01T23:08:46.905848Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-45
+[2m2026-10-01T23:08:46.907626Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:46.907672Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:46.907676Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-44/docs/features"
+[2m2026-10-01T23:08:46.907684Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-44/docs/features/in-progress/bulk-44.md" in in-progress
+[2m2026-10-01T23:08:46.907689Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:46.907695Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-44/docs/features/in-progress/bulk-44.md"
+[2m2026-10-01T23:08:46.907698Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:46.907988Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:46.927040Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-44
+[2m2026-10-01T23:08:46.963490Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-44
+[2m2026-10-01T23:08:46.964980Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:46.965030Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:46.965053Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-43/docs/features"
+[2m2026-10-01T23:08:46.965062Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-43/docs/features/in-progress/bulk-43.md" in in-progress
+[2m2026-10-01T23:08:46.965066Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:46.965071Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-43/docs/features/in-progress/bulk-43.md"
+[2m2026-10-01T23:08:46.965074Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:46.965408Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:46.982330Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-43
+[2m2026-10-01T23:08:47.017331Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-43
+[2m2026-10-01T23:08:47.018653Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.018697Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.018701Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-42/docs/features"
+[2m2026-10-01T23:08:47.018708Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-42/docs/features/in-progress/bulk-42.md" in in-progress
+[2m2026-10-01T23:08:47.018711Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.018716Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-42/docs/features/in-progress/bulk-42.md"
+[2m2026-10-01T23:08:47.018718Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.019076Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.035391Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-42
+[2m2026-10-01T23:08:47.067772Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-42
+[2m2026-10-01T23:08:47.069193Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.069285Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.069292Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-41/docs/features"
+[2m2026-10-01T23:08:47.069306Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-41/docs/features/in-progress/bulk-41.md" in in-progress
+[2m2026-10-01T23:08:47.069310Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.069317Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-41/docs/features/in-progress/bulk-41.md"
+[2m2026-10-01T23:08:47.069320Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.069729Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.089557Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-41
+[2m2026-10-01T23:08:47.117697Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-41
+[2m2026-10-01T23:08:47.119477Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.119533Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.119537Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-40/docs/features"
+[2m2026-10-01T23:08:47.119545Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-40/docs/features/in-progress/bulk-40.md" in in-progress
+[2m2026-10-01T23:08:47.119549Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.119554Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-40/docs/features/in-progress/bulk-40.md"
+[2m2026-10-01T23:08:47.119558Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.120101Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.142545Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-40
+[2m2026-10-01T23:08:47.178856Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-40
+[2m2026-10-01T23:08:47.180929Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.180981Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.180985Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-39/docs/features"
+[2m2026-10-01T23:08:47.180993Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-39/docs/features/in-progress/bulk-39.md" in in-progress
+[2m2026-10-01T23:08:47.181000Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.181006Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-39/docs/features/in-progress/bulk-39.md"
+[2m2026-10-01T23:08:47.181009Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.181440Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.201291Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-39
+[2m2026-10-01T23:08:47.246231Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-39
+[2m2026-10-01T23:08:47.249417Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.249475Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.249479Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-38/docs/features"
+[2m2026-10-01T23:08:47.249487Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-38/docs/features/in-progress/bulk-38.md" in in-progress
+[2m2026-10-01T23:08:47.249491Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.249498Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-38/docs/features/in-progress/bulk-38.md"
+[2m2026-10-01T23:08:47.249501Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.249850Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.286366Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-38
+[2m2026-10-01T23:08:47.324249Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-38
+[2m2026-10-01T23:08:47.325627Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.325670Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.325673Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-37/docs/features"
+[2m2026-10-01T23:08:47.325680Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-37/docs/features/in-progress/bulk-37.md" in in-progress
+[2m2026-10-01T23:08:47.325687Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.325692Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-37/docs/features/in-progress/bulk-37.md"
+[2m2026-10-01T23:08:47.325695Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.325950Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.345615Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-37
+[2m2026-10-01T23:08:47.379032Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-37
+[2m2026-10-01T23:08:47.380770Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.380894Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.380904Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-36/docs/features"
+[2m2026-10-01T23:08:47.380921Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-36/docs/features/in-progress/bulk-36.md" in in-progress
+[2m2026-10-01T23:08:47.380930Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.380945Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-36/docs/features/in-progress/bulk-36.md"
+[2m2026-10-01T23:08:47.380952Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.381432Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.405885Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-36
+[2m2026-10-01T23:08:47.443611Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-36
+[2m2026-10-01T23:08:47.445098Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.445162Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.445165Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-35/docs/features"
+[2m2026-10-01T23:08:47.445174Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-35/docs/features/in-progress/bulk-35.md" in in-progress
+[2m2026-10-01T23:08:47.445178Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.445186Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-35/docs/features/in-progress/bulk-35.md"
+[2m2026-10-01T23:08:47.445189Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.445636Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.466583Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-35
+[2m2026-10-01T23:08:47.507142Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-35
+[2m2026-10-01T23:08:47.508598Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.508657Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.508661Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-34/docs/features"
+[2m2026-10-01T23:08:47.508668Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-34/docs/features/in-progress/bulk-34.md" in in-progress
+[2m2026-10-01T23:08:47.508671Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.508677Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-34/docs/features/in-progress/bulk-34.md"
+[2m2026-10-01T23:08:47.508679Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.509009Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.534632Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-34
+[2m2026-10-01T23:08:47.607472Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-34
+[2m2026-10-01T23:08:47.608877Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.608929Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.608933Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-33/docs/features"
+[2m2026-10-01T23:08:47.608941Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-33/docs/features/in-progress/bulk-33.md" in in-progress
+[2m2026-10-01T23:08:47.608944Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.608949Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-33/docs/features/in-progress/bulk-33.md"
+[2m2026-10-01T23:08:47.608955Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.609230Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.642716Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-33
+[2m2026-10-01T23:08:47.700158Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-33
+[2m2026-10-01T23:08:47.702125Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.702176Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.702179Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-32/docs/features"
+[2m2026-10-01T23:08:47.702186Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-32/docs/features/in-progress/bulk-32.md" in in-progress
+[2m2026-10-01T23:08:47.702190Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.702196Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-32/docs/features/in-progress/bulk-32.md"
+[2m2026-10-01T23:08:47.702199Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.702796Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.742429Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-32
+[2m2026-10-01T23:08:47.808978Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-32
+[2m2026-10-01T23:08:47.812783Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.812833Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.812837Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-31/docs/features"
+[2m2026-10-01T23:08:47.812844Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-31/docs/features/in-progress/bulk-31.md" in in-progress
+[2m2026-10-01T23:08:47.812847Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.812853Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-31/docs/features/in-progress/bulk-31.md"
+[2m2026-10-01T23:08:47.812856Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.813195Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.851147Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-31
+[2m2026-10-01T23:08:47.915668Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-31
+[2m2026-10-01T23:08:47.919206Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.919279Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.919283Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-30/docs/features"
+[2m2026-10-01T23:08:47.919294Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-30/docs/features/in-progress/bulk-30.md" in in-progress
+[2m2026-10-01T23:08:47.919298Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.919305Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-30/docs/features/in-progress/bulk-30.md"
+[2m2026-10-01T23:08:47.919308Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.919702Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.940204Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-30
+[2m2026-10-01T23:08:47.972928Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-30
+[2m2026-10-01T23:08:47.975330Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:47.975386Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:47.975390Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-29/docs/features"
+[2m2026-10-01T23:08:47.975399Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-29/docs/features/in-progress/bulk-29.md" in in-progress
+[2m2026-10-01T23:08:47.975403Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:47.975409Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-29/docs/features/in-progress/bulk-29.md"
+[2m2026-10-01T23:08:47.975413Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:47.975780Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:47.994234Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-29
+[2m2026-10-01T23:08:48.024982Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-29
+[2m2026-10-01T23:08:48.026352Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.026407Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.026411Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-28/docs/features"
+[2m2026-10-01T23:08:48.026418Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-28/docs/features/in-progress/bulk-28.md" in in-progress
+[2m2026-10-01T23:08:48.026422Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.026427Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-28/docs/features/in-progress/bulk-28.md"
+[2m2026-10-01T23:08:48.026430Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.026788Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.045433Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-28
+[2m2026-10-01T23:08:48.075362Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-28
+[2m2026-10-01T23:08:48.077660Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.077715Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.077719Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-27/docs/features"
+[2m2026-10-01T23:08:48.077727Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-27/docs/features/in-progress/bulk-27.md" in in-progress
+[2m2026-10-01T23:08:48.077732Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.077738Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-27/docs/features/in-progress/bulk-27.md"
+[2m2026-10-01T23:08:48.077741Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.078147Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.100841Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-27
+[2m2026-10-01T23:08:48.140676Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-27
+[2m2026-10-01T23:08:48.142238Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.142288Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.142292Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-26/docs/features"
+[2m2026-10-01T23:08:48.142300Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-26/docs/features/in-progress/bulk-26.md" in in-progress
+[2m2026-10-01T23:08:48.142304Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.142309Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-26/docs/features/in-progress/bulk-26.md"
+[2m2026-10-01T23:08:48.142312Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.142664Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.162355Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-26
+[2m2026-10-01T23:08:48.199790Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-26
+[2m2026-10-01T23:08:48.201745Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.201796Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.201800Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-25/docs/features"
+[2m2026-10-01T23:08:48.201808Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-25/docs/features/in-progress/bulk-25.md" in in-progress
+[2m2026-10-01T23:08:48.201812Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.201818Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-25/docs/features/in-progress/bulk-25.md"
+[2m2026-10-01T23:08:48.201822Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.202249Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.223113Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-25
+[2m2026-10-01T23:08:48.254637Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-25
+[2m2026-10-01T23:08:48.256366Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.256419Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.256423Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-24/docs/features"
+[2m2026-10-01T23:08:48.256431Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-24/docs/features/in-progress/bulk-24.md" in in-progress
+[2m2026-10-01T23:08:48.256434Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.256441Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-24/docs/features/in-progress/bulk-24.md"
+[2m2026-10-01T23:08:48.256444Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.256739Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.275127Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-24
+[2m2026-10-01T23:08:48.314198Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-24
+[2m2026-10-01T23:08:48.315625Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.315674Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.315677Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-23/docs/features"
+[2m2026-10-01T23:08:48.315684Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-23/docs/features/in-progress/bulk-23.md" in in-progress
+[2m2026-10-01T23:08:48.315688Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.315693Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-23/docs/features/in-progress/bulk-23.md"
+[2m2026-10-01T23:08:48.315696Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.316012Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.335045Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-23
+[2m2026-10-01T23:08:48.370547Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-23
+[2m2026-10-01T23:08:48.371884Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.371948Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.371953Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-22/docs/features"
+[2m2026-10-01T23:08:48.371962Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-22/docs/features/in-progress/bulk-22.md" in in-progress
+[2m2026-10-01T23:08:48.371965Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.371971Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-22/docs/features/in-progress/bulk-22.md"
+[2m2026-10-01T23:08:48.371974Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.372519Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.392985Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-22
+[2m2026-10-01T23:08:48.426859Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-22
+[2m2026-10-01T23:08:48.429678Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.429730Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.429734Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-21/docs/features"
+[2m2026-10-01T23:08:48.429742Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-21/docs/features/in-progress/bulk-21.md" in in-progress
+[2m2026-10-01T23:08:48.429746Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.429753Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-21/docs/features/in-progress/bulk-21.md"
+[2m2026-10-01T23:08:48.429756Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.430211Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.451460Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-21
+[2m2026-10-01T23:08:48.487618Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-21
+[2m2026-10-01T23:08:48.489145Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.489191Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.489194Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-20/docs/features"
+[2m2026-10-01T23:08:48.489206Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-20/docs/features/in-progress/bulk-20.md" in in-progress
+[2m2026-10-01T23:08:48.489210Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.489215Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-20/docs/features/in-progress/bulk-20.md"
+[2m2026-10-01T23:08:48.489218Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.489811Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.504020Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-20
+[2m2026-10-01T23:08:48.528531Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-20
+[2m2026-10-01T23:08:48.529998Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.530047Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.530050Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-19/docs/features"
+[2m2026-10-01T23:08:48.530058Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-19/docs/features/in-progress/bulk-19.md" in in-progress
+[2m2026-10-01T23:08:48.530062Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.530067Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-19/docs/features/in-progress/bulk-19.md"
+[2m2026-10-01T23:08:48.530070Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.530582Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.543808Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-19
+[2m2026-10-01T23:08:48.568130Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-19
+[2m2026-10-01T23:08:48.569702Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.569745Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.569748Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-18/docs/features"
+[2m2026-10-01T23:08:48.569758Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-18/docs/features/in-progress/bulk-18.md" in in-progress
+[2m2026-10-01T23:08:48.569761Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.569766Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-18/docs/features/in-progress/bulk-18.md"
+[2m2026-10-01T23:08:48.569769Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.570088Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.588570Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-18
+[2m2026-10-01T23:08:48.620494Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-18
+[2m2026-10-01T23:08:48.622842Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.622892Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.622895Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-17/docs/features"
+[2m2026-10-01T23:08:48.622902Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-17/docs/features/in-progress/bulk-17.md" in in-progress
+[2m2026-10-01T23:08:48.622905Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.622910Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-17/docs/features/in-progress/bulk-17.md"
+[2m2026-10-01T23:08:48.622913Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.623190Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.637813Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-17
+[2m2026-10-01T23:08:48.662909Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-17
+[2m2026-10-01T23:08:48.664613Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.664666Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.664669Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-16/docs/features"
+[2m2026-10-01T23:08:48.664678Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-16/docs/features/in-progress/bulk-16.md" in in-progress
+[2m2026-10-01T23:08:48.664685Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.664690Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-16/docs/features/in-progress/bulk-16.md"
+[2m2026-10-01T23:08:48.664693Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.664994Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.681540Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-16
+[2m2026-10-01T23:08:48.708783Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-16
+[2m2026-10-01T23:08:48.710587Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.710635Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.710638Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-15/docs/features"
+[2m2026-10-01T23:08:48.710646Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-15/docs/features/in-progress/bulk-15.md" in in-progress
+[2m2026-10-01T23:08:48.710649Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.710655Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-15/docs/features/in-progress/bulk-15.md"
+[2m2026-10-01T23:08:48.710658Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.710901Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.731735Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-15
+[2m2026-10-01T23:08:48.767405Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-15
+[2m2026-10-01T23:08:48.770499Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.770558Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.770561Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-14/docs/features"
+[2m2026-10-01T23:08:48.770570Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-14/docs/features/in-progress/bulk-14.md" in in-progress
+[2m2026-10-01T23:08:48.770573Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.770583Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-14/docs/features/in-progress/bulk-14.md"
+[2m2026-10-01T23:08:48.770587Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.771247Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.789687Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-14
+[2m2026-10-01T23:08:48.841128Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-14
+[2m2026-10-01T23:08:48.844205Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.844377Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.844384Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-13/docs/features"
+[2m2026-10-01T23:08:48.844395Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-13/docs/features/in-progress/bulk-13.md" in in-progress
+[2m2026-10-01T23:08:48.844400Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.844407Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-13/docs/features/in-progress/bulk-13.md"
+[2m2026-10-01T23:08:48.844458Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.844851Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.863725Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-13
+[2m2026-10-01T23:08:48.903508Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-13
+[2m2026-10-01T23:08:48.905214Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.905266Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.905270Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-12/docs/features"
+[2m2026-10-01T23:08:48.905279Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-12/docs/features/in-progress/bulk-12.md" in in-progress
+[2m2026-10-01T23:08:48.905283Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.905288Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-12/docs/features/in-progress/bulk-12.md"
+[2m2026-10-01T23:08:48.905295Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.905549Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.924678Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-12
+[2m2026-10-01T23:08:48.970803Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-12
+[2m2026-10-01T23:08:48.972287Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:48.972331Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:48.972334Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-11/docs/features"
+[2m2026-10-01T23:08:48.972342Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-11/docs/features/in-progress/bulk-11.md" in in-progress
+[2m2026-10-01T23:08:48.972346Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:48.972354Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-11/docs/features/in-progress/bulk-11.md"
+[2m2026-10-01T23:08:48.972357Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:48.973832Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:48.988079Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-11
+[2m2026-10-01T23:08:49.021610Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-11
+[2m2026-10-01T23:08:49.022970Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.023014Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.023017Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-10/docs/features"
+[2m2026-10-01T23:08:49.023024Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-10/docs/features/in-progress/bulk-10.md" in in-progress
+[2m2026-10-01T23:08:49.023027Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.023032Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-10/docs/features/in-progress/bulk-10.md"
+[2m2026-10-01T23:08:49.023037Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.023323Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.038216Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-10
+[2m2026-10-01T23:08:49.075254Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-10
+[2m2026-10-01T23:08:49.076647Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.076690Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.076693Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-09/docs/features"
+[2m2026-10-01T23:08:49.076700Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-09/docs/features/in-progress/bulk-09.md" in in-progress
+[2m2026-10-01T23:08:49.076703Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.076708Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-09/docs/features/in-progress/bulk-09.md"
+[2m2026-10-01T23:08:49.076712Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.077723Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.101939Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-09
+[2m2026-10-01T23:08:49.143567Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-09
+[2m2026-10-01T23:08:49.146055Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.146108Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.146111Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-08/docs/features"
+[2m2026-10-01T23:08:49.146121Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-08/docs/features/in-progress/bulk-08.md" in in-progress
+[2m2026-10-01T23:08:49.146125Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.146130Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-08/docs/features/in-progress/bulk-08.md"
+[2m2026-10-01T23:08:49.146133Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.146499Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.172986Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-08
+[2m2026-10-01T23:08:49.220198Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-08
+[2m2026-10-01T23:08:49.222425Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.222475Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.222478Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-07/docs/features"
+[2m2026-10-01T23:08:49.222485Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-07/docs/features/in-progress/bulk-07.md" in in-progress
+[2m2026-10-01T23:08:49.222488Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.222494Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-07/docs/features/in-progress/bulk-07.md"
+[2m2026-10-01T23:08:49.222496Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.223210Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.246769Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-07
+[2m2026-10-01T23:08:49.277772Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-07
+[2m2026-10-01T23:08:49.279457Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.279511Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.279515Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-06/docs/features"
+[2m2026-10-01T23:08:49.279524Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-06/docs/features/in-progress/bulk-06.md" in in-progress
+[2m2026-10-01T23:08:49.279527Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.279533Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-06/docs/features/in-progress/bulk-06.md"
+[2m2026-10-01T23:08:49.279536Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.279781Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.291879Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-06
+[2m2026-10-01T23:08:49.317559Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-06
+[2m2026-10-01T23:08:49.319335Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.319476Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.319483Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-05/docs/features"
+[2m2026-10-01T23:08:49.319515Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-05/docs/features/in-progress/bulk-05.md" in in-progress
+[2m2026-10-01T23:08:49.319523Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.319530Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-05/docs/features/in-progress/bulk-05.md"
+[2m2026-10-01T23:08:49.319533Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.320040Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.332630Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-05
+[2m2026-10-01T23:08:49.359353Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-05
+[2m2026-10-01T23:08:49.362924Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.362983Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.362987Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-04/docs/features"
+[2m2026-10-01T23:08:49.362995Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-04/docs/features/in-progress/bulk-04.md" in in-progress
+[2m2026-10-01T23:08:49.362999Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.363004Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-04/docs/features/in-progress/bulk-04.md"
+[2m2026-10-01T23:08:49.363007Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.363256Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.375236Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-04
+[2m2026-10-01T23:08:49.404820Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-04
+[2m2026-10-01T23:08:49.406418Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.406470Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.406474Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-03/docs/features"
+[2m2026-10-01T23:08:49.406482Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-03/docs/features/in-progress/bulk-03.md" in in-progress
+[2m2026-10-01T23:08:49.406486Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.406492Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-03/docs/features/in-progress/bulk-03.md"
+[2m2026-10-01T23:08:49.406495Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.406823Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.419561Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-03
+[2m2026-10-01T23:08:49.454910Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-03
+[2m2026-10-01T23:08:49.456790Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.456841Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.456845Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-02/docs/features"
+[2m2026-10-01T23:08:49.456854Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-02/docs/features/in-progress/bulk-02.md" in in-progress
+[2m2026-10-01T23:08:49.456858Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.456864Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-02/docs/features/in-progress/bulk-02.md"
+[2m2026-10-01T23:08:49.456867Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.457165Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.475683Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-02
+[2m2026-10-01T23:08:49.502731Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-02
+[2m2026-10-01T23:08:49.504416Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.504465Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.504469Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/bulk-01/docs/features"
+[2m2026-10-01T23:08:49.504476Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/bulk-01/docs/features/in-progress/bulk-01.md" in in-progress
+[2m2026-10-01T23:08:49.504479Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.504485Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/bulk-01/docs/features/in-progress/bulk-01.md"
+[2m2026-10-01T23:08:49.504487Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.504855Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.516798Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/bulk-01
+[2m2026-10-01T23:08:49.537781Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/bulk-01
+[2m2026-10-01T23:08:49.539451Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:08:49.539498Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:08:49.539502Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/syncme/docs/features"
+[2m2026-10-01T23:08:49.539515Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/syncme/docs/features/in-progress/syncme.md" in in-progress
+[2m2026-10-01T23:08:49.539519Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:08:49.539525Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/syncme/docs/features/in-progress/syncme.md"
+[2m2026-10-01T23:08:49.539528Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:08:49.539952Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files
+[2m2026-10-01T23:08:49.552365Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Removed worktree at /tmp/bbx/syncme
+[2m2026-10-01T23:08:49.575938Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Deleted branch feature/syncme

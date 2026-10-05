@@ -1,0 +1,13 @@
+[2m2026-10-01T22:50:58.796461Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Created worktree at /tmp/bbx/beta
+[2m2026-10-01T22:50:58.851823Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Fixed git worktree path from absolute to relative: ../demo/.git/worktrees/beta
+[2m2026-10-01T22:50:59.000675Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Detected adapter: Generic
+[2m2026-10-01T22:50:59.000718Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m No secret files found to copy
+[2m2026-10-01T22:50:59.003175Z[0m [33m WARN[0m [2mworktree_core::workflows::feature[0m[2m:[0m No .env found at /tmp/bbx/demo/.env
+[2m2026-10-01T22:50:59.006740Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T22:50:59.009606Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T22:50:59.009651Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/beta/docs/features"
+[2m2026-10-01T22:50:59.009741Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/beta/docs/features/in-progress/beta.md" in in-progress
+[2m2026-10-01T22:50:59.009754Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Setting up feature specification...
+[2m2026-10-01T22:50:59.010000Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Updated spec frontmatter
+[2m2026-10-01T22:50:59.010008Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec ready: "/tmp/bbx/beta/docs/features/in-progress/beta.md"
+[2m2026-10-01T22:50:59.010352Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Using service URL from adapter: http://dev:3000

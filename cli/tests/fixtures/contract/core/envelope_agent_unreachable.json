@@ -1,0 +1,11 @@
+{
+  "error": {
+    "causes": [
+      "No such file or directory (os error 2)"
+    ],
+    "code": "agent_unreachable",
+    "details": null,
+    "message": "failed to connect to BranchBox agent at <repo>/missing.sock"
+  },
+  "schema_version": 1
+}

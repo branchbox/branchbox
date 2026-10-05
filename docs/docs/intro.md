@@ -5,7 +5,7 @@ slug: /
 
 # BranchBox
 
-**Parallel development for humans and AI agents. Real environments, zero collisions.**
+**Parallel feature workspaces for humans and AI agents.**
 
 ## The Problem
 
@@ -21,7 +21,7 @@ You've felt this. The "which branch am I on?" moment. The port 3000 conflict. Th
 
 ## The Solution
 
-**One command creates a complete, isolated environment:**
+**One command creates a feature worktree and runs its configured setup:**
 
 ```bash
 branchbox feature start "Add OAuth"
@@ -30,10 +30,10 @@ branchbox feature start "Add OAuth"
 That's it. You now have:
 
 - ✅ Dedicated git worktree and branch
-- ✅ Isolated Docker network and ports
-- ✅ Separate database
-- ✅ Synced devcontainer
-- ✅ Copied environment variables
+- ✅ Compose project identity when configured
+- ✅ Database naming configuration when detected
+- ✅ Synced devcontainer configuration when enabled
+- ✅ Copied environment file when present
 - ✅ Optional Cloudflare tunnel for sharing
 
 Work in `../add-oauth/`. Your main workspace stays pristine.
@@ -62,7 +62,8 @@ branchbox feature teardown oauth-integration
 
 ## Quick Links
 
-- **[Quick Start](getting-started/quick-start.md)** — Get running in 2 minutes
+- **[BranchBox for Mac](guides/mac-app.md)** — Add projects, manage features, review teardown plans, and inspect operations
+- **[Quick Start](getting-started/quick-start.md)** — Initialize a project and start a feature
 - **[Installation](getting-started/installation.md)** — All install methods
 - **[Use Cases](guides/parallel-features.md)** — Common workflows
 - **[CLI Reference](reference/cli.md)** — Every command documented

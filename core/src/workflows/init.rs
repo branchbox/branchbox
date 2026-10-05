@@ -29,6 +29,7 @@
 //!     non_interactive: false,
 //!     verbose: false,
 //!     coding_agents: true,
+//!     onepassword: Default::default(),
 //! };
 //!
 //! let mut workflow = InitWorkflow::new(options);
@@ -43,11 +44,10 @@ use crate::config::{BranchBoxConfig, CloudflaredConfig};
 use crate::git::GitWorktree;
 use crate::modules::{default_port_for_stack, detect_main_service};
 use crate::{Error, Result};
-use dialoguer::console::Term;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -56,6 +56,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
 const CLOUDFLARE_API_BASE_ENV: &str = "BRANCHBOX_CLOUDFLARE_API_BASE";
 const CLOUDFLARE_INIT_USER_AGENT: &str = "branchbox/init";
+
+/// `schema_version` of the `init --json` payload (DESIGN §5.13).
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// Initialization workflow orchestrator
 ///
@@ -121,6 +124,47 @@ pub struct InitOptions {
 
     /// Configure shared AI coding agent mounts (enabled by default)
     pub coding_agents: bool,
+
+    /// 1Password references to record without prompting (`--op-*`, `--skip-1password`)
+    pub onepassword: OnePasswordSetup,
+}
+
+/// What `init` does about 1Password credential references in `.devcontainer/.env`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum OnePasswordSetup {
+    /// Ask in an interactive terminal; otherwise leave the file as it is and warn when no
+    /// reference is configured.
+    #[default]
+    Unchanged,
+    /// Record that this project does not use 1Password (`BRANCHBOX_OP_SETUP=skip`), replacing
+    /// any references.
+    Skip,
+    /// Record these `op://` references. With `verify`, each must resolve with `op read` before
+    /// init changes anything.
+    Configure {
+        github_ref: String,
+        signing_key_ref: Option<String>,
+        verify: bool,
+    },
+}
+
+/// Whether the project's devcontainer gets credentials from 1Password, as `.devcontainer/.env`
+/// records it after init.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnePasswordStatus {
+    /// `OP_GITHUB_REF` holds an `op://` reference.
+    Configured,
+    /// The project opted out (`BRANCHBOX_OP_SETUP=skip`).
+    Skipped,
+    /// Neither: no reference and no opt-out.
+    NotConfigured,
+}
+
+/// The `onepassword` object of the `init --json` payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct OnePasswordSummary {
+    pub status: OnePasswordStatus,
 }
 
 impl Default for InitOptions {
@@ -139,6 +183,7 @@ impl Default for InitOptions {
             non_interactive: false,
             verbose: false,
             coding_agents: true, // Default to enabled for AI coding agent mounts
+            onepassword: OnePasswordSetup::Unchanged,
         }
     }
 }
@@ -156,10 +201,37 @@ pub enum InitSource {
     CurrentDirectory,
 }
 
-/// Summary of initialization results
-#[derive(Debug)]
+/// The `.gitignore` lines `init` makes sure a project has: BranchBox's state, secrets and
+/// generated files. `doctor --repo` reports the ones missing.
+pub(crate) const GITIGNORE_ENTRIES: &[&str] = &[
+    ".branchbox/registry.json",
+    ".branchbox/secure/",
+    ".branchbox/secure/tunnels/",
+    ".branchbox/runtime/",
+    ".branchbox/devcontainer-sync/",
+    // Crash leftovers of the registry's atomic writes, and the lock file used where the state
+    // directory itself cannot be locked (atomic_fs).
+    ".branchbox/.registry.*.tmp",
+    ".branchbox/.lock",
+    ".devcontainer/.branchbox.env",
+    ".devcontainer/.cloudflared.env",
+    ".devcontainer/.branchbox-sbx-compose.yaml",
+    "**/.branchbox-sbx-compose-input-*.yaml",
+    ".devcontainer/.devcontainer.json",
+    ".devcontainer/.github-token.env",
+    ".devcontainer/.git-signing-key",
+    ".devcontainer/.gitconfig.env",
+    ".branchbox.env",
+    ".env",
+    ".env.local",
+];
+
+/// Summary of initialization results. Serializes to the `init --json` payload (DESIGN §5.13)
+/// inside an [`InitDocument`].
+#[derive(Debug, Serialize)]
 pub struct InitSummary {
-    /// Final workspace path
+    /// Final workspace path (absolute in JSON; `null` when not known, e.g. a dry-run clone)
+    #[serde(serialize_with = "serialize_workspace_path")]
     pub workspace_path: PathBuf,
 
     /// Repository state determined during analysis
@@ -169,9 +241,11 @@ pub struct InitSummary {
     pub reorganized: bool,
 
     /// Detected/forced stack
+    #[serde(serialize_with = "serialize_stack")]
     pub stack: Stack,
 
-    /// Adapter name
+    /// Adapter name (its lowercase id in JSON, as `detect --json` reports it)
+    #[serde(serialize_with = "serialize_adapter")]
     pub adapter: String,
 
     /// Enabled module names
@@ -183,6 +257,9 @@ pub struct InitSummary {
     /// Whether BranchBox registry was initialized
     pub registry_initialized: bool,
 
+    /// Whether the devcontainer gets credentials from 1Password
+    pub onepassword: OnePasswordSummary,
+
     /// Warnings encountered
     pub warnings: Vec<String>,
 
@@ -191,7 +268,8 @@ pub struct InitSummary {
 }
 
 /// Current state of the repository
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RepositoryState {
     /// Fresh clone from URL
     Cloned { url: String },
@@ -213,7 +291,8 @@ pub enum RepositoryState {
 }
 
 /// Status of devcontainer configuration
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DevcontainerStatus {
     /// Complete and valid
     Valid,
@@ -229,6 +308,54 @@ pub enum DevcontainerStatus {
 
     /// Not present (skipped by user)
     None,
+}
+
+/// The `init --json` payload (DESIGN §5.13): the summary with its schema version.
+#[derive(Debug, Serialize)]
+pub struct InitDocument<'a> {
+    pub schema_version: u32,
+    #[serde(flatten)]
+    pub summary: &'a InitSummary,
+}
+
+impl InitSummary {
+    /// The `init --json` document for this summary.
+    pub fn document(&self) -> InitDocument<'_> {
+        InitDocument {
+            schema_version: SCHEMA_VERSION,
+            summary: self,
+        }
+    }
+}
+
+fn serialize_workspace_path<S: Serializer>(
+    path: &Path,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    if path.as_os_str().is_empty() {
+        return serializer.serialize_none();
+    }
+    std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .serialize(serializer)
+}
+
+fn serialize_stack<S: Serializer>(
+    stack: &Stack,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.serialize_str(stack.as_str())
+}
+
+fn serialize_adapter<S: Serializer>(
+    name: &str,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    if name.is_empty() {
+        serializer.serialize_none()
+    } else {
+        serializer.serialize_str(&crate::workflows::detect::adapter_id(name))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +398,14 @@ impl InitWorkflow {
     /// 6. Initialize BranchBox registry
     /// 7. Generate next steps
     pub fn execute(&mut self) -> Result<InitSummary> {
+        let mut summary = self.run_phases()?;
+        if !summary.workspace_path.as_os_str().is_empty() {
+            summary.onepassword = Self::onepassword_summary(&summary.workspace_path);
+        }
+        Ok(summary)
+    }
+
+    fn run_phases(&mut self) -> Result<InitSummary> {
         let mut summary = InitSummary::default();
 
         if self.options.verbose {
@@ -280,6 +415,9 @@ impl InitWorkflow {
         // Phase 1: Analyze current state
         let state = self.analyze_repository_state()?;
         summary.repository_state = state.clone();
+        if !matches!(self.options.source, InitSource::Url(_)) {
+            summary.workspace_path = self.current_path();
+        }
 
         if self.options.verbose {
             tracing::info!("Repository state: {:?}", state);
@@ -290,11 +428,14 @@ impl InitWorkflow {
             return self.validate_and_report(state);
         }
 
+        // Explicit 1Password references are checked before anything changes.
+        self.check_onepassword_references()?;
+
         // Phase 2: Repository setup (clone or reorganize)
         let workspace_path = match state {
             RepositoryState::Cloned { ref url } => {
                 if self.options.dry_run {
-                    println!("[DRY RUN] Would clone: {}", url);
+                    crate::humanln!("[DRY RUN] Would clone: {}", url);
                     return Ok(summary);
                 }
                 self.clone_repository(url)?
@@ -330,10 +471,11 @@ impl InitWorkflow {
                 if self.options.update {
                     self.current_path()
                 } else {
-                    println!("✓ Already initialized");
+                    crate::humanln!("✓ Already initialized");
                     if !self.options.non_interactive {
-                        println!("  Run with --update to update configuration");
+                        crate::humanln!("  Run with --update to update configuration");
                     }
+                    self.describe_unchanged_project(&mut summary)?;
                     return Ok(summary);
                 }
             }
@@ -347,7 +489,8 @@ impl InitWorkflow {
                 if self.options.update {
                     self.current_path()
                 } else {
-                    println!("✓ Already set up as worktree parent");
+                    crate::humanln!("✓ Already set up as worktree parent");
+                    self.describe_unchanged_project(&mut summary)?;
                     return Ok(summary);
                 }
             }
@@ -391,18 +534,24 @@ impl InitWorkflow {
 
         // Phase 6b: Configure tunnel defaults
         if self.options.dry_run {
-            println!("[DRY RUN] Would configure tunnel defaults");
+            crate::humanln!("[DRY RUN] Would configure tunnel defaults");
         } else if let Some(warning) = self.configure_tunnel_settings(&workspace_path)? {
             summary.warnings.push(warning);
         }
 
         // Phase 6c: Configure 1Password credential references
-        if !self.options.skip_devcontainer {
-            if self.options.dry_run {
-                println!("[DRY RUN] Would configure 1Password credential references");
-            } else if let Some(warning) = self.configure_onepassword_settings(&workspace_path)? {
-                summary.warnings.push(warning);
+        if self.options.skip_devcontainer {
+            if self.options.onepassword != OnePasswordSetup::Unchanged {
+                summary.warnings.push(
+                    "1Password setup was not recorded: --skip-devcontainer leaves no \
+                     .devcontainer/.env to hold it."
+                        .to_string(),
+                );
             }
+        } else if self.options.dry_run {
+            crate::humanln!("[DRY RUN] Would configure 1Password credential references");
+        } else if let Some(warning) = self.configure_onepassword_settings(&workspace_path)? {
+            summary.warnings.push(warning);
         }
 
         // Phase 7: Generate next steps
@@ -502,9 +651,12 @@ impl InitWorkflow {
         Ok(())
     }
 
-    /// Check if path has .branchbox registry
+    /// Check if path has a `.branchbox/registry.json`, the same rule as `detect --json` and
+    /// `doctor`. A `.branchbox/` holding only `config.json` or `secure/` (written by `config set`
+    /// or `tunnel credentials set` before init, or committed config in a fresh clone) is not
+    /// initialized; init then keeps that configuration.
     fn has_branchbox_registry(&self, path: &Path) -> Result<bool> {
-        Ok(path.join(".branchbox").exists())
+        Ok(super::detect::is_initialized(path))
     }
 
     /// Check if this is a worktree parent
@@ -660,7 +812,7 @@ impl InitWorkflow {
             )));
         }
 
-        println!("Cloning {} into {}", url, target_path.display());
+        crate::humanln!("Cloning {} into {}", url, target_path.display());
 
         // Create parent directory
         if let Some(parent) = target_path.parent() {
@@ -680,7 +832,7 @@ impl InitWorkflow {
             return Err(Error::validation(format!("Clone failed: {}", stderr)));
         }
 
-        println!("✓ Cloned successfully");
+        crate::humanln!("✓ Cloned successfully");
 
         Ok(target_path)
     }
@@ -703,7 +855,7 @@ impl InitWorkflow {
     fn reorganize_to_worktree(&self) -> Result<PathBuf> {
         let current_path = self.current_path();
 
-        println!("⚠ Reorganization requested");
+        crate::humanln!("⚠ Reorganization requested");
 
         // Determine target path
         let target_path = if let Some(path) = &self.options.target_dir {
@@ -725,30 +877,25 @@ impl InitWorkflow {
 
         // Don't move if already in target location
         if current_path == target_path {
-            println!("✓ Already in target location");
+            crate::humanln!("✓ Already in target location");
             return Ok(current_path);
         }
 
         if self.options.dry_run {
-            println!("[DRY RUN] Would move:");
-            println!("  From: {}", current_path.display());
-            println!("  To:   {}", target_path.display());
+            crate::humanln!("[DRY RUN] Would move:");
+            crate::humanln!("  From: {}", current_path.display());
+            crate::humanln!("  To:   {}", target_path.display());
             return Ok(target_path);
         }
 
         // Confirm with user unless non-interactive
         if !self.options.non_interactive {
-            println!("  From: {}", current_path.display());
-            println!("  To:   {}", target_path.display());
-            println!();
-            println!("Continue? (y/N)");
+            crate::humanln!("  From: {}", current_path.display());
+            crate::humanln!("  To:   {}", target_path.display());
+            crate::humanln!();
 
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-
-            if !input.trim().eq_ignore_ascii_case("y") {
-                // User declined - use current path instead (not an error)
-                println!("Reorganization cancelled. Continuing with current location.");
+            if !Self::confirm_reorganization()? {
+                // User declined (or could not be asked) - use current path instead (not an error)
                 return Ok(current_path);
             }
         }
@@ -759,11 +906,11 @@ impl InitWorkflow {
         }
 
         // Move directory
-        println!("Moving repository...");
+        crate::humanln!("Moving repository...");
         fs::rename(&current_path, &target_path)
             .map_err(|e| Error::validation(format!("Failed to move repository: {}", e)))?;
 
-        println!("✓ Moved to {}", target_path.display());
+        crate::humanln!("✓ Moved to {}", target_path.display());
 
         Ok(target_path)
     }
@@ -776,33 +923,28 @@ impl InitWorkflow {
         let main_dir = container_path.join("main");
 
         if current_path == main_dir {
-            println!("✓ Already using parent structure");
+            crate::humanln!("✓ Already using parent structure");
             return Ok(main_dir);
         }
 
         if main_dir.exists() {
-            println!("✓ Parent structure already in place");
+            crate::humanln!("✓ Parent structure already in place");
             return Ok(main_dir);
         }
 
         if self.options.dry_run {
-            println!("[DRY RUN] Would reorganize into parent structure:");
-            println!("  Container: {}", container_path.display());
-            println!("  Main worktree: {}", main_dir.display());
+            crate::humanln!("[DRY RUN] Would reorganize into parent structure:");
+            crate::humanln!("  Container: {}", container_path.display());
+            crate::humanln!("  Main worktree: {}", main_dir.display());
             return Ok(main_dir);
         }
 
         if !self.options.non_interactive {
-            println!("  Container: {}", container_path.display());
-            println!("  Main worktree: {}", main_dir.display());
-            println!();
-            println!("Continue? (y/N)");
+            crate::humanln!("  Container: {}", container_path.display());
+            crate::humanln!("  Main worktree: {}", main_dir.display());
+            crate::humanln!();
 
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Reorganization cancelled. Continuing with current location.");
+            if !Self::confirm_reorganization()? {
                 return Ok(current_path.to_path_buf());
             }
         }
@@ -813,7 +955,7 @@ impl InitWorkflow {
             self.move_into_container(current_path, container_path, &main_dir)?;
         }
 
-        println!("✓ Reorganized into {}", main_dir.display());
+        crate::humanln!("✓ Reorganized into {}", main_dir.display());
         Ok(main_dir)
     }
 
@@ -896,11 +1038,11 @@ impl InitWorkflow {
         if !devcontainer_dir.exists() {
             // Generate from scratch
             if self.options.verbose {
-                println!("Generating devcontainer configuration...");
+                crate::humanln!("Generating devcontainer configuration...");
             }
 
             if self.options.dry_run {
-                println!("[DRY RUN] Would generate devcontainer for {:?}", stack);
+                crate::humanln!("[DRY RUN] Would generate devcontainer for {:?}", stack);
                 return Ok(DevcontainerStatus::Created);
             }
 
@@ -913,7 +1055,7 @@ impl InitWorkflow {
                 crate::modules::configure_workspace_settings(&devcontainer_dir)?;
             if !configure_outcome.changes.is_empty() && self.options.verbose {
                 for change in &configure_outcome.changes {
-                    println!("  - {}", change);
+                    crate::humanln!("  - {}", change);
                 }
             }
 
@@ -923,7 +1065,7 @@ impl InitWorkflow {
             }
 
             if !self.options.verbose {
-                println!("✓ Created devcontainer configuration");
+                crate::humanln!("✓ Created devcontainer configuration");
             }
 
             return Ok(DevcontainerStatus::Created);
@@ -932,7 +1074,7 @@ impl InitWorkflow {
         // Existing devcontainer - validate and configure for worktree compatibility
         if self.options.dry_run {
             if self.options.verbose {
-                println!("✓ Devcontainer configuration exists");
+                crate::humanln!("✓ Devcontainer configuration exists");
             }
             return Ok(DevcontainerStatus::Valid);
         }
@@ -945,18 +1087,19 @@ impl InitWorkflow {
             let outcome = crate::modules::inject_coding_agent_mounts(&devcontainer_dir)?;
             if !outcome.changes.is_empty() {
                 if self.options.verbose {
-                    println!("Configured AI coding agent mounts:");
+                    crate::humanln!("Configured AI coding agent mounts:");
                     if let Some(ref user) = outcome.container_user {
-                        println!(
+                        crate::humanln!(
                             "  - Detected container user: {} ({})",
-                            user.username, user.home_path
+                            user.username,
+                            user.home_path
                         );
                     }
                     for change in &outcome.changes {
-                        println!("  - {}", change);
+                        crate::humanln!("  - {}", change);
                     }
                 } else {
-                    println!("✓ Configured AI coding agent shared mounts");
+                    crate::humanln!("✓ Configured AI coding agent shared mounts");
                 }
             }
             outcome
@@ -967,12 +1110,12 @@ impl InitWorkflow {
         // Print workspace configuration changes if any
         if !configure_outcome.changes.is_empty() {
             if self.options.verbose {
-                println!("Enhanced devcontainer for worktree compatibility:");
+                crate::humanln!("Enhanced devcontainer for worktree compatibility:");
                 for change in &configure_outcome.changes {
-                    println!("  - {}", change);
+                    crate::humanln!("  - {}", change);
                 }
             } else {
-                println!("✓ Enhanced devcontainer for worktree compatibility");
+                crate::humanln!("✓ Enhanced devcontainer for worktree compatibility");
             }
         }
 
@@ -987,7 +1130,7 @@ impl InitWorkflow {
         }
 
         if self.options.verbose {
-            println!("✓ Devcontainer configuration valid");
+            crate::humanln!("✓ Devcontainer configuration valid");
         }
 
         Ok(DevcontainerStatus::Valid)
@@ -1001,7 +1144,7 @@ impl InitWorkflow {
         }
 
         if self.options.dry_run {
-            println!("[DRY RUN] Would create placeholder {}", env_path.display());
+            crate::humanln!("[DRY RUN] Would create placeholder {}", env_path.display());
             return Ok(());
         }
 
@@ -1013,7 +1156,7 @@ impl InitWorkflow {
         fs::write(&env_path, contents)?;
 
         if self.options.verbose {
-            println!("✓ Created {}", env_path.display());
+            crate::humanln!("✓ Created {}", env_path.display());
         }
 
         Ok(())
@@ -1031,7 +1174,7 @@ impl InitWorkflow {
         // Always ensure defaults align with our expectations.
         config.tunnel.ensure_defaults();
 
-        let interactive = !self.options.non_interactive && Term::stdout().is_term();
+        let interactive = !self.options.non_interactive && crate::output::is_interactive();
 
         if !interactive {
             if config.tunnel.enabled && !config.tunnel.has_cloudflared() {
@@ -1170,16 +1313,12 @@ impl InitWorkflow {
                         Self::prompt_for_api_token(&theme)?
                     };
 
-                    if let Some(parent) = secure_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    let file_content = format!(
-                        "CLOUDFLARE_API_TOKEN={}\nCLOUDFLARE_ACCOUNT_ID={}\n",
-                        api_token.trim(),
-                        cloudflared.account_id.clone().unwrap_or_default()
-                    );
-                    fs::write(&secure_path, file_content)?;
+                    // Owner-only from creation, other lines kept (credentials module).
+                    crate::credentials::write_cloudflare_env(
+                        &secure_path,
+                        cloudflared.account_id.as_deref(),
+                        crate::credentials::TokenChange::Set(&api_token),
+                    )?;
 
                     cloudflared.api_token_path =
                         Some(PathBuf::from(".branchbox/secure/cloudflared.env"));
@@ -1228,12 +1367,12 @@ impl InitWorkflow {
 
                 if !cloudflared_outcome.changes.is_empty() {
                     if self.options.verbose {
-                        println!("Added tunnel support to devcontainer:");
+                        crate::humanln!("Added tunnel support to devcontainer:");
                         for change in &cloudflared_outcome.changes {
-                            println!("  - {}", change);
+                            crate::humanln!("  - {}", change);
                         }
                     } else {
-                        println!("✓ Added cloudflared tunnel service");
+                        crate::humanln!("✓ Added cloudflared tunnel service");
                     }
                 }
             }
@@ -1490,15 +1629,50 @@ impl InitWorkflow {
 
     /// Configure 1Password credential references for devcontainer GitHub/signing auth.
     ///
-    /// Prompts interactively for `OP_GITHUB_REF` and `OP_SIGNING_KEY_REF`, persists them
-    /// to `.devcontainer/.env` so `init-host.sh` can fetch secrets on container startup.
+    /// Records explicit references (`--op-*`) or the opt-out (`--skip-1password`) without
+    /// asking; otherwise prompts interactively for `OP_GITHUB_REF` and `OP_SIGNING_KEY_REF`.
+    /// The values are persisted to `.devcontainer/.env` so `init-host.sh` can fetch secrets on
+    /// container startup.
     fn configure_onepassword_settings(&self, workspace_path: &Path) -> Result<Option<String>> {
         let devcontainer_dir = workspace_path.join(".devcontainer");
         if !devcontainer_dir.exists() {
+            if self.options.onepassword != OnePasswordSetup::Unchanged {
+                return Ok(Some(format!(
+                    "1Password setup was not recorded: {} does not exist.",
+                    devcontainer_dir.display()
+                )));
+            }
             return Ok(None);
         }
 
         let env_path = devcontainer_dir.join(".env");
+
+        match &self.options.onepassword {
+            OnePasswordSetup::Unchanged => {}
+            OnePasswordSetup::Skip => {
+                Self::write_op_env(&env_path, None, None, true)?;
+                crate::humanln!(
+                    "  Skipped 1Password setup (recorded in {})",
+                    env_path.display()
+                );
+                return Ok(None);
+            }
+            OnePasswordSetup::Configure {
+                github_ref,
+                signing_key_ref,
+                ..
+            } => {
+                // Already checked (and verified) by check_onepassword_references.
+                Self::write_op_env(
+                    &env_path,
+                    Some(github_ref),
+                    signing_key_ref.as_deref(),
+                    false,
+                )?;
+                crate::humanln!("✓ 1Password references saved to {}", env_path.display());
+                return Ok(None);
+            }
+        }
 
         // Read existing values from .devcontainer/.env if present.
         let (existing_github_ref, existing_signing_ref, existing_setup) =
@@ -1517,13 +1691,14 @@ impl InitWorkflow {
             return Ok(None);
         }
 
-        let interactive = !self.options.non_interactive && Term::stdout().is_term();
+        let interactive = !self.options.non_interactive && crate::output::is_interactive();
 
         if !interactive {
             if !has_github {
                 return Ok(Some(
                     "1Password credential references not configured; \
-                     set OP_GITHUB_REF and OP_SIGNING_KEY_REF in your environment \
+                     set OP_GITHUB_REF and OP_SIGNING_KEY_REF in your environment, \
+                     pass --op-github-ref (or --skip-1password), \
                      or run `branchbox init` interactively."
                         .to_string(),
                 ));
@@ -1543,7 +1718,7 @@ impl InitWorkflow {
 
         if !enable {
             Self::write_op_env(&env_path, None, None, true)?;
-            println!(
+            crate::humanln!(
                 "  Skipped 1Password setup. To configure later, \
                  delete {} and run `branchbox init`.",
                 env_path.display()
@@ -1564,12 +1739,12 @@ impl InitWorkflow {
 
         // Validate the reference resolves in 1Password (op read handles all
         // format validation; no client-side prefix check needed).
-        print!("  Verifying GitHub token reference... ");
+        crate::human!("  Verifying GitHub token reference... ");
         match Self::verify_op_reference(&github_ref) {
-            Ok(()) => println!("✓"),
+            Ok(()) => crate::humanln!("✓"),
             Err(e) => {
-                println!("✘");
-                println!("  {}", e);
+                crate::humanln!("✘");
+                crate::humanln!("  {}", e);
                 let proceed = Confirm::with_theme(&theme)
                     .with_prompt("Save this reference anyway?")
                     .default(false)
@@ -1597,15 +1772,15 @@ impl InitWorkflow {
         let signing = if signing_ref.is_empty() {
             None
         } else {
-            print!("  Verifying signing key reference... ");
+            crate::human!("  Verifying signing key reference... ");
             match Self::verify_op_reference(&signing_ref) {
                 Ok(()) => {
-                    println!("✓");
+                    crate::humanln!("✓");
                     Some(signing_ref.as_str())
                 }
                 Err(e) => {
-                    println!("✘");
-                    println!("  {}", e);
+                    crate::humanln!("✘");
+                    crate::humanln!("  {}", e);
                     let proceed = Confirm::with_theme(&theme)
                         .with_prompt("Save this reference anyway?")
                         .default(false)
@@ -1620,9 +1795,96 @@ impl InitWorkflow {
         };
 
         Self::write_op_env(&env_path, Some(&github_ref), signing, false)?;
-        println!("✓ 1Password references saved to {}", env_path.display());
+        crate::humanln!("✓ 1Password references saved to {}", env_path.display());
 
         Ok(None)
+    }
+
+    /// Fill in what init detects for a project it leaves as it is (already initialized, and no
+    /// `--update`), and warn that explicit 1Password flags were not applied.
+    fn describe_unchanged_project(&self, summary: &mut InitSummary) -> Result<()> {
+        let path = self.current_path();
+        summary.stack = self.detect_or_force_stack(&path)?;
+        summary.adapter = crate::adapters::detect_adapter(&path)?.name().to_string();
+        summary.modules = crate::modules::detect_modules(&path, &[])
+            .handles
+            .iter()
+            .map(|handle| handle.name.clone())
+            .collect();
+        if self.options.onepassword != OnePasswordSetup::Unchanged {
+            summary.warnings.push(
+                "1Password setup was not recorded: the project is already initialized; rerun \
+                 with --update to change it."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Check the explicit 1Password references (`--op-github-ref`, `--op-signing-key-ref`)
+    /// before init changes anything: each must be an `op://` reference on one line and, unless
+    /// verification is off (`--no-verify-op-refs`), resolve with `op read`. A refusal names the
+    /// flag, the reference and the cause.
+    fn check_onepassword_references(&self) -> Result<()> {
+        let OnePasswordSetup::Configure {
+            github_ref,
+            signing_key_ref,
+            verify,
+        } = &self.options.onepassword
+        else {
+            return Ok(());
+        };
+        let references = [
+            ("--op-github-ref", Some(github_ref)),
+            ("--op-signing-key-ref", signing_key_ref.as_ref()),
+        ];
+        for (flag, reference) in references {
+            let Some(reference) = reference else {
+                continue;
+            };
+            if !Self::is_op_reference(reference) {
+                return Err(Error::validation(format!(
+                    "{flag} '{reference}' is not a 1Password secret reference: expected \
+                     op://vault/item/field on one line. Nothing was changed."
+                )));
+            }
+            if *verify {
+                if let Err(cause) = Self::verify_op_reference(reference) {
+                    return Err(Error::validation(format!(
+                        "1Password reference {flag} '{reference}' could not be read: {cause}. \
+                         Nothing was changed. Check the reference and that the 1Password CLI is \
+                         signed in (`op signin`), or pass --no-verify-op-refs to save it \
+                         unverified."
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `reference` looks like a 1Password secret reference (`op://vault/item/field`).
+    fn is_op_reference(reference: &str) -> bool {
+        reference.strip_prefix("op://").is_some_and(|rest| {
+            let components: Vec<_> = rest.split('/').collect();
+            components.len() >= 3
+                && components
+                    .iter()
+                    .all(|component| !component.trim().is_empty())
+        }) && !reference.chars().any(char::is_control)
+    }
+
+    /// The 1Password status `.devcontainer/.env` records for the workspace.
+    fn onepassword_summary(workspace_path: &Path) -> OnePasswordSummary {
+        let (github_ref, _, setup) =
+            Self::read_op_env(&workspace_path.join(".devcontainer").join(".env"));
+        let status = if github_ref.is_some_and(|reference| reference.starts_with("op://")) {
+            OnePasswordStatus::Configured
+        } else if setup.as_deref() == Some("skip") {
+            OnePasswordStatus::Skipped
+        } else {
+            OnePasswordStatus::NotConfigured
+        };
+        OnePasswordSummary { status }
     }
 
     /// Verify an `op://` reference resolves by calling `op read --no-newline`.
@@ -1817,7 +2079,7 @@ impl InitWorkflow {
         dns_zone: Option<&str>,
         workspace_path: &Path,
     ) -> Result<()> {
-        println!("Provisioning tunnel '{}'...", tunnel_name);
+        crate::humanln!("Provisioning tunnel '{}'...", tunnel_name);
         tracing::info!("Provisioning tunnel '{}'...", tunnel_name);
 
         let client = CloudflareClient::new(api_token.to_string(), account_id.to_string())?;
@@ -1825,9 +2087,10 @@ impl InitWorkflow {
         // Check if tunnel already exists, or create a new one
         let (tunnel_id, tunnel_token) =
             if let Some(existing) = client.find_tunnel_by_name(tunnel_name)? {
-                println!(
+                crate::humanln!(
                     "ℹ Tunnel '{}' already exists (id: {}), fetching token...",
-                    tunnel_name, existing.id
+                    tunnel_name,
+                    existing.id
                 );
                 tracing::info!(
                     "Tunnel '{}' already exists (id: {}), fetching token",
@@ -1838,13 +2101,15 @@ impl InitWorkflow {
                 // Fetch the token for the existing tunnel
                 match client.get_tunnel_token(&existing.id) {
                     Ok(token) => {
-                        println!("✓ Retrieved token for existing tunnel");
+                        crate::humanln!("✓ Retrieved token for existing tunnel");
                         tracing::info!("Retrieved token for existing tunnel '{}'", tunnel_name);
                         (existing.id, token)
                     }
                     Err(e) => {
-                        println!("⚠ Failed to retrieve tunnel token: {}", e);
-                        println!("  You may need to get the token from the Cloudflare dashboard");
+                        crate::humanln!("⚠ Failed to retrieve tunnel token: {}", e);
+                        crate::humanln!(
+                            "  You may need to get the token from the Cloudflare dashboard"
+                        );
                         tracing::warn!("Failed to retrieve tunnel token: {}", e);
                         return Ok(());
                     }
@@ -1852,9 +2117,10 @@ impl InitWorkflow {
             } else {
                 // Create a new tunnel
                 let provision = client.create_tunnel(tunnel_name)?;
-                println!(
+                crate::humanln!(
                     "✓ Created tunnel '{}' (id: {})",
-                    provision.name, provision.id
+                    provision.name,
+                    provision.id
                 );
                 tracing::info!("Created tunnel '{}' (id: {})", provision.name, provision.id);
                 (provision.id, provision.token)
@@ -1876,10 +2142,10 @@ impl InitWorkflow {
             );
 
             if let Err(e) = fs::write(&env_path, env_content) {
-                println!("⚠ Failed to write .cloudflared.env: {}", e);
+                crate::humanln!("⚠ Failed to write .cloudflared.env: {}", e);
                 tracing::warn!("Failed to write .cloudflared.env: {}", e);
             } else {
-                println!("✓ Saved tunnel token to .cloudflared.env");
+                crate::humanln!("✓ Saved tunnel token to .cloudflared.env");
                 tracing::info!("Saved tunnel token to .cloudflared.env");
             }
         }
@@ -1890,19 +2156,19 @@ impl InitWorkflow {
 
             // Configure tunnel ingress routing
             if let Err(e) = client.configure_tunnel(&tunnel_id, &hostname, service_url) {
-                println!("⚠ Failed to configure tunnel ingress: {}", e);
+                crate::humanln!("⚠ Failed to configure tunnel ingress: {}", e);
                 tracing::warn!("Failed to configure tunnel ingress: {}", e);
             } else {
-                println!("✓ Configured tunnel ingress for {}", hostname);
+                crate::humanln!("✓ Configured tunnel ingress for {}", hostname);
                 tracing::info!("Configured tunnel ingress for {}", hostname);
             }
 
             // Create DNS CNAME record pointing to the tunnel
             if let Err(e) = client.ensure_cname_record(&hostname, zone, &tunnel_id) {
-                println!("⚠ Failed to create DNS record: {}", e);
+                crate::humanln!("⚠ Failed to create DNS record: {}", e);
                 tracing::warn!("Failed to create DNS record for {}: {}", hostname, e);
             } else {
-                println!("✓ Created DNS record for {}", hostname);
+                crate::humanln!("✓ Created DNS record for {}", hostname);
                 tracing::info!("Created DNS CNAME record for {}", hostname);
             }
         }
@@ -1917,7 +2183,7 @@ impl InitWorkflow {
         // Quick check if already exists (optimization)
         if registry_path.exists() {
             if self.options.verbose {
-                println!("✓ BranchBox registry already exists");
+                crate::humanln!("✓ BranchBox registry already exists");
             }
             // Even if the registry already exists (e.g., from older init runs), ensure the repo
             // `.gitignore` still contains the expected BranchBox entries.
@@ -1928,7 +2194,7 @@ impl InitWorkflow {
         }
 
         if self.options.dry_run {
-            println!("[DRY RUN] Would create .branchbox/ registry");
+            crate::humanln!("[DRY RUN] Would create .branchbox/ registry");
             return Ok(true);
         }
 
@@ -1958,7 +2224,7 @@ impl InitWorkflow {
                 self.update_gitignore(path)?;
 
                 if self.options.verbose {
-                    println!("✓ Created BranchBox registry");
+                    crate::humanln!("✓ Created BranchBox registry");
                 }
 
                 Ok(true)
@@ -1966,7 +2232,7 @@ impl InitWorkflow {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Another process created it - that's fine
                 if self.options.verbose {
-                    println!("✓ BranchBox registry already exists");
+                    crate::humanln!("✓ BranchBox registry already exists");
                 }
                 self.update_gitignore(path)?;
                 Ok(false)
@@ -1987,26 +2253,8 @@ impl InitWorkflow {
         };
 
         // Check which entries need to be added
-        let entries = vec![
-            ".branchbox/registry.json",
-            ".branchbox/secure/",
-            ".branchbox/secure/tunnels/",
-            ".branchbox/runtime/",
-            ".devcontainer/.branchbox.env",
-            ".devcontainer/.cloudflared.env",
-            ".devcontainer/.branchbox-sbx-compose.yaml",
-            "**/.branchbox-sbx-compose-input-*.yaml",
-            ".devcontainer/.devcontainer.json",
-            ".devcontainer/.github-token.env",
-            ".devcontainer/.git-signing-key",
-            ".devcontainer/.gitconfig.env",
-            ".branchbox.env",
-            ".env",
-            ".env.local",
-        ];
-
         let mut new_entries = Vec::new();
-        for entry in entries {
+        for &entry in GITIGNORE_ENTRIES {
             // Check if this specific entry exists (not just any branchbox entry)
             if !content.lines().any(|line| line.trim() == entry) {
                 new_entries.push(entry);
@@ -2066,45 +2314,62 @@ impl InitWorkflow {
 
     /// Validate and report (for --validate mode)
     fn validate_and_report(&self, state: RepositoryState) -> Result<InitSummary> {
-        println!("🔍 Validation Mode");
-        println!();
+        crate::humanln!("🔍 Validation Mode");
+        crate::humanln!();
 
         match state {
             RepositoryState::AlreadyInitialized => {
-                println!("✓ Already initialized");
+                crate::humanln!("✓ Already initialized");
             }
             RepositoryState::WorktreeParent => {
-                println!("✓ Set up as worktree parent");
+                crate::humanln!("✓ Set up as worktree parent");
             }
             RepositoryState::ReadyToInitialize { warn_location } => {
-                println!("Ready to initialize");
+                crate::humanln!("Ready to initialize");
                 if warn_location {
-                    println!("⚠ Location is temporary (consider reorganization)");
+                    crate::humanln!("⚠ Location is temporary (consider reorganization)");
                 }
             }
             RepositoryState::RegularClone {
                 needs_reorganization,
             } => {
-                println!("Regular clone detected");
+                crate::humanln!("Regular clone detected");
                 if needs_reorganization {
-                    println!("⚠ Reorganization recommended");
+                    crate::humanln!("⚠ Reorganization recommended");
                 }
             }
             _ => {}
         }
 
-        Ok(InitSummary::default())
+        let mut summary = InitSummary {
+            workspace_path: self.current_path(),
+            repository_state: state,
+            ..InitSummary::default()
+        };
+        // Report what init would set up, as the early exits do (read-only). A clone that does
+        // not exist yet has nothing to detect.
+        let path = self.current_path();
+        if path.is_dir() {
+            summary.stack = self.detect_or_force_stack(&path)?;
+            summary.adapter = crate::adapters::detect_adapter(&path)?.name().to_string();
+            summary.modules = crate::modules::detect_modules(&path, &[])
+                .handles
+                .iter()
+                .map(|handle| handle.name.clone())
+                .collect();
+        }
+        Ok(summary)
     }
 
     /// Warn user about temporary location
     fn warn_about_location(&self) -> Result<()> {
         let path = self.current_path();
-        println!("⚠ Warning: Repository is in a temporary location");
-        println!("  Current: {}", path.display());
-        println!();
-        println!("  This directory may be deleted by the system.");
-        println!("  Recommend running with --reorganize flag.");
-        println!();
+        crate::humanln!("⚠ Warning: Repository is in a temporary location");
+        crate::humanln!("  Current: {}", path.display());
+        crate::humanln!();
+        crate::humanln!("  This directory may be deleted by the system.");
+        crate::humanln!("  Recommend running with --reorganize flag.");
+        crate::humanln!();
 
         Ok(())
     }
@@ -2117,15 +2382,47 @@ impl InitWorkflow {
 
         let path = self.current_path();
         if self.is_temporary_location(&path)? {
-            println!("Move to permanent location? (Y/n)");
-
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-
-            Ok(!input.trim().eq_ignore_ascii_case("n"))
+            // Without a terminal (or with --json) nobody can answer: keep the repository where it
+            // is. The location warning already recommends --reorganize.
+            Ok(Self::prompt_line("Move to permanent location? (Y/n)")?
+                .is_some_and(|input| !input.trim().eq_ignore_ascii_case("n")))
         } else {
             Ok(false)
         }
+    }
+
+    /// Ask "Continue? (y/N)" before moving the repository. A declined prompt, and a session that
+    /// cannot prompt at all, both keep the current location; the latter says how to proceed.
+    fn confirm_reorganization() -> Result<bool> {
+        match Self::prompt_line("Continue? (y/N)")? {
+            Some(input) if input.trim().eq_ignore_ascii_case("y") => Ok(true),
+            Some(_) => {
+                crate::humanln!("Reorganization cancelled. Continuing with current location.");
+                Ok(false)
+            }
+            None => {
+                crate::humanln!(
+                    "Reorganization needs confirmation, and this session cannot prompt (no \
+                     terminal, or --json). Continuing with current location; rerun with --yes \
+                     to reorganize without prompting."
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Print `question` and read one line of reply from stdin. Returns `None`, without printing,
+    /// when the session is not interactive ([`crate::output::is_interactive`]: no terminal, or
+    /// `--json`), so the caller takes its non-interactive outcome instead of blocking on input.
+    fn prompt_line(question: &str) -> Result<Option<String>> {
+        if !crate::output::is_interactive() {
+            return Ok(None);
+        }
+        crate::humanln!("{question}");
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        Ok(Some(input))
     }
 }
 
@@ -2142,6 +2439,9 @@ impl Default for InitSummary {
             modules: Vec::new(),
             devcontainer_status: DevcontainerStatus::None,
             registry_initialized: false,
+            onepassword: OnePasswordSummary {
+                status: OnePasswordStatus::NotConfigured,
+            },
             warnings: Vec::new(),
             next_steps: Vec::new(),
         }
@@ -2566,6 +2866,9 @@ mod tests {
         assert!(gitignore.contains(".branchbox/registry.json"));
         assert!(gitignore.contains(".branchbox/secure/"));
         assert!(gitignore.contains(".branchbox/runtime/"));
+        assert!(gitignore.contains(".branchbox/devcontainer-sync/"));
+        assert!(gitignore.contains(".branchbox/.registry.*.tmp"));
+        assert!(gitignore.contains(".branchbox/.lock"));
         assert!(gitignore.contains(".devcontainer/.branchbox.env"));
         assert!(gitignore.contains(".devcontainer/.cloudflared.env"));
         assert!(gitignore.contains("**/.branchbox-sbx-compose-input-*.yaml"));
@@ -2599,8 +2902,14 @@ mod tests {
         let mut second_workflow = InitWorkflow::new(second_options);
         let summary = second_workflow.execute().unwrap();
 
-        // Should detect already initialized
-        assert_eq!(summary.workspace_path, PathBuf::new());
+        // Should detect already initialized, exit early and still report where it looked
+        assert_eq!(
+            summary.repository_state,
+            RepositoryState::AlreadyInitialized
+        );
+        assert!(!summary.registry_initialized);
+        assert_eq!(summary.devcontainer_status, DevcontainerStatus::None);
+        assert_eq!(summary.workspace_path, repo_path);
     }
 
     #[test]
@@ -3290,6 +3599,247 @@ mod tests {
         assert!(
             compose_yaml.contains("../..:/workspaces:cached"),
             "Generated compose.yaml should use ../..:/workspaces:cached"
+        );
+    }
+
+    #[test]
+    fn summary_document_matches_the_init_json_contract() {
+        let summary = InitSummary {
+            workspace_path: PathBuf::from("/r/main"),
+            repository_state: RepositoryState::ReadyToInitialize {
+                warn_location: false,
+            },
+            stack: Stack::Rust,
+            adapter: "Generic".to_string(),
+            modules: vec!["devcontainer".to_string(), "specs".to_string()],
+            devcontainer_status: DevcontainerStatus::Created,
+            registry_initialized: true,
+            ..InitSummary::default()
+        };
+        assert_eq!(
+            serde_json::to_value(summary.document()).unwrap(),
+            serde_json::json!({
+                "schema_version": 1,
+                "workspace_path": "/r/main",
+                "repository_state": {"kind": "ready_to_initialize", "warn_location": false},
+                "reorganized": false,
+                "stack": "rust",
+                "adapter": "generic",
+                "modules": ["devcontainer", "specs"],
+                "devcontainer_status": {"kind": "created"},
+                "registry_initialized": true,
+                "onepassword": {"status": "not_configured"},
+                "warnings": [],
+                "next_steps": []
+            })
+        );
+    }
+
+    #[test]
+    fn tagged_states_and_unknown_values_serialize_predictably() {
+        let value = |state: &RepositoryState| serde_json::to_value(state).unwrap();
+        assert_eq!(
+            value(&RepositoryState::Cloned {
+                url: "https://x/y.git".to_string()
+            }),
+            serde_json::json!({"kind": "cloned", "url": "https://x/y.git"})
+        );
+        assert_eq!(
+            value(&RepositoryState::FeatureWorktree { parent_path: None }),
+            serde_json::json!({"kind": "feature_worktree", "parent_path": null})
+        );
+        assert_eq!(
+            value(&RepositoryState::AlreadyInitialized),
+            serde_json::json!({"kind": "already_initialized"})
+        );
+        assert_eq!(
+            serde_json::to_value(DevcontainerStatus::Enhanced {
+                changes: vec!["added mount".to_string()]
+            })
+            .unwrap(),
+            serde_json::json!({"kind": "enhanced", "changes": ["added mount"]})
+        );
+        assert_eq!(
+            serde_json::to_value(DevcontainerStatus::None).unwrap(),
+            serde_json::json!({"kind": "none"})
+        );
+
+        // A clone that has not happened yet (dry run) has no workspace or adapter.
+        let document = serde_json::to_value(InitSummary::default().document()).unwrap();
+        assert_eq!(document["workspace_path"], serde_json::Value::Null);
+        assert_eq!(document["adapter"], serde_json::Value::Null);
+        // A relative workspace is reported absolute.
+        let relative = InitSummary {
+            workspace_path: PathBuf::from("main"),
+            ..InitSummary::default()
+        };
+        let path = serde_json::to_value(relative.document()).unwrap()["workspace_path"].clone();
+        assert!(Path::new(path.as_str().unwrap()).is_absolute(), "{path}");
+    }
+
+    #[test]
+    fn op_references_must_be_op_urls_on_one_line() {
+        assert!(InitWorkflow::is_op_reference("op://vault/item/field"));
+        assert!(InitWorkflow::is_op_reference(
+            "op://Development vault/Git signing/private key"
+        ));
+        for reference in [
+            "",
+            "op://",
+            "vault/item",
+            "op://vault/item field",
+            "op://a\nb",
+            "op://vault/item/private\rkey",
+            "op://vault/item/private\tkey",
+            "op://vault/ /field",
+            "op://vault/item/",
+        ] {
+            assert!(!InitWorkflow::is_op_reference(reference), "{reference:?}");
+        }
+
+        let workflow = |github_ref: &str, signing_key_ref: Option<&str>| {
+            InitWorkflow::new(InitOptions {
+                onepassword: OnePasswordSetup::Configure {
+                    github_ref: github_ref.to_string(),
+                    signing_key_ref: signing_key_ref.map(str::to_string),
+                    verify: false,
+                },
+                ..Default::default()
+            })
+        };
+        assert!(workflow("op://v/i/f", Some("op://v/k/f"))
+            .check_onepassword_references()
+            .is_ok());
+        assert!(workflow(
+            "op://Development vault/GitHub account/token",
+            Some("op://Development vault/Git signing/private key")
+        )
+        .check_onepassword_references()
+        .is_ok());
+        let err = workflow("op://v/i/f", Some("ssh-key"))
+            .check_onepassword_references()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("--op-signing-key-ref 'ssh-key'"),
+            "{err}"
+        );
+        assert!(InitWorkflow::new(InitOptions::default())
+            .check_onepassword_references()
+            .is_ok());
+    }
+
+    #[test]
+    fn onepassword_status_follows_the_devcontainer_env() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        let status = || InitWorkflow::onepassword_summary(workspace).status;
+        assert_eq!(status(), OnePasswordStatus::NotConfigured);
+
+        fs::create_dir_all(workspace.join(".devcontainer")).unwrap();
+        let env = workspace.join(".devcontainer/.env");
+        InitWorkflow::write_op_env(&env, None, None, true).unwrap();
+        assert_eq!(status(), OnePasswordStatus::Skipped);
+        InitWorkflow::write_op_env(&env, Some("op://v/i/f"), None, false).unwrap();
+        assert_eq!(status(), OnePasswordStatus::Configured);
+    }
+
+    #[test]
+    fn explicit_onepassword_setup_is_recorded_without_prompting() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+        let options = |onepassword| InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            onepassword,
+            ..Default::default()
+        };
+
+        let summary = InitWorkflow::new(options(OnePasswordSetup::Configure {
+            github_ref: "op://v/github/token".to_string(),
+            signing_key_ref: None,
+            verify: false,
+        }))
+        .execute()
+        .unwrap();
+        assert_eq!(summary.onepassword.status, OnePasswordStatus::Configured);
+        assert_eq!(
+            fs::read_to_string(repo_path.join(".devcontainer/.env")).unwrap(),
+            "OP_GITHUB_REF=op://v/github/token\n"
+        );
+
+        // Already initialized: the flags are not applied without --update, and init says so.
+        let unchanged = InitWorkflow::new(options(OnePasswordSetup::Skip))
+            .execute()
+            .unwrap();
+        assert_eq!(
+            unchanged.repository_state,
+            RepositoryState::AlreadyInitialized
+        );
+        assert_eq!(unchanged.onepassword.status, OnePasswordStatus::Configured);
+        assert!(
+            unchanged.warnings.iter().any(|w| w.contains("--update")),
+            "{:?}",
+            unchanged.warnings
+        );
+        assert_eq!(unchanged.workspace_path, repo_path);
+        assert!(!unchanged.modules.is_empty());
+
+        let updated = InitWorkflow::new(InitOptions {
+            update: true,
+            ..options(OnePasswordSetup::Skip)
+        })
+        .execute()
+        .unwrap();
+        assert_eq!(updated.onepassword.status, OnePasswordStatus::Skipped);
+    }
+
+    #[test]
+    fn onepassword_flags_with_skip_devcontainer_warn() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+        let summary = InitWorkflow::new(InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            non_interactive: true,
+            skip_devcontainer: true,
+            onepassword: OnePasswordSetup::Skip,
+            ..Default::default()
+        })
+        .execute()
+        .unwrap();
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|w| w.contains("--skip-devcontainer")),
+            "{:?}",
+            summary.warnings
+        );
+        assert!(!repo_path.join(".devcontainer/.env").exists());
+    }
+
+    #[test]
+    fn validate_mode_reports_the_workspace_and_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = create_test_repo(&temp_dir);
+        fs::write(repo_path.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+        let summary = InitWorkflow::new(InitOptions {
+            source: InitSource::LocalPath(repo_path.clone()),
+            validate_only: true,
+            ..Default::default()
+        })
+        .execute()
+        .unwrap();
+        assert_eq!(summary.workspace_path, repo_path);
+        assert!(matches!(
+            summary.repository_state,
+            RepositoryState::RegularClone { .. }
+        ));
+        // Validation reports the detected stack, not the default.
+        assert_eq!(summary.stack, Stack::Rust);
+        assert!(!summary.adapter.is_empty());
+        assert!(
+            !repo_path.join(".branchbox").exists(),
+            "validation writes nothing"
         );
     }
 }

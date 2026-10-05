@@ -1,0 +1,12 @@
+{
+  "error": {
+    "causes": [],
+    "code": "feature_not_found",
+    "details": {
+      "name": "nope",
+      "registry": "<repo>/main/.branchbox/registry.json"
+    },
+    "message": "Feature 'nope' is not registered in <repo>/main/.branchbox/registry.json"
+  },
+  "schema_version": 1
+}

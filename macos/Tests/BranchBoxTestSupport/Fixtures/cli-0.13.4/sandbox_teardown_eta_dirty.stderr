@@ -1,0 +1,8 @@
+[2m2026-10-01T23:07:07.250482Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:07:07.250541Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:07:07.250546Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/eta/docs/features"
+[2m2026-10-01T23:07:07.250555Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/eta/docs/features/in-progress/eta.md" in in-progress
+[2m2026-10-01T23:07:07.250559Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Handling feature specification...
+[2m2026-10-01T23:07:07.250565Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec found: "/tmp/bbx/eta/docs/features/in-progress/eta.md"
+[2m2026-10-01T23:07:07.250568Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Spec remains in in-progress (use --complete-spec to move to completed)
+[2m2026-10-01T23:07:07.250762Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m Cleaned up temporary files

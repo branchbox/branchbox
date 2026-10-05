@@ -1,0 +1,15 @@
+[2m2026-10-01T23:09:42.889280Z[0m [34mDEBUG[0m [2mworktree_core::git[0m[2m:[0m Running: cd "/tmp/bbx/demo" && "git" "worktree" "add" "-B" "feature/theta" "/tmp/bbx/theta"
+[2m2026-10-01T23:09:42.927718Z[0m [32m INFO[0m [2mworktree_core::git[0m[2m:[0m Created worktree at /tmp/bbx/theta
+[2m2026-10-01T23:09:42.940666Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Fixed git worktree path from absolute to relative: ../demo/.git/worktrees/theta
+[2m2026-10-01T23:09:42.968476Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Detected adapter: Generic
+[2m2026-10-01T23:09:42.968525Z[0m [32m INFO[0m [2mworktree_core::adapters::generic[0m[2m:[0m No secret files found to copy
+[2m2026-10-01T23:09:42.969530Z[0m [33m WARN[0m [2mworktree_core::workflows::feature[0m[2m:[0m No .env found at /tmp/bbx/demo/.env
+[2m2026-10-01T23:09:42.969945Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created backlog directory
+[2m2026-10-01T23:09:42.970091Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Created completed directory
+[2m2026-10-01T23:09:42.970102Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Initialized specs directory: "/tmp/bbx/theta/docs/features"
+[2m2026-10-01T23:09:42.970130Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Discovered existing feature spec "/tmp/bbx/theta/docs/features/in-progress/theta.md" in in-progress
+[2m2026-10-01T23:09:42.970136Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Setting up feature specification...
+[2m2026-10-01T23:09:42.970257Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Updated spec frontmatter
+[2m2026-10-01T23:09:42.970262Z[0m [32m INFO[0m [2mworktree_core::modules::specs[0m[2m:[0m Feature spec ready: "/tmp/bbx/theta/docs/features/in-progress/theta.md"
+[2m2026-10-01T23:09:42.970313Z[0m [32m INFO[0m [2mworktree_core::workflows::feature[0m[2m:[0m Using service URL from adapter: http://dev:3000
+[2m2026-10-01T23:09:42.970340Z[0m [34mDEBUG[0m [2mworktree_core::workflows::feature[0m[2m:[0m Git worktree path is already relative: ../demo/.git/worktrees/theta

@@ -9,6 +9,8 @@ resolver = "2"
 [workspace.package]
 version = "0.13.4"
 edition = "2021"
+# std File::lock/try_lock (registry lock in core/src/atomic_fs.rs) needs 1.89.
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/branchbox/branchbox"
 authors = ["Rida Al Barazi <rbarazi@gmail.com>"]
@@ -64,7 +66,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # Testing
 rstest = "0.18"
 mockito = "1.2"
-jsonc-parser = { version = "0.27", features = ["serde"] }
+jsonc-parser = { version = "0.27", features = ["serde", "cst"] }
 
 [workspace.metadata.release]
 # Version management

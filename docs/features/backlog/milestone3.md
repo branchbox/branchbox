@@ -6,6 +6,13 @@ created: 2025-11-14
 
 # Milestone 3 – Control Plane Bridge & macOS Distribution
 
+> **Status update (2026-10).** The macOS half of this milestone was delivered by the [mac-app-revamp](../in-progress/mac-app-revamp.md) in a different shape:
+> - `.github/workflows/macos-app.yml` builds with warnings as errors, runs the tests on macOS 14 (Xcode 16.2) and macOS 15, runs integration suites against the same-commit CLI and the 0.13.4 floor, packages a universal ad-hoc-signed app and uploads it as an artifact. Notarization is still deferred.
+> - The Swift warnings are gone because the app dropped `swift-protobuf`/`grpc-swift` entirely and has no dependencies.
+> - The app has no Agent tab: it drives the CLI's `--json` contract, and an agent-backed transport is deferred.
+>
+> The control-plane bridge goals (1 and 4) are unchanged and still open.
+
 ## Problem
 Milestone 2 delivered the local agent, macOS preview app, and tunnel/devcontainer UX, but everything still runs locally:
 - The control plane never receives agent telemetry in real time, so remote operators cannot see tunnel/drift status.

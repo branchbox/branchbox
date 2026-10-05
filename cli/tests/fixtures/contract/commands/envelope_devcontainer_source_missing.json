@@ -1,0 +1,11 @@
+{
+  "error": {
+    "causes": [],
+    "code": "devcontainer_source_missing",
+    "details": {
+      "path": "<repo>/main/.devcontainer"
+    },
+    "message": "Devcontainer source not found: <repo>/main/.devcontainer does not exist in the main worktree"
+  },
+  "schema_version": 1
+}

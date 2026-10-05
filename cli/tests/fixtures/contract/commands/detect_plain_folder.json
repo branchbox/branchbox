@@ -1,0 +1,15 @@
+{
+  "adapter": "nodejs",
+  "git_repository": false,
+  "has_devcontainer": false,
+  "has_env": false,
+  "initialized": false,
+  "modules": [
+    "tunnel",
+    "specs"
+  ],
+  "project": "<repo>",
+  "schema_version": 1,
+  "stack": "nodejs",
+  "warnings": []
+}

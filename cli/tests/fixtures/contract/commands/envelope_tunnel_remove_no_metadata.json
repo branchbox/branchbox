@@ -1,0 +1,9 @@
+{
+  "error": {
+    "causes": [],
+    "code": "validation_failed",
+    "details": null,
+    "message": "Validation error: Feature 'eta' has no tunnel metadata recorded"
+  },
+  "schema_version": 1
+}

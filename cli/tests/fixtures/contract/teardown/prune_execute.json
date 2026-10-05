@@ -1,0 +1,90 @@
+{
+  "dry_run": false,
+  "failed": 0,
+  "pruned": 2,
+  "results": [
+    {
+      "error": null,
+      "outcome": "removed",
+      "summary": {
+        "adapter_cleanup_warnings": [],
+        "branch_action": "force_delete",
+        "branch_delete_error": null,
+        "branch_deleted": true,
+        "branch_name": "feature/clean",
+        "discarded_changes": [],
+        "module_reports": [
+          {
+            "errors": [],
+            "name": "specs",
+            "teardown_ok": true
+          }
+        ],
+        "preserved": [
+          {
+            "destination": "docs/features/backlog/clean.md",
+            "path": "docs/features/in-progress/clean.md"
+          }
+        ],
+        "registry_updated": true,
+        "runtime_teardown": {
+          "provider": "container",
+          "residue": [],
+          "residue_free": true,
+          "verified": true
+        },
+        "warnings": [
+          "Tunnel descriptor missing; skipping provider teardown"
+        ],
+        "work_feature": "clean",
+        "worktree_removed": true
+      },
+      "work_feature": "clean"
+    },
+    {
+      "error": null,
+      "outcome": "removed",
+      "summary": {
+        "adapter_cleanup_warnings": [],
+        "branch_action": "force_delete",
+        "branch_delete_error": null,
+        "branch_deleted": true,
+        "branch_name": "feature/risky",
+        "discarded_changes": [
+          {
+            "area": "other",
+            "kind": "untracked",
+            "path": "scratch.txt"
+          }
+        ],
+        "module_reports": [
+          {
+            "errors": [],
+            "name": "specs",
+            "teardown_ok": true
+          }
+        ],
+        "preserved": [
+          {
+            "destination": "docs/features/backlog/risky.md",
+            "path": "docs/features/in-progress/risky.md"
+          }
+        ],
+        "registry_updated": true,
+        "runtime_teardown": {
+          "provider": "container",
+          "residue": [],
+          "residue_free": true,
+          "verified": true
+        },
+        "warnings": [
+          "Tunnel descriptor missing; skipping provider teardown"
+        ],
+        "work_feature": "risky",
+        "worktree_removed": true
+      },
+      "work_feature": "risky"
+    }
+  ],
+  "schema_version": 1
+}

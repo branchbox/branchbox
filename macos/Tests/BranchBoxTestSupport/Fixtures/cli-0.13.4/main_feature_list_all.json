@@ -1,0 +1,540 @@
+[
+  {
+    "work_feature": "prine",
+    "branch_name": "feature/prine",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/prine",
+    "base_branch": null,
+    "feature_url": "dev-prine.localhost",
+    "compose_project_name": "branchbox-prine",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/prine/.env",
+    "status": "active",
+    "created_at": "2026-03-17T03:37:57.979509Z",
+    "updated_at": "2026-03-17T03:37:57.979509Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "cloudflared",
+      "status": "disabled",
+      "notes": "Tunnel provisioning disabled in project configuration",
+      "last_updated": "2026-03-17T03:37:57.975531Z"
+    },
+    "color": "#f39c12",
+    "last_commit": "d3f308c112340957ce1fc42ec5383ce1b7294074",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 9,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 190,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-03-17T03:37:57.979509Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "remotion",
+    "branch_name": "feature/remotion",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/remotion",
+    "base_branch": null,
+    "feature_url": "dev-remotion.localhost",
+    "compose_project_name": "branchbox-remotion",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/remotion/.env",
+    "status": "active",
+    "created_at": "2026-02-17T15:49:46.470702Z",
+    "updated_at": "2026-02-17T15:49:46.470702Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel provisioning disabled in project configuration",
+      "last_updated": "2026-02-17T15:49:46.466211Z"
+    },
+    "color": "#c0392b",
+    "last_commit": "dfcb8c9fedf3b1969e407c578655e8d3122c04f5",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 1,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 118,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-02-17T15:49:46.470702Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "coding-agents",
+    "branch_name": "feature/coding-agents",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/coding-agents",
+    "base_branch": null,
+    "feature_url": "dev-coding-agents.localhost",
+    "compose_project_name": "branchbox-coding-agents",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/coding-agents/.env",
+    "status": "removed",
+    "created_at": "2026-01-03T16:36:45.605945Z",
+    "updated_at": "2026-01-07T00:37:51.474180Z",
+    "removed_at": "2026-01-07T00:37:51.474180Z",
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel removed via CLI",
+      "last_updated": "2026-01-07T00:37:51.474180Z",
+      "removed_at": "2026-01-07T00:37:51.474180Z"
+    },
+    "color": "#2ecc71",
+    "last_commit": "1aa9035a5ac3bd546ee903e9e6cd8a66bca1507f",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 2,
+        "forced": false,
+        "recorded_at": "2026-01-03T16:36:45.605945Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 220,
+        "forced": false,
+        "recorded_at": "2026-01-03T16:36:45.605945Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-01-03T16:36:45.605945Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-01-03T16:36:45.605945Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-01-03T16:36:45.605945Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "workspace-mount",
+    "branch_name": "feature/workspace-mount",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/workspace-mount",
+    "base_branch": null,
+    "feature_url": "dev-workspace-mount.localhost",
+    "compose_project_name": "branchbox-workspace-mount",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/workspace-mount/.env",
+    "status": "removed",
+    "created_at": "2026-01-02T01:33:18.729351Z",
+    "updated_at": "2026-01-03T16:35:42.284748Z",
+    "removed_at": "2026-01-03T16:35:42.284748Z",
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel removed via CLI",
+      "last_updated": "2026-01-03T16:35:42.284748Z",
+      "removed_at": "2026-01-03T16:35:42.284748Z"
+    },
+    "color": "#16a085",
+    "last_commit": "2c76d851d42736e9a11c7cf7030e92a2bf09f3bb",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 1,
+        "forced": false,
+        "recorded_at": "2026-01-02T01:33:18.729351Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 237,
+        "forced": false,
+        "recorded_at": "2026-01-02T01:33:18.729351Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-01-02T01:33:18.729351Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-01-02T01:33:18.729351Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-01-02T01:33:18.729351Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "milestone2",
+    "branch_name": "feature/milestone2",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/milestone2",
+    "base_branch": null,
+    "feature_url": "dev-milestone2.localhost",
+    "compose_project_name": "branchbox-milestone2",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/milestone2/.env",
+    "status": "removed",
+    "created_at": "2025-11-10T16:05:34.457985Z",
+    "updated_at": "2025-11-14T14:41:10.315190Z",
+    "removed_at": "2025-11-14T14:41:10.315190Z",
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel removed via CLI",
+      "last_updated": "2025-11-14T14:41:10.315190Z",
+      "removed_at": "2025-11-14T14:41:10.315190Z"
+    },
+    "color": "#e67e22",
+    "last_commit": "14233691e3bb17e6a3ec4c7d881d5474bde8bc58",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 1,
+        "forced": false,
+        "recorded_at": "2025-11-10T16:05:34.457985Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 171,
+        "forced": false,
+        "recorded_at": "2025-11-10T16:05:34.457985Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2025-11-10T16:05:34.457985Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2025-11-10T16:05:34.457985Z"
+      }
+    ],
+    "last_summary_rendered_at": "2025-11-10T16:05:34.457985Z",
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "cli-e2e-rust-smoke",
+    "branch_name": "feature/cli-e2e-rust-smoke",
+    "worktree_path": "/workspaces/cli-e2e-rust-smoke",
+    "base_branch": null,
+    "feature_url": "dev-cli-e2e-rust-smoke.localhost",
+    "compose_project_name": "workspaces-cli-e2e-rust-smoke",
+    "env_path": "/workspaces/cli-e2e-rust-smoke/.env",
+    "status": "removed",
+    "created_at": "2025-11-10T04:29:00.768535795Z",
+    "updated_at": "2025-11-10T04:29:02.145183129Z",
+    "removed_at": "2025-11-10T04:29:02.145183129Z",
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel removed via CLI",
+      "last_updated": "2025-11-10T04:29:02.145183129Z",
+      "removed_at": "2025-11-10T04:29:02.145183129Z"
+    },
+    "color": "#c0392b",
+    "last_commit": "2aab883b3a1c15cc96da7cd9597a2e983757ac2d",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 4,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:00.768535795Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 74,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:00.768535795Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "success",
+        "duration_ms": 5,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:00.768535795Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 3,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:00.768535795Z"
+      }
+    ],
+    "last_summary_rendered_at": "2025-11-10T04:29:00.768535795Z",
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "cli-e2e-rust-smoke-tunnel-fallback",
+    "branch_name": "feature/cli-e2e-rust-smoke-tunnel-fallback",
+    "worktree_path": "/workspaces/cli-e2e-rust-smoke-tunnel-fallback",
+    "base_branch": null,
+    "feature_url": "dev-cli-e2e-rust-smoke-tunnel-fallback.localhost",
+    "compose_project_name": "workspaces-cli-e2e-rust-smoke-tunnel-fallback",
+    "env_path": "/workspaces/cli-e2e-rust-smoke-tunnel-fallback/.env",
+    "status": "removed",
+    "created_at": "2025-11-10T04:29:01.712202421Z",
+    "updated_at": "2025-11-10T04:29:01.966235379Z",
+    "removed_at": "2025-11-10T04:29:01.966235379Z",
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel removed via CLI",
+      "last_updated": "2025-11-10T04:29:01.966235379Z",
+      "removed_at": "2025-11-10T04:29:01.966235379Z"
+    },
+    "color": "#c0392b",
+    "last_commit": "2aab883b3a1c15cc96da7cd9597a2e983757ac2d",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 2,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.712202421Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 42,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.712202421Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.712202421Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.712202421Z"
+      }
+    ],
+    "last_summary_rendered_at": "2025-11-10T04:29:01.712202421Z",
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "cli-e2e-rust-smoke-tunnel",
+    "branch_name": "feature/cli-e2e-rust-smoke-tunnel",
+    "worktree_path": "/workspaces/cli-e2e-rust-smoke-tunnel",
+    "base_branch": null,
+    "feature_url": "dev-cli-e2e-rust-smoke-tunnel.localhost",
+    "compose_project_name": "workspaces-cli-e2e-rust-smoke-tunnel",
+    "env_path": "/workspaces/cli-e2e-rust-smoke-tunnel/.env",
+    "status": "removed",
+    "created_at": "2025-11-10T04:29:01.150559004Z",
+    "updated_at": "2025-11-10T04:29:01.428869795Z",
+    "removed_at": "2025-11-10T04:29:01.428869795Z",
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel removed via CLI",
+      "last_updated": "2025-11-10T04:29:01.428869795Z",
+      "removed_at": "2025-11-10T04:29:01.428869795Z"
+    },
+    "color": "#27ae60",
+    "last_commit": "2aab883b3a1c15cc96da7cd9597a2e983757ac2d",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 3,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.150559004Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 71,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.150559004Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.150559004Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2025-11-10T04:29:01.150559004Z"
+      }
+    ],
+    "last_summary_rendered_at": "2025-11-10T04:29:01.150559004Z",
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  }
+]

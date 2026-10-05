@@ -1,0 +1,22 @@
+{
+  "dry_run": false,
+  "failed": 0,
+  "results": [
+    {
+      "error": null,
+      "files": [
+        "devcontainer.json",
+        "scripts/setup.sh"
+      ],
+      "registry_updated": true,
+      "skip_reason": null,
+      "status": "synced",
+      "work_feature": "eta",
+      "worktree_path": "<repo>/eta"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": 0,
+  "strategy": "copy",
+  "synced": 1
+}

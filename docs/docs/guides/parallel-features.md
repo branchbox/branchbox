@@ -39,16 +39,11 @@ cd ../fix-auth-bug
 # Fix the bug here...
 ```
 
-You now have two completely isolated environments:
+You now have two separate feature worktrees:
 - `../payment-refactor/` — Your refactor, untouched
 - `../fix-auth-bug/` — The urgent fix
 
-Each has its own:
-- Git branch
-- Docker containers
-- Database
-- Ports
-- Environment variables
+Each has its own Git branch and working directory. Configured setup modules can add a Compose identity, devcontainer configuration, database naming, and a customized environment file. Start each container environment and application separately; fixed host ports and external databases still depend on your project configuration.
 
 ### Switch Between Them Freely
 
@@ -116,6 +111,25 @@ Each feature runs its own containers. With 5+ features, you might hit resource l
    branchbox feature teardown old-feature --keep-branch
    ```
    Removes containers/worktree but keeps the git branch for later.
+
+### Tear Down Safely
+
+Teardown refuses, before removing anything, when a feature still holds work: uncommitted files in the worktree, or commits on its branch that aren't merged. The refusal lists the files and the branch and names the flag that would override it. Nothing is lost by trying.
+
+```bash
+# See what a teardown would do; changes nothing
+branchbox feature teardown old-feature --dry-run
+
+# Drop leftover scratch files, keep the branch
+branchbox feature teardown old-feature --discard-changes --keep-branch
+
+# The branch was abandoned: delete it with its unmerged commits
+branchbox feature teardown old-feature --discard-changes --force-delete-branch
+```
+
+`--discard-changes` only discards uncommitted files; it never force-deletes the branch. `--force` keeps its older, broader meaning (remove whatever the state, and `git branch -D` when deleting the branch), so prefer the specific flags.
+
+Cleaning up many features at once? `branchbox prune --dry-run` lists what would be lost first. Prune itself discards uncommitted changes and force-deletes branches it deletes, so for anything you are unsure about, tear features down one at a time instead. The Mac app's Prune does exactly that: it runs one safe teardown per feature and skips any that refuse.
 
 ## Real Example: 3 Features at Once
 

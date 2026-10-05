@@ -1,0 +1,140 @@
+[
+  {
+    "work_feature": "prine",
+    "branch_name": "feature/prine",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/prine",
+    "base_branch": null,
+    "feature_url": "dev-prine.localhost",
+    "compose_project_name": "branchbox-prine",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/prine/.env",
+    "status": "active",
+    "created_at": "2026-03-17T03:37:57.979509Z",
+    "updated_at": "2026-03-17T03:37:57.979509Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "cloudflared",
+      "status": "disabled",
+      "notes": "Tunnel provisioning disabled in project configuration",
+      "last_updated": "2026-03-17T03:37:57.975531Z"
+    },
+    "color": "#f39c12",
+    "last_commit": "d3f308c112340957ce1fc42ec5383ce1b7294074",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 9,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 190,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-03-17T03:37:57.979509Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-03-17T03:37:57.979509Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  },
+  {
+    "work_feature": "remotion",
+    "branch_name": "feature/remotion",
+    "worktree_path": "/Users/dev/projects/branchbox-suite/branchbox/remotion",
+    "base_branch": null,
+    "feature_url": "dev-remotion.localhost",
+    "compose_project_name": "branchbox-remotion",
+    "env_path": "/Users/dev/projects/branchbox-suite/branchbox/remotion/.env",
+    "status": "active",
+    "created_at": "2026-02-17T15:49:46.470702Z",
+    "updated_at": "2026-02-17T15:49:46.470702Z",
+    "removed_at": null,
+    "tunnel": {
+      "provider": "manual",
+      "status": "disabled",
+      "notes": "Tunnel provisioning disabled in project configuration",
+      "last_updated": "2026-02-17T15:49:46.466211Z"
+    },
+    "color": "#c0392b",
+    "last_commit": "dfcb8c9fedf3b1969e407c578655e8d3122c04f5",
+    "devcontainer_outdated": false,
+    "start_mode": "full",
+    "module_outcomes": [
+      {
+        "module": "devcontainer",
+        "status": "success",
+        "duration_ms": 1,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      },
+      {
+        "module": "compose",
+        "status": "success",
+        "duration_ms": 118,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      },
+      {
+        "module": "specs",
+        "status": "success",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      },
+      {
+        "module": "tunnel",
+        "status": "skipped",
+        "duration_ms": 0,
+        "forced": false,
+        "recorded_at": "2026-02-17T15:49:46.470702Z"
+      }
+    ],
+    "last_summary_rendered_at": "2026-02-17T15:49:46.470702Z",
+    "adapter": {
+      "name": "Generic",
+      "service_url": "http://dev:3000",
+      "warnings": []
+    },
+    "runtime": {
+      "provider": "container"
+    },
+    "default_agent": {
+      "status": "disabled",
+      "label": null,
+      "command": null,
+      "detail": "Set BRANCHBOX_DEFAULT_AGENT_CMD to auto-launch your preferred agent",
+      "followup": null
+    }
+  }
+]

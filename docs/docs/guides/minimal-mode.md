@@ -15,48 +15,25 @@ Skip heavyweight provisioning for quick explorations and spikes.
 
 ## How It Works
 
-Normal feature start provisions everything:
+Normal feature start runs the configured modules, which may include:
 - Devcontainer sync
 - Docker Compose project
-- Database initialization
+- Database naming configuration
 - Tunnel configuration
 
-**Minimal mode skips these heavyweight modules** for instant startup:
+**Minimal mode skips devcontainer sync, Compose isolation, and specs by default:**
 
 ```bash
 branchbox feature start "Quick spike" --minimal
 ```
 
-Output:
-```
-🚀 Feature workspace ready (minimal)
-  Feature: quick-spike
+You still get a Git worktree and branch, and the normal environment-file handling. The start result names the modules that ran or were skipped.
 
-+------------------+------------+------------------------------------------+
-| Step             | Result     | Details                                  |
-+------------------+------------+------------------------------------------+
-| Worktree         | ✓ ready    | ../quick-spike                           |
-| Branch           | ✓ ready    | feature/quick-spike                      |
-| .env             | ✓ copied   | ../quick-spike/.env                      |
-| Modules          | ⏭ skipped  | 3 skip (minimal mode)                    |
-+------------------+------------+------------------------------------------+
+Minimal mode is not a blanket switch that disables every module or runtime. Database and tunnel behavior depends on project configuration and explicit skips; policy-enforced modules can override minimal defaults. Use `--skip-module database --skip-module tunnel` when you want to request those skips too, and review the result for enforced policy.
 
-Skipped modules:
-  - devcontainer (Skipped by minimal mode defaults)
-  - compose (Skipped by minimal mode defaults)
-  - database (Skipped by minimal mode defaults)
+The Mac app's **Quick** setup choice uses this same mode. It does not guarantee a freshly synced devcontainer. See the [Mac app guide](mac-app.md#start-a-feature).
 
-Next: run `branchbox devcontainer sync` when you're ready to fully provision.
-```
-
-You get:
-- ✅ Git worktree and branch
-- ✅ Copied `.env` file
-- ⏭ No Docker containers
-- ⏭ No database setup
-- ⏭ No devcontainer sync
-
-## Upgrade to Full Mode Later
+## Sync the Devcontainer Later
 
 If your spike turns into real work, sync the devcontainer:
 
@@ -65,7 +42,7 @@ cd ../quick-spike
 branchbox devcontainer sync
 ```
 
-Now you have full provisioning.
+This syncs the devcontainer configuration for active features. It does not run every skipped module or start a container. Start the devcontainer separately when you need it, and review the other feature setup requirements.
 
 ## Alias: --fast
 
@@ -106,18 +83,13 @@ branchbox feature start "No DB" --skip-module database --skip-module compose
 Available modules to skip:
 - `devcontainer` — Devcontainer sync
 - `compose` — Docker Compose project isolation
-- `database` — Database initialization
+- `database` — Database naming configuration in an existing `.env`
 - `tunnel` — Cloudflare tunnel provisioning
 - `specs` — Feature spec lifecycle
 
-## Performance Comparison
+## Startup Cost
 
-| Mode | Startup Time | Resources |
-|------|-------------|-----------|
-| **Full** | ~10-30s (depends on Docker) | Full containers, DB |
-| **Minimal** | ~1-2s | Just git worktree |
-
-Minimal mode is **10-15x faster** for exploration.
+Minimal mode avoids the default devcontainer sync, Compose isolation, and spec work. Actual startup time and resource use depend on the repository, runtime, enabled modules, and policy. Use the start result's module durations to compare runs in your own project.
 
 ## Example: Quick Documentation Fix
 
@@ -139,7 +111,7 @@ cd ../main
 branchbox feature teardown fix-readme-typo
 ```
 
-No Docker. No waiting. Just the git worktree you need.
+Review the start summary to confirm which modules and runtime setup ran for this project.
 
 ---
 

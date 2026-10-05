@@ -1,0 +1,56 @@
+{
+  "effective": {
+    "editor": {
+      "auto_launch_agent_terminal": false,
+      "default_agent": null,
+      "hide_secondary_sidebar": false,
+      "preferred_sidebar_view": null
+    },
+    "feature": {
+      "branch_prefix": "feature",
+      "teardown": {
+        "delete_branch_by_default": true,
+        "force_delete_unmerged_by_default": false,
+        "prompt_force_delete_unmerged": true
+      }
+    },
+    "runtime": {
+      "provider": "sbx",
+      "sbx": {
+        "run_services": []
+      }
+    },
+    "tunnel": {
+      "default_provider": "cloudflared",
+      "enabled": true,
+      "providers": {
+        "cloudflared": null
+      }
+    },
+    "version": "<version>"
+  },
+  "exists": true,
+  "file": {
+    "runtime": {
+      "provider": "sbx"
+    }
+  },
+  "keys": [
+    {
+      "allowed": [
+        "container",
+        "sbx",
+        "local-vm",
+        "in-guest"
+      ],
+      "default": "container",
+      "description": "Runtime used when `feature start` gets no `--runtime`: `container` (Docker on the host), `sbx` (Docker Sandboxes microVMs), `local-vm` (local microVM driver) or `in-guest` (a devcontainer inside an isolation boundary the caller owns).",
+      "key": "runtime.provider",
+      "source": "file",
+      "type": "enum",
+      "value": "sbx"
+    }
+  ],
+  "path": "<repo>/main/.branchbox/config.json",
+  "schema_version": 1
+}

@@ -1,0 +1,168 @@
+name: macOS App
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'macos/**'
+      - 'cli/**'
+      - 'core/**'
+      - 'scripts/package-macos-app.sh'
+      - 'scripts/macos-*.sh'
+      - '.github/workflows/macos-app.yml'
+  pull_request:
+    paths:
+      - 'macos/**'
+      - 'cli/**'
+      - 'core/**'
+      - 'scripts/package-macos-app.sh'
+      - 'scripts/macos-*.sh'
+      - '.github/workflows/macos-app.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: macos-app-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Runner images: every job uses macos-26 (Apple silicon) with the latest stable Xcode, the same OS and
+# toolchain developers use. The app requires macOS 26, so tests cannot run on older images.
+
+jobs:
+  test:
+    name: Swift build + test
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Print Swift version
+        run: swift --version
+      - name: Build (warnings are errors)
+        run: swift build --package-path macos --build-tests -Xswiftc -warnings-as-errors
+      - name: Test
+        # Integration suites skip themselves unless BRANCHBOX_IT=1. Every test is a Swift Testing
+        # test, so the grep fails the step if Swift Testing did not run at all (for example under
+        # SwiftPM 6.0's --parallel), instead of passing an empty run.
+        shell: bash
+        # The store tests time main-actor work; run them apart from the git-heavy CLI tests, which saturate
+        # the runner's few cores with git processes.
+        run: |
+          swift test --package-path macos --parallel --skip BranchBoxStoresTests 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+          grep -Eq 'Test run with [1-9][0-9]* tests? .*passed' "$RUNNER_TEMP/swift-test.log"
+          swift test --package-path macos --parallel --filter BranchBoxStoresTests 2>&1 | tee "$RUNNER_TEMP/swift-test-stores.log"
+          grep -Eq 'Test run with [1-9][0-9]* tests? .*passed' "$RUNNER_TEMP/swift-test-stores.log"
+      - name: Guard against gRPC, SwiftProtobuf and NIO imports
+        run: |
+          ! grep -rn 'import GRPC\|SwiftProtobuf\|NIOCore' macos/Sources
+      - name: Guard against sheets and alerts in the menu bar
+        run: |
+          ! grep -rnE '\.sheet\(|\.alert\(' macos/Sources/BranchBoxApp/MenuBar
+
+  integration:
+    # The gated suites (DESIGN §13.2) against the CLI built from this same commit (contract mode), then the
+    # JSON that CLI prints, captured live and decoded by the app's models.
+    name: Integration (same-commit CLI)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the CLI
+        run: cargo build --release --locked -p branchbox-cli
+      - name: Integration tests
+        # A disposable folder: TempRepo and the CLI's worktrees live there and nothing outlives the job.
+        # SwiftPM gives the test process its own TMPDIR, so TempRepo reads BRANCHBOX_IT_TMP.
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/it"
+          BRANCHBOX_IT_TMP="$RUNNER_TEMP/it" BRANCHBOX_IT=1 BRANCHBOX_IT_CLI="$GITHUB_WORKSPACE/target/release/branchbox" \
+            swift test --package-path macos --filter BranchBoxIntegrationTests
+      - name: Capture live CLI fixtures
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/capture"
+          TMPDIR="$RUNNER_TEMP/capture" scripts/macos-capture-fixtures.sh target/release/branchbox "$RUNNER_TEMP/live"
+      - name: Decode live fixtures
+        # LiveFixtureDecodeTests decodes every captured payload and prints keys the app does not read as
+        # ::warning:: lines (annotations); a payload that does not decode fails the step.
+        shell: bash
+        run: |
+          BRANCHBOX_LIVE_FIXTURES="$RUNNER_TEMP/live" swift test --package-path macos --filter LiveFixtureDecodeTests
+      - name: Upload live fixtures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-cli-fixtures-${{ github.sha }}
+          path: ${{ runner.temp }}/live
+          retention-days: 14
+          if-no-files-found: ignore
+
+  integration-floor:
+    # The same suites against the oldest supported CLI (0.13.4, the floor; legacy mode), from its release.
+    name: Integration (CLI 0.13.4 floor)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Download branchbox 0.13.4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/floor"
+          gh release download v0.13.4 --repo "$GITHUB_REPOSITORY" -p 'branchbox-*-aarch64-apple-darwin.tar.gz' -D "$RUNNER_TEMP/floor"
+          tar -xzf "$RUNNER_TEMP"/floor/branchbox-*-aarch64-apple-darwin.tar.gz -C "$RUNNER_TEMP/floor"
+          cli="$(find "$RUNNER_TEMP/floor" -type f -name branchbox -perm -u+x | head -n 1)"
+          [[ -n "$cli" ]] || { echo "::error::no branchbox executable in the v0.13.4 archive"; exit 1; }
+          "$cli" --version
+          echo "FLOOR_CLI=$cli" >> "$GITHUB_ENV"
+      - name: Integration tests (legacy mode)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/it"
+          BRANCHBOX_IT_TMP="$RUNNER_TEMP/it" BRANCHBOX_IT=1 BRANCHBOX_IT_CLI="$FLOOR_CLI" \
+            swift test --package-path macos --filter BranchBoxIntegrationTests
+
+  package:
+    name: Package BranchBox.app
+    runs-on: macos-26
+    needs: test
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: CFBundleVersion is `git rev-list --count HEAD`.
+          fetch-depth: 0
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Package (universal, ad hoc signed)
+        run: scripts/package-macos-app.sh --universal --zip
+      - name: Verify the signature
+        run: |
+          codesign --verify --deep --strict --verbose=2 macos/build/BranchBox.app
+          lipo -archs macos/build/BranchBox.app/Contents/MacOS/BranchBox
+          plutil -p macos/build/BranchBox.app/Contents/Info.plist
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: BranchBox-macOS-${{ github.sha }}
+          path: macos/build/BranchBox-*.zip*
+          retention-days: 14
+          if-no-files-found: error

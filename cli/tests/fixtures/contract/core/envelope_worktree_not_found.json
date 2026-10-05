@@ -1,0 +1,12 @@
+{
+  "error": {
+    "causes": [],
+    "code": "worktree_not_found",
+    "details": {
+      "name": "nope",
+      "path": "<repo>/nope"
+    },
+    "message": "Worktree not found: <repo>/nope"
+  },
+  "schema_version": 1
+}

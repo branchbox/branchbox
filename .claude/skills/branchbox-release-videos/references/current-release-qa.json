@@ -1,0 +1,184 @@
+{
+  "date": "2026-10-04",
+  "skill_invocation": "Read and activated SKILL.md and production.md from disk after showing beat-map/four proof stills.",
+  "capture_app_revision": "1e51154",
+  "capture_runtime_revision": "ee39d94",
+  "reviewed_current_app_revision": "f63f2c0",
+  "ci_fixture_followup": "40027ae",
+  "revision_difference": "Current app LogView empty-placeholder change does not change these sheet/Run pixels; CI fixture followup has no production behavior change.",
+  "claim_correction": "Independent forward-test found Quick skips devcontainer,compose,specs by default, not tunnel workflow provisioning; source verified feature.rs787/814. Setup film re-rendered with3defaults and text equivalents corrected.",
+  "style": "Original 2D continuous-mask/spring explanation with actual captures; no stock footage, fake outcomes, or recorded-click claim.",
+  "audio": "Silent edition; no licensed song or downloaded SFX supplied and no synthesis. Optional licensed mix can be muxed with video stream copy; drop alignment may require timing adaptation.",
+  "renderer": "Playwright canvas1440\u00d71440;4subframes at240fps;FFmpeg tmix4 equal weights then60fps H.264 yuv420p faststart.",
+  "source_refinements": "Nonvisual lazy capture loading, reviewed hash gate and invocation guidance were added after movie render; visual functions stayed frozen during each render.",
+  "films": {
+    "launch": {
+      "sha256": "789bb6f0affdddbb557cd83ee37ed543417c44b13d4a59492c23df144450bb31",
+      "duration": 27.0,
+      "dimensions": [
+        1440,
+        1440
+      ],
+      "fps": 60,
+      "frames": 1620,
+      "audio": "none",
+      "full_decode": "passed",
+      "spike_rule": "mean grayscale frame difference >1 and >3\u00d7 both neighbors",
+      "flagged_spikes": [],
+      "loop_mean_grayscale_difference": 0.029236111789941788,
+      "visual_review": {
+        "status": "withheld_after_user_creative_rejection",
+        "date": "2026-10-04",
+        "producer": "Inspected source captures, individual proof/poster frames and all beat-contact samples; genuine crops clean, captions preserve setup/run/plan boundaries.",
+        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration.",
+        "prior_internal_status": "approved",
+        "scope": "Producer/root comments record the prior internal visual QA. User creative rejection supersedes that integration approval; technical results remain unchanged."
+      },
+      "loop_requirement": "launch only; mean grayscale difference0.029/255 passed",
+      "filename": "branchbox-launch.mp4",
+      "subframes_per_output_frame": 4
+    },
+    "setup": {
+      "sha256": "322ddeb219f5d335db8111789cc6efde239d82d8c5a402caf3e01399bad3fc24",
+      "duration": 14.0,
+      "dimensions": [
+        1440,
+        1440
+      ],
+      "fps": 60,
+      "frames": 840,
+      "audio": "none",
+      "full_decode": "passed",
+      "spike_rule": "mean grayscale frame difference >1 and >3\u00d7 both neighbors",
+      "flagged_spikes": [],
+      "loop_mean_grayscale_difference": 178.4755401611328,
+      "visual_review": {
+        "status": "withheld_after_user_creative_rejection",
+        "date": "2026-10-04",
+        "producer": "Inspected source captures, individual proof/poster frames and all beat-contact samples; genuine crops clean, captions preserve setup/run/plan boundaries.",
+        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration.",
+        "prior_internal_status": "approved",
+        "scope": "Producer/root comments record the prior internal visual QA. User creative rejection supersedes that integration approval; technical results remain unchanged."
+      },
+      "loop_requirement": "Not applicable: focused films are one-shot, with intentionally different endpoints.",
+      "filename": "branchbox-setup.mp4",
+      "subframes_per_output_frame": 4
+    },
+    "teardown": {
+      "sha256": "eb72461226b298fd1279719882c362d0468c8eb91ee8b44bdc0126d3e41d9d04",
+      "duration": 14.0,
+      "dimensions": [
+        1440,
+        1440
+      ],
+      "fps": 60,
+      "frames": 840,
+      "audio": "none",
+      "full_decode": "passed",
+      "spike_rule": "mean grayscale frame difference >1 and >3\u00d7 both neighbors",
+      "flagged_spikes": [],
+      "loop_mean_grayscale_difference": 174.680908203125,
+      "visual_review": {
+        "status": "withheld_after_user_creative_rejection",
+        "date": "2026-10-04",
+        "producer": "Inspected source captures, individual proof/poster frames and all beat-contact samples; genuine crops clean, captions preserve setup/run/plan boundaries.",
+        "root": "Inspected all three final beat-contact sheets and QA reports; approved visual integration.",
+        "prior_internal_status": "approved",
+        "scope": "Producer/root comments record the prior internal visual QA. User creative rejection supersedes that integration approval; technical results remain unchanged."
+      },
+      "loop_requirement": "Not applicable: focused films are one-shot, with intentionally different endpoints.",
+      "filename": "branchbox-teardown.mp4",
+      "subframes_per_output_frame": 4
+    }
+  },
+  "posters": {
+    "launch": {
+      "filename": "branchbox-launch-poster.png",
+      "dimensions": [
+        1440,
+        1440
+      ],
+      "sha256": "5122450457917545b217205a5995086b96082e0a3ccfbe8b4e04808c90a78f71"
+    },
+    "setup": {
+      "filename": "branchbox-setup-poster.png",
+      "dimensions": [
+        1440,
+        1440
+      ],
+      "sha256": "c3c6f7608b40a340a8f3be99358f3ab74dce9e6a52931e88b6e7126a9b55a604"
+    },
+    "teardown": {
+      "filename": "branchbox-teardown-poster.png",
+      "dimensions": [
+        1440,
+        1440
+      ],
+      "sha256": "395c762082ef9afdd23d4dcfe9c771a93bbe78ef57e62f6e1adfb93b8e2fa0b9"
+    }
+  },
+  "source_sha256": {
+    "assets/film.html": "5b1f13f3624d6445ddb8f7b93203797bbe037de092261e5c686b9782534a1773",
+    "scripts/render.mjs": "06966fdce3ee3a5204a33556a85f76e236244658c44710287ad82e06570a530f",
+    "scripts/qa.py": "8d9d4b2f2fba5b622b241848428ad253a5d32553923b2060dba154ab0b5e4dd7",
+    "scripts/verify-assets.mjs": "a1c08d04fdc6ea5c4ae3f14a511af9a281fc788d6bea54fd58f42d79fe2f9bad"
+  },
+  "limitations": [
+    "At film capture time, the native main Overview was withheld due a rendering band; the rejected films use clean attached sheets and Run window. A later clean Overview is documented in documentation_capture_followup.",
+    "Teardown screenshot is a plan only; ownership rule comes from separate core/live validation.",
+    "No cloud tunnel, coding agent, real Rails database, OS notification, release publication, or successful deletion is established by these films."
+  ],
+  "independent_review": {
+    "status": "passed",
+    "date": "2026-10-04",
+    "reviewer": "component_audit",
+    "checks": [
+      "Realistic stale-capture/configured-only tunnel scenario withholds unsupported claims and keeps silent edition.",
+      "Independent source review corrected Quick module count; final baked setup frame shows3defaults.",
+      "Frozen launch asset gate verifies8assets.",
+      "Changing the relevant capture in a disposable skill copy refuses with exit1 before browser or output.",
+      "Focused setup proof works after unrelated Run and teardown captures are removed.",
+      "Skill validator passes with existing cached PyYAML.",
+      "All3movie hashes match this receipt; all beat-contact sheets and corrected Quick frame visually reviewed."
+    ],
+    "issues_remaining": "Creative reference caliber was not met; all three films are withheld following user rejection. Technical checks are retained.",
+    "scope": "Technical correctness, feature claims, asset gates, and skill behavior; this pass does not establish user creative approval.",
+    "prior_issues_remaining": "none in assigned video/skill scope"
+  },
+  "nonvisual_packaging_followup": "Removed trailing whitespace from bundled OFL licenses for git diff --check; all license words unchanged. Refreshed only those reviewed asset hashes. Fonts, captures, visual source and final movies are unchanged.",
+  "delivery_status": "withheld_after_user_creative_rejection",
+  "creative_review": {
+    "status": "rejected_by_user",
+    "date": "2026-10-04",
+    "reference": "Supplied Claude session Agentify Apple-style launch film",
+    "benchmark": [
+      "Large connected geometric morphs",
+      "Glass effects and depth",
+      "Purposeful camera movement",
+      "Synchronized licensed music and SFX"
+    ],
+    "observed_gap": "The three BranchBox films mostly framed screenshots and moved labels; the user rejected them as below the supplied reference caliber.",
+    "technical_qa_boundary": "Existing internal visual and technical passes do not establish user creative approval. Decode, dimensions, timing, hashes, claim checks, and provenance below remain valid technical evidence.",
+    "audio_limit": "The films are silent because no licensed music/SFX was supplied; the complete audiovisual reference benchmark was not established.",
+    "user_direction": "Return to the original app work; do not re-render these films.",
+    "integration_status": "Motion embeds and disclosures removed from public website/docs sources. The genuine 24-second recording and original five screenshots remain, with a later clean Overview capture bringing the guide to six screenshots.",
+    "draft_directory": "docs/drafts/mac-app-motion/",
+    "publication_status": "Rejected movie/poster files preserved outside docs/static and absent from the public builds; no new publication authorized."
+  },
+  "documentation_capture_followup": {
+    "public_screenshot_count": 6,
+    "overview": {
+      "filename": "feature-overview.png",
+      "app_source_revision": "87e0f93",
+      "runtime_revision": "ee39d94",
+      "window_id": 54786,
+      "dimensions": [
+        2424,
+        1664
+      ],
+      "sha256": "96039d54169ec0f02389ba6e5a73cce660b75fa2377a7bff5bb6ef68f67240fc",
+      "observed_state": "Real disposable add-search Quick feature: registry Active, devcontainer Not created, recorded branch and commit visible. Clean Overview confirmed by root and documentation pixel review."
+    },
+    "capture_scope": "The new Overview uses the updated main-window layout. Original five screenshots and genuine 24-second recording retain their earlier capture provenance and identical bytes. Rejected motion films remain withheld outside public static assets."
+  }
+}

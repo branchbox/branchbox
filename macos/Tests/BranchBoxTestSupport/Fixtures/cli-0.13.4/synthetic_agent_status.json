@@ -1,0 +1,11 @@
+{
+  "control_plane_configured": true,
+  "control_plane_connected": false,
+  "last_delivery_at": "2026-09-30T10:00:00.123Z",
+  "last_failure_at": null,
+  "last_error": "connection refused",
+  "last_ack_event_id": 12,
+  "last_sent_batch_id": 3,
+  "last_sent_event_id": 14,
+  "last_sent_at": "2026-09-30T10:00:01Z"
+}

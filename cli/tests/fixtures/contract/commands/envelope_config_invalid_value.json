@@ -1,0 +1,12 @@
+{
+  "error": {
+    "causes": [],
+    "code": "config_invalid",
+    "details": {
+      "expected": "true or false",
+      "key": "tunnel.enabled"
+    },
+    "message": "Configuration error: tunnel.enabled must be true or false (got \"yes\"). Nothing was changed."
+  },
+  "schema_version": 1
+}

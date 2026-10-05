@@ -1,0 +1,11 @@
+{
+  "error": {
+    "causes": [],
+    "code": "not_a_git_repository",
+    "details": {
+      "path": "/nonexistent"
+    },
+    "message": "Validation error: Not a git repository: /nonexistent"
+  },
+  "schema_version": 1
+}

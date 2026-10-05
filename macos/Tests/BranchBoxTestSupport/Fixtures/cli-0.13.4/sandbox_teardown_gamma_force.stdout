@@ -1,0 +1,10 @@
+🧹 Feature teardown finished
+  Worktree removed: yes
+  Branch deleted: yes
+  Runtime cleanup verified: yes (residue free: yes)
+
+Modules:
+  - specs (ok)
+
+Warnings:
+  - Tunnel descriptor missing; skipping provider teardown

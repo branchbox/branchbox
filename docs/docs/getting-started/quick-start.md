@@ -4,7 +4,7 @@ sidebar_position: 0
 
 # Quick Start
 
-Get BranchBox running in 2 minutes.
+Install BranchBox, initialize a project, and start your first feature workspace.
 
 ## Install
 
@@ -75,6 +75,9 @@ If `branchbox init` **creates** `.devcontainer/` from BranchBox templates, it al
 
 With `OP_GITHUB_REF` / `OP_SIGNING_KEY_REF` set, opening the container can auto-refresh token/key from 1Password, configure git HTTPS credentials, and enable SSH commit signing (when key material is valid).
 
+References may contain spaces in vault, item and field names. Quote the whole reference when passing
+it to the CLI, for example `--op-signing-key-ref 'op://Development/Git signing/private key'`.
+
 Important: if your repo already has a custom `.devcontainer/`, `branchbox init` currently updates workspace compatibility but does **not** automatically retrofit these 1Password/git hooks into your existing files.
 
 ## Start Your First Feature
@@ -109,13 +112,13 @@ As shown in the output, the new workspace is created in the parent directory. Ch
 cd ../add-user-authentication
 ```
 
-You're now in a fully isolated workspace:
+You're now in a separate feature worktree. Depending on the configured modules, it also has:
 - **Own git branch** — `feature/add-user-authentication`
-- **Own Docker network** — no port conflicts
-- **Own database** — no data leaks
+- **Compose project identity** — isolates owned container resources; fixed host ports still need conflict-free configuration
+- **Database naming configuration** — the database module can add `DATABASE_NAME` to an existing `.env`, but your application must use it and run its own database setup
 - **Own `.env`** — customized for this feature
 
-Run your app, make changes, commit freely. Your main workspace is untouched.
+For the container runtime, start the devcontainer separately when you need it. Run your project's database setup and application commands, make changes, and commit in this worktree. Feature setup alone does not prove those services are running.
 
 ## Optional: Use an SBX MicroVM
 
@@ -179,6 +182,36 @@ branchbox feature teardown add-user-authentication
 ```
 
 Everything is gone. Clean slate.
+
+### Teardown won't delete your work
+
+Teardown checks the worktree before it removes anything. If you left uncommitted files behind, or the branch has commits that aren't merged, it stops, changes nothing, and tells you what to do:
+
+```
+⚠️  Detected uncommitted changes inside ~/projects/myapp/add-user-authentication:
+    • notes.txt (untracked)
+    (BranchBox refuses to discard them without --discard-changes or --force)
+Error: Refusing to tear down 'add-user-authentication'; nothing was removed. 1 uncommitted change in ~/projects/myapp/add-user-authentication would be lost: notes.txt (untracked). Commit or stash it, or rerun with --discard-changes to discard it. Branch 'feature/add-user-authentication' has 1 commit not merged into main; rerun with --keep-branch to keep it, or --force-delete-branch to delete it anyway.
+```
+
+Then choose:
+
+- **Keep the work:** commit or stash it, or push the branch and merge it first.
+- **Drop the changes:** `--discard-changes` discards the uncommitted files. It never force-deletes the branch.
+- **Keep the branch:** `--keep-branch` removes the worktree and keeps the branch for later.
+- **Delete unmerged commits too:** `--force-delete-branch` (`git branch -D`).
+
+Not sure what a teardown would do? `--dry-run` prints the plan and changes nothing:
+
+```bash
+branchbox feature teardown add-user-authentication --dry-run
+```
+
+Files BranchBox generated in the worktree (such as `.devcontainer/.branchbox.env`) never count as your changes, and the feature's spec is moved back to the main worktree.
+
+:::note[About `--force`]
+`--force` still removes the worktree whatever its state, as in earlier releases, and when the branch is deleted it uses `git branch -D`, so unmerged commits are deleted as well. Prefer `--discard-changes` with `--keep-branch` or `--force-delete-branch`, which say exactly what you want to lose.
+:::
 
 ---
 

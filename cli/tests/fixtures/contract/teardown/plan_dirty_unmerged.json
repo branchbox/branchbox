@@ -1,0 +1,95 @@
+{
+  "blockers": [
+    {
+      "count": 2,
+      "kind": "uncommitted_changes",
+      "message": "2 uncommitted changes in <repo>/eta would be lost: README.md (modified), notes.txt (untracked). Commit or stash them, or rerun with --discard-changes to discard them.",
+      "override": "--discard-changes"
+    },
+    {
+      "ahead": 1,
+      "branch": "feature/eta",
+      "kind": "unmerged_branch",
+      "message": "Branch 'feature/eta' has 1 commit not merged into main; rerun with --keep-branch to keep it, or --force-delete-branch to delete it anyway.",
+      "override": "--keep-branch | --force-delete-branch"
+    }
+  ],
+  "branch": {
+    "action": "delete",
+    "ahead": 1,
+    "exists": true,
+    "merged": false,
+    "merged_into_head": false,
+    "name": "feature/eta",
+    "reference": "HEAD",
+    "reference_name": "main",
+    "source": "registry",
+    "upstream": null
+  },
+  "changes": {
+    "generated": [
+      {
+        "path": ".devcontainer/.branchbox.env",
+        "rule": "reserved_name"
+      },
+      {
+        "path": ".devcontainer/.env",
+        "rule": "devcontainer_env_link"
+      },
+      {
+        "path": ".env",
+        "rule": "env_feature_block"
+      },
+      {
+        "path": ".vscode/settings.json",
+        "rule": "vscode_managed_keys"
+      },
+      {
+        "path": ".vscode/tasks.json",
+        "rule": "vscode_managed_tasks"
+      }
+    ],
+    "preserved": [
+      {
+        "destination": "docs/features/backlog/eta.md",
+        "path": "docs/features/in-progress/eta.md"
+      }
+    ],
+    "status_available": true,
+    "truncated": false,
+    "user": [
+      {
+        "area": "other",
+        "kind": "modified",
+        "path": "README.md"
+      },
+      {
+        "area": "other",
+        "kind": "untracked",
+        "path": "notes.txt"
+      }
+    ]
+  },
+  "defaults": {
+    "delete_branch_by_default": true,
+    "force_delete_unmerged_by_default": false
+  },
+  "registered": true,
+  "runtime": {
+    "provider": "container",
+    "runtime_id": null
+  },
+  "schema_version": 1,
+  "status": "active",
+  "tunnel": {
+    "status": "disabled"
+  },
+  "warnings": [],
+  "work_feature": "eta",
+  "worktree": {
+    "exists": true,
+    "lock_reason": null,
+    "locked": false,
+    "path": "<repo>/eta"
+  }
+}

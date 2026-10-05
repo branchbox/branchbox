@@ -1,0 +1,7 @@
+{
+  "service_name": "app",
+  "port": 3000,
+  "service_url": "http://app:3000",
+  "container_user": "vscode",
+  "home_path": "/home/vscode"
+}

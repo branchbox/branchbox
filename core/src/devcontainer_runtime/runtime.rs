@@ -7,7 +7,7 @@ use super::docker::{ComposeExecOptions, ContainerState, Docker};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempPath;
@@ -19,6 +19,7 @@ const BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL: &str =
 pub struct DevcontainerRuntime {
     docker: Docker,
     workspace_folder: PathBuf,
+    workspace_alias: PathBuf,
     config: DevcontainerConfig,
     config_path: PathBuf,
 }
@@ -130,18 +131,42 @@ pub struct DownOptions {
 impl DevcontainerRuntime {
     /// Create a new runtime for a workspace
     pub fn new(workspace_folder: &Path) -> Result<Self> {
+        let workspace_alias = if workspace_folder.is_absolute() {
+            workspace_folder.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(workspace_folder)
+        };
         let workspace_folder = std::fs::canonicalize(workspace_folder).with_context(|| {
             format!(
                 "Failed to resolve workspace: {}",
                 workspace_folder.display()
             )
         })?;
+        // A lexical selector may contain `sub/..`; retain its normalized alias only when it still
+        // resolves to the same workspace. Symlink traversal must not authorize a different root.
+        let mut normalized_alias = PathBuf::new();
+        for component in workspace_alias.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized_alias.pop();
+                }
+                _ => normalized_alias.push(component.as_os_str()),
+            }
+        }
+        let workspace_alias =
+            if normalized_alias.canonicalize().ok().as_ref() == Some(&workspace_folder) {
+                normalized_alias
+            } else {
+                workspace_alias
+            };
 
         let (config, config_path) = DevcontainerConfig::load(&workspace_folder)?;
 
         Ok(Self {
             docker: Docker::new(),
             workspace_folder,
+            workspace_alias,
             config,
             config_path,
         })
@@ -326,10 +351,20 @@ impl DevcontainerRuntime {
             service,
             ComposeServiceEnvironment {
                 environment: &environment,
-                labels: BTreeMap::from([(
-                    BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL,
-                    container_environment_names_digest(&configured_environment),
-                )]),
+                labels: BTreeMap::from([
+                    (
+                        BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL,
+                        container_environment_names_digest(&configured_environment),
+                    ),
+                    (
+                        "devcontainer.local_folder",
+                        self.workspace_folder.to_string_lossy().replace('$', "$$"),
+                    ),
+                    (
+                        "devcontainer.config_file",
+                        self.config_path.to_string_lossy().replace('$', "$$"),
+                    ),
+                ]),
             },
         )]);
         let document = ComposeEnvironmentOverride { services };
@@ -931,61 +966,148 @@ impl DevcontainerRuntime {
         }
     }
 
-    /// Stop and optionally remove the devcontainer
-    pub fn down(&self, options: DownOptions) -> Result<DownResult> {
-        match self.config.container_type() {
-            DevcontainerType::DockerCompose => {
-                let devcontainer_dir = self.devcontainer_dir();
-                let compose_files = self.config.compose_files(&devcontainer_dir);
-                let compose_file_refs: Vec<&Path> =
-                    compose_files.iter().map(|p| p.as_path()).collect();
-
-                let project_name = self.workspace_name();
-
-                tracing::info!(
-                    compose_files = ?compose_file_refs,
-                    project = %project_name,
-                    "Stopping devcontainer with Docker Compose"
-                );
-
-                let output = self.docker.compose_down(
-                    &compose_file_refs,
-                    Some(&project_name),
-                    options.volumes,
-                    options.remove_orphans,
-                )?;
-
-                if !output.success {
-                    anyhow::bail!("docker compose down failed: {}", output.stderr);
-                }
-
-                Ok(DownResult {
-                    outcome: "stopped".to_string(),
-                    removed_containers: None,
-                })
+    /// Find every container owned by this workspace and configuration before changing any resources.
+    fn down_container_ids(&self) -> Result<BTreeSet<String>> {
+        let folders = BTreeSet::from([
+            self.workspace_folder.to_string_lossy().into_owned(),
+            self.workspace_alias.to_string_lossy().into_owned(),
+        ]);
+        let mut configs = BTreeSet::from([self.config_path.to_string_lossy().into_owned()]);
+        if let Ok(relative) = self.config_path.strip_prefix(&self.workspace_folder) {
+            configs.insert(
+                self.workspace_alias
+                    .join(relative)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        let mut containers = BTreeSet::new();
+        for folder in &folders {
+            for config in &configs {
+                containers.extend(self.docker.find_containers(&[
+                    ("devcontainer.local_folder", folder),
+                    ("devcontainer.config_file", config),
+                ])?);
             }
-            _ => {
-                // For image/dockerfile-based containers
-                let container_id = self.find_container()?;
+        }
+        Ok(containers)
+    }
 
-                if let Some(id) = container_id {
-                    tracing::info!(container_id = %id, "Stopping and removing container");
-
-                    self.docker.stop_container(&id)?;
-                    self.docker.remove_container(&id, true)?;
-
-                    Ok(DownResult {
-                        outcome: "removed".to_string(),
-                        removed_containers: Some(vec![id]),
-                    })
-                } else {
-                    Ok(DownResult {
-                        outcome: "not_found".to_string(),
-                        removed_containers: None,
-                    })
+    /// Stop and remove the owned devcontainers. Volume deletion requires explicit consent.
+    pub fn down(&self, options: DownOptions) -> Result<DownResult> {
+        let owned = self
+            .down_container_ids()
+            .context("Cannot discover owned devcontainers")?;
+        let mut projects =
+            crate::modules::compose::retained_teardown_projects(&self.workspace_folder)?;
+        let mut standalone = BTreeSet::new();
+        for id in &owned {
+            if let Some(project) = self.docker.container_compose_project(id)? {
+                projects.insert(project);
+            } else {
+                standalone.insert(id.clone());
+            }
+        }
+        let compose = self.config.container_type() == DevcontainerType::DockerCompose;
+        if !projects.is_empty() && !compose {
+            anyhow::bail!("Owned Compose resources remain, but the current devcontainer configuration has no Compose files; restore its Compose configuration before stopping it");
+        }
+        if !projects.is_empty() {
+            crate::modules::compose::persist_teardown_projects(&self.workspace_folder, &projects)?;
+        }
+        let mut errors = Vec::new();
+        for id in &standalone {
+            match self.docker.stop_container(id) {
+                Ok(output) if output.success => {}
+                Ok(output) => {
+                    errors.push(format!(
+                        "Cannot stop container {id}: {}",
+                        output.stderr.trim()
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    errors.push(format!("Cannot stop container {id}: {error}"));
+                    continue;
+                }
+            }
+            match self
+                .docker
+                .remove_container_with_volumes(id, true, options.volumes)
+            {
+                Ok(output) if output.success => {}
+                Ok(output) => errors.push(format!(
+                    "Cannot remove container {id}: {}",
+                    output.stderr.trim()
+                )),
+                Err(error) => errors.push(format!("Cannot remove container {id}: {error}")),
+            }
+        }
+        let compose_files = self.config.compose_files(&self.devcontainer_dir());
+        let compose_file_refs: Vec<&Path> =
+            compose_files.iter().map(|path| path.as_path()).collect();
+        for project in &projects {
+            match self.docker.compose_down(
+                &compose_file_refs,
+                Some(project),
+                options.volumes,
+                options.remove_orphans,
+            ) {
+                Ok(output) if output.success => {}
+                Ok(output) => errors.push(format!(
+                    "Cannot stop Compose project {project}: {}",
+                    output.stderr.trim()
+                )),
+                Err(error) => {
+                    errors.push(format!("Cannot stop Compose project {project}: {error}"))
+                }
+            }
+            let kinds: &[&str] = if options.volumes {
+                &["container", "network", "volume"]
+            } else {
+                &["container", "network"]
+            };
+            for kind in kinds {
+                match self.docker.compose_project_resource_ids(kind, project) {
+                    Ok(ids) if ids.is_empty() => {}
+                    Ok(ids) => errors.push(format!(
+                        "Compose project {project} still has {kind} resources: {}",
+                        ids.join(", ")
+                    )),
+                    Err(error) => errors.push(format!(
+                        "Cannot verify {kind} cleanup for Compose project {project}: {error}"
+                    )),
                 }
             }
         }
+        match self.down_container_ids() {
+            Ok(ids) if ids.is_empty() => {}
+            Ok(ids) => errors.push(format!(
+                "Owned devcontainers remain: {}",
+                ids.into_iter().collect::<Vec<_>>().join(", ")
+            )),
+            Err(error) => errors.push(format!("Cannot verify devcontainer cleanup: {error}")),
+        }
+        if !errors.is_empty() {
+            anyhow::bail!("Devcontainer cleanup failed: {}", errors.join("; "));
+        }
+        if options.volumes && !projects.is_empty() {
+            crate::modules::compose::persist_teardown_projects(
+                &self.workspace_folder,
+                &BTreeSet::new(),
+            )?;
+        }
+        Ok(DownResult {
+            outcome: if owned.is_empty() && projects.is_empty() {
+                "not_found"
+            } else if compose {
+                "stopped"
+            } else {
+                "removed"
+            }
+            .to_string(),
+            removed_containers: (!owned.is_empty()).then(|| owned.into_iter().collect()),
+        })
     }
 }
 
@@ -1089,6 +1211,18 @@ mod tests {
             .iter()
             .all(|(name, _)| name != BRANCHBOX_CONTAINER_ENV_NAMES_DIGEST_LABEL));
 
+        // Native Compose startup must install the same stable ownership labels as standalone startup,
+        // so Down can discover it without guessing a Compose project from the folder name.
+        let override_file = runtime
+            .compose_container_environment_override("app")
+            .unwrap();
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&override_file).unwrap()).unwrap();
+        let compose_labels = &document["services"]["app"]["labels"];
+        for (name, value) in runtime.container_identity_labels() {
+            assert_eq!(compose_labels[name.as_str()].as_str(), Some(value.as_str()));
+        }
+
         let explicit = HashMap::from([
             ("PRECEDENCE".to_string(), "explicit".to_string()),
             ("EXPLICIT_ONLY".to_string(), "per-command".to_string()),
@@ -1098,5 +1232,34 @@ mod tests {
         assert_eq!(remote.get("PRECEDENCE").unwrap(), "explicit");
         assert_eq!(remote.get("EXPLICIT_ONLY").unwrap(), "per-command");
         assert!(!remote.contains_key("CONTAINER_ONLY"));
+    }
+
+    #[test]
+    fn compose_ownership_paths_remain_literal_under_compose_interpolation() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("parent-$BB_REVIEW_LITERAL/workspace");
+        let config_dir = workspace.join(".devcontainer");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        let runtime = DevcontainerRuntime::new(&workspace).unwrap();
+        let override_file = runtime
+            .compose_container_environment_override("app")
+            .unwrap();
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&override_file).unwrap()).unwrap();
+        let labels = &document["services"]["app"]["labels"];
+        for (name, path) in runtime.container_identity_labels() {
+            let encoded = labels[name.as_str()].as_str().unwrap();
+            assert!(encoded.contains("$$BB_REVIEW_LITERAL"));
+            assert_eq!(
+                encoded.replace("$$", "$"),
+                path,
+                "Compose must preserve the literal filesystem ownership path"
+            );
+        }
     }
 }

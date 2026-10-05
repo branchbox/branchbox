@@ -1,10 +1,12 @@
 ---
 branch: backlog/mac-app-polish
-status: in-progress
+status: superseded
 created: 2025-11-12
 ---
 
 # macOS app polish + agent controls
+
+> **Superseded (2026-10) by the [mac-app-revamp](../in-progress/mac-app-revamp.md).** The app was rebuilt on the CLI's `--json` contract instead of gRPC. Most goals below shipped in a different form: a multi-project sidebar instead of a workspace picker (no transport selector, since there is one transport), plain-language health states with remediation, start options behind an Advanced disclosure, safe teardown that never persists Force, and a menu bar with recent activity and per-project features. The open questions are answered there: no embedded agent launcher, and an ad-hoc-signed CI artifact now, with a notarized build and Homebrew cask later. This page is kept for history.
 
 ## Problem
 The SwiftUI preview in `macos/` proves that the gRPC surface works end-to-end, but it is intentionally bare-bones. We still need workflow affordances (workspace picker, launch status, tunnel health) before it can ship to internal users.
@@ -48,7 +50,7 @@ The SwiftUI preview in `macos/` proves that the gRPC surface works end-to-end, b
 5. **Documentation**: update README + manual guide once UX stabilises.
 
 ## Testing
-- Manual testing via `swift run BranchBoxApp` using the new workspace picker + CLI fallback path.
+- Manual testing via the old `BranchBoxApp` target's `swift run` using the workspace picker + CLI fallback path (replaced by the Mac App ↔ CLI Loop in `docs/docs/getting-started/manual-cli-e2e.md`).
 - QA to add snapshot + UI automation coverage once the UI stabilises.
 
 ## Open Questions

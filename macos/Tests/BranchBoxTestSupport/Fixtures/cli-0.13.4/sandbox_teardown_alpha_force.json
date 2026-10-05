@@ -1,0 +1,23 @@
+{
+  "work_feature": "alpha",
+  "branch_name": "feature/alpha",
+  "worktree_removed": true,
+  "branch_deleted": true,
+  "adapter_cleanup_warnings": [],
+  "module_reports": [
+    {
+      "name": "specs",
+      "teardown_ok": true,
+      "errors": []
+    }
+  ],
+  "runtime_teardown": {
+    "provider": "container",
+    "verified": true,
+    "residue_free": true,
+    "residue": []
+  },
+  "warnings": [
+    "Tunnel descriptor missing; skipping provider teardown"
+  ]
+}

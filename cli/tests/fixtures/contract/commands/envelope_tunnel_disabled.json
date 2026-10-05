@@ -1,0 +1,9 @@
+{
+  "error": {
+    "causes": [],
+    "code": "validation_failed",
+    "details": null,
+    "message": "Validation error: Tunnel provisioning is disabled in project configuration"
+  },
+  "schema_version": 1
+}

@@ -1,39 +1,28 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
-    name: "BranchBoxApp",
+    name: "BranchBox",
     defaultLocalization: "en",
-    platforms: [
-        .macOS(.v13)
-    ],
-    products: [
-        .executable(
-            name: "BranchBoxApp",
-            targets: ["BranchBoxApp"]
-        )
-    ],
-    dependencies: [
-        .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.27.0"),
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.26.0"),
-        // Explicitly depend on SwiftNIO to use NIOCore/NIOPosix products
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.88.0")
-    ],
+    platforms: [.macOS(.v26)],
+    products: [.executable(name: "BranchBox", targets: ["BranchBoxApp"])],
     targets: [
-        .executableTarget(
-            name: "BranchBoxApp",
-            dependencies: [
-                .product(name: "GRPC", package: "grpc-swift"),
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "SwiftProtobuf", package: "swift-protobuf")
-            ],
-            path: "Sources"
-        ),
-        .testTarget(
-            name: "BranchBoxAppTests",
-            dependencies: ["BranchBoxApp"],
-            path: "Tests"
-        )
-    ]
+        .target(name: "BranchBoxKit"),
+        .target(name: "BranchBoxCLI", dependencies: ["BranchBoxKit"]),
+        .target(name: "BranchBoxStores", dependencies: ["BranchBoxKit"]),
+        .target(name: "BranchBoxPreview", dependencies: ["BranchBoxKit"]),
+        .executableTarget(name: "BranchBoxApp",
+                          dependencies: ["BranchBoxKit", "BranchBoxCLI", "BranchBoxStores", "BranchBoxPreview"]),
+        .target(name: "BranchBoxTestSupport",
+                dependencies: ["BranchBoxKit", "BranchBoxCLI", "BranchBoxPreview"],
+                path: "Tests/BranchBoxTestSupport",
+                resources: [.copy("Fixtures")]),
+        .testTarget(name: "BranchBoxKitTests", dependencies: ["BranchBoxKit", "BranchBoxTestSupport"]),
+        .testTarget(name: "BranchBoxCLITests", dependencies: ["BranchBoxCLI", "BranchBoxKit", "BranchBoxTestSupport"]),
+        .testTarget(name: "BranchBoxStoresTests", dependencies: ["BranchBoxStores", "BranchBoxPreview", "BranchBoxTestSupport"]),
+        .testTarget(name: "BranchBoxAppTests", dependencies: ["BranchBoxApp", "BranchBoxStores", "BranchBoxPreview", "BranchBoxTestSupport"]),
+        .testTarget(name: "BranchBoxIntegrationTests",
+                    dependencies: ["BranchBoxCLI", "BranchBoxKit", "BranchBoxStores", "BranchBoxTestSupport"]),
+    ],
+    swiftLanguageModes: [.v6]
 )

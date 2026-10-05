@@ -1,0 +1,207 @@
+{
+  "effective": {
+    "editor": {
+      "auto_launch_agent_terminal": false,
+      "default_agent": null,
+      "hide_secondary_sidebar": false,
+      "preferred_sidebar_view": null
+    },
+    "feature": {
+      "branch_prefix": "feature",
+      "teardown": {
+        "delete_branch_by_default": true,
+        "force_delete_unmerged_by_default": false,
+        "prompt_force_delete_unmerged": true
+      }
+    },
+    "runtime": {
+      "provider": "container",
+      "sbx": {
+        "run_services": []
+      }
+    },
+    "tunnel": {
+      "default_provider": "cloudflared",
+      "enabled": true,
+      "providers": {
+        "cloudflared": null
+      }
+    },
+    "version": "<version>"
+  },
+  "exists": false,
+  "file": {},
+  "keys": [
+    {
+      "allowed": [
+        "container",
+        "sbx",
+        "local-vm",
+        "in-guest"
+      ],
+      "default": "container",
+      "description": "Runtime used when `feature start` gets no `--runtime`: `container` (Docker on the host), `sbx` (Docker Sandboxes microVMs), `local-vm` (local microVM driver) or `in-guest` (a devcontainer inside an isolation boundary the caller owns).",
+      "key": "runtime.provider",
+      "source": "default",
+      "type": "enum",
+      "value": "container"
+    },
+    {
+      "allowed": [],
+      "default": [],
+      "description": "Compose services a devcontainer starts inside Docker Sandboxes. Compose still starts their declared dependencies; other host-integrated sidecars stay stopped.",
+      "key": "runtime.sbx.run_services",
+      "source": "default",
+      "type": "string_list",
+      "value": []
+    },
+    {
+      "allowed": [],
+      "default": "feature",
+      "description": "Prefix of the branch a new feature gets: feature `eta` starts on `<prefix>/eta`.",
+      "key": "feature.branch_prefix",
+      "source": "default",
+      "type": "string",
+      "value": "feature"
+    },
+    {
+      "allowed": [],
+      "default": true,
+      "description": "Delete the feature branch when the feature is torn down (`--keep-branch` overrides it for one teardown).",
+      "key": "feature.teardown.delete_branch_by_default",
+      "source": "default",
+      "type": "bool",
+      "value": true
+    },
+    {
+      "allowed": [],
+      "default": false,
+      "description": "Delete a feature branch that has unmerged commits (`git branch -D`) without asking. When false, an unmerged branch is kept or the teardown is refused, depending on whether a prompt is possible.",
+      "key": "feature.teardown.force_delete_unmerged_by_default",
+      "source": "default",
+      "type": "bool",
+      "value": false
+    },
+    {
+      "allowed": [],
+      "default": true,
+      "description": "In an interactive terminal, ask before force-deleting a branch with unmerged commits.",
+      "key": "feature.teardown.prompt_force_delete_unmerged",
+      "source": "default",
+      "type": "bool",
+      "value": true
+    },
+    {
+      "allowed": [],
+      "default": true,
+      "description": "Provision a public tunnel for each feature.",
+      "key": "tunnel.enabled",
+      "source": "default",
+      "type": "bool",
+      "value": true
+    },
+    {
+      "allowed": [
+        "cloudflared"
+      ],
+      "default": "cloudflared",
+      "description": "Tunnel provider for new tunnels.",
+      "key": "tunnel.default_provider",
+      "source": "default",
+      "type": "enum",
+      "value": "cloudflared"
+    },
+    {
+      "allowed": [],
+      "default": null,
+      "description": "Cloudflare account that owns the tunnels, or `$CLOUDFLARE_ACCOUNT_ID` to read it from the environment. `branchbox tunnel credentials set` sets it together with the API token.",
+      "key": "tunnel.providers.cloudflared.account_id",
+      "source": "default",
+      "type": "string",
+      "value": null
+    },
+    {
+      "allowed": [],
+      "default": "branchbox",
+      "description": "Prefix of tunnel names and, with `dns_zone`, of feature hostnames (`<prefix>-<feature>.<dns_zone>`).",
+      "key": "tunnel.providers.cloudflared.tunnel_name_prefix",
+      "source": "default",
+      "type": "string",
+      "value": "branchbox"
+    },
+    {
+      "allowed": [],
+      "default": null,
+      "description": "Cloudflare DNS zone (for example `example.com`) in which tunnel hostnames are created. When unset, the zone is derived from the feature hostname.",
+      "key": "tunnel.providers.cloudflared.dns_zone",
+      "source": "default",
+      "type": "string",
+      "value": null
+    },
+    {
+      "allowed": [],
+      "default": null,
+      "description": "Service the tunnel forwards to (for example `http://app:5001`). When unset, the project's adapter decides.",
+      "key": "tunnel.providers.cloudflared.service_url",
+      "source": "default",
+      "type": "string",
+      "value": null
+    },
+    {
+      "allowed": [],
+      "default": false,
+      "description": "Print manual tunnel setup steps instead of provisioning through the Cloudflare API.",
+      "key": "tunnel.providers.cloudflared.manual_instructions",
+      "source": "default",
+      "type": "bool",
+      "value": false
+    },
+    {
+      "allowed": [],
+      "default": null,
+      "description": "File holding `CLOUDFLARE_API_TOKEN`, relative to the repository root. `branchbox tunnel credentials set` writes `.branchbox/secure/cloudflared.env` (owner-only) and sets this key.",
+      "key": "tunnel.providers.cloudflared.api_token_path",
+      "source": "default",
+      "type": "string",
+      "value": null
+    },
+    {
+      "allowed": [],
+      "default": null,
+      "description": "Coding agent the editor integration prefers (for example `codex` or `claude`).",
+      "key": "editor.default_agent",
+      "source": "default",
+      "type": "string",
+      "value": null
+    },
+    {
+      "allowed": [],
+      "default": false,
+      "description": "Open a terminal running the default agent when the editor attaches to a feature.",
+      "key": "editor.auto_launch_agent_terminal",
+      "source": "default",
+      "type": "bool",
+      "value": false
+    },
+    {
+      "allowed": [],
+      "default": null,
+      "description": "Editor view to focus on attach (for example `workbench.view.scm`).",
+      "key": "editor.preferred_sidebar_view",
+      "source": "default",
+      "type": "string",
+      "value": null
+    },
+    {
+      "allowed": [],
+      "default": false,
+      "description": "Hide the editor's secondary (right) sidebar on attach.",
+      "key": "editor.hide_secondary_sidebar",
+      "source": "default",
+      "type": "bool",
+      "value": false
+    }
+  ],
+  "path": "<repo>/main/.branchbox/config.json",
+  "schema_version": 1
+}

@@ -1,5 +1,10 @@
+#![cfg_attr(test, allow(clippy::disallowed_macros))]
+
 #[macro_use]
 extern crate assert_cmd;
+
+#[path = "support/empty_docker.rs"]
+mod empty_docker;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -161,6 +166,10 @@ case "$1" in
   exec)
     case "$*" in
       *"devcontainer up"*)
+        if [ "${FAKE_SBX_KILL_PARENT_ON_UP:-}" = "1" ]; then
+          kill -9 "$PPID"
+          exit 0
+        fi
         if [ "${FAKE_SBX_REQUIRE_RUN_SERVICES:-}" = "1" ]; then
           override="$3/.devcontainer/.devcontainer.json"
           if [ ! -f "$override" ] || ! grep -q '"runServices"' "$override" || ! grep -q '"app"' "$override" || grep -q '"tailscale"' "$override"; then
@@ -1596,7 +1605,10 @@ fn teardown_json_includes_verified_runtime_residue_contract() {
         .assert()
         .success();
 
-    let output = branchbox_cmd!(repo_path)
+    let docker = empty_docker::EmptyDocker::new();
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let output = docker
+        .command(branchbox_cmd!(repo_path))
         .args([
             "feature",
             "teardown",
@@ -1620,6 +1632,7 @@ fn teardown_json_includes_verified_runtime_residue_contract() {
         payload["runtime_teardown"]["residue"],
         serde_json::json!([])
     );
+    docker.assert_probed(&[&worktree_path]);
 }
 
 #[test]
@@ -1883,6 +1896,19 @@ fn in_guest_v3_partial_start_removes_only_its_compose_residue() {
         !provider_states.exists() || fs::read_dir(provider_states).unwrap().next().is_none(),
         "failed-start cleanup leaked provider state"
     );
+    // The write-ahead registry entry goes with the worktree it described.
+    let registry_path = test_repo.path().join(".branchbox/registry.json");
+    if registry_path.exists() {
+        let registry: Value = serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        assert!(
+            registry["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|feature| feature["work_feature"] != work_feature),
+            "failed in-guest start left a registry entry: {registry}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -2031,6 +2057,19 @@ fn in_guest_external_git_mount_cannot_cover_private_run_directory() {
 #[cfg(unix)]
 #[test]
 fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
+    assert_in_guest_orphan_teardown_recovers_provider_state(false);
+}
+
+/// A start killed after its write-ahead registry entry (provider recorded, assignment identity
+/// not yet) is torn down from the provider state, like a start with no entry at all.
+#[cfg(unix)]
+#[test]
+fn in_guest_interrupted_start_teardown_recovers_state_from_the_provider() {
+    assert_in_guest_orphan_teardown_recovers_provider_state(true);
+}
+
+#[cfg(unix)]
+fn assert_in_guest_orphan_teardown_recovers_provider_state(write_ahead_entry: bool) {
     let test_repo = init_test_repo();
     let revision = commit_in_guest_devcontainer(&test_repo);
     let fake = create_fake_in_guest_runtime();
@@ -2090,6 +2129,34 @@ fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
     let mut permissions = fs::metadata(&state_path).unwrap().permissions();
     permissions.set_mode(0o600);
     fs::set_permissions(&state_path, permissions).unwrap();
+    let registry_path = test_repo.path().join(".branchbox/registry.json");
+    if write_ahead_entry {
+        // What `feature start` records right after creating the worktree.
+        let registry = serde_json::json!({
+            "version": "1",
+            "features": [{
+                "work_feature": work_feature,
+                "branch_name": branch_name,
+                "worktree_path": worktree.clone(),
+                "base_branch": null,
+                "feature_url": null,
+                "compose_project_name": null,
+                "env_path": null,
+                "status": "active",
+                "created_at": "2026-10-01T22:50:29Z",
+                "updated_at": "2026-10-01T22:50:29Z",
+                "removed_at": null,
+                "start_mode": "full",
+                "runtime": {"provider": "in-guest"},
+                "setup": {"state": "in_progress", "pid": 999999, "started_at": "2026-10-01T22:50:29Z"}
+            }]
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+    }
 
     let output = branchbox_cmd!(
         test_repo.path(),
@@ -2125,6 +2192,11 @@ fn in_guest_no_registry_teardown_recovers_state_without_project_modules() {
         !calls.lines().any(|line| line.starts_with("compose ")),
         "no-registry in-guest teardown ran host-side Compose/modules:\n{calls}"
     );
+    if write_ahead_entry {
+        let registry: Value = serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        assert_eq!(registry["features"][0]["status"], "removed");
+        assert!(registry["features"][0].get("setup").is_none());
+    }
 }
 
 #[cfg(unix)]
@@ -2307,7 +2379,8 @@ fn feature_teardown_allows_container_with_override_flag() {
     assert!(output.status.success(), "feature start should succeed");
 
     // Teardown WITH --allow-container — should succeed.
-    // Also pass --force to bypass the dirty-worktree guard (devcontainer files synced during start).
+    // --force is kept from 0.13, when the synced devcontainer files tripped the dirty-worktree
+    // guard; a fresh feature now tears down without it.
     let output = Command::new(cargo_bin!("branchbox"))
         .current_dir(repo_path)
         .env("DOCKER_CONTAINER", "1")
@@ -2342,7 +2415,8 @@ fn feature_teardown_allows_container_with_no_host_check_alias() {
     assert!(output.status.success(), "feature start should succeed");
 
     // Teardown WITH --no-host-check alias — should succeed.
-    // Also pass --force to bypass the dirty-worktree guard (devcontainer files synced during start).
+    // --force is kept from 0.13, when the synced devcontainer files tripped the dirty-worktree
+    // guard; a fresh feature now tears down without it.
     let output = Command::new(cargo_bin!("branchbox"))
         .current_dir(repo_path)
         .env("DOCKER_CONTAINER", "1")
@@ -2782,6 +2856,140 @@ fn sbx_runtime_full_cli_lifecycle() {
     assert!(calls.contains("branchbox-port-proxy fake-container-id 3000"));
     assert!(calls.contains("codex --version"));
     assert!(calls.contains("rm --force branchbox-"));
+}
+
+/// A start killed after its sandbox exists (here, while the devcontainer comes up) has recorded
+/// the sandbox in its write-ahead entry, so the forced teardown of the interrupted start removes
+/// the sandbox instead of reporting the runtime residue-free and leaking it.
+#[cfg(unix)]
+#[test]
+fn sbx_start_killed_during_setup_is_torn_down_with_its_sandbox() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let repo_path = test_repo.path();
+    let work_feature = "sbx-killed";
+    let worktree_path = test_repo.worktree_parent().join(work_feature);
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    // `output()` reaps the killed process, so the list below sees its pid as gone.
+    let output = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_KILL_PARENT_ON_UP" => "1",
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--json",
+    ])
+    .output()
+    .expect("start feature through fake sbx");
+    assert_eq!(
+        output.status.signal(),
+        Some(9),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fake_state.exists(),
+        "the sandbox was created before the kill"
+    );
+    assert!(worktree_path.exists());
+
+    let listed = branchbox_cmd!(repo_path)
+        .args(["feature", "list", "--json"])
+        .output()
+        .expect("list features");
+    assert!(listed.status.success());
+    let entries: Value = serde_json::from_slice(&listed.stdout).expect("parse list JSON");
+    let entry = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["work_feature"] == work_feature)
+        .expect("the interrupted start is listed");
+    assert_eq!(entry["setup"]["state"], "interrupted");
+    let runtime_id = entry["runtime"]["runtime_id"]
+        .as_str()
+        .expect("the write-ahead entry names the sandbox")
+        .to_string();
+    assert!(runtime_id.starts_with("branchbox-"), "{runtime_id}");
+
+    let teardown = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+    )
+    .args(["feature", "teardown", work_feature, "--force", "--json"])
+    .output()
+    .expect("tear down the interrupted start");
+    assert!(
+        teardown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&teardown.stderr)
+    );
+    assert!(!worktree_path.exists());
+    assert!(!fake_state.exists(), "teardown removed the sandbox");
+    let calls = fs::read_to_string(fake_log).expect("read fake sbx calls");
+    assert!(
+        calls.contains(&format!("rm --force {runtime_id}")),
+        "{calls}"
+    );
+}
+
+/// A start whose environment fails, without `--keep-runtime-on-failure`, removes its sandbox
+/// again; the interrupted entry then no longer names it, so a later teardown does not try to
+/// remove a sandbox that is gone.
+#[cfg(unix)]
+#[test]
+fn sbx_start_failure_forgets_the_sandbox_it_removed() {
+    let test_repo = init_test_repo();
+    test_repo.with_valid_devcontainer();
+    let repo_path = test_repo.path();
+    let work_feature = "sbx-failed";
+    let (_fake_temp, fake_sbx, fake_state, fake_log) = create_fake_sbx();
+
+    let output = branchbox_cmd!(
+        repo_path,
+        "BRANCHBOX_SBX_PATH" => &fake_sbx,
+        "FAKE_SBX_STATE" => &fake_state,
+        "FAKE_SBX_LOG" => &fake_log,
+        "FAKE_SBX_START_FAILURE" => "1",
+    )
+    .args([
+        "feature",
+        "start",
+        work_feature,
+        "--runtime",
+        "sbx",
+        "--json",
+    ])
+    .output()
+    .expect("start feature through fake sbx");
+    assert!(!output.status.success());
+    assert!(!fake_state.exists(), "the failed start removed its sandbox");
+
+    let registry: Value = serde_json::from_slice(
+        &fs::read(repo_path.join(".branchbox/registry.json")).expect("read registry"),
+    )
+    .expect("parse registry");
+    let entry = registry["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["work_feature"] == work_feature)
+        .expect("the write-ahead entry stays");
+    assert_eq!(entry["runtime"]["provider"], "sbx");
+    assert!(entry["runtime"]["runtime_id"].is_null(), "{entry:#}");
+    assert_eq!(entry["setup"]["state"], "in_progress");
 }
 
 #[cfg(unix)]

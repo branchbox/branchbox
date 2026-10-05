@@ -1,0 +1,4 @@
+interface:
+  display_name: "BranchBox release videos"
+  short_description: "Evidence-based launch and documentation films"
+  default_prompt: "Use $branchbox-release-videos to prepare verified BranchBox launch and documentation videos for this release."

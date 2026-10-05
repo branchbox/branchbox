@@ -1,27 +1,46 @@
-use anyhow::{anyhow, bail, Context, Result};
+use crate::json_error;
+use anyhow::{anyhow, bail, Result};
 use chrono::Local;
 use clap::{Args, Subcommand};
-use dialoguer::{console::Term, theme::ColorfulTheme, Confirm};
+use dialoguer::{theme::ColorfulTheme, Confirm};
 use serde::Serialize;
 use serde_json::json;
 use shell_words::split as split_command_line;
 use std::{
     env, fmt,
-    path::{Path, PathBuf},
-    process::Command,
+    path::PathBuf,
     thread,
     time::{Duration, Instant},
 };
 use worktree_core::{
     config::BranchBoxConfig,
+    human, humanln, output,
     runtime::{self, RuntimeProviderKind},
-    workflows::feature::{
-        DevcontainerReusePolicy, FeatureMetadata, FeatureStatus, FeatureTunnelStatus,
-        FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus,
-        StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary, WorkspaceMode,
+    workflows::{
+        feature::{
+            DevcontainerReusePolicy, FeatureMetadata, FeatureStatus, FeatureTunnelStatus,
+            FeatureWorkflow, ModuleOutcome, ModuleOutcomeRecord, ModuleSkipRecord, ModuleStatus,
+            StartMode, StartRequest, StartSummary, TeardownRequest, TeardownSummary, WorkspaceMode,
+        },
+        teardown_plan::{
+            BranchAction, BranchSource, TeardownOptions, TeardownPlan, REFUSAL_LISTED_FILES,
+        },
     },
     Error as CoreError,
 };
+
+/// Contract capabilities this module adds to `branchbox version --json` (DESIGN §5.3):
+/// `prune-json` is `prune --dry-run --json`, `prune --yes --json` and `--feature` selection
+/// (§5.9).
+pub const CAPABILITIES: &[&str] = &["prune-json", "host-container-teardown-verified"];
+
+/// `schema_version` of the prune documents.
+const PRUNE_SCHEMA_VERSION: u32 = 1;
+
+/// The 0.13 refusal for dirty devcontainer/compose files. Text mode keeps it as the first
+/// `Error:` line when module files are among the changes, so scripts that match it still do.
+const LEGACY_MODULE_REFUSAL: &str =
+    "Devcontainer/compose changes detected; rerun this command with --force to proceed.";
 
 const DEFAULT_MINIMAL_PROMPT: &str = "You are the default BranchBox coding agent operating in minimal mode. Devcontainer, compose, and specs modules were skipped to keep setup lightweight—focus on quick tweaks or documentation updates, and run `branchbox devcontainer sync` later if full provisioning becomes necessary.";
 
@@ -167,13 +186,25 @@ pub struct FeatureTeardownArgs {
     #[arg(long, conflicts_with = "keep_branch")]
     pub delete_branch: bool,
 
-    /// Force removal even with local changes
+    /// Remove the worktree whatever its state: discard uncommitted changes, remove a locked or
+    /// unreadable worktree (deleting the directory if git cannot), and force-delete the branch
+    /// (`git branch -D`, even with unmerged commits) when deleting it. Prefer
+    /// --discard-changes, which keeps unmerged commits safe
     #[arg(long)]
     pub force: bool,
 
     /// Force-delete the git branch even if it is not fully merged (`git branch -D`)
     #[arg(long)]
     pub force_delete_branch: bool,
+
+    /// Discard the worktree's uncommitted changes (modified and untracked files) instead of
+    /// refusing. Does not force-delete the branch
+    #[arg(long)]
+    pub discard_changes: bool,
+
+    /// Print what teardown would do (the teardown plan) and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Move spec to completed during teardown
     #[arg(long)]
@@ -187,7 +218,7 @@ pub struct FeatureTeardownArgs {
     #[arg(long, alias = "no-host-check")]
     pub allow_container: bool,
 
-    /// Emit deterministic teardown and residue evidence as JSON
+    /// Emit deterministic teardown and residue evidence as JSON (with --dry-run, the plan)
     #[arg(long)]
     pub json: bool,
 }
@@ -244,6 +275,14 @@ pub struct FeaturePruneArgs {
     /// Allow running feature prune from inside a containerized environment
     #[arg(long, alias = "no-host-check")]
     pub allow_container: bool,
+
+    /// Prune only this feature (repeatable); by default every active or retained feature
+    #[arg(long = "feature", value_name = "NAME")]
+    pub features: Vec<String>,
+
+    /// Emit the dry-run candidates, or the prune results, as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args)]
@@ -317,6 +356,28 @@ pub struct FeatureDispatchToolArgs {
     pub wait_seconds: u64,
 }
 
+impl FeatureCommands {
+    /// Whether this invocation asked for machine (`--json`) output.
+    pub fn wants_json(&self) -> bool {
+        match self {
+            FeatureCommands::Start(args) => args.json,
+            FeatureCommands::Teardown(args) => args.json,
+            FeatureCommands::List(args) => args.json,
+            FeatureCommands::Prune(args) => args.wants_json(),
+            FeatureCommands::Exec(args) => args.json,
+            FeatureCommands::ExecProvider(_) => false,
+            FeatureCommands::DispatchTool(args) => args.json,
+        }
+    }
+}
+
+impl FeaturePruneArgs {
+    /// Whether this invocation asked for machine (`--json`) output.
+    pub fn wants_json(&self) -> bool {
+        self.json
+    }
+}
+
 pub fn execute(command: FeatureCommands) -> Result<()> {
     match command {
         FeatureCommands::Start(args) => run_start(args),
@@ -344,15 +405,12 @@ fn run_dispatch_tool(args: FeatureDispatchToolArgs) -> Result<()> {
             }
             Err(CoreError::ToolRequestNotPending { .. }) => {
                 if args.json {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&json!({
-                            "status": "not-pending",
-                            "retryable": true,
-                            "lease_id": args.lease,
-                            "request_id": args.request_id
-                        }))?
-                    );
+                    output::emit_json(&json!({
+                        "status": "not-pending",
+                        "retryable": true,
+                        "lease_id": args.lease,
+                        "request_id": args.request_id
+                    }))?;
                 }
                 std::process::exit(75);
             }
@@ -360,16 +418,13 @@ fn run_dispatch_tool(args: FeatureDispatchToolArgs) -> Result<()> {
         }
     };
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "status": "dispatched",
-                "retryable": false,
-                "result": result
-            }))?
-        );
+        output::emit_json(&json!({
+            "status": "dispatched",
+            "retryable": false,
+            "result": result
+        }))?;
     } else {
-        println!("{}", serde_json::to_string(&result.response)?);
+        humanln!("{}", serde_json::to_string(&result.response)?);
     }
     Ok(())
 }
@@ -395,9 +450,11 @@ fn run_exec(args: FeatureExecArgs) -> Result<()> {
     let result = workflow.exec_runtime(&args.name, &args.command)?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        // In-band failure (DESIGN §5.2 rule 4): the payload is the document, so a failing inner
+        // command adds no envelope.
+        output::emit_json(&result)?;
     } else {
-        print!("{}", result.stdout);
+        human!("{}", result.stdout);
         eprint!("{}", result.stderr);
     }
 
@@ -439,18 +496,27 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
     };
 
     if default_prompt && mode != StartMode::Minimal {
-        bail!("--default-prompt can only be used with --minimal or --fast");
+        // A usage refusal, not a crash: coded validation_failed, with the same text as before.
+        return Err(json_error::CliError::new(
+            "validation_failed",
+            "--default-prompt can only be used with --minimal or --fast",
+        )
+        .into());
     }
 
     const PROMPT_MAX_CHARS: usize = 2000;
     let mut prompt_seed = prompt
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let mut truncation_warning = None;
     if let Some(ref mut seed) = prompt_seed {
         let len = seed.chars().count();
         if len > PROMPT_MAX_CHARS {
             let truncated: String = seed.chars().take(PROMPT_MAX_CHARS).collect();
-            println!("⚠️  Prompt truncated to {PROMPT_MAX_CHARS} characters before storage.");
+            let warning =
+                format!("Prompt truncated to {PROMPT_MAX_CHARS} characters before storage.");
+            humanln!("⚠️  {warning}");
+            truncation_warning = Some(warning);
             *seed = truncated;
         }
     }
@@ -484,7 +550,12 @@ fn run_start(args: FeatureStartArgs) -> Result<()> {
     };
 
     let _host_validation_override = HostValidationOverride::new(allow_container);
-    let summary = workflow.start(request)?;
+    let mut summary = workflow.start(request)?;
+    // In JSON mode the notice above went to stderr, so the payload carries it as a warning. Text
+    // mode already showed it; repeating it under "Warnings:" would change the text output.
+    if let Some(warning) = truncation_warning.filter(|_| json) {
+        summary.warnings.push(warning);
+    }
     print_start_summary(&summary, json, no_summary)?;
 
     Ok(())
@@ -547,7 +618,9 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         .count();
 
     if let Some(status_filter) = status.as_ref() {
-        let parsed: FeatureStatus = status_filter.parse()?;
+        let parsed: FeatureStatus = status_filter.parse().map_err(|err| {
+            json_error::recode(anyhow::Error::new(err), "validation_failed", None)
+        })?;
         features.retain(|feature| feature.status == parsed);
     } else if !all {
         features.retain(|feature| feature.status != FeatureStatus::Removed);
@@ -555,27 +628,27 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
 
     if total_count == 0 {
         if json {
-            println!("[]");
+            output::emit_json(&[] as &[FeatureMetadata])?;
         } else {
-            println!("ℹ️  No features tracked yet. Run `branchbox feature start` to create one.");
+            humanln!("ℹ️  No features tracked yet. Run `branchbox feature start` to create one.");
         }
         return Ok(());
     }
 
     if features.is_empty() {
         if json {
-            println!("[]");
+            output::emit_json(&[] as &[FeatureMetadata])?;
         } else if let Some(filter) = status.as_ref() {
-            println!(
+            humanln!(
                 "ℹ️  No features found with status '{}'.",
                 filter.to_ascii_lowercase()
             );
         } else if !all {
-            println!(
+            humanln!(
                 "ℹ️  No active or retained features. Use `branchbox feature list --all` to include removed entries."
             );
         } else {
-            println!("ℹ️  No features match the requested filters.");
+            humanln!("ℹ️  No features match the requested filters.");
         }
         return Ok(());
     }
@@ -609,14 +682,18 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
                 agent: plan,
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        output::emit_json(&payload)?;
         return Ok(());
     }
 
     let showing_count = entries.len();
-    println!(
+    humanln!(
         "📚 Feature registry — {} active · {} retained/orphaned · {} removed (showing {}/{})",
-        active_count, failed_count, removed_count, showing_count, total_count
+        active_count,
+        failed_count,
+        removed_count,
+        showing_count,
+        total_count
     );
 
     let headers = [
@@ -687,14 +764,14 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
         .map(|(idx, header)| format!("{:<width$}", header, width = widths[idx]))
         .collect::<Vec<_>>()
         .join("  ");
-    println!("{}", header_line);
+    humanln!("{}", header_line);
 
     let separator = widths
         .iter()
         .map(|width| "-".repeat(*width))
         .collect::<Vec<_>>()
         .join("  ");
-    println!("{}", separator);
+    humanln!("{}", separator);
 
     for row in rows {
         let line = row
@@ -703,7 +780,7 @@ fn run_list(args: FeatureListArgs) -> Result<()> {
             .map(|(idx, cell)| format!("{:<width$}", cell, width = widths[idx]))
             .collect::<Vec<_>>()
             .join("  ");
-        println!("{}", line);
+        humanln!("{}", line);
     }
 
     Ok(())
@@ -815,6 +892,8 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         delete_branch,
         force,
         force_delete_branch,
+        discard_changes,
+        dry_run,
         complete_spec,
         telemetry,
         allow_container,
@@ -823,6 +902,8 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
+    let _host_validation_override = HostValidationOverride::new(allow_container);
+    workflow.validate_host()?;
 
     let config = BranchBoxConfig::load(workflow.repo_root()).unwrap_or_default();
     let default_delete_branch = config.feature.teardown.delete_branch_by_default;
@@ -834,9 +915,10 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
     } else {
         default_delete_branch
     };
+    // No branch prefix unless given: core deletes the branch the registry recorded.
     let mut request = TeardownRequest {
         work_feature: name,
-        branch_prefix: branch_prefix.or_else(|| Some(config.feature.branch_prefix.clone())),
+        branch_prefix,
         delete_branch,
         force_delete_branch,
         force_remove: force,
@@ -844,40 +926,401 @@ fn run_teardown(args: FeatureTeardownArgs) -> Result<()> {
         complete_spec,
         telemetry,
     };
-
-    // Only prompt on interactive shells; in non-interactive contexts we surface a failure if the
-    // branch cannot be deleted without force so callers can retry with `--force`.
-    if Term::stdout().is_term() {
-        maybe_prompt_force_delete_branch(&repo_path, &config, &mut request)?;
-    }
-
-    let _host_validation_override = HostValidationOverride::new(allow_container);
-    let summary = match workflow.teardown(request.clone()) {
-        Ok(summary) => summary,
-        Err(err) => handle_teardown_error(err, &workflow, &mut request)?,
+    let mut options = TeardownOptions {
+        discard_changes: force || discard_changes,
+        require_mergeable_branch: true,
     };
 
-    if !Term::stdout().is_term() && request.delete_branch && !summary.branch_deleted {
-        let branch_name =
-            build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
-        if local_branch_exists(&repo_path, &branch_name)
-            && !request.force_remove
-            && !request.force_delete_branch
-        {
-            bail!(
-                "Branch '{}' could not be deleted without force; rerun with `--force-delete-branch` (or `--force`).",
-                branch_name
-            );
+    let mut plan = workflow.plan_teardown(&request, &options)?;
+    if !plan.worktree.exists && !force && !dry_run {
+        return Err(CoreError::WorktreeMissing {
+            name: request.work_feature,
+            path: plan.worktree.path,
+        }
+        .into());
+    }
+    let interactive = output::is_interactive() && !dry_run;
+
+    // The branch decision first: an unmerged branch that would be deleted.
+    if let Some((branch, _)) = plan.unmerged_branch() {
+        let branch = branch.to_string();
+        if decide_unmerged_branch(&config, &mut request, &branch, interactive)? {
+            plan = workflow.plan_teardown(&request, &options)?;
         }
     }
 
+    // Then the dirty decision: user changes nobody agreed to discard.
+    if plan.blocks_on_uncommitted_changes() {
+        if !dry_run {
+            print_uncommitted_banner(&plan);
+        }
+        if interactive && confirm_discard()? {
+            options.discard_changes = true;
+            plan = workflow.plan_teardown(&request, &options)?;
+        }
+    }
+
+    if dry_run {
+        if json {
+            output::emit_json(&plan)?;
+        } else {
+            print_teardown_plan(&plan, force);
+        }
+        return Ok(());
+    }
+
+    if plan.is_blocked() {
+        return Err(teardown_refusal(plan));
+    }
+
+    let summary = workflow.teardown_with_options(request, options)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+        output::emit_json(&summary)?;
     } else {
         print_teardown_summary(&summary);
     }
 
     Ok(())
+}
+
+/// Decide what to do with an unmerged branch that teardown was asked to delete (S5). Returns
+/// whether `request` changed.
+///
+/// - `force_delete_unmerged_by_default` force-deletes it;
+/// - interactively, as in 0.13: ask when `prompt_force_delete_unmerged` (yes force-deletes,
+///   no keeps the branch), otherwise keep it;
+/// - otherwise nothing changes and teardown refuses before touching anything, naming
+///   `--keep-branch` and `--force-delete-branch`.
+fn decide_unmerged_branch(
+    config: &BranchBoxConfig,
+    request: &mut TeardownRequest,
+    branch: &str,
+    interactive: bool,
+) -> Result<bool> {
+    if config.feature.teardown.force_delete_unmerged_by_default {
+        request.force_delete_branch = true;
+        return Ok(true);
+    }
+    if !interactive {
+        return Ok(false);
+    }
+
+    let force_delete = config.feature.teardown.prompt_force_delete_unmerged
+        && Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Branch '{}' is not fully merged. Force delete it with -D?",
+                branch
+            ))
+            .default(false)
+            .interact()?;
+    if force_delete {
+        request.force_delete_branch = true;
+    } else {
+        request.delete_branch = false;
+        humanln!("ℹ️  Keeping branch '{}' (not fully merged).", branch);
+    }
+    Ok(true)
+}
+
+/// The dirty-worktree banner. The first line stays the 0.13 text when module files changed:
+/// `scripts/manual-cli-e2e.sh` matches "Detected devcontainer/compose changes".
+fn print_uncommitted_banner(plan: &TeardownPlan) {
+    let what = if plan.has_module_area_changes() {
+        "devcontainer/compose changes"
+    } else {
+        "uncommitted changes"
+    };
+    humanln!(
+        "⚠️  Detected {} inside {}:",
+        what,
+        plan.worktree.path.display()
+    );
+    for change in plan.changes.user.iter().take(REFUSAL_LISTED_FILES) {
+        humanln!("    • {} ({})", change.path, change.kind.label());
+    }
+    let unlisted = plan.changes.user.len().saturating_sub(REFUSAL_LISTED_FILES);
+    if unlisted > 0 || plan.changes.truncated {
+        humanln!("    • … and more");
+    }
+    humanln!("    (BranchBox refuses to discard them without --discard-changes or --force)");
+}
+
+fn confirm_discard() -> Result<bool> {
+    let proceed = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Discard these changes and continue teardown?")
+        .default(false)
+        .interact()?;
+    if !proceed {
+        bail!("Teardown aborted; nothing was removed. Rerun with --discard-changes to discard the changes.");
+    }
+    Ok(true)
+}
+
+/// The refusal for a blocked plan: `teardown_refused` with the plan in its details. In text
+/// mode, module-file changes keep the 0.13 line as the first `Error:` line, with the
+/// cause-naming refusal under it.
+fn teardown_refusal(plan: TeardownPlan) -> anyhow::Error {
+    let legacy_line = !output::machine_mode()
+        && plan.blocks_on_uncommitted_changes()
+        && plan.has_module_area_changes();
+    let refusal = anyhow::Error::new(plan.into_refusal());
+    if legacy_line {
+        refusal.context(LEGACY_MODULE_REFUSAL)
+    } else {
+        refusal
+    }
+}
+
+/// `feature teardown --dry-run` in text mode.
+fn print_teardown_plan(plan: &TeardownPlan, force: bool) {
+    humanln!(
+        "🧭 Teardown plan for '{}' (dry run; nothing was changed)",
+        plan.work_feature
+    );
+    let mut worktree = format!(
+        "  Worktree: {} ({})",
+        plan.worktree.path.display(),
+        if plan.worktree.exists {
+            "exists"
+        } else {
+            "missing"
+        }
+    );
+    if plan.worktree.locked {
+        worktree.push_str(", locked");
+        if let Some(reason) = &plan.worktree.lock_reason {
+            worktree.push_str(&format!(": {reason}"));
+        }
+    }
+    humanln!("{}", worktree);
+
+    if !plan.changes.status_available {
+        humanln!("  Uncommitted changes: unknown (git status failed)");
+    } else if plan.changes.user.is_empty() {
+        humanln!("  Uncommitted changes: none");
+    } else {
+        let fate = if plan.blocks_on_uncommitted_changes() {
+            "teardown refuses"
+        } else {
+            "discarded"
+        };
+        humanln!(
+            "  Uncommitted changes ({}): {}{}",
+            fate,
+            plan.changes.user.len(),
+            if plan.changes.truncated { "+" } else { "" }
+        );
+        for change in &plan.changes.user {
+            humanln!("    • {} ({})", change.path, change.kind.label());
+        }
+    }
+    if !plan.changes.generated.is_empty() {
+        humanln!(
+            "  BranchBox-generated files (discarded): {}",
+            plan.changes.generated.len()
+        );
+    }
+    for file in &plan.changes.preserved {
+        humanln!(
+            "  Kept: {} → {} in the main worktree",
+            file.path,
+            file.destination
+        );
+    }
+    if let Some(branch) = &plan.branch {
+        let source = match branch.source {
+            BranchSource::ExplicitPrefix => "from --branch-prefix",
+            BranchSource::Registry => "from the registry",
+            BranchSource::ConfigPrefix => "from the configured prefix",
+        };
+        let state = if !branch.exists {
+            "does not exist".to_string()
+        } else if branch.merged {
+            format!("merged into {}", branch.reference_name)
+        } else {
+            format!(
+                "{} {} not in {}",
+                branch.ahead,
+                if branch.ahead == 1 {
+                    "commit"
+                } else {
+                    "commits"
+                },
+                branch.reference_name
+            )
+        };
+        let action = match branch.action {
+            BranchAction::Keep => "keep",
+            BranchAction::Delete => "delete (git branch -d)",
+            BranchAction::ForceDelete => "force-delete (git branch -D)",
+        };
+        humanln!(
+            "  Branch: {} ({}; {}) → {}",
+            branch.name,
+            source,
+            state,
+            action
+        );
+    }
+    if !plan.warnings.is_empty() {
+        humanln!("  Warnings:");
+        for warning in &plan.warnings {
+            humanln!("    - {}", warning);
+        }
+    }
+    if plan.is_blocked() {
+        humanln!("✗ Teardown would refuse:");
+        for blocker in &plan.blockers {
+            humanln!("    - {}", blocker.message());
+        }
+    } else if !plan.worktree.exists && !force {
+        humanln!(
+            "✗ Teardown would refuse: the worktree {} is missing; rerun with --force to tear \
+             down what is left.",
+            plan.worktree.path.display()
+        );
+    } else {
+        humanln!("✓ Teardown would proceed.");
+    }
+}
+
+/// What `prune` does to every feature (CLI users only): the documented forced teardown, which
+/// discards uncommitted changes and force-deletes branches when deleting them.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct PrunePolicy {
+    delete_branch: bool,
+    force_delete_branch: bool,
+    discard_changes: bool,
+    complete_spec: bool,
+}
+
+impl PrunePolicy {
+    fn request(&self, feature: &FeatureMetadata, telemetry: bool) -> TeardownRequest {
+        TeardownRequest {
+            work_feature: feature.work_feature.clone(),
+            // Core deletes the branch the registry recorded.
+            branch_prefix: None,
+            delete_branch: self.delete_branch,
+            force_delete_branch: self.force_delete_branch,
+            force_remove: true,
+            force_remove_modules: true,
+            complete_spec: self.complete_spec,
+            telemetry,
+        }
+    }
+
+    fn options(&self) -> TeardownOptions {
+        TeardownOptions {
+            discard_changes: self.discard_changes,
+            require_mergeable_branch: false,
+        }
+    }
+}
+
+/// One feature `prune` would tear down, with its plan under the prune policy.
+#[derive(Debug, Serialize)]
+struct PruneCandidate {
+    work_feature: String,
+    status: FeatureStatus,
+    branch_name: String,
+    worktree_path: PathBuf,
+    plan: Option<TeardownPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_error: Option<String>,
+}
+
+impl PruneCandidate {
+    /// What pruning this feature destroys, for the text listing.
+    fn losses(&self) -> Vec<String> {
+        let Some(plan) = &self.plan else {
+            return vec![format!(
+                "plan unavailable: {}",
+                self.plan_error.as_deref().unwrap_or("unknown error")
+            )];
+        };
+        let mut losses = Vec::new();
+        let changes = plan.changes.user.len();
+        if changes > 0 {
+            losses.push(format!(
+                "{}{} uncommitted {} discarded",
+                changes,
+                if plan.changes.truncated { "+" } else { "" },
+                if changes == 1 { "change" } else { "changes" }
+            ));
+        }
+        if let Some(branch) = unmerged_force_delete(plan) {
+            losses.push(format!(
+                "branch {} force-deleted with {} unmerged {}",
+                branch.0,
+                branch.1,
+                if branch.1 == 1 { "commit" } else { "commits" }
+            ));
+        }
+        losses
+    }
+}
+
+/// The branch and unmerged commit count a forced prune would delete, if any.
+fn unmerged_force_delete(plan: &TeardownPlan) -> Option<(&str, u32)> {
+    plan.branch
+        .as_ref()
+        .filter(|branch| {
+            branch.action == BranchAction::ForceDelete && branch.exists && !branch.merged
+        })
+        .map(|branch| (branch.name.as_str(), branch.ahead))
+}
+
+#[derive(Debug, Serialize)]
+struct PruneDryRun<'a> {
+    schema_version: u32,
+    dry_run: bool,
+    policy: PrunePolicy,
+    candidates: &'a [PruneCandidate],
+    at_risk: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct PruneOutcome {
+    work_feature: String,
+    outcome: &'static str,
+    summary: Option<TeardownSummary>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct PruneReport {
+    schema_version: u32,
+    dry_run: bool,
+    results: Vec<PruneOutcome>,
+    pruned: usize,
+    failed: usize,
+}
+
+/// What a prune would destroy: uncommitted changes and unmerged commits, per feature.
+fn prune_at_risk(candidates: &[PruneCandidate]) -> serde_json::Value {
+    let mut uncommitted = Vec::new();
+    let mut unmerged = Vec::new();
+    for candidate in candidates {
+        let Some(plan) = &candidate.plan else {
+            continue;
+        };
+        if !plan.changes.user.is_empty() {
+            uncommitted.push(json!({
+                "work_feature": candidate.work_feature,
+                "count": plan.changes.user.len(),
+                "truncated": plan.changes.truncated,
+                "paths": plan.changes.user.iter().map(|change| &change.path).collect::<Vec<_>>(),
+            }));
+        }
+        if let Some((branch, ahead)) = unmerged_force_delete(plan) {
+            unmerged.push(json!({
+                "work_feature": candidate.work_feature,
+                "branch": branch,
+                "ahead": ahead,
+            }));
+        }
+    }
+    json!({ "uncommitted_changes": uncommitted, "unmerged_commits": unmerged })
 }
 
 pub fn run_prune(args: FeaturePruneArgs) -> Result<()> {
@@ -890,42 +1333,127 @@ pub fn run_prune(args: FeaturePruneArgs) -> Result<()> {
         complete_spec,
         telemetry,
         allow_container,
+        features: selected,
+        json,
     } = args;
 
     let repo_path = repo.unwrap_or_else(|| PathBuf::from("."));
     let workflow = FeatureWorkflow::new(&repo_path)?;
     let mut features = workflow.list_features()?;
     features.retain(|feature| feature.status != FeatureStatus::Removed);
-
-    if features.is_empty() {
-        println!("ℹ️  No active or retained features to prune.");
-        return Ok(());
+    if !selected.is_empty() {
+        let registry = workflow.repo_root().join(".branchbox/registry.json");
+        if let Some(unknown) = selected.iter().find(|name| {
+            !features
+                .iter()
+                .any(|feature| &feature.work_feature == *name)
+        }) {
+            return Err(json_error::CliError::new(
+                "feature_not_found",
+                format!(
+                    "Feature '{unknown}' is not an active or retained feature in {}; nothing was \
+                     pruned",
+                    registry.display()
+                ),
+            )
+            .with_details(json!({
+                "name": unknown,
+                "registry": registry.display().to_string(),
+            }))
+            .into());
+        }
+        features.retain(|feature| selected.contains(&feature.work_feature));
     }
 
-    println!(
-        "🧹 Preparing to prune {} active or retained feature worktree(s):",
-        features.len()
-    );
-    for feature in &features {
-        println!("  - {}", feature.work_feature);
+    let config = BranchBoxConfig::load(workflow.repo_root()).unwrap_or_default();
+    let should_delete_branch = if keep_branch {
+        false
+    } else if delete_branch {
+        true
+    } else {
+        config.feature.teardown.delete_branch_by_default
+    };
+    let policy = PrunePolicy {
+        delete_branch: should_delete_branch,
+        force_delete_branch: should_delete_branch,
+        discard_changes: true,
+        complete_spec,
+    };
+
+    let candidates: Vec<PruneCandidate> = features
+        .iter()
+        .map(|feature| {
+            let plan =
+                workflow.plan_teardown(&policy.request(feature, telemetry), &policy.options());
+            PruneCandidate {
+                work_feature: feature.work_feature.clone(),
+                status: feature.status.clone(),
+                branch_name: feature.branch_name.clone(),
+                worktree_path: feature.worktree_path.clone(),
+                plan_error: plan.as_ref().err().map(ToString::to_string),
+                plan: plan.ok(),
+            }
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        humanln!("ℹ️  No active or retained features to prune.");
+    } else {
+        humanln!(
+            "🧹 Preparing to prune {} active or retained feature worktree(s):",
+            candidates.len()
+        );
+        for candidate in &candidates {
+            let losses = candidate.losses();
+            if losses.is_empty() {
+                humanln!("  - {}", candidate.work_feature);
+            } else {
+                humanln!("  - {} ({})", candidate.work_feature, losses.join("; "));
+            }
+        }
     }
 
     if dry_run {
-        println!("ℹ️  Dry run only; no teardown executed.");
+        if json {
+            output::emit_json(&PruneDryRun {
+                schema_version: PRUNE_SCHEMA_VERSION,
+                dry_run: true,
+                policy,
+                at_risk: prune_at_risk(&candidates),
+                candidates: &candidates,
+            })?;
+        } else if !candidates.is_empty() {
+            humanln!("ℹ️  Dry run only; no teardown executed.");
+        }
+        return Ok(());
+    }
+
+    if candidates.is_empty() {
+        if json {
+            output::emit_json(&PruneReport {
+                schema_version: PRUNE_SCHEMA_VERSION,
+                dry_run: false,
+                results: Vec::new(),
+                pruned: 0,
+                failed: 0,
+            })?;
+        }
         return Ok(());
     }
 
     if !yes {
-        if !Term::stdout().is_term() {
-            bail!(
-                "Refusing to prune in non-interactive mode without --yes. Rerun with --yes to confirm."
-            );
+        if !output::is_interactive() {
+            return Err(json_error::CliError::confirmation_required(
+                candidates.len(),
+                "Refusing to prune in non-interactive mode without --yes. Rerun with --yes to confirm.",
+            )
+            .into());
         }
 
         let proceed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
                 "Tear down all {} active features now?",
-                features.len()
+                candidates.len()
             ))
             .default(false)
             .interact()?;
@@ -934,230 +1462,73 @@ pub fn run_prune(args: FeaturePruneArgs) -> Result<()> {
         }
     }
 
-    let config = BranchBoxConfig::load(workflow.repo_root()).unwrap_or_default();
-    let default_delete_branch = config.feature.teardown.delete_branch_by_default;
-    let should_delete_branch = if keep_branch {
-        false
-    } else if delete_branch {
-        true
-    } else {
-        default_delete_branch
-    };
-
     let _host_validation_override = HostValidationOverride::new(allow_container);
-    let mut failed = Vec::new();
-    let total = features.len();
+    workflow.validate_host()?;
+    let mut results = Vec::new();
+    let total = candidates.len();
 
-    for feature in features {
-        println!();
-        println!("→ Pruning {}", feature.work_feature);
+    for feature in &features {
+        humanln!();
+        humanln!("→ Pruning {}", feature.work_feature);
 
-        let request = TeardownRequest {
-            work_feature: feature.work_feature.clone(),
-            branch_prefix: derive_branch_prefix(&feature),
-            delete_branch: should_delete_branch,
-            force_delete_branch: should_delete_branch,
-            force_remove: true,
-            force_remove_modules: true,
-            complete_spec,
-            telemetry,
-        };
-
-        match workflow.teardown(request) {
-            Ok(summary) => print_teardown_summary(&summary),
+        match workflow.teardown_with_options(policy.request(feature, telemetry), policy.options()) {
+            Ok(summary) => {
+                print_teardown_summary(&summary);
+                results.push(PruneOutcome {
+                    work_feature: feature.work_feature.clone(),
+                    outcome: "removed",
+                    summary: Some(summary),
+                    error: None,
+                });
+            }
             Err(err) => {
                 eprintln!("✗ Failed to prune '{}': {}", feature.work_feature, err);
-                failed.push((feature.work_feature, err.to_string()));
+                results.push(PruneOutcome {
+                    work_feature: feature.work_feature.clone(),
+                    outcome: "failed",
+                    summary: None,
+                    error: Some(json!({"code": err.code(), "message": err.to_string()})),
+                });
             }
         }
     }
 
-    println!();
-    if failed.is_empty() {
-        println!("✓ Pruned {} feature(s).", total);
-        return Ok(());
-    }
-
-    eprintln!(
-        "Completed prune with failures ({}/{} failed):",
-        failed.len(),
-        total
-    );
-    for (feature, reason) in failed {
-        eprintln!("  - {}: {}", feature, reason);
-    }
-    bail!("Prune completed with failures.")
-}
-
-fn handle_teardown_error(
-    err: CoreError,
-    workflow: &FeatureWorkflow,
-    request: &mut TeardownRequest,
-) -> Result<TeardownSummary> {
-    match err {
-        CoreError::WorktreeDirty { worktree, files } => {
-            handle_dirty_worktree(workflow, request, &worktree, &files)
-        }
-        other => Err(other.into()),
-    }
-}
-
-fn handle_dirty_worktree(
-    workflow: &FeatureWorkflow,
-    request: &mut TeardownRequest,
-    worktree: &Path,
-    files: &[String],
-) -> Result<TeardownSummary> {
-    println!(
-        "⚠️  Detected devcontainer/compose changes inside {}:",
-        worktree.display()
-    );
-    for entry in files {
-        println!("    • {}", entry);
-    }
-    println!("    (BranchBox refuses to delete dirty module files without --force)");
-
-    if !Term::stdout().is_term() {
-        anyhow::bail!(
-            "Devcontainer/compose changes detected; rerun this command with --force to proceed."
-        );
-    }
-
-    let proceed = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Continue teardown with --force? This will discard local module changes.")
-        .default(false)
-        .interact()?;
-
-    if !proceed {
-        anyhow::bail!("Teardown aborted; rerun with --force to skip this prompt.");
-    }
-
-    request.force_remove = true;
-    request.force_remove_modules = true;
-    Ok(workflow.teardown(request.clone())?)
-}
-
-fn build_branch_name(prefix: Option<&str>, work_feature: &str) -> String {
-    let prefix = prefix.unwrap_or("feature").trim_end_matches('/');
-    if prefix.is_empty() {
-        work_feature.to_string()
+    let failures: Vec<&PruneOutcome> = results
+        .iter()
+        .filter(|result| result.outcome == "failed")
+        .collect();
+    let failed = failures.len();
+    humanln!();
+    if failed == 0 {
+        humanln!("✓ Pruned {} feature(s).", total);
     } else {
-        format!("{}/{}", prefix, work_feature)
-    }
-}
-
-fn derive_branch_prefix(feature: &FeatureMetadata) -> Option<String> {
-    let suffix = format!("/{}", feature.work_feature);
-    if let Some(prefix) = feature.branch_name.strip_suffix(&suffix) {
-        return Some(prefix.to_string());
-    }
-
-    if feature.branch_name == feature.work_feature {
-        return Some(String::new());
-    }
-
-    None
-}
-
-fn local_branch_exists(repo_root: &Path, branch_name: &str) -> bool {
-    let ref_name = format!("refs/heads/{}", branch_name);
-    Command::new("git")
-        .current_dir(repo_root)
-        .args(["show-ref", "--verify", "--quiet", &ref_name])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn local_branch_is_merged(repo_root: &Path, branch_name: &str) -> Result<bool> {
-    let output = Command::new("git")
-        .current_dir(repo_root)
-        .args(["branch", "--merged"])
-        .output()
-        .context("failed to run `git branch --merged`")?;
-
-    if !output.status.success() {
-        bail!(
-            "git branch --merged failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        eprintln!(
+            "Completed prune with failures ({}/{} failed):",
+            failed, total
         );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let merged = stdout.lines().any(|line| {
-        let normalized = line.trim().trim_start_matches('*').trim();
-        normalized == branch_name
-    });
-    Ok(merged)
-}
-
-fn maybe_prompt_force_delete_branch(
-    repo_path: &Path,
-    config: &BranchBoxConfig,
-    request: &mut TeardownRequest,
-) -> Result<()> {
-    if !request.delete_branch || request.force_delete_branch {
-        return Ok(());
-    }
-
-    let force_by_default = config.feature.teardown.force_delete_unmerged_by_default;
-    let prompt = config.feature.teardown.prompt_force_delete_unmerged;
-
-    if !Term::stdout().is_term() {
-        // Non-interactive: we cannot prompt, so only force-delete when explicitly allowed.
-        let branch_name =
-            build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
-        if local_branch_exists(repo_path, &branch_name)
-            && !local_branch_is_merged(repo_path, &branch_name)?
-        {
-            if request.force_remove || force_by_default {
-                request.force_delete_branch = true;
-                return Ok(());
-            }
-
-            bail!(
-                "Branch '{}' is not fully merged; rerun with `--force-delete-branch` (or `--force`) to delete it.",
-                branch_name
-            );
+        for failure in &failures {
+            let reason = failure
+                .error
+                .as_ref()
+                .and_then(|error| error["message"].as_str())
+                .unwrap_or_default();
+            eprintln!("  - {}: {}", failure.work_feature, reason);
         }
-        return Ok(());
     }
 
-    let branch_name = build_branch_name(request.branch_prefix.as_deref(), &request.work_feature);
-    if !local_branch_exists(repo_path, &branch_name) {
-        return Ok(());
+    if json {
+        // In-band failure (DESIGN §5.2 rule 4): the report is the document, even with failures.
+        output::emit_json(&PruneReport {
+            schema_version: PRUNE_SCHEMA_VERSION,
+            dry_run: false,
+            pruned: total - failed,
+            failed,
+            results,
+        })?;
     }
-
-    if local_branch_is_merged(repo_path, &branch_name)? {
-        return Ok(());
+    if failed > 0 {
+        bail!("Prune completed with failures.");
     }
-
-    if force_by_default {
-        request.force_delete_branch = true;
-        return Ok(());
-    }
-
-    if !prompt {
-        request.delete_branch = false;
-        println!("ℹ️  Keeping branch '{}' (not fully merged).", branch_name);
-        return Ok(());
-    }
-
-    let proceed = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt(format!(
-            "Branch '{}' is not fully merged. Force delete it with -D?",
-            branch_name
-        ))
-        .default(false)
-        .interact()?;
-
-    if proceed {
-        request.force_delete_branch = true;
-        return Ok(());
-    }
-
-    request.delete_branch = false;
-    println!("ℹ️  Keeping branch '{}' (not fully merged).", branch_name);
     Ok(())
 }
 
@@ -1234,51 +1605,51 @@ fn print_start_summary(
             "default_agent": default_agent_json,
         });
 
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        output::emit_json(&payload)?;
         return Ok(());
     }
 
-    println!("🚀 Feature workspace ready ({})", summary.mode);
-    println!("  Feature: {}", summary.work_feature);
-    println!();
+    humanln!("🚀 Feature workspace ready ({})", summary.mode);
+    humanln!("  Feature: {}", summary.work_feature);
+    humanln!();
     print_start_checklist(summary, prompt_bridge_enabled, &agent_plan);
 
     if let Some(adapter) = summary.adapter.as_ref() {
         if !adapter.warnings.is_empty() {
-            println!();
-            println!("Adapter warnings:");
+            humanln!();
+            humanln!("Adapter warnings:");
             for warning in &adapter.warnings {
-                println!("  ⚠ {}", warning);
+                humanln!("  ⚠ {}", warning);
             }
         }
     }
 
     if !suppress_summary {
         if !summary.module_outcomes.is_empty() {
-            println!();
+            humanln!();
             print_module_outcome_table(&summary.module_outcomes);
         }
 
         if !summary.skipped_modules.is_empty() {
-            println!();
-            println!("Skipped modules:");
+            humanln!();
+            humanln!("Skipped modules:");
             for record in &summary.skipped_modules {
-                println!("  - {} ({})", record.name, record.reason.description());
+                humanln!("  - {} ({})", record.name, record.reason.description());
             }
         }
 
         if summary.mode == StartMode::Minimal && !summary.skipped_modules.is_empty() {
-            println!();
-            println!(
+            humanln!();
+            humanln!(
                 "Next: run `branchbox devcontainer sync` or targeted module commands when you're ready to fully provision."
             );
         }
 
         if !summary.warnings.is_empty() {
-            println!();
-            println!("Warnings:");
+            humanln!();
+            humanln!("Warnings:");
             for warning in &summary.warnings {
-                println!("  - {}", warning);
+                humanln!("  - {}", warning);
             }
         }
     }
@@ -1547,8 +1918,8 @@ fn render_checklist(rows: &[ChecklistRow]) {
         detail = "-".repeat(detail_w),
     );
 
-    println!("{border}");
-    println!(
+    humanln!("{border}");
+    humanln!(
         "| {step:<step_w$} | {result:<result_w$} | {detail:<detail_w$} |",
         step = "Step",
         result = "Result",
@@ -1557,10 +1928,10 @@ fn render_checklist(rows: &[ChecklistRow]) {
         result_w = result_w,
         detail_w = detail_w,
     );
-    println!("{border}");
+    humanln!("{border}");
 
     for row in rows {
-        println!(
+        humanln!(
             "| {step:<step_w$} | {result:<result_w$} | {detail:<detail_w$} |",
             step = row.step,
             result = row.result,
@@ -1571,12 +1942,12 @@ fn render_checklist(rows: &[ChecklistRow]) {
         );
     }
 
-    println!("{border}");
+    humanln!("{border}");
 }
 
 fn print_teardown_summary(summary: &TeardownSummary) {
-    println!("🧹 Feature teardown finished");
-    println!(
+    humanln!("🧹 Feature teardown finished");
+    humanln!(
         "  Worktree removed: {}",
         if summary.worktree_removed {
             "yes"
@@ -1584,11 +1955,11 @@ fn print_teardown_summary(summary: &TeardownSummary) {
             "no"
         }
     );
-    println!(
+    humanln!(
         "  Branch deleted: {}",
         if summary.branch_deleted { "yes" } else { "no" }
     );
-    println!(
+    humanln!(
         "  Runtime cleanup verified: {} (residue free: {})",
         if summary.runtime_teardown.verified {
             "yes"
@@ -1602,36 +1973,66 @@ fn print_teardown_summary(summary: &TeardownSummary) {
         }
     );
     if !summary.branch_deleted {
-        println!(
+        humanln!(
             "  Branch kept: {} (delete manually with `git branch -d {}` or `git branch -D {}`)",
-            summary.branch_name, summary.branch_name, summary.branch_name
+            summary.branch_name,
+            summary.branch_name,
+            summary.branch_name
+        );
+    }
+    if let Some(error) = &summary.branch_delete_error {
+        humanln!("  Branch delete failed: {}", error);
+    }
+    if !summary.discarded_changes.is_empty() {
+        let names: Vec<&str> = summary
+            .discarded_changes
+            .iter()
+            .take(REFUSAL_LISTED_FILES)
+            .map(|change| change.path.as_str())
+            .collect();
+        humanln!(
+            "  Discarded changes: {} ({}{})",
+            summary.discarded_changes.len(),
+            names.join(", "),
+            if summary.discarded_changes.len() > names.len() {
+                ", …"
+            } else {
+                ""
+            }
+        );
+    }
+    for file in &summary.preserved {
+        humanln!(
+            "  Kept: {} → {} in the main worktree",
+            file.path,
+            file.destination
         );
     }
     if !summary.adapter_cleanup_warnings.is_empty() {
-        println!();
-        println!("Adapter:");
+        humanln!();
+        humanln!("Adapter:");
         for warning in &summary.adapter_cleanup_warnings {
-            println!("  ⚠ {}", warning);
+            humanln!("  ⚠ {}", warning);
         }
     }
 
     if !summary.module_reports.is_empty() {
-        println!();
-        println!("Modules:");
+        humanln!();
+        humanln!("Modules:");
         for report in &summary.module_reports {
             let status = if report.teardown_ok { "ok" } else { "warn" };
-            println!("  - {} ({})", report.name, status);
+            humanln!("  - {} ({})", report.name, status);
             for error in &report.errors {
-                println!("      • {}", error);
+                humanln!("      • {}", error);
             }
         }
     }
 
     if !summary.warnings.is_empty() {
-        println!();
-        println!("Warnings:");
+        humanln!();
+        humanln!("Warnings:");
         for warning in &summary.warnings {
-            println!("  - {}", warning);
+            humanln!("  - {}", warning);
         }
     }
 }
@@ -1688,12 +2089,12 @@ fn print_module_outcome_table(outcomes: &[ModuleOutcome]) {
         notes_w = notes_w,
     );
 
-    println!("{border}");
-    println!("{header}");
-    println!("{border}");
+    humanln!("{border}");
+    humanln!("{header}");
+    humanln!("{border}");
 
     for (name, status, duration, notes) in rows {
-        println!(
+        humanln!(
             "| {name:<name_w$} | {status:<status_w$} | {duration:<duration_w$} | {notes:<notes_w$} |",
             name = name,
             status = status,
@@ -1706,9 +2107,9 @@ fn print_module_outcome_table(outcomes: &[ModuleOutcome]) {
         );
     }
 
-    println!("{border}");
+    humanln!("{border}");
     if outcomes.iter().any(|outcome| outcome.forced) {
-        println!("(*) Forced module executed due to policy requirements.");
+        humanln!("(*) Forced module executed due to policy requirements.");
     }
 }
 
@@ -1899,22 +2300,22 @@ fn maybe_launch_default_agent(summary: &StartSummary, plan: &AgentPlan, json_out
                 return;
             };
             let label = plan.label.as_deref().unwrap_or("default coding agent");
-            println!();
-            println!(
+            humanln!();
+            humanln!(
                 "🤖 Launching {} via `{}` (cwd: {})",
                 label,
                 command,
                 summary.worktree_path.display()
             );
             match launch_agent_process(command, summary) {
-                Ok(()) => println!("✅ Agent session completed successfully."),
-                Err(err) => println!("⚠️  Default coding agent command failed: {err}"),
+                Ok(()) => humanln!("✅ Agent session completed successfully."),
+                Err(err) => humanln!("⚠️  Default coding agent command failed: {err}"),
             }
         }
         AgentPlanStatus::Waiting | AgentPlanStatus::Blocked => {
             if let Some(message) = plan.followup.as_ref() {
-                println!();
-                println!("{message}");
+                humanln!();
+                humanln!("{message}");
             }
         }
         AgentPlanStatus::Disabled => {}
