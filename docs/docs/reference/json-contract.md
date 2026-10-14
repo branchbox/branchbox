@@ -141,6 +141,27 @@ Example: `cli/tests/fixtures/contract/core/list_interrupted.json`.
 
 The start summary: the resolved name, branch, worktree path, URLs, runtime, module outcomes, tunnel and default agent. Example: `core/start_minimal_truncated_prompt.json`.
 
+Managed `in-guest` source builds also return optional `runtime.in_guest.prepared_overlay`
+for the standard linked workspace layout. The receipt is measured before the primary container
+starts. Its schema is `branchbox.in-guest-preparation.v1`; it binds the assignment file SHA-256,
+run/lease/outer-runtime identity, approved repository revision, feature, task branch, workspace
+path, projected `.git` pointer SHA-256, common Git directory device/inode and UTC preparation time.
+
+`generated` always contains these two entries in order:
+
+| Path | Required observation |
+| --- | --- |
+| `.devcontainer/.devcontainer.json` | `present: true`, SHA-256, permission bits, UID/GID and device/inode |
+| `.devcontainer/.branchbox-sbx-compose.yaml` | The same metadata when present; otherwise only `path` and `present: false` |
+
+These bounded, single-link regular files are opened through held directories without following
+symlinks. The receipt contains no file contents or provider-home state. Missing required files,
+changed observations, unsafe file types or a wrong Git projection refuse startup through normal
+failed-start cleanup. Legacy records, repository-mode starts, nonstandard layouts and non-Unix
+starts omit the receipt. Consumers must authenticate the trusted producer and assignment and
+recheck physical state; this optional JSON field does not establish a retained-session capability
+or authorize a checkpoint import.
+
 ### `feature teardown` {#teardown}
 
 **Plan** (`--dry-run --json`, always exit 0): what teardown would do, and why it would refuse.

@@ -1046,8 +1046,21 @@ impl FeatureWorkflow {
                 return Err(err);
             }
         };
-        let environment_result =
-            runtime_provider.start_environment(&runtime_context, &mut runtime_metadata);
+        let preparation_result = match (in_guest_plan.as_ref(), runtime_metadata.in_guest.as_mut())
+        {
+            (Some(plan), Some(metadata)) => runtime::PreparedOverlay::capture(
+                plan.manifest_path(),
+                &self.repo_root,
+                &worktree_path,
+                &work_feature,
+                metadata,
+            )
+            .map(|receipt| metadata.prepared_overlay = receipt),
+            _ => Ok(()),
+        };
+        let environment_result = preparation_result.and_then(|()| {
+            runtime_provider.start_environment(&runtime_context, &mut runtime_metadata)
+        });
 
         // Keep successful in-guest worktrees pointed at the exact container Git projection while
         // the coding environment is active. Failed starts and other runtime providers need the

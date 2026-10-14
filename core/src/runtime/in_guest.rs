@@ -297,6 +297,10 @@ pub struct InGuestRuntimeMetadata {
     pub leases: Vec<InGuestLeaseRecord>,
     /// Provider-private state contains cleanup paths. Public lease records never contain them.
     pub state_path: PathBuf,
+    /// Fixed generated workspace inputs measured before untrusted containers start.
+    /// Absence preserves old runtime records and does not establish recovery readiness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_overlay: Option<super::PreparedOverlay>,
 }
 
 #[derive(Debug, Clone)]
@@ -3324,6 +3328,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 project_docker: "disabled".to_string(),
                 leases: assignment.leases,
                 state_path,
+                prepared_overlay: None,
             }),
             version: None,
         })
@@ -3627,6 +3632,7 @@ pub(crate) fn recover_runtime_metadata(
                 project_docker: "disabled".to_string(),
                 leases: Vec::new(),
                 state_path,
+                prepared_overlay: None,
             }),
             version: None,
         }));

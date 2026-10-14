@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Managed in-guest starts report the two fixed generated workspace inputs in an optional
+  preparation receipt, measured before container startup. It binds the assignment, approved
+  revision, branch, linked Git projection and file identity without returning their contents.
+  Missing or changed required inputs refuse startup through the existing cleanup path.
 - Initialization accepts valid 1Password references with spaces in vault, item and field names,
   including `private key`, while still rejecting control characters and incomplete references.
 - Devcontainer symlink sync records link ownership so unchanged BranchBox-created links no longer

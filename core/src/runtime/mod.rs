@@ -22,6 +22,7 @@ use std::sync::OnceLock;
 mod host_container;
 mod in_guest;
 mod local_vm;
+mod prepared_overlay;
 pub(crate) use in_guest::recover_runtime_metadata as recover_in_guest_runtime_metadata;
 pub(crate) use in_guest::validate_private_compose_stage_git_mount;
 use in_guest::InGuestRuntimeProvider;
@@ -30,6 +31,7 @@ pub use in_guest::{
     InGuestLeaseRecord, InGuestRuntimeMetadata, InGuestTunnelPlacement,
 };
 use local_vm::LocalVmRuntimeProvider;
+pub use prepared_overlay::{PreparedOverlay, PreparedOverlayFile};
 
 /// Runtime implementations selectable for a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
