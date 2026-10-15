@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuse operations, and only verified committed generations advance credential expiry.
   The admitted profile also rejects repository cgroup-parent overrides and verifies every
   owned primary/dependency container belongs to the fixed workload slice before execution.
+  Its signed PID budget covers the common slice's total workload, including trusted runtime
+  and Docker support; the provider enforces that limit.
   Ordinary assignments retain their existing behavior.
 
 - Managed in-guest starts report the two fixed generated workspace inputs in an optional
