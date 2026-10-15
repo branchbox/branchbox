@@ -32,6 +32,9 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[path = "credential_generation.rs"]
+mod credential_generation;
+
 const LEGACY_MANIFEST_VERSION: &str = "1";
 const MANAGED_MANIFEST_VERSION: &str = "2";
 const WORKSPACE_CONSUMER_MANIFEST_VERSION: &str = "3";
@@ -305,6 +308,7 @@ pub struct InGuestRuntimeMetadata {
 
 #[derive(Debug, Clone)]
 pub struct InGuestFacadePlan {
+    generation_admission: Option<credential_generation::Admission>,
     manifest_path: PathBuf,
     run_id: String,
     tunnel_placement: InGuestTunnelPlacement,
@@ -320,6 +324,7 @@ impl InGuestFacadePlan {
     #[cfg(test)]
     pub(crate) fn empty_for_tests() -> Self {
         Self {
+            generation_admission: None,
             manifest_path: PathBuf::new(),
             run_id: String::new(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
@@ -353,6 +358,19 @@ impl InGuestFacadePlan {
             gid: consumer_uid,
         });
         self
+    }
+
+    pub(crate) fn workload_slice(&self) -> Option<&'static str> {
+        self.generation_admission
+            .as_ref()
+            .map(|_| credential_generation::WORKLOAD_SLICE)
+    }
+
+    pub(crate) fn validate_workload_cgroup_request(&self, value: &serde_json::Value) -> Result<()> {
+        if let Some(admission) = &self.generation_admission {
+            admission.validate_requested_json(value)?;
+        }
+        Ok(())
     }
 
     pub fn manifest_path(&self) -> &Path {
@@ -1105,6 +1123,9 @@ enum LeaseScope {
     /// home. This scope binds the file alone, read-only like the rest, and
     /// leaves the directory holding it to the container.
     ProviderCredential,
+    /// Fixed per-invocation helpers and generation children, read-only in the
+    /// coding container. Only an explicitly bound managed v3 assignment opts in.
+    CredentialGeneration,
 }
 
 impl LeaseScope {
@@ -1119,6 +1140,7 @@ impl LeaseScope {
             Self::ToolRequest => "tool-request",
             Self::PlatformTunnel => "platform-tunnel",
             Self::ProviderCredential => "provider-credential",
+            Self::CredentialGeneration => "credential-generation",
         }
     }
 }
@@ -1460,8 +1482,14 @@ impl InGuestRuntimeProvider {
         worktree_path: &Path,
         config_path: &Path,
         compose_project_name: &str,
+        metadata: &RuntimeMetadata,
     ) -> Result<String> {
-        self.verify_resolved_configuration(worktree_path, config_path, compose_project_name)?;
+        self.verify_resolved_configuration(
+            worktree_path,
+            config_path,
+            compose_project_name,
+            metadata,
+        )?;
         let worktree = worktree_path.to_string_lossy();
         let config = config_path.to_string_lossy();
         let output = self.devcontainer_output(
@@ -1516,6 +1544,7 @@ impl InGuestRuntimeProvider {
         worktree_path: &Path,
         config_path: &Path,
         compose_project_name: &str,
+        metadata: &RuntimeMetadata,
     ) -> Result<()> {
         let output = self.checked_devcontainer(
             "resolved configuration inspection",
@@ -1532,7 +1561,22 @@ impl InGuestRuntimeProvider {
             Some(worktree_path),
             Some(compose_project_name),
         )?;
-        validate_resolved_configuration(&output.stdout)
+        validate_resolved_configuration(&output.stdout)?;
+        if let Some(identity) = &metadata.in_guest {
+            let state = Self::read_state(&identity.state_path)?;
+            let assignment = load_assignment(&state.manifest_path)?;
+            if let Some(guard) = &assignment._generation_guard {
+                let configuration = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .rev()
+                    .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .ok_or_else(|| {
+                        Error::validation("Renewable workload merged configuration absent")
+                    })?;
+                guard.admission().validate_requested_json(&configuration)?;
+            }
+        }
+        Ok(())
     }
 
     fn probe(
@@ -1648,6 +1692,17 @@ impl InGuestRuntimeProvider {
             if let Some(identity) = metadata.in_guest.as_ref() {
                 let state = Self::read_state(&identity.state_path)?;
                 let assignment = load_assignment(&state.manifest_path)?;
+                if assignment._generation_guard.is_some() {
+                    let owned = self.discover_owned_docker_identity(&state)?;
+                    if !owned.container_ids.contains(container_id) {
+                        return Err(Error::validation(
+                        "Renewable workload primary container is outside its exact owned closure",
+                    ));
+                    }
+                    for member in owned.container_ids {
+                        self.verify_workload_cgroup(&member)?;
+                    }
+                }
                 (
                     assignment.signed_mounts(),
                     assignment.provider_environment_names(),
@@ -1656,6 +1711,40 @@ impl InGuestRuntimeProvider {
                 (BTreeMap::new(), BTreeSet::new())
             };
         validate_container_inspection(&output.stdout, &signed_mounts, &forbidden_environment)
+    }
+
+    fn verify_workload_cgroup(&self, container: &str) -> Result<()> {
+        let before = self.checked_docker(
+            "renewable workload cgroup inspection",
+            &["inspect", container],
+        )?;
+        let identity = workload_container_identity(&before.stdout)?;
+        let path = PathBuf::from(format!("/proc/{}/cgroup", identity.1));
+        let mut file = fs::File::open(&path).map_err(|error| {
+            Error::validation(format!(
+                "Cannot read renewable workload cgroup membership: {error}"
+            ))
+        })?;
+        let mut cgroup = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(4097)
+            .read_to_end(&mut cgroup)?;
+        if cgroup.len() > 4096 {
+            return Err(Error::validation(
+                "Renewable workload cgroup membership exceeds its bound",
+            ));
+        }
+        validate_workload_cgroup(&identity.0, &cgroup)?;
+        let after = self.checked_docker(
+            "renewable workload cgroup revalidation",
+            &["inspect", container],
+        )?;
+        if workload_container_identity(&after.stdout)? != identity {
+            return Err(Error::validation(
+                "Renewable workload container changed during cgroup validation",
+            ));
+        }
+        Ok(())
     }
 
     fn proxy_name(compose_project_name: &str, runtime_port: u16) -> String {
@@ -2066,6 +2155,19 @@ impl InGuestRuntimeProvider {
     ) -> Result<i32> {
         let provider_environment =
             self.provider_execution_environment(metadata, provider, inherited_environment)?;
+        let renewable = {
+            let identity = metadata
+                .in_guest
+                .as_ref()
+                .ok_or_else(|| Error::validation("Managed provider identity absent"))?;
+            let state = Self::read_state(&identity.state_path)?;
+            let assignment = load_assignment(&state.manifest_path)?;
+            let consumer =
+                assignment.authorize_provider_execution(provider, inherited_environment)?;
+            assignment.mounts.iter().any(|mount| {
+                mount.scope == LeaseScope::CredentialGeneration && mount.consumer == consumer
+            })
+        };
         for name in inherited_environment {
             if std::env::var_os(name).is_none() {
                 return Err(Error::validation(format!(
@@ -2102,7 +2204,24 @@ impl InGuestRuntimeProvider {
             command.args(["--env", &binding.name]);
         }
         command.arg(container_id);
-        append_secure_container_exec(&mut command, "branchbox-in-guest-provider", provider, args);
+        if renewable {
+            command
+                .args([
+                    "/bin/sh",
+                    "-lc",
+                    credential_generation::PROVIDER_WRAPPER,
+                    "branchbox-in-guest-provider",
+                    provider,
+                ])
+                .args(args);
+        } else {
+            append_secure_container_exec(
+                &mut command,
+                "branchbox-in-guest-provider",
+                provider,
+                args,
+            );
+        }
         let status = command.status().map_err(|err| {
             Error::validation(format!(
                 "Failed to execute the managed provider in the devcontainer: {err}"
@@ -3357,8 +3476,12 @@ impl RuntimeProvider for InGuestRuntimeProvider {
                 &assignment.manifest.service_images,
                 assignment.manifest.port_proxy_image.as_deref(),
             )?;
-            let container_id =
-                self.start_devcontainer(context.worktree_path, &config, &compose_project_name)?;
+            let container_id = self.start_devcontainer(
+                context.worktree_path,
+                &config,
+                &compose_project_name,
+                metadata,
+            )?;
             // Persist the primary identity before any later boundary/probe/proxy check can fail.
             metadata.container_id = Some(container_id.clone());
             self.record_partial_start_identity(metadata)?;
@@ -3403,7 +3526,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         }
         let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
         let container_id =
-            self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
+            self.start_devcontainer(worktree_path, &config, &compose_project_name, metadata)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
         if let Some(identity) = metadata.in_guest.as_ref() {
             let state = Self::read_state(&identity.state_path)?;
@@ -3448,7 +3571,7 @@ impl RuntimeProvider for InGuestRuntimeProvider {
         }
         let (compose_project_name, config) = self.managed_cli_context(metadata, worktree_path)?;
         let container_id =
-            self.start_devcontainer(worktree_path, &config, &compose_project_name)?;
+            self.start_devcontainer(worktree_path, &config, &compose_project_name, metadata)?;
         self.verify_untrusted_boundary(&container_id, metadata)?;
         let mut process = self.devcontainer_command(Some(&compose_project_name))?;
         process.args([
@@ -3648,6 +3771,7 @@ struct LoadedAssignment {
     leases: Vec<InGuestLeaseRecord>,
     tool_request_spools: Vec<ToolRequestSpool>,
     linked_tool_endpoints: BTreeSet<String>,
+    _generation_guard: Option<credential_generation::GenerationGuard>,
 }
 
 impl LoadedAssignment {
@@ -3748,6 +3872,7 @@ impl LoadedAssignment {
                     mount.scope,
                     LeaseScope::SharedDirectory
                         | LeaseScope::ToolEndpoint
+                        | LeaseScope::CredentialGeneration
                         // A placed credential is inspected like any other signed
                         // bind: the container must carry it read-only, and the
                         // run fails closed when it does not.
@@ -3807,7 +3932,12 @@ pub fn load_in_guest_facade_plan(
         task_branch,
         repository_revision,
     )?;
+    let generation_admission = assignment
+        ._generation_guard
+        .as_ref()
+        .map(credential_generation::GenerationGuard::admission);
     Ok(InGuestFacadePlan {
+        generation_admission,
         manifest_path: assignment.manifest_path,
         run_id: assignment.manifest.run_id,
         tunnel_placement: assignment.manifest.tunnel_placement,
@@ -3822,7 +3952,14 @@ pub fn load_in_guest_facade_plan(
 
 fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     let manifest_path = validate_private_regular_file(manifest_path, "assignment manifest")?;
-    let manifest: AssignmentManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)
+        .map_err(|err| Error::validation(format!("Invalid in-guest assignment manifest: {err}")))?;
+    let generation_guard = credential_generation::apply(&mut value, &manifest_path)?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| Error::validation("In-guest assignment must be an object"))?
+        .remove("credential_generation");
+    let manifest: AssignmentManifest = serde_json::from_value(value)
         .map_err(|err| Error::validation(format!("Invalid in-guest assignment manifest: {err}")))?;
     if !matches!(
         manifest.version.as_str(),
@@ -3854,7 +3991,9 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         !lease.materializations.is_empty()
             && !matches!(
                 lease.scope,
-                LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+                LeaseScope::SharedDirectory
+                    | LeaseScope::ToolEndpoint
+                    | LeaseScope::CredentialGeneration
             )
     });
     let materialization_root = if has_file_materializations {
@@ -3994,6 +4133,34 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 ));
             }
         }
+        if lease.scope == LeaseScope::CredentialGeneration
+            && (generation_guard.is_none()
+                || lease.materializations.len() != 1
+                || lease.materializations[0].source_path
+                    != manifest_path
+                        .parent()
+                        .expect("validated parent")
+                        .join("materializations/credential-generations")
+                || lease.materializations[0].target_path.as_deref()
+                    != Some(Path::new(credential_generation::TARGET))
+                || !manifest.leases.iter().any(|other| {
+                    other.scope == LeaseScope::ModelIdentity && other.consumer == lease.consumer
+                })
+                || manifest.leases.iter().any(|other| {
+                    other.consumer == lease.consumer
+                        && (other
+                            .inherited_environment
+                            .iter()
+                            .any(|name| matches!(name.as_str(), "GH_TOKEN" | "GITHUB_TOKEN"))
+                            || other.materializations.iter().any(|item| {
+                                item.environment_name
+                                    .as_deref()
+                                    .is_some_and(|name| matches!(name, "GH_TOKEN" | "GITHUB_TOKEN"))
+                            }))
+                }))
+        {
+            return Err(Error::validation("Managed generation directory requires its exact opted-in consumer without ambient GitHub tokens"));
+        }
         if lease.scope == LeaseScope::ProviderCredential
             && (lease.materializations.len() != 1
                 || lease
@@ -4006,7 +4173,9 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         }
         if matches!(
             lease.scope,
-            LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+            LeaseScope::SharedDirectory
+                | LeaseScope::ToolEndpoint
+                | LeaseScope::CredentialGeneration
         ) && (lease.materializations.len() != 1
             || lease
                 .expires_at
@@ -4047,7 +4216,9 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         for materialization in &lease.materializations {
             let (source, source_kind) = if matches!(
                 lease.scope,
-                LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+                LeaseScope::SharedDirectory
+                    | LeaseScope::ToolEndpoint
+                    | LeaseScope::CredentialGeneration
             ) {
                 if materialization.sha256.is_some() {
                     return Err(Error::validation(
@@ -4107,6 +4278,13 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                     if lease.scope == LeaseScope::ToolEndpoint {
                         validate_managed_mount_target(target, TOOL_ENDPOINT_TARGET_ROOT)?;
                     }
+                    if lease.scope == LeaseScope::CredentialGeneration
+                        && target != Path::new(credential_generation::TARGET)
+                    {
+                        return Err(Error::validation(
+                            "Managed generation directory target changed",
+                        ));
+                    }
                     if lease.scope == LeaseScope::ToolRequest {
                         let spool = lease
                             .request_spool_target
@@ -4157,7 +4335,9 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
                 }
             } else if !matches!(
                 lease.scope,
-                LeaseScope::SharedDirectory | LeaseScope::ToolEndpoint
+                LeaseScope::SharedDirectory
+                    | LeaseScope::ToolEndpoint
+                    | LeaseScope::CredentialGeneration
             ) {
                 return Err(Error::validation(
                     "File materializations require a SHA-256 digest",
@@ -4302,6 +4482,7 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
         leases,
         tool_request_spools,
         linked_tool_endpoints,
+        _generation_guard: generation_guard,
     })
 }
 
@@ -4495,7 +4676,11 @@ fn validate_run_owned_managed_source(
         .ok_or_else(|| {
             Error::validation("Managed mount source must be a non-symlink directory or Unix socket")
         })?;
-    if scope == LeaseScope::SharedDirectory && source_kind != ManagedSourceKind::Directory {
+    if matches!(
+        scope,
+        LeaseScope::SharedDirectory | LeaseScope::CredentialGeneration
+    ) && source_kind != ManagedSourceKind::Directory
+    {
         return Err(Error::validation(
             "Shared-directory leases require an owner-only source directory",
         ));
@@ -4565,7 +4750,14 @@ fn validate_managed_source_kind(
     {
         let mode = metadata.permissions().mode() & 0o777;
         let safe = match expected {
-            ManagedSourceKind::Directory if scope == LeaseScope::SharedDirectory => mode == 0o755,
+            ManagedSourceKind::Directory
+                if matches!(
+                    scope,
+                    LeaseScope::SharedDirectory | LeaseScope::CredentialGeneration
+                ) =>
+            {
+                mode == 0o755
+            }
             ManagedSourceKind::Directory => mode == 0o700,
             ManagedSourceKind::Socket => mode & 0o077 == 0 && mode & 0o600 == 0o600,
             // A placed credential file is readable by its consumer and writable
@@ -5230,6 +5422,56 @@ fn contains_ambient_authority_reference(value: &str) -> bool {
         ]
         .iter()
         .any(|marker| normalized.contains(marker))
+}
+
+fn workload_container_identity(source: &[u8]) -> Result<(String, u32)> {
+    let documents: serde_json::Value = serde_json::from_slice(source).map_err(|_error| {
+        // cause-withheld: Docker inspection can contain provider/project environment values.
+        Error::validation("Renewable workload container inspection refused")
+    })?;
+    let document = documents
+        .as_array()
+        .filter(|values| values.len() == 1)
+        .and_then(|values| values.first())
+        .ok_or_else(|| {
+            Error::validation("Renewable workload requires one exact container inspection")
+        })?;
+    let id = document["Id"]
+        .as_str()
+        .ok_or_else(|| Error::validation("Renewable workload container identity absent"))?;
+    let parent = document["HostConfig"]["CgroupParent"]
+        .as_str()
+        .ok_or_else(|| Error::validation("Renewable workload cgroup parent evidence absent"))?;
+    let pid = document["State"]["Pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0 && *pid <= i32::MAX as u32)
+        .ok_or_else(|| Error::validation("Renewable workload container is not running"))?;
+    if document["State"]["Running"] != true
+        || id.len() != 64
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || (!parent.is_empty() && parent != credential_generation::WORKLOAD_SLICE)
+    {
+        return Err(Error::validation(
+            "Renewable workload container cgroup parent refused",
+        ));
+    }
+    Ok((id.to_owned(), pid))
+}
+
+fn validate_workload_cgroup(container_id: &str, source: &[u8]) -> Result<()> {
+    let expected = format!(
+        "0::/{}/docker-{container_id}.scope\n",
+        credential_generation::WORKLOAD_SLICE
+    );
+    if source != expected.as_bytes() {
+        return Err(Error::validation(
+            "Renewable workload container is outside the fixed workload slice",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_container_inspection(
@@ -6994,6 +7236,7 @@ mod tests {
         let assignment = load_assignment(&manifest).unwrap();
         let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
+            generation_admission: None,
             manifest_path: manifest,
             run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
@@ -7052,6 +7295,7 @@ mod tests {
         let spool = assignment.tool_request_spool("delivery_requests").unwrap();
         let signed = assignment.signed_mounts();
         let plan = InGuestFacadePlan {
+            generation_admission: None,
             manifest_path: manifest,
             run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
@@ -7863,6 +8107,50 @@ mod tests {
     }
 
     #[test]
+    fn renewable_parent_requires_running_exact_container_and_kernel_slice_membership() {
+        let id = "a".repeat(64);
+        for parent in ["", credential_generation::WORKLOAD_SLICE] {
+            let inspection = serde_json::json!([{"Id":id,"HostConfig":{"CgroupParent":parent},
+                "State":{"Running":true,"Pid":123}}]);
+            let identity =
+                workload_container_identity(&serde_json::to_vec(&inspection).unwrap()).unwrap();
+            assert_eq!(identity, (id.clone(), 123));
+            validate_workload_cgroup(
+                &id,
+                format!("0::/agentifyworkloads.slice/docker-{id}.scope\n").as_bytes(),
+            )
+            .unwrap();
+            for cgroup in [
+                format!("0::/system.slice/docker-{id}.scope\n"),
+                format!(
+                    "0::/agentifyworkloads.slice/docker-{}.scope\n",
+                    "b".repeat(64)
+                ),
+                "0::/\n".to_owned(),
+            ] {
+                assert!(validate_workload_cgroup(&id, cgroup.as_bytes()).is_err());
+            }
+        }
+        for inspection in [
+            serde_json::json!([{"Id":id,"HostConfig":{"CgroupParent":"other.slice"},"State":{"Running":true,"Pid":123}}]),
+            serde_json::json!([{"Id":id,"HostConfig":{"CgroupParent":""},"State":{"Running":false,"Pid":0}}]),
+            serde_json::json!([{"Id":id,"HostConfig":{},"State":{"Running":true,"Pid":123}}]),
+        ] {
+            assert!(
+                workload_container_identity(&serde_json::to_vec(&inspection).unwrap()).is_err()
+            );
+        }
+        // Ordinary facade plans do not enter the new profile's refusal path.
+        InGuestFacadePlan::empty_for_tests()
+            .validate_workload_cgroup_request(
+                &serde_json::json!({"runArgs":["--cgroup-parent=legacy"]}),
+            )
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        assert!(validate_workload_cgroup(&id, &fs::read("/proc/self/cgroup").unwrap()).is_err());
+    }
+
+    #[test]
     fn running_container_rejects_remote_daemon_environment_and_privilege_reintroduction() {
         for inspection in [
             serde_json::json!([{
@@ -8622,6 +8910,7 @@ fi
         .is_err());
 
         let plan = InGuestFacadePlan {
+            generation_admission: None,
             manifest_path: manifest,
             run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,

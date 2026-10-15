@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Explicit managed v3 assignments can bind a fixed credential generation directory. Git/gh
+  children resolve current material under a bounded operation lock; pending installations
+  refuse operations, and only verified committed generations advance credential expiry.
+  The admitted profile also rejects repository cgroup-parent overrides and verifies every
+  owned primary/dependency container belongs to the fixed workload slice before execution.
+  Ordinary assignments retain their existing behavior.
+
 - Managed in-guest starts report the two fixed generated workspace inputs in an optional
   preparation receipt, measured before container startup. It binds the assignment, approved
   revision, branch, linked Git projection and file identity without returning their contents.

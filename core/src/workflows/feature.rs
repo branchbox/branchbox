@@ -4398,6 +4398,7 @@ fn prepare_in_guest_devcontainer_config(
     let mut value = jsonc_parser::parse_to_serde_value(&source, &Default::default())
         .map_err(|err| Error::validation(format!("Failed to parse devcontainer JSONC: {err:?}")))?
         .ok_or_else(|| Error::validation("Devcontainer configuration is empty"))?;
+    plan.validate_workload_cgroup_request(&value)?;
     let config: DevcontainerConfig = serde_json::from_value(value.clone()).map_err(|err| {
         Error::validation(format!("Could not inspect in-guest devcontainer: {err}"))
     })?;
@@ -4450,6 +4451,9 @@ fn prepare_in_guest_devcontainer_config(
                 .ok_or_else(|| Error::validation("In-guest Compose source has no parent"))?,
         )?;
         let document = read_in_guest_compose_document(worktree_path, compose_file)?;
+        if plan.workload_slice().is_some() {
+            reject_workload_cgroup_yaml(&document)?;
+        }
         reject_supervisor_socket_references_yaml(&document)?;
         validate_in_guest_compose_security(
             &document,
@@ -5434,6 +5438,40 @@ fn remove_compose_extensions(value: &mut serde_yaml::Value) {
         serde_yaml::Value::Tagged(tagged) => remove_compose_extensions(&mut tagged.value),
         _ => {}
     }
+}
+
+fn reject_workload_cgroup_yaml(value: &serde_yaml::Value) -> Result<()> {
+    fn parent_key(value: &serde_yaml::Value) -> bool {
+        match value {
+            serde_yaml::Value::Tagged(value) => parent_key(&value.value),
+            _ => value.as_str().is_some_and(|key| {
+                matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "cgroup_parent" | "cgroupparent" | "cgroup-parent"
+                )
+            }),
+        }
+    }
+    match value {
+        serde_yaml::Value::Mapping(values) => {
+            for (key, value) in values {
+                if parent_key(key) {
+                    return Err(Error::validation(
+                        "Renewable workload rejects Compose cgroup-parent overrides",
+                    ));
+                }
+                reject_workload_cgroup_yaml(value)?;
+            }
+        }
+        serde_yaml::Value::Sequence(values) => {
+            for value in values {
+                reject_workload_cgroup_yaml(value)?;
+            }
+        }
+        serde_yaml::Value::Tagged(value) => reject_workload_cgroup_yaml(&value.value)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 fn sanitize_in_guest_devcontainer_json(
@@ -10831,6 +10869,22 @@ mod tests {
             fs::read_to_string(source_config).unwrap(),
             r#"{"image":"alpine:3.19"}"#
         );
+    }
+
+    #[test]
+    fn test_in_guest_long_compose_rejects_parent_override_in_any_dependency_or_merge() {
+        for source in [
+            "services:\n  app:\n    image: fixed\n  dependency:\n    cgroup_parent: other.slice\n",
+            "services:\n  app:\n    cgroup_parent: !override agentifyworkloads.slice\n",
+            "services:\n  app:\n    ? !override cgroup_parent\n    : other.slice\n",
+        ] {
+            let value: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+            assert!(reject_workload_cgroup_yaml(&value).is_err());
+        }
+        reject_workload_cgroup_yaml(
+            &serde_yaml::from_str("services:\n  app:\n    image: fixed\n").unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
