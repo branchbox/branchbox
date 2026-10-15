@@ -1867,6 +1867,25 @@ fn in_guest_v3_partial_start_removes_only_its_compose_residue() {
             .any(|line| line.starts_with("up ")),
         "fake Dev Containers CLI did not reach up"
     );
+    let up_call = devcontainer_calls
+        .lines()
+        .find(|line| line.starts_with("up "))
+        .unwrap();
+    let arguments: Vec<_> = up_call.split_whitespace().collect();
+    let config_index = arguments
+        .iter()
+        .position(|argument| *argument == "--config")
+        .unwrap();
+    let private_config = Path::new(arguments[config_index + 1]);
+    assert_eq!(private_config.file_name().unwrap(), ".devcontainer.json");
+    let stage = private_config.parent().unwrap();
+    assert_eq!(stage.parent(), Some(assignment.path()));
+    assert!(stage
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("branchbox-compose-"));
+    assert!(!private_config.starts_with(&worktree));
     let docker_calls = fs::read_to_string(&fake.log).unwrap();
     for unowned in [
         "agentify".to_string(),

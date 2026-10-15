@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preparation receipt, measured before container startup. It binds the assignment, approved
   revision, branch, linked Git projection and file identity without returning their contents.
   Missing or changed required inputs refuse startup through the existing cleanup path.
+  For v3 writable-workspace consumers, a v2 receipt instead binds the exact private sanitized
+  config and Compose inputs in the runtime-owned assignment stage, and proves both generated
+  workspace paths absent. Protected inputs remain outside the coding workspace; v1 receipts
+  and ordinary starts retain their existing behavior.
 - Initialization accepts valid 1Password references with spaces in vault, item and field names,
   including `private key`, while still rejecting control characters and incomplete references.
 - Devcontainer symlink sync records link ownership so unchanged BranchBox-created links no longer

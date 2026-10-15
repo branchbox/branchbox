@@ -1048,14 +1048,19 @@ impl FeatureWorkflow {
         };
         let preparation_result = match (in_guest_plan.as_ref(), runtime_metadata.in_guest.as_mut())
         {
-            (Some(plan), Some(metadata)) => runtime::PreparedOverlay::capture(
-                plan.manifest_path(),
-                &self.repo_root,
-                &worktree_path,
-                &work_feature,
-                metadata,
-            )
-            .map(|receipt| metadata.prepared_overlay = receipt),
+            (Some(plan), Some(metadata)) => plan
+                .private_compose_stage_dir(&worktree_path)
+                .and_then(|stage| {
+                    runtime::PreparedOverlay::capture(
+                        plan.manifest_path(),
+                        &self.repo_root,
+                        &worktree_path,
+                        &work_feature,
+                        metadata,
+                        stage.as_deref(),
+                    )
+                })
+                .map(|receipt| metadata.prepared_overlay = receipt),
             _ => Ok(()),
         };
         let environment_result = preparation_result.and_then(|()| {
@@ -1604,27 +1609,24 @@ impl FeatureWorkflow {
         }
 
         let mut worktree_removed = false;
-        if worktree_exists {
-            #[cfg(test)]
-            if let Some(hook) = self.before_worktree_removal {
-                hook(&worktree_path);
-            }
-
-            if !discard {
-                // A spec that was copied (not moved) out is still in the worktree and kept.
-                let copied_spec = preserved
-                    .iter()
-                    .map(|file| file.path.as_str())
-                    .find(|path| worktree_path.join(path).is_file());
-                self.recheck_before_removal(
-                    &request,
-                    &options,
-                    &plan,
-                    &worktree_path,
-                    copied_spec,
-                    &completed_steps,
-                )?;
-            }
+        #[cfg(test)]
+        if let Some(hook) = self.before_worktree_removal.filter(|_| worktree_exists) {
+            hook(&worktree_path);
+        }
+        if worktree_exists && !discard {
+            // A spec that was copied (not moved) out is still in the worktree and kept.
+            let copied_spec = preserved
+                .iter()
+                .map(|file| file.path.as_str())
+                .find(|path| worktree_path.join(path).is_file());
+            self.recheck_before_removal(
+                &request,
+                &options,
+                &plan,
+                &worktree_path,
+                copied_spec,
+                &completed_steps,
+            )?;
         }
 
         // The adapter cleanup deletes caches and build output (tmp/, build/, dist/…). It runs

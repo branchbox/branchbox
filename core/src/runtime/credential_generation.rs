@@ -75,34 +75,38 @@ pub(super) struct GenerationGuard {
 
 impl Admission {
     pub(super) fn validate_requested_json(&self, value: &Value) -> Result<()> {
-        match value {
-            Value::Object(values) => {
-                for (key, value) in values {
-                    if matches!(
-                        key.to_ascii_lowercase().as_str(),
-                        "cgroup_parent" | "cgroupparent" | "cgroup-parent"
-                    ) || (key == "runArgs"
-                        && value.as_array().is_some_and(|arguments| {
-                            arguments.iter().any(|argument| {
-                                argument.as_str().is_some_and(|argument| {
-                                    argument.trim().split('=').next() == Some("--cgroup-parent")
+        // The receiver keeps this validation reachable only after opaque admission.
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Object(values) => {
+                    for (key, value) in values {
+                        if matches!(
+                            key.to_ascii_lowercase().as_str(),
+                            "cgroup_parent" | "cgroupparent" | "cgroup-parent"
+                        ) || (key == "runArgs"
+                            && value.as_array().is_some_and(|arguments| {
+                                arguments.iter().any(|argument| {
+                                    argument.as_str().is_some_and(|argument| {
+                                        argument.trim().split('=').next() == Some("--cgroup-parent")
+                                    })
                                 })
-                            })
-                        }))
-                    {
-                        return Err(Error::validation(
-                            "Renewable workload rejects repository cgroup-parent overrides",
-                        ));
+                            }))
+                        {
+                            return Err(Error::validation(
+                                "Renewable workload rejects repository cgroup-parent overrides",
+                            ));
+                        }
+                        pending.push(value);
                     }
-                    self.validate_requested_json(value)?;
                 }
-            }
-            Value::Array(values) => {
-                for value in values {
-                    self.validate_requested_json(value)?;
+                Value::Array(values) => {
+                    for value in values {
+                        pending.push(value);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
         Ok(())
     }
@@ -337,7 +341,7 @@ pub(super) fn apply(manifest: &mut Value, path: &Path) -> Result<Option<Generati
     require(
         state.schema_version == "branchbox.credential-generation-state.v1"
             && state.generation <= 8
-            && pointer == format!("g{:016x}", state.generation)
+            && pointer == PathBuf::from(format!("g{:016x}", state.generation))
             && hex(&state.offer_digest)
             && state.manifest_sha256 == spec.manifest_sha256
             && state.identity_sha256 == spec.identity_sha256

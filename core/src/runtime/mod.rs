@@ -31,7 +31,7 @@ pub use in_guest::{
     InGuestLeaseRecord, InGuestRuntimeMetadata, InGuestTunnelPlacement,
 };
 use local_vm::LocalVmRuntimeProvider;
-pub use prepared_overlay::{PreparedOverlay, PreparedOverlayFile};
+pub use prepared_overlay::{PreparedOverlay, PreparedOverlayFile, PreparedPrivateConfiguration};
 
 /// Runtime implementations selectable for a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
