@@ -9863,12 +9863,33 @@ mod tests {
         };
         assert!(changed_anything);
         assert!(!plan.changes.status_available);
+        assert_eq!(plan.work_feature, "unreadable");
+        assert_eq!(plan.worktree.path, worktree);
+        assert!(plan.worktree.exists);
+        let [Blocker::StatusUnavailable {
+            cause,
+            message,
+            override_hint,
+        }] = plan.blockers.as_slice()
+        else {
+            panic!(
+                "expected only a status-unavailable refusal: {:?}",
+                plan.blockers
+            );
+        };
         assert!(
-            matches!(plan.blockers.as_slice(), [Blocker::StatusUnavailable { cause, .. }] if cause.contains("not a git repository")),
-            "{:?}",
-            plan.blockers
+            cause
+                .strip_prefix("git status failed: ")
+                .is_some_and(|diagnostic| !diagnostic.trim().is_empty()),
+            "{cause}"
         );
+        assert!(message.contains(worktree.to_str().unwrap()));
+        assert!(message.contains(cause.as_str()));
+        assert_eq!(override_hint, "--force");
         assert!(worktree.exists());
+        let entry = workflow.state.get_feature("unreadable").unwrap().unwrap();
+        assert_eq!(entry.status, FeatureStatus::Active);
+        assert!(branch_exists(&repo, &plan.branch.as_ref().unwrap().name));
     }
 
     #[cfg(unix)]
