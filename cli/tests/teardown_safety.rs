@@ -737,6 +737,7 @@ fn a_locked_worktree_is_refused_then_removed_with_force() {
 fn a_corrupted_git_file_reports_the_git_error_as_status_unavailable() {
     let repo = init_test_repo();
     let worktree = start_minimal(&repo, "broken");
+    assert_eq!(status_of(&repo, "broken"), "active");
     fs::write(
         worktree.join(".git"),
         "gitdir: /nonexistent/worktrees/broken\n",
@@ -748,16 +749,26 @@ fn a_corrupted_git_file_reports_the_git_error_as_status_unavailable() {
         "teardown_refused",
     );
     let plan = &envelope["error"]["details"]["plan"];
+    assert_eq!(plan["registered"], true);
+    assert_eq!(plan["worktree"]["path"], worktree.to_str().unwrap());
+    assert_eq!(plan["worktree"]["exists"], true);
     assert_eq!(blocker_kinds(plan), ["status_unavailable"]);
     assert_eq!(plan["changes"]["status_available"], false);
     let cause = plan["blockers"][0]["cause"].as_str().unwrap();
+    // Git versions describe a broken gitfile differently. Require the scoped
+    // status command's failure and diagnostic, not an arbitrary refusal.
     assert!(
-        // Some git versions print "(null)" instead of the missing gitdir.
-        cause.contains("fatal: not a git repository"),
+        cause
+            .strip_prefix("git status failed: ")
+            .is_some_and(|diagnostic| !diagnostic.trim().is_empty()),
         "{cause}"
     );
+    let message = plan["blockers"][0]["message"].as_str().unwrap();
+    assert!(message.contains(worktree.to_str().unwrap()), "{message}");
+    assert!(message.contains(cause), "{message}");
     assert_eq!(plan["blockers"][0]["override"], "--force");
     assert!(worktree.exists());
+    assert_eq!(status_of(&repo, "broken"), "active");
 
     let summary = assert_ok_json(&branchbox(
         &repo,
