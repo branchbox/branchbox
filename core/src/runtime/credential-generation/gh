@@ -1,0 +1,21 @@
+#!/bin/sh
+# Resolve delivery material for this invocation, never from the provider env.
+set -eu
+root=/run/branchbox/leases/credential-generations
+PATH=${AGENTIFY_CREDENTIAL_BASE_PATH:?}; export PATH
+unset GH_TOKEN GITHUB_TOKEN AGENTIFY_SOURCE_TOKEN GIT_ASKPASS SSH_ASKPASS
+real=$(command -v gh) || exit 78
+exec 9<"$root/.operation-lock"
+/usr/bin/flock --shared --timeout 5 9 || exit 75
+test ! -e "$root/pending" && test ! -L "$root/pending" || exit 78
+IFS= read -r expiry <"$root/current/expires-at" || exit 78
+case "$expiry" in ''|*[!0-9]*) exit 78;; esac
+now=$(/usr/bin/date +%s)
+remaining=$((expiry - now))
+test "$remaining" -gt 0 || exit 78
+if test "$remaining" -gt 3300; then remaining=3300; fi
+IFS= read -r GH_TOKEN <"$root/current/source-delivery" || exit 78
+test -n "$GH_TOKEN" || exit 78
+GH_PROMPT_DISABLED=1
+export GH_TOKEN GH_PROMPT_DISABLED
+exec /usr/bin/timeout --signal=TERM --kill-after=5 "$remaining" "$real" "$@"

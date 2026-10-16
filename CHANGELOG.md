@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Explicit managed v3 assignments can bind a fixed credential generation directory. Git/gh
+  children resolve current material under a bounded operation lock; pending installations
+  refuse operations, and only verified committed generations advance credential expiry.
+  The admitted profile also rejects repository cgroup-parent overrides and verifies every
+  owned primary/dependency container belongs to the fixed workload slice before execution.
+  Its signed PID budget covers the common slice's total workload, including trusted runtime
+  and Docker support; the provider enforces that limit.
+  Ordinary assignments retain their existing behavior.
+
+- Managed in-guest starts report the two fixed generated workspace inputs in an optional
+  preparation receipt, measured before container startup. It binds the assignment, approved
+  revision, branch, linked Git projection and file identity without returning their contents.
+  Missing or changed required inputs refuse startup through the existing cleanup path.
+  For v3 writable-workspace consumers, a v2 receipt instead binds the exact private sanitized
+  config and Compose inputs in the runtime-owned assignment stage, and proves both generated
+  workspace paths absent. Protected inputs remain outside the coding workspace; v1 receipts
+  and ordinary starts retain their existing behavior.
 - Initialization accepts valid 1Password references with spaces in vault, item and field names,
   including `private key`, while still rejecting control characters and incomplete references.
 - Devcontainer symlink sync records link ownership so unchanged BranchBox-created links no longer

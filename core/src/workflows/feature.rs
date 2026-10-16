@@ -1046,8 +1046,26 @@ impl FeatureWorkflow {
                 return Err(err);
             }
         };
-        let environment_result =
-            runtime_provider.start_environment(&runtime_context, &mut runtime_metadata);
+        let preparation_result = match (in_guest_plan.as_ref(), runtime_metadata.in_guest.as_mut())
+        {
+            (Some(plan), Some(metadata)) => plan
+                .private_compose_stage_dir(&worktree_path)
+                .and_then(|stage| {
+                    runtime::PreparedOverlay::capture(
+                        plan.manifest_path(),
+                        &self.repo_root,
+                        &worktree_path,
+                        &work_feature,
+                        metadata,
+                        stage.as_deref(),
+                    )
+                })
+                .map(|receipt| metadata.prepared_overlay = receipt),
+            _ => Ok(()),
+        };
+        let environment_result = preparation_result.and_then(|()| {
+            runtime_provider.start_environment(&runtime_context, &mut runtime_metadata)
+        });
 
         // Keep successful in-guest worktrees pointed at the exact container Git projection while
         // the coding environment is active. Failed starts and other runtime providers need the
@@ -1591,27 +1609,24 @@ impl FeatureWorkflow {
         }
 
         let mut worktree_removed = false;
-        if worktree_exists {
-            #[cfg(test)]
-            if let Some(hook) = self.before_worktree_removal {
-                hook(&worktree_path);
-            }
-
-            if !discard {
-                // A spec that was copied (not moved) out is still in the worktree and kept.
-                let copied_spec = preserved
-                    .iter()
-                    .map(|file| file.path.as_str())
-                    .find(|path| worktree_path.join(path).is_file());
-                self.recheck_before_removal(
-                    &request,
-                    &options,
-                    &plan,
-                    &worktree_path,
-                    copied_spec,
-                    &completed_steps,
-                )?;
-            }
+        #[cfg(test)]
+        if let Some(hook) = self.before_worktree_removal.filter(|_| worktree_exists) {
+            hook(&worktree_path);
+        }
+        if worktree_exists && !discard {
+            // A spec that was copied (not moved) out is still in the worktree and kept.
+            let copied_spec = preserved
+                .iter()
+                .map(|file| file.path.as_str())
+                .find(|path| worktree_path.join(path).is_file());
+            self.recheck_before_removal(
+                &request,
+                &options,
+                &plan,
+                &worktree_path,
+                copied_spec,
+                &completed_steps,
+            )?;
         }
 
         // The adapter cleanup deletes caches and build output (tmp/, build/, dist/…). It runs
@@ -4385,6 +4400,7 @@ fn prepare_in_guest_devcontainer_config(
     let mut value = jsonc_parser::parse_to_serde_value(&source, &Default::default())
         .map_err(|err| Error::validation(format!("Failed to parse devcontainer JSONC: {err:?}")))?
         .ok_or_else(|| Error::validation("Devcontainer configuration is empty"))?;
+    plan.validate_workload_cgroup_request(&value)?;
     let config: DevcontainerConfig = serde_json::from_value(value.clone()).map_err(|err| {
         Error::validation(format!("Could not inspect in-guest devcontainer: {err}"))
     })?;
@@ -4437,6 +4453,9 @@ fn prepare_in_guest_devcontainer_config(
                 .ok_or_else(|| Error::validation("In-guest Compose source has no parent"))?,
         )?;
         let document = read_in_guest_compose_document(worktree_path, compose_file)?;
+        if plan.workload_slice().is_some() {
+            reject_workload_cgroup_yaml(&document)?;
+        }
         reject_supervisor_socket_references_yaml(&document)?;
         validate_in_guest_compose_security(
             &document,
@@ -5421,6 +5440,40 @@ fn remove_compose_extensions(value: &mut serde_yaml::Value) {
         serde_yaml::Value::Tagged(tagged) => remove_compose_extensions(&mut tagged.value),
         _ => {}
     }
+}
+
+fn reject_workload_cgroup_yaml(value: &serde_yaml::Value) -> Result<()> {
+    fn parent_key(value: &serde_yaml::Value) -> bool {
+        match value {
+            serde_yaml::Value::Tagged(value) => parent_key(&value.value),
+            _ => value.as_str().is_some_and(|key| {
+                matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "cgroup_parent" | "cgroupparent" | "cgroup-parent"
+                )
+            }),
+        }
+    }
+    match value {
+        serde_yaml::Value::Mapping(values) => {
+            for (key, value) in values {
+                if parent_key(key) {
+                    return Err(Error::validation(
+                        "Renewable workload rejects Compose cgroup-parent overrides",
+                    ));
+                }
+                reject_workload_cgroup_yaml(value)?;
+            }
+        }
+        serde_yaml::Value::Sequence(values) => {
+            for value in values {
+                reject_workload_cgroup_yaml(value)?;
+            }
+        }
+        serde_yaml::Value::Tagged(value) => reject_workload_cgroup_yaml(&value.value)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 fn sanitize_in_guest_devcontainer_json(
@@ -9812,12 +9865,33 @@ mod tests {
         };
         assert!(changed_anything);
         assert!(!plan.changes.status_available);
+        assert_eq!(plan.work_feature, "unreadable");
+        assert_eq!(plan.worktree.path, worktree);
+        assert!(plan.worktree.exists);
+        let [Blocker::StatusUnavailable {
+            cause,
+            message,
+            override_hint,
+        }] = plan.blockers.as_slice()
+        else {
+            panic!(
+                "expected only a status-unavailable refusal: {:?}",
+                plan.blockers
+            );
+        };
         assert!(
-            matches!(plan.blockers.as_slice(), [Blocker::StatusUnavailable { cause, .. }] if cause.contains("not a git repository")),
-            "{:?}",
-            plan.blockers
+            cause
+                .strip_prefix("git status failed: ")
+                .is_some_and(|diagnostic| !diagnostic.trim().is_empty()),
+            "{cause}"
         );
+        assert!(message.contains(worktree.to_str().unwrap()));
+        assert!(message.contains(cause.as_str()));
+        assert_eq!(override_hint, "--force");
         assert!(worktree.exists());
+        let entry = workflow.state.get_feature("unreadable").unwrap().unwrap();
+        assert_eq!(entry.status, FeatureStatus::Active);
+        assert!(branch_exists(&repo, &plan.branch.as_ref().unwrap().name));
     }
 
     #[cfg(unix)]
@@ -10818,6 +10892,22 @@ mod tests {
             fs::read_to_string(source_config).unwrap(),
             r#"{"image":"alpine:3.19"}"#
         );
+    }
+
+    #[test]
+    fn test_in_guest_long_compose_rejects_parent_override_in_any_dependency_or_merge() {
+        for source in [
+            "services:\n  app:\n    image: fixed\n  dependency:\n    cgroup_parent: other.slice\n",
+            "services:\n  app:\n    cgroup_parent: !override agentifyworkloads.slice\n",
+            "services:\n  app:\n    ? !override cgroup_parent\n    : other.slice\n",
+        ] {
+            let value: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+            assert!(reject_workload_cgroup_yaml(&value).is_err());
+        }
+        reject_workload_cgroup_yaml(
+            &serde_yaml::from_str("services:\n  app:\n    image: fixed\n").unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]

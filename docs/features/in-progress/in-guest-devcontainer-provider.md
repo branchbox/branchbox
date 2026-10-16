@@ -173,3 +173,30 @@ preserved by the safe literal policy; account/admin seed values and framework en
 arrive through the signed assignment's typed project-environment env file. Model/provider identity
 such as `OPENAI_API_KEY` remains reserved for the fixed provider execution lane and cannot be
 persisted through project environment.
+
+
+## Local validation: 2026-10-15
+
+The preparation/renewal change passed a local Linux ARM64 check with Rust/Cargo 1.89.0
+(`rustc` commit `29483883eed69d5fb4db01964cdf2af4d86e9cb2`) and matching rustfmt/Clippy.
+The code-only 171-file source manifest SHA-256 was
+`636b4f0ecd755a02db85ba7b0443f56d8486cb2b39bcf694b36406d0e9e4d30e`;
+this documentation-only record was appended afterward, with executable inputs unchanged.
+
+- `cargo test --locked --offline --workspace --all-features --no-fail-fast -- --test-threads=1 --nocapture`:
+  **1,036 passed, 0 failed, 27 ignored**, including 17 documentation tests. Cargo executed the
+  default workspace tests because Nextest was unavailable; this was not a literal Nextest run.
+- Formatting, workspace/all-target/all-feature Clippy with `-D warnings`, private-item Rustdoc
+  with `-D warnings`, and the debug workspace build passed on that same toolchain.
+- The built CLI's help/version commands passed and advertised `in-guest-private-preparation`.
+  Nine agent harness regressions passed. The real disposable IPC lifecycle with a local control-plane
+  stub started and tore down its feature, retried workflow delivery, and durably acknowledged event 3.
+- Focused receipt tests covered v1 compatibility, v2 private input identities and refusal cases.
+  The actual v3 CLI failure-path fixture reached the private config and removed only owned residue;
+  its Docker/Dev Containers executables were test doubles.
+
+The 27 ignored cases stayed ignored; two opt-in Docker tests returned capability skips.
+Actual Docker/Compose parser and manual CLI matrix outcomes, the full Docker agent harness,
+AMD64/native guest placement and continuity, cross-platform checks, release build, coverage/audit,
+and docs-site/macOS checks remain unverified for this change. These results qualify the named
+local checks and do not establish release readiness or native retained-session acceptance.

@@ -1888,19 +1888,40 @@ bare
         // fall back to the main repository's status.
         let linked = temp_dir.path().join("linked");
         git.create(&linked, "feature/linked", None).unwrap();
+        let gitfile = fs::read(linked.join(".git")).unwrap();
+        assert!(git.status_entries(&linked).unwrap().is_empty());
+        fs::write(temp_dir.path().join("parent-only.txt"), "parent change\n").unwrap();
+        assert!(git
+            .status_entries(temp_dir.path())
+            .unwrap()
+            .iter()
+            .any(|entry| entry.path == "parent-only.txt"));
         fs::write(
             linked.join(".git"),
             "gitdir: /nonexistent/worktrees/linked\n",
         )
         .unwrap();
-        let err = git.status_entries(&linked).unwrap_err().to_string();
-        assert!(err.contains("git status failed"), "{err}");
-        // Git versions differ on whether they name the missing gitdir ("(null)" on some).
-        assert!(err.contains("not a git repository"), "{err}");
-
-        fs::remove_file(linked.join(".git")).unwrap();
-        let err = git.status_entries(&linked).unwrap_err().to_string();
-        assert!(err.contains("not a git repository"), "{err}");
+        for missing_gitfile in [false, true] {
+            if missing_gitfile {
+                fs::remove_file(linked.join(".git")).unwrap();
+            }
+            let err = git.status_entries(&linked).unwrap_err();
+            let Error::CommandFailed(cause) = err else {
+                panic!("expected the scoped Git status command to fail: {err:?}");
+            };
+            // Git versions describe a broken gitfile differently. Require a failed
+            // status command with its diagnostic, never a spawn/parse error or a
+            // successful fallback to the parent's independently dirty status.
+            assert!(
+                cause
+                    .strip_prefix("git status failed: ")
+                    .is_some_and(|diagnostic| !diagnostic.trim().is_empty()),
+                "{cause}"
+            );
+            assert!(linked.is_dir());
+        }
+        fs::write(linked.join(".git"), gitfile).unwrap();
+        assert!(git.status_entries(&linked).unwrap().is_empty());
     }
 
     #[test]

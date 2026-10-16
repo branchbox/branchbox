@@ -1,0 +1,33 @@
+#!/bin/sh
+# Fixed managed helper. This process never changes its native provider parent.
+set -eu
+root=/run/branchbox/leases/credential-generations
+PATH=${AGENTIFY_CREDENTIAL_BASE_PATH:?}; export PATH
+unset GH_TOKEN GITHUB_TOKEN AGENTIFY_SOURCE_TOKEN GIT_ASKPASS SSH_ASKPASS
+real=$(command -v git) || exit 78
+exec 9<"$root/.operation-lock"
+/usr/bin/flock --shared --timeout 5 9 || exit 75
+test ! -e "$root/pending" && test ! -L "$root/pending" || exit 78
+IFS= read -r expiry <"$root/current/expires-at" || exit 78
+case "$expiry" in ''|*[!0-9]*) exit 78;; esac
+now=$(/usr/bin/date +%s)
+remaining=$((expiry - now))
+test "$remaining" -gt 0 || exit 78
+if test "$remaining" -gt 3300; then remaining=3300; fi
+slot=source-fetch
+skip=0
+for argument do
+  if test "$skip" = 1; then skip=0; continue; fi
+  case "$argument" in
+    -C|-c|--git-dir|--work-tree|--namespace|--config-env) skip=1 ;;
+    -*) ;;
+    *) if test "$argument" = push; then slot=source-delivery; fi; break ;;
+  esac
+done
+IFS= read -r AGENTIFY_SOURCE_TOKEN <"$root/current/$slot" || exit 78
+test -n "$AGENTIFY_SOURCE_TOKEN" || exit 78
+GIT_ASKPASS=$root/git-askpass
+GIT_TERMINAL_PROMPT=0
+export AGENTIFY_SOURCE_TOKEN GIT_ASKPASS GIT_TERMINAL_PROMPT
+# timeout owns a separate child group; the shared lock survives through it.
+exec /usr/bin/timeout --signal=TERM --kill-after=5 "$remaining" "$real" -c credential.helper= "$@"
