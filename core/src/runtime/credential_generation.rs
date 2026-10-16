@@ -338,10 +338,11 @@ pub(super) fn apply(manifest: &mut Value, path: &Path) -> Result<Option<Generati
     let state: State =
         serde_json::from_slice(&bytes(&folder.join("state.json"), owner, MAX_FILE, 0o444)?)
             .map_err(|_| refused())?;
+    let expected_generation_name = format!("g{:016x}", state.generation);
     require(
         state.schema_version == "branchbox.credential-generation-state.v1"
             && state.generation <= 8
-            && pointer == PathBuf::from(format!("g{:016x}", state.generation))
+            && pointer.as_path() == Path::new(&expected_generation_name)
             && hex(&state.offer_digest)
             && state.manifest_sha256 == spec.manifest_sha256
             && state.identity_sha256 == spec.identity_sha256
@@ -645,6 +646,7 @@ mod tests {
             "pointer",
             "epoch",
             "digest",
+            "generation_name",
             "token",
             "helper",
         ] {
@@ -657,6 +659,14 @@ mod tests {
                 "pointer" => {
                     fs::remove_file(f.source.join("current")).unwrap();
                     std::os::unix::fs::symlink("../outside", f.source.join("current")).unwrap();
+                }
+                "generation_name" => {
+                    fs::rename(
+                        f.source.join("g0000000000000000"),
+                        f.source.join("g0000000000000001"),
+                    )
+                    .unwrap();
+                    f.point(1);
                 }
                 "epoch" | "digest" => {
                     let mut state = f.state.clone();
