@@ -32,8 +32,87 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(unix)]
 #[path = "credential_generation.rs"]
 mod credential_generation;
+
+#[cfg(any(not(unix), test))]
+mod unsupported_credential_generation {
+    use crate::{Error, Result};
+    use serde_json::Value;
+    use std::path::Path;
+
+    pub(super) const WORKLOAD_SLICE: &str = "agentifyworkloads.slice";
+    pub(super) const TARGET: &str = "/run/branchbox/leases/credential-generations";
+    pub(super) const PROVIDER_WRAPPER: &str = "exit 78";
+
+    // Neither type can be minted on a platform without Unix custody primitives.
+    #[derive(Debug, Clone)]
+    pub(super) enum Admission {}
+
+    impl Admission {
+        pub(super) fn validate_requested_json(&self, _value: &Value) -> Result<()> {
+            match *self {}
+        }
+    }
+
+    #[derive(Debug)]
+    pub(super) enum GenerationGuard {}
+
+    impl GenerationGuard {
+        pub(super) fn admission(&self) -> Admission {
+            match *self {}
+        }
+    }
+
+    pub(super) fn apply(manifest: &mut Value, _path: &Path) -> Result<Option<GenerationGuard>> {
+        if manifest.get("credential_generation").is_some() {
+            return Err(Error::validation(
+                "Managed credential generations require Unix custody primitives",
+            ));
+        }
+        Ok(None)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ordinary_manifest_passes_without_mutation() {
+            let mut manifest = serde_json::json!({"version":"1", "leases":[]});
+            let original = manifest.clone();
+            assert!(apply(&mut manifest, Path::new("nonexistent-manifest"))
+                .unwrap()
+                .is_none());
+            assert_eq!(manifest, original);
+            // Compile the closed adapter's complete interface on Unix test hosts.
+            let _: fn(&Admission, &Value) -> Result<()> = Admission::validate_requested_json;
+            let _: fn(&GenerationGuard) -> Admission = GenerationGuard::admission;
+            assert_eq!(PROVIDER_WRAPPER, "exit 78");
+            assert_eq!(TARGET, "/run/branchbox/leases/credential-generations");
+            assert_eq!(WORKLOAD_SLICE, "agentifyworkloads.slice");
+        }
+
+        #[test]
+        fn any_generation_key_refuses_without_mutation_or_filesystem_access() {
+            for value in [
+                Value::Null,
+                serde_json::json!({}),
+                serde_json::json!("malformed"),
+            ] {
+                let mut manifest =
+                    serde_json::json!({"version":"3", "credential_generation":value});
+                let original = manifest.clone();
+                assert!(apply(&mut manifest, Path::new("nonexistent-manifest")).is_err());
+                assert_eq!(manifest, original);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+use unsupported_credential_generation as credential_generation;
 
 const LEGACY_MANIFEST_VERSION: &str = "1";
 const MANAGED_MANIFEST_VERSION: &str = "2";

@@ -625,7 +625,10 @@ mod unix {
                 let (source, repository, workspace, _, scope) = fixture();
                 fs::remove_file(workspace.join(GENERATED[0])).unwrap();
                 let run = tempfile::tempdir().unwrap();
-                let assignment = run.path().join("assignment.json");
+                // macOS temp paths can start at the /var symlink. The producer
+                // deliberately refuses aliases, so fixture roots must be physical.
+                let run_root = run.path().canonicalize().unwrap();
+                let assignment = run_root.join("assignment.json");
                 let runtime_uid = unsafe { libc::geteuid() };
                 fs::write(
                     &assignment,
@@ -639,9 +642,7 @@ mod unix {
                 .unwrap();
                 use std::os::unix::ffi::OsStrExt;
                 let digest = format!("{:x}", Sha256::digest(workspace.as_os_str().as_bytes()));
-                let stage = run
-                    .path()
-                    .join(format!("branchbox-compose-{}", &digest[..16]));
+                let stage = run_root.join(format!("branchbox-compose-{}", &digest[..16]));
                 fs::create_dir(&stage).unwrap();
                 fs::set_permissions(&stage, fs::Permissions::from_mode(0o700)).unwrap();
                 for (name, bytes) in [
@@ -724,6 +725,34 @@ mod unix {
                 configuration.files[0].sha256,
                 changed.private_configuration.unwrap().files[0].sha256
             );
+        }
+
+        #[test]
+        fn private_stage_refuses_symlinked_assignment_roots() {
+            let fixture = PrivateFixture::new();
+            let physical_run = fixture._run.path().canonicalize().unwrap();
+            assert_eq!(fixture.assignment.parent().unwrap(), physical_run);
+            assert_eq!(fixture.stage.canonicalize().unwrap(), fixture.stage);
+            fixture.capture().unwrap().unwrap();
+            let alias_root = tempfile::tempdir().unwrap();
+            let alias = alias_root.path().canonicalize().unwrap().join("run-alias");
+            symlink(&physical_run, &alias).unwrap();
+            let error = capture_with_configuration(
+                &alias.join("assignment.json"),
+                &fixture.repository,
+                &fixture.workspace,
+                "aex-proof",
+                &fixture.scope,
+                Some(&fixture.stage),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::Io(ref io) if matches!(
+                    io.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)
+                )),
+                "aliased assignment root must fail no-follow directory traversal: {error}"
+            );
+            assert!(fixture.capture().unwrap().is_some());
         }
 
         #[test]
