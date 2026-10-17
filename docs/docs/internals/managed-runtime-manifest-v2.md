@@ -66,6 +66,47 @@ For example:
 The complete manifest also carries the run, outer-runtime, repository, branch, workspace, and
 published-port fields required by version 1.
 
+
+## Signed workspace topology in version 3
+
+Current source builds can bind the reviewed container workspace and omitted connectors in the
+version-3 assignment. These optional fields must appear together; an empty omission set is explicit:
+
+```json
+{
+  "version": "3",
+  "workspace_folder": "/workspaces/reviewed-project",
+  "omitted_services": ["proxy"],
+  "workspace_consumer": {"uid": 1001, "gid": 1001},
+  "service_images": {
+    "app": "registry.example/team/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
+```
+
+This excerpt accompanies the required run, repository, branch and lease fields. The outer operator
+binds it to the reviewed source commit and immutable images. `workspace_folder` must be a literal,
+normalized path below `/workspaces/`; `/workspaces/main` is reserved for the Git projection and
+refused. BranchBox replaces the repository's workspace folder with the assigned path, mounts the
+canonical task worktree there, and checks that the inspected primary container has exactly that
+writable bind before provider execution. The recorded provider working directory must also match.
+
+`omitted_services` contains at most 32 Compose connector names. Each is at most 64 ASCII characters,
+begins with an alphanumeric character, and otherwise uses alphanumerics, `_`, `-` or `.`. BranchBox's
+resolved connector set must equal this reviewed set. A missing connector, unexpected omission,
+omitted primary service or incomplete image map fails; repository names do not supply defaults.
+Older assignments without these two fields retain their existing topology behavior.
+
+Use `branchbox runtime-capabilities` to check a staged binary without repository access. It always
+prints one versioned JSON document; `managed_workspace_contract_v1` and
+`preloaded_compose_sanitization_v1` describe the supported guarantees. General clients can read the
+same guarantees as `managed-workspace-contract` and `preloaded-compose-sanitization` in
+`branchbox version --json`. See the [JSON contract](../reference/json-contract.md#runtime-capabilities).
+
+Private staged Compose inputs ignore ambient repository `.env` files. Retained fields reject
+unescaped `$VAR` or `${VAR}` before Compose runs; use explicit static values, `$$` for container-side
+expansion, or signed raw project-environment materialization for primary-service configuration.
+
 ## Preloaded service images
 
 A version 2 assignment can opt into build-free startup by binding Compose service names to exact

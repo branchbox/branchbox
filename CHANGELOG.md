@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- Generic managed v3 assignments can bind the reviewed workspace path and omitted connector set
+  without losing retained private preparation receipts. Startup rejects mismatched topology;
+  execution verifies the exact writable task bind and provider working directory. The JSON-only
+  `runtime-capabilities` probe and `version --json` report the linked contract guarantees.
+
 - Explicit managed v3 assignments can bind a fixed credential generation directory. Git/gh
   children resolve current material under a bounded operation lock; pending installations
   refuse operations, and only verified committed generations advance credential expiry.

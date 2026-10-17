@@ -56,6 +56,7 @@ pub fn capabilities() -> Vec<&'static str> {
         atomic_fs::CAPABILITIES,
         workflows::feature::CAPABILITIES,
         workflows::teardown_plan::CAPABILITIES,
+        runtime::CAPABILITIES,
     ]
     .concat()
 }
@@ -71,6 +72,7 @@ mod tests {
             .iter()
             .chain(workflows::feature::CAPABILITIES)
             .chain(workflows::teardown_plan::CAPABILITIES)
+            .chain(runtime::CAPABILITIES)
             .copied()
             .collect();
         assert_eq!(capabilities, expected);

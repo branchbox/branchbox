@@ -113,6 +113,11 @@ mod unsupported_credential_generation {
 
 #[cfg(not(unix))]
 use unsupported_credential_generation as credential_generation;
+/// Managed-runtime guarantees advertised by the exact linked core implementation.
+pub(crate) const CAPABILITIES: &[&str] = &[
+    "managed-workspace-contract",
+    "preloaded-compose-sanitization",
+];
 
 const LEGACY_MANIFEST_VERSION: &str = "1";
 const MANAGED_MANIFEST_VERSION: &str = "2";
@@ -391,6 +396,8 @@ pub struct InGuestFacadePlan {
     manifest_path: PathBuf,
     run_id: String,
     tunnel_placement: InGuestTunnelPlacement,
+    workspace_folder: Option<String>,
+    omitted_services: Option<BTreeSet<String>>,
     published_ports: Vec<RuntimePort>,
     service_images: BTreeMap<String, String>,
     mounts: Vec<InGuestMount>,
@@ -407,6 +414,8 @@ impl InGuestFacadePlan {
             manifest_path: PathBuf::new(),
             run_id: String::new(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
+            workspace_folder: None,
+            omitted_services: None,
             published_ports: Vec::new(),
             service_images: BTreeMap::new(),
             mounts: Vec::new(),
@@ -462,6 +471,14 @@ impl InGuestFacadePlan {
 
     pub fn tunnel_placement(&self) -> InGuestTunnelPlacement {
         self.tunnel_placement
+    }
+
+    pub fn workspace_folder(&self) -> Option<&str> {
+        self.workspace_folder.as_deref()
+    }
+
+    pub fn omitted_services(&self) -> Option<&BTreeSet<String>> {
+        self.omitted_services.as_ref()
     }
 
     pub fn service_images(&self) -> &BTreeMap<String, String> {
@@ -1123,6 +1140,10 @@ struct AssignmentManifest {
     lease_id: String,
     outer_runtime_id: String,
     workspace: PathBuf,
+    #[serde(default)]
+    workspace_folder: Option<String>,
+    #[serde(default)]
+    omitted_services: Option<BTreeSet<String>>,
     repository: AssignedRepository,
     task_branch: String,
     tunnel_placement: InGuestTunnelPlacement,
@@ -1789,7 +1810,20 @@ impl InGuestRuntimeProvider {
             } else {
                 (BTreeMap::new(), BTreeSet::new())
             };
-        validate_container_inspection(&output.stdout, &signed_mounts, &forbidden_environment)
+        validate_container_inspection(&output.stdout, &signed_mounts, &forbidden_environment)?;
+        if let Some(identity) = metadata.in_guest.as_ref() {
+            let state = Self::read_state(&identity.state_path)?;
+            let assignment = load_assignment(&state.manifest_path)?;
+            if let Some(folder) = assignment.manifest.workspace_folder.as_deref() {
+                validate_managed_workspace_runtime(
+                    folder,
+                    metadata.workspace_folder.as_deref(),
+                    &output.stdout,
+                    &state.worktree_path,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn verify_workload_cgroup(&self, container: &str) -> Result<()> {
@@ -3456,6 +3490,13 @@ impl RuntimeProvider for InGuestRuntimeProvider {
             Error::validation(format!("Could not read in-guest runtime config: {err}"))
         })?;
         let workspace_folder = effective_workspace_folder(&config, context.worktree_path);
+        if let Some(approved) = assignment.manifest.workspace_folder.as_deref() {
+            if workspace_folder != approved {
+                return Err(Error::validation(format!(
+                    "Managed workspace folder changed after assignment validation: expected '{approved}', observed '{workspace_folder}'"
+                )));
+            }
+        }
         let container_user = configured_container_user(&config);
         let mut workspace_paths = workspace_candidates(context.worktree_path)
             .into_iter()
@@ -4020,6 +4061,8 @@ pub fn load_in_guest_facade_plan(
         manifest_path: assignment.manifest_path,
         run_id: assignment.manifest.run_id,
         tunnel_placement: assignment.manifest.tunnel_placement,
+        workspace_folder: assignment.manifest.workspace_folder,
+        omitted_services: assignment.manifest.omitted_services,
         published_ports: assignment.manifest.published_ports,
         service_images: assignment.manifest.service_images,
         mounts: assignment.mounts,
@@ -4055,6 +4098,37 @@ fn load_assignment(manifest_path: &Path) -> Result<LoadedAssignment> {
     validate_git_revision(&manifest.repository.revision)?;
     validate_ports(&manifest.published_ports)?;
     validate_workspace_consumer(&manifest)?;
+    if let Some(folder) = manifest.workspace_folder.as_deref() {
+        if manifest.version != WORKSPACE_CONSUMER_MANIFEST_VERSION
+            || manifest.service_images.is_empty()
+        {
+            return Err(Error::validation(
+                "A managed workspace folder requires version 3 preloaded-image assignment",
+            ));
+        }
+        validate_managed_workspace_folder(folder)?;
+        let omitted = manifest.omitted_services.as_ref().ok_or_else(|| {
+            Error::validation("Managed workspace topology requires an explicit omitted-service set")
+        })?;
+        if omitted.len() > 32
+            || omitted.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 64
+                    || !name.as_bytes()[0].is_ascii_alphanumeric()
+                    || !name.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    })
+            })
+        {
+            return Err(Error::validation(
+                "Managed omitted-service names are invalid",
+            ));
+        }
+    } else if manifest.omitted_services.is_some() {
+        return Err(Error::validation(
+            "Omitted-service set requires a managed workspace topology",
+        ));
+    }
     validate_service_images(&manifest.version, &manifest.service_images)?;
     validate_port_proxy_image(
         &manifest.version,
@@ -5800,6 +5874,97 @@ fn validate_container_inspection(
     Ok(())
 }
 
+/// Version 3 assignments may pin the container path independently from the
+/// repository's devcontainer.json. A literal path is required so the worktree
+/// bind, provider cwd, and caller's prompt refer to the same directory.
+pub(crate) fn validate_managed_workspace_folder(folder: &str) -> Result<()> {
+    // The generated facade mounts the common Git directory at this path's
+    // .git child. A task worktree bound here already has a .git file, so the
+    // nested directory bind would mask it or prevent the container from booting.
+    if folder == "/workspaces/main" {
+        return Err(Error::validation(
+            "Managed workspace folder overlaps the reserved main Git mount",
+        ));
+    }
+    let segments = folder
+        .strip_prefix("/workspaces/")
+        .ok_or_else(|| Error::validation("Managed workspace folder must be below /workspaces"))?;
+    if folder.len() > 200
+        || segments.is_empty()
+        || segments.split('/').count() > 4
+        || segments.split('/').any(|segment| {
+            segment.is_empty()
+                || segment.len() > 64
+                || !segment.as_bytes()[0].is_ascii_alphanumeric()
+                || !segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        })
+    {
+        return Err(Error::validation(
+            "Managed workspace folder must be a normalized path below /workspaces",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_workspace_bind(source: &[u8], worktree_path: &Path, folder: &str) -> Result<()> {
+    let documents: serde_json::Value = serde_json::from_slice(source).map_err(|error| {
+        Error::validation(format!(
+            "Docker returned invalid workspace inspection JSON: {error}"
+        ))
+    })?;
+    let container = documents
+        .as_array()
+        .and_then(|documents| documents.first())
+        .ok_or_else(|| Error::validation("Docker returned no container inspection record"))?;
+    let expected_source = fs::canonicalize(worktree_path).map_err(|error| {
+        Error::validation(format!(
+            "Cannot resolve the managed task worktree '{}': {error}",
+            worktree_path.display()
+        ))
+    })?;
+    let mounts = container
+        .get("Mounts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::validation("Primary container has no inspected mounts"))?;
+    let observed = mounts
+        .iter()
+        .filter(|mount| {
+            mount.get("Destination").and_then(serde_json::Value::as_str) == Some(folder)
+        })
+        .collect::<Vec<_>>();
+    if observed.len() != 1
+        || observed[0].get("Type").and_then(serde_json::Value::as_str) != Some("bind")
+        || observed[0].get("RW").and_then(serde_json::Value::as_bool) != Some(true)
+        || observed[0]
+            .get("Source")
+            .and_then(serde_json::Value::as_str)
+            .map(Path::new)
+            != Some(expected_source.as_path())
+    {
+        return Err(Error::validation(format!(
+            "Primary container lacks the exact writable task worktree bind at '{folder}' from '{}'",
+            expected_source.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_managed_workspace_runtime(
+    assigned_folder: &str,
+    provider_workdir: Option<&str>,
+    inspected_container: &[u8],
+    worktree_path: &Path,
+) -> Result<()> {
+    if provider_workdir != Some(assigned_folder) {
+        return Err(Error::validation(
+            "Provider working directory differs from the managed workspace assignment",
+        ));
+    }
+    validate_workspace_bind(inspected_container, worktree_path, assigned_folder)
+}
+
 fn contains_supervisor_mount(value: &str, allowed_sources: &BTreeSet<PathBuf>) -> bool {
     let normalized = value.to_ascii_lowercase();
     contains_project_docker_reference(&normalized)
@@ -6447,10 +6612,13 @@ mod tests {
         for (uid, gid) in [(runtime_uid, consumer_gid), (consumer_uid, runtime_gid)] {
             manifest["workspace_consumer"] = serde_json::json!({"uid":uid,"gid":gid});
             private_write(&manifest_path, &serde_json::to_vec(&manifest).unwrap());
-            assert!(require_secure_in_guest_launch_assignment(&manifest_path)
+            let refusal = require_secure_in_guest_launch_assignment(&manifest_path)
                 .unwrap_err()
-                .to_string()
-                .contains("distinct from the BranchBox runtime"));
+                .to_string();
+            assert!(
+                refusal.contains("distinct from the BranchBox runtime"),
+                "{refusal}"
+            );
         }
     }
 
@@ -7241,6 +7409,156 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn managed_workspace_assignment_requires_paired_reviewed_topology_and_preloaded_images() {
+        let (_root, manifest, _provider_secret) = managed_assignment_fixture();
+        let mut assignment: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        assignment["version"] = serde_json::json!("3");
+        assignment["workspace_consumer"] = serde_json::json!({"uid": 1001, "gid": 1001});
+        assignment["published_ports"] = serde_json::json!([]);
+        assignment["leases"] = serde_json::json!([]);
+        assignment["service_images"] = serde_json::json!({
+            "app": format!("registry.example/team/app@sha256:{}", "b".repeat(64))
+        });
+        assignment["workspace_folder"] = serde_json::json!("/workspaces/team/reviewed-project");
+        assignment["omitted_services"] = serde_json::json!(["proxy"]);
+        private_write(&manifest, &serde_json::to_vec(&assignment).unwrap());
+        let loaded = load_assignment(&manifest).unwrap();
+        assert_eq!(
+            loaded.manifest.workspace_folder.as_deref(),
+            Some("/workspaces/team/reviewed-project")
+        );
+        assert_eq!(
+            loaded.manifest.omitted_services,
+            Some(BTreeSet::from(["proxy".to_string()]))
+        );
+
+        for (patch, expected) in [
+            (
+                serde_json::json!({"workspace_folder": null}),
+                "Omitted-service set requires",
+            ),
+            (
+                serde_json::json!({"omitted_services": null}),
+                "requires an explicit omitted-service set",
+            ),
+            (
+                serde_json::json!({"version": "2", "workspace_consumer": null}),
+                "requires version 3 preloaded-image assignment",
+            ),
+            (
+                serde_json::json!({"service_images": {}}),
+                "requires version 3 preloaded-image assignment",
+            ),
+            (
+                serde_json::json!({"workspace_folder": "/workspaces/main"}),
+                "overlaps the reserved main Git mount",
+            ),
+            (
+                serde_json::json!({"omitted_services": [""]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": ["_proxy"]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": ["proxy/sidecar"]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": ["x".repeat(65)]}),
+                "omitted-service names are invalid",
+            ),
+            (
+                serde_json::json!({"omitted_services": (0..33).map(|index| format!("proxy-{index}")).collect::<Vec<_>>()}),
+                "omitted-service names are invalid",
+            ),
+        ] {
+            let mut invalid = assignment.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                invalid[key] = value.clone();
+            }
+            private_write(&manifest, &serde_json::to_vec(&invalid).unwrap());
+            let refusal = load_assignment(&manifest).unwrap_err().to_string();
+            assert!(refusal.contains(expected), "{patch}: {refusal}");
+        }
+
+        assignment["omitted_services"] = serde_json::json!([]);
+        private_write(&manifest, &serde_json::to_vec(&assignment).unwrap());
+        assert_eq!(
+            load_assignment(&manifest)
+                .unwrap()
+                .manifest
+                .omitted_services,
+            Some(BTreeSet::new()),
+            "a reviewed topology can explicitly omit no connectors"
+        );
+        assignment
+            .as_object_mut()
+            .unwrap()
+            .remove("workspace_folder");
+        assignment
+            .as_object_mut()
+            .unwrap()
+            .remove("omitted_services");
+        private_write(&manifest, &serde_json::to_vec(&assignment).unwrap());
+        let legacy_topology = load_assignment(&manifest).unwrap();
+        assert!(legacy_topology.manifest.workspace_folder.is_none());
+        assert!(legacy_topology.manifest.omitted_services.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agentify_generic_mobilbid_assignment_keeps_the_signed_service_and_workspace_contract() {
+        // Match the producer's generic v3 shape, including the fields previously
+        // rejected by deny_unknown_fields; no repository or image is fetched.
+        let (_root, manifest, _provider_secret) = managed_assignment_fixture();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["version"] = serde_json::json!("3");
+        value["workspace_consumer"] = serde_json::json!({"uid": 1000, "gid": 1000});
+        value["workspace_folder"] = serde_json::json!("/workspaces/mobilbid");
+        value["omitted_services"] = serde_json::json!(["cloudflared"]);
+        value["repository"]["revision"] =
+            serde_json::json!("e5413b629681d9b893db6ad1f3e63b5ccacb9a67");
+        value["task_branch"] = serde_json::json!("pilot/mobilbid-retained");
+        value["leases"] = serde_json::json!([]);
+        let images: BTreeMap<_, _> = ["rails-app", "postgres", "redis", "cache", "mailpit"]
+            .into_iter()
+            .map(|service| {
+                (
+                    service.to_string(),
+                    format!(
+                        "registry.example/mobilbid/{service}@sha256:{}",
+                        "b".repeat(64)
+                    ),
+                )
+            })
+            .collect();
+        value["service_images"] = serde_json::to_value(&images).unwrap();
+        value["port_proxy_image"] = serde_json::json!(format!(
+            "registry.example/mobilbid/port-proxy@sha256:{}",
+            "c".repeat(64)
+        ));
+        private_write(&manifest, &serde_json::to_vec(&value).unwrap());
+        let loaded = load_assignment(&manifest).unwrap();
+        assert_eq!(loaded.manifest.service_images, images);
+        assert_eq!(
+            loaded.manifest.workspace_folder.as_deref(),
+            Some("/workspaces/mobilbid")
+        );
+        assert_eq!(
+            loaded.manifest.omitted_services,
+            Some(BTreeSet::from(["cloudflared".to_string()]))
+        );
+        assert_eq!(loaded.manifest.published_ports[0].host, 3000);
+        assert_eq!(loaded.manifest.published_ports[0].runtime, 3000);
+        assert_eq!(loaded.manifest.task_branch, "pilot/mobilbid-retained");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn managed_manifest_exposes_preloaded_service_image_bindings() {
         let (_root, manifest, _provider_secret) = managed_assignment_fixture();
         let mut value: serde_json::Value =
@@ -7319,6 +7637,8 @@ mod tests {
             manifest_path: manifest,
             run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
+            workspace_folder: None,
+            omitted_services: None,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
             mounts: assignment.mounts.clone(),
@@ -7378,6 +7698,8 @@ mod tests {
             manifest_path: manifest,
             run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
+            workspace_folder: None,
+            omitted_services: None,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
             mounts: assignment.mounts.clone(),
@@ -8776,6 +9098,82 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
     }
 
     #[test]
+    fn managed_workspace_folder_requires_a_literal_normalized_path() {
+        for folder in ["/workspaces/reviewed-project", "/workspaces/team/project"] {
+            validate_managed_workspace_folder(folder).unwrap();
+        }
+        for folder in [
+            "/workspaces",
+            "/workspaces/",
+            "/workspaces/main",
+            "/workspaces/../run",
+            "/workspaces/a/./b",
+            "/workspaces//project",
+            "/workspace/project",
+            "/workspaces/${localWorkspaceFolderBasename}",
+            "/workspaces/.hidden",
+            "/workspaces/project/",
+        ] {
+            assert!(
+                validate_managed_workspace_folder(folder).is_err(),
+                "accepted {folder}"
+            );
+        }
+    }
+
+    #[test]
+    fn inspected_primary_must_bind_the_exact_task_worktree_at_the_approved_path() {
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path().join("aex-task");
+        fs::create_dir(&worktree).unwrap();
+        let canonical_worktree = fs::canonicalize(&worktree).unwrap();
+        let mount = serde_json::json!({
+            "Type": "bind", "Source": canonical_worktree, "Destination": "/workspaces/reviewed-project",
+            "RW": true,
+        });
+        let inspect = |mounts: Vec<serde_json::Value>| {
+            serde_json::to_vec(&serde_json::json!([{"Mounts": mounts}])).unwrap()
+        };
+        validate_managed_workspace_runtime(
+            "/workspaces/reviewed-project",
+            Some("/workspaces/reviewed-project"),
+            &inspect(vec![mount.clone()]),
+            &worktree,
+        )
+        .unwrap();
+        assert!(validate_managed_workspace_runtime(
+            "/workspaces/reviewed-project",
+            Some("/workspaces/aex-task"),
+            &inspect(vec![mount.clone()]),
+            &worktree,
+        )
+        .is_err());
+        for changed in [
+            serde_json::json!({"Type": "bind", "Source": root.path().join("other"),
+                "Destination": "/workspaces/reviewed-project", "RW": true}),
+            serde_json::json!({"Type": "volume", "Source": canonical_worktree,
+                "Destination": "/workspaces/reviewed-project", "RW": true}),
+            serde_json::json!({"Type": "bind", "Source": canonical_worktree,
+                "Destination": "/workspaces/aex-task", "RW": true}),
+            serde_json::json!({"Type": "bind", "Source": canonical_worktree,
+                "Destination": "/workspaces/reviewed-project", "RW": false}),
+        ] {
+            assert!(validate_workspace_bind(
+                &inspect(vec![changed]),
+                &worktree,
+                "/workspaces/reviewed-project"
+            )
+            .is_err());
+        }
+        assert!(validate_workspace_bind(
+            &inspect(vec![mount.clone(), mount]),
+            &worktree,
+            "/workspaces/reviewed-project"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn published_port_proxy_targets_only_the_inspected_primary_container() {
         assert!(IN_GUEST_PORT_PROXY_SCRIPT.contains("inspect -f '{{.Name}}' \"$container_id\""));
         assert!(IN_GUEST_PORT_PROXY_SCRIPT.contains("run -d --pull=never"));
@@ -8993,6 +9391,8 @@ fi
             manifest_path: manifest,
             run_id: assignment.manifest.run_id.clone(),
             tunnel_placement: InGuestTunnelPlacement::Outer,
+            workspace_folder: None,
+            omitted_services: None,
             published_ports: Vec::new(),
             service_images: assignment.manifest.service_images.clone(),
             mounts: assignment.mounts,

@@ -39,7 +39,7 @@ When a command fails in machine mode it prints one envelope on stdout:
 - `details` is an object whose shape depends on the code (see the table), or `null`.
 - stderr still carries the familiar `Error: …` text, unchanged from text mode.
 
-The envelope is printed only in `--json` mode. Older CLIs (0.13.x) print no envelope; their errors are on stderr only.
+The envelope is printed in machine mode (`--json`, or the JSON-only `runtime-capabilities` command). Older CLIs (0.13.x) print no envelope; their errors are on stderr only.
 
 ## Exit codes {#exit-codes}
 
@@ -105,6 +105,8 @@ New codes may be added. Treat an unknown code as a generic failure and show `mes
 |---|---|
 | `json-error-envelope` | Machine mode and the error envelope. |
 | `registry-lock` | Registry writes are locked and atomic, so concurrent commands do not lose entries. |
+| `managed-workspace-contract` | Version-3 signed workspace path and omitted connector set; inspected task bind and provider working directory must match. |
+| `preloaded-compose-sanitization` | Private sanitized Compose inputs preserve reviewed images and mounts while rejecting ambient interpolation. |
 | `write-ahead-start` | `feature list` shows a start that has not finished (see [`feature list`](#feature-list)). |
 | `teardown-plan` | `feature teardown --dry-run --json`. |
 | `teardown-discard-changes` | `feature teardown --discard-changes`, `--delete-branch`, `--force-delete-branch`. |
@@ -126,6 +128,21 @@ New codes may be added. Treat an unknown code as a generic failure and show `mes
 - Dates are RFC 3339 strings.
 
 ## Payloads {#payloads}
+
+
+### `runtime-capabilities` {#runtime-capabilities}
+
+This compatibility probe for staged managed-runtime binaries always selects machine mode and needs
+no repository or Docker access. It takes no `--json` flag and prints:
+
+```json
+{"schema_version":1,"managed_workspace_contract_v1":true,"preloaded_compose_sanitization_v1":true}
+```
+
+The booleans reflect the linked core implementation. They correspond to the
+`managed-workspace-contract` and `preloaded-compose-sanitization` strings in `version --json`.
+An older binary without this command exits 2. These are implementation guarantees; they do not
+prove that a particular assignment, repository or VM passed end-to-end validation.
 
 ### `feature list --json` {#feature-list}
 
