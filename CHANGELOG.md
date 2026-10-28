@@ -339,6 +339,11 @@ Text-mode output and the manual harness:
 
 ### Added
 
+- Maintainers can prepare and explicitly update the Homebrew publishing secret with
+  `scripts/renew-homebrew-token.py`. The helper defaults to an offline plan, supports
+  metadata and local syntax checks, and accepts replacement PATs only at a hidden terminal
+  prompt. `docs/HOMEBREW_SETUP.md` documents human renewal and least repository permissions.
+
 #### CLI and core
 
 - `branchbox version --json` prints `{"version", "contract_version", "capabilities"}`, so tools

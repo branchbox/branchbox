@@ -24,6 +24,8 @@ jobs:
         run: scripts/review-preflight.sh
       - name: Run agent harness regressions
         run: python3 -B -I scripts/tests/test_agent_e2e.py -v
+      - name: Test local Homebrew credential helper with dummy data
+        run: python3 -B -I scripts/tests/test_renew_homebrew_token.py -v
 
   quality_checks:
     name: Quality Checks
