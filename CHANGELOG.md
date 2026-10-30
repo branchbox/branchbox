@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Update `rustls-webpki` to 0.103.16 and `webpki-roots` to 1.0.10 to address
+  RUSTSEC-2026-0382 and RUSTSEC-2026-0381 without changing the dependency graph.
+
 #### CLI and core
 
 - Explicit managed v3 assignments can bind a fixed credential generation directory. Git/gh
