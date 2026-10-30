@@ -351,9 +351,10 @@ branchbox --version
 
 **Troubleshooting:**
 - If the job fails, check the workflow logs: `gh run view`
-- Ensure `HOMEBREW_TAP_TOKEN` secret is set in repository settings
+- Ensure `HOMEBREW_TAP_TOKEN` is set in `branchbox/branchbox` repository Actions secrets; it grants Contents write access only to `branchbox/homebrew-tap`
+- Follow [Homebrew token setup and renewal](docs/HOMEBREW_SETUP.md) for human PAT renewal, an offline dry run, read-only metadata checks, and the locally run helper. Do not trigger or rerun a release just to test a secret update
 - The job only runs for stable releases (skipped for pre-releases)
-- See workflow file: `.github/workflows/release.yml` (lines 354-496)
+- See workflow file: [`.github/workflows/release.yml`](.github/workflows/release.yml), `update-homebrew` job
 
 ### 2. Update Scoop Manifest (Future)
 
