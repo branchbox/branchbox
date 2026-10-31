@@ -1239,15 +1239,14 @@ impl FeatureWorkflow {
         }
 
         // Set up VS Code workspace customization for visual differentiation
-        if let Err(err) = self.setup_vscode_workspace(
+        self.customize_editor_workspace(
+            runtime_kind,
             &worktree_path,
             &work_feature,
             &summary_color,
             feature_url.as_deref(),
-        ) {
-            tracing::warn!("Failed to set up VS Code workspace customization: {}", err);
-            warnings.push(format!("Failed to set up VS Code workspace: {}", err));
-        }
+            &mut warnings,
+        );
 
         Ok(StartSummary {
             work_feature,
@@ -4022,6 +4021,30 @@ impl FeatureWorkflow {
         validation::validate_host_environment()
     }
 
+    /// The last step of a successful start: the VS Code customization of
+    /// [`Self::setup_vscode_workspace`], for the runtimes that take it (see
+    /// [`customizes_editor_workspace`]). The feature is already started, so a failure is a
+    /// warning.
+    fn customize_editor_workspace(
+        &self,
+        runtime: RuntimeProviderKind,
+        worktree_path: &Path,
+        work_feature: &str,
+        color: &Option<String>,
+        feature_url: Option<&str>,
+        warnings: &mut Vec<String>,
+    ) {
+        if !customizes_editor_workspace(runtime) {
+            return;
+        }
+        if let Err(err) =
+            self.setup_vscode_workspace(worktree_path, work_feature, color, feature_url)
+        {
+            tracing::warn!("Failed to set up VS Code workspace customization: {}", err);
+            warnings.push(format!("Failed to set up VS Code workspace: {}", err));
+        }
+    }
+
     /// Set up VS Code workspace customization for visual differentiation.
     fn setup_vscode_workspace(
         &self,
@@ -4363,6 +4386,24 @@ fn require_forced_in_guest_teardown(in_guest: bool, request: &TeardownRequest) -
         ));
     }
     Ok(())
+}
+
+/// Whether `feature start` writes VS Code customization (Peacock colours, window title, the
+/// feature-URL task) into a worktree started on `runtime`.
+///
+/// That customization is a convenience for a person opening their own worktree in an editor. A
+/// managed in-guest task worktree belongs to an independent coding consumer instead, and trusted
+/// tooling checks it against the approved revision: a `.vscode/` written there after the prepared
+/// overlay was measured would be outside that provenance, show up as an untracked file (or change
+/// a committed `.vscode/settings.json`), and in a delegated v3 workspace stay runtime-owned where
+/// the consumer cannot manage it.
+fn customizes_editor_workspace(runtime: RuntimeProviderKind) -> bool {
+    match runtime {
+        RuntimeProviderKind::Container
+        | RuntimeProviderKind::Sbx
+        | RuntimeProviderKind::LocalVm => true,
+        RuntimeProviderKind::InGuest => false,
+    }
 }
 
 const SBX_COMPOSE_INPUT_PREFIX: &str = ".branchbox-sbx-compose-input-";
@@ -13444,6 +13485,146 @@ volumes:
             Some("#old-color")
         );
         assert!(settings.get("workbench.colorCustomizations").is_some());
+    }
+
+    #[test]
+    fn editor_customization_applies_to_every_runtime_except_in_guest() {
+        for runtime in [
+            RuntimeProviderKind::Container,
+            RuntimeProviderKind::Sbx,
+            RuntimeProviderKind::LocalVm,
+        ] {
+            assert!(customizes_editor_workspace(runtime), "{runtime}");
+        }
+        assert!(!customizes_editor_workspace(RuntimeProviderKind::InGuest));
+    }
+
+    /// `git status --porcelain` of `worktree`, listing untracked files one by one.
+    fn porcelain_status(worktree: &Path) -> String {
+        let output = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .current_dir(worktree)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git status: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// The editor step of an in-guest start writes nothing: no `.vscode/` appears in the task
+    /// worktree, and a committed `.vscode/settings.json` stays as committed. The same step on the
+    /// host runtime still writes both files, so the test notices if the gate goes away.
+    #[test]
+    fn in_guest_start_leaves_the_editor_workspace_untouched() {
+        let committed = "{\n  \"editor.tabSize\": 2\n}\n";
+        for commits_settings in [false, true] {
+            let (temp, repo) = nested_test_repo();
+            if commits_settings {
+                fs::create_dir(repo.join(".vscode")).unwrap();
+                fs::write(repo.join(".vscode/settings.json"), committed).unwrap();
+                git_in(&repo, &["add", ".vscode/settings.json"]);
+                git_in(&repo, &["commit", "-q", "-m", "Share editor settings"]);
+            }
+            let worktree = temp.path().join("managed");
+            git_in(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    "feature/managed",
+                    worktree.to_str().unwrap(),
+                ],
+            );
+            let workflow = FeatureWorkflow::new(&repo).unwrap();
+            let color = Some(generate_feature_color("managed"));
+            let mut warnings = Vec::new();
+
+            workflow.customize_editor_workspace(
+                RuntimeProviderKind::InGuest,
+                &worktree,
+                "managed",
+                &color,
+                Some("managed.dev.example.com"),
+                &mut warnings,
+            );
+
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(
+                porcelain_status(&worktree),
+                "",
+                "in-guest start changed files"
+            );
+            if commits_settings {
+                assert_eq!(
+                    fs::read_to_string(worktree.join(".vscode/settings.json")).unwrap(),
+                    committed
+                );
+                assert!(!worktree.join(".vscode/tasks.json").exists());
+            } else {
+                assert!(!worktree.join(".vscode").exists());
+            }
+
+            workflow.customize_editor_workspace(
+                RuntimeProviderKind::Container,
+                &worktree,
+                "managed",
+                &color,
+                Some("managed.dev.example.com"),
+                &mut warnings,
+            );
+
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let settings_change = if commits_settings { " M" } else { "??" };
+            assert_eq!(
+                porcelain_status(&worktree),
+                format!("{settings_change} .vscode/settings.json\n?? .vscode/tasks.json\n")
+            );
+        }
+    }
+
+    /// A host start still ends with the editor customization: byte for byte what
+    /// `setup_vscode_workspace` writes for the feature's colour and URL.
+    #[test]
+    fn host_start_still_writes_the_editor_workspace() {
+        let (temp, repo) = nested_test_repo();
+        let workflow = FeatureWorkflow::new(&repo).unwrap();
+        let summary = workflow
+            .start(StartRequest {
+                name: Some("editor".to_string()),
+                mode: StartMode::Minimal,
+                ..StartRequest::default()
+            })
+            .unwrap();
+        assert_eq!(summary.runtime.provider, RuntimeProviderKind::Container);
+        assert_eq!(summary.color, Some(generate_feature_color("editor")));
+        assert!(
+            !summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("VS Code")),
+            "{:?}",
+            summary.warnings
+        );
+        let feature_url = summary.feature_url.as_deref();
+        assert!(feature_url.is_some(), "the fixture's APP_URL gives a URL");
+
+        let expected = temp.path().join("expected");
+        fs::create_dir(&expected).unwrap();
+        workflow
+            .setup_vscode_workspace(&expected, "editor", &summary.color, feature_url)
+            .unwrap();
+        for file in [".vscode/settings.json", ".vscode/tasks.json"] {
+            assert_eq!(
+                fs::read(summary.worktree_path.join(file)).unwrap(),
+                fs::read(expected.join(file)).unwrap(),
+                "{file}"
+            );
+        }
     }
 
     #[cfg(unix)]
