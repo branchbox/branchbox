@@ -179,6 +179,10 @@ starts omit the receipt. Consumers must authenticate the trusted producer and as
 recheck physical state; this optional JSON field does not establish a retained-session capability
 or authorize a checkpoint import.
 
+A managed `in-guest` start writes no VS Code customization into the task worktree: no
+`.vscode/settings.json` or `.vscode/tasks.json` is created, and a committed
+`.vscode/settings.json` stays as committed. Starts on the other runtimes still write them.
+
 ### `feature teardown` {#teardown}
 
 **Plan** (`--dry-run --json`, always exit 0): what teardown would do, and why it would refuse.
