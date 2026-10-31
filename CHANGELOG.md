@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
-- Managed in-guest starts no longer write VS Code customization (`.vscode/settings.json` and the
-  "Open Feature URL" task) into the task worktree. That `.vscode/` appeared after the preparation
+- Managed in-guest starts no longer write the VS Code editor customization
+  (`.vscode/settings.json`) into the task worktree. That `.vscode/` appeared after the preparation
   receipt was measured, stayed owned by the runtime user in delegated v3 workspaces, showed up as
   an untracked file to trusted inspection, and changed a committed `.vscode/settings.json`.
   Starts on the other runtimes customize the editor as before.
