@@ -1,0 +1,57 @@
+name: macOS Release Build Check
+
+# Build-only validation: never invoke the release workflow or publish artifacts.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-macos-check.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Release build (${{ matrix.target }})
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Preserve release.yml's Intel cross-compilation on an ARM host.
+          - target: x86_64-apple-darwin
+            arch: x86_64
+          - target: aarch64-apple-darwin
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify runner
+        run: |
+          sw_vers
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 15
+          test "$(uname -m)" = arm64
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Match release.yml's toolchain, package, profile and target; build cold.
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --package branchbox-cli
+
+      - name: Strip and verify binary
+        run: |
+          binary="target/${{ matrix.target }}/release/branchbox"
+          strip "$binary"
+          file "$binary"
+          lipo "$binary" -verify_arch ${{ matrix.arch }}
