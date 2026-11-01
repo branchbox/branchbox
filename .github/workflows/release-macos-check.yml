@@ -54,4 +54,4 @@ jobs:
           binary="target/${{ matrix.target }}/release/branchbox"
           strip "$binary"
           file "$binary"
-          lipo -verify_arch ${{ matrix.arch }} "$binary"
+          lipo "$binary" -verify_arch ${{ matrix.arch }}
