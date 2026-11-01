@@ -142,12 +142,12 @@ jobs:
 
           # macOS Intel (cross-compile on ARM runner)
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             archive_ext: tar.gz
 
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             archive_ext: tar.gz
 
           # Windows x64
