@@ -6084,12 +6084,32 @@ fn prepare_outer_tunnel_compose_override(
         );
     }
 
+    // Plain named volumes are the only repository mounts that survive: Compose creates them in
+    // the guest for this run's project, and teardown removes them with the project. Every other
+    // repository mount is replaced below.
+    let plain_volumes = in_guest_plain_named_volumes(compose_documents);
+    let named_volume_mounts = in_guest_named_volume_mounts(compose_documents, &plain_volumes);
+    let mut declared_volumes = BTreeSet::new();
     for name in definitions.keys() {
         let service = services
             .entry(serde_yaml::Value::String(name.clone()))
             .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
             .as_mapping_mut()
             .ok_or_else(|| Error::config("Generated Compose service facade must be a mapping"))?;
+        // The primary's list is built from its signed mounts below.
+        let kept_volumes = if omitted.contains(name) || primary_service == Some(name.as_str()) {
+            Vec::new()
+        } else {
+            named_volume_mounts
+                .get(name)
+                .into_iter()
+                .flatten()
+                .map(|mount| {
+                    declared_volumes.insert(mount.source.clone());
+                    mount.to_compose()
+                })
+                .collect()
+        };
         for key in [
             "env_file",
             "volumes",
@@ -6100,11 +6120,16 @@ fn prepare_outer_tunnel_compose_override(
             "configs",
             "volumes_from",
         ] {
+            let value = if key == "volumes" {
+                kept_volumes.clone()
+            } else {
+                Vec::new()
+            };
             service.insert(
                 serde_yaml::Value::String(key.to_string()),
                 serde_yaml::Value::Tagged(Box::new(TaggedValue {
                     tag: Tag::new("!override"),
-                    value: serde_yaml::Value::Sequence(Vec::new()),
+                    value: serde_yaml::Value::Sequence(value),
                 })),
             );
         }
@@ -6226,6 +6251,42 @@ fn prepare_outer_tunnel_compose_override(
             );
             serde_yaml::Value::Mapping(mount)
         }));
+        // The primary keeps only read-only named volumes, appended after its signed mounts and
+        // never at or around one of their paths. A writable repository volume there (a provider
+        // home such as ~/.codex, or node_modules inside the worktree) would shadow what the
+        // runtime and the workspace consumer expect to find, so it stays removed.
+        let mut reserved_targets = vec![
+            PathBuf::from("/workspaces"),
+            PathBuf::from("/run/branchbox"),
+            PathBuf::from(workspace_folder),
+            PathBuf::from(CONTAINER_MAIN_GIT_TARGET),
+        ];
+        reserved_targets.extend(
+            assignment
+                .lease_mounts
+                .iter()
+                .map(|(_, target)| target.clone()),
+        );
+        reserved_targets.extend(
+            assignment
+                .spool_volumes
+                .iter()
+                .map(|(_, target)| target.clone()),
+        );
+        for mount in named_volume_mounts
+            .get(primary_service)
+            .into_iter()
+            .flatten()
+        {
+            if mount.read_only
+                && !reserved_targets.iter().any(|reserved| {
+                    in_guest_container_paths_overlap(reserved, Path::new(&mount.target))
+                })
+            {
+                declared_volumes.insert(mount.source.clone());
+                safe_volumes.push(mount.to_compose());
+            }
+        }
         primary.insert(
             serde_yaml::Value::String("volumes".to_string()),
             serde_yaml::Value::Tagged(Box::new(TaggedValue {
@@ -6233,6 +6294,24 @@ fn prepare_outer_tunnel_compose_override(
                 value: serde_yaml::Value::Sequence(safe_volumes),
             })),
         );
+    }
+
+    if !declared_volumes.is_empty() {
+        // An empty declaration lets Compose create the volume under this run's project name.
+        let document_mapping = document
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose facade must be a mapping"))?;
+        let volumes = document_mapping
+            .entry(serde_yaml::Value::String("volumes".to_string()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| Error::config("Generated Compose facade volumes must be a mapping"))?;
+        for volume in &declared_volumes {
+            volumes.insert(
+                serde_yaml::Value::String(volume.clone()),
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
+        }
     }
 
     if !assignment.spool_volumes.is_empty() {
@@ -6416,6 +6495,250 @@ fn in_guest_primary_volumes(
         serde_yaml::Value::Mapping(workspace),
         serde_yaml::Value::Mapping(git),
     ])
+}
+
+/// A repository mount of a plain named volume that the in-guest facade keeps.
+///
+/// Compose creates such a volume inside the guest, scoped to the run's project, so it carries
+/// nothing from the host and lets services share files, such as a display sidecar's X cookie.
+/// Binds, tmpfs, anonymous volumes and volumes with any top-level configuration (a driver, driver
+/// options, a fixed name, labels or `external`) stay removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InGuestNamedVolumeMount {
+    source: String,
+    target: String,
+    read_only: bool,
+}
+
+impl InGuestNamedVolumeMount {
+    fn to_compose(&self) -> serde_yaml::Value {
+        let mut mount = serde_yaml::Mapping::new();
+        mount.insert(
+            serde_yaml::Value::String("type".to_string()),
+            serde_yaml::Value::String("volume".to_string()),
+        );
+        mount.insert(
+            serde_yaml::Value::String("source".to_string()),
+            serde_yaml::Value::String(self.source.clone()),
+        );
+        mount.insert(
+            serde_yaml::Value::String("target".to_string()),
+            serde_yaml::Value::String(self.target.clone()),
+        );
+        mount.insert(
+            serde_yaml::Value::String("read_only".to_string()),
+            serde_yaml::Value::Bool(self.read_only),
+        );
+        serde_yaml::Value::Mapping(mount)
+    }
+}
+
+/// A repository volume name the facade may declare. The `branchbox` prefix stays reserved for
+/// platform volumes, such as signed tool-request spools, which the facade declares by name.
+fn is_in_guest_named_volume_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        && !name.to_ascii_lowercase().starts_with("branchbox")
+}
+
+/// A literal, normalized, absolute container path below `/`.
+fn is_in_guest_named_volume_target(target: &str) -> bool {
+    target.len() <= 512
+        && target.len() > 1
+        && target.starts_with('/')
+        && !target.ends_with('/')
+        && !target
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '$' | '\\' | ':' | ','))
+        && target[1..]
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+        && !contains_supervisor_reference(target)
+}
+
+/// Top-level volumes that every Compose input declares with an empty definition. A volume that
+/// any input configures (driver, driver options, name, labels, `external`, ...) is not plain,
+/// because Compose merges that configuration into the volume the guest would create.
+fn in_guest_plain_named_volumes(documents: &[serde_yaml::Value]) -> BTreeSet<String> {
+    let mut plain = BTreeSet::new();
+    let mut configured = BTreeSet::new();
+    for document in documents {
+        let Some(volumes) = untag_in_guest_compose_value(document)
+            .get("volumes")
+            .map(untag_in_guest_compose_value)
+            .and_then(serde_yaml::Value::as_mapping)
+        else {
+            continue;
+        };
+        for (name, declaration) in volumes {
+            let Some(name) = name.as_str() else {
+                continue;
+            };
+            let empty = match untag_in_guest_compose_value(declaration) {
+                serde_yaml::Value::Null => true,
+                serde_yaml::Value::Mapping(definition) => definition.is_empty(),
+                _ => false,
+            };
+            if empty && is_in_guest_named_volume_name(name) {
+                plain.insert(name.to_string());
+            } else {
+                configured.insert(name.to_string());
+            }
+        }
+    }
+    plain.retain(|name| !configured.contains(name));
+    plain
+}
+
+/// The container path a repository volume entry mounts at, whether or not the facade keeps it.
+fn in_guest_compose_mount_target(entry: &serde_yaml::Value) -> Option<String> {
+    match untag_in_guest_compose_value(entry) {
+        serde_yaml::Value::String(entry) => {
+            let mut parts = entry.split(':');
+            let first = parts.next()?;
+            Some(parts.next().unwrap_or(first).to_string())
+        }
+        serde_yaml::Value::Mapping(entry) => entry
+            .get(serde_yaml::Value::String("target".to_string()))
+            .and_then(serde_yaml::Value::as_str)
+            .map(ToOwned::to_owned),
+        _ => None,
+    }
+}
+
+/// Parse one repository volume entry, in short (`name:/target[:ro]`) or long form, as a plain
+/// named-volume mount. Anything else returns `None` and stays removed.
+fn in_guest_named_volume_mount(
+    entry: &serde_yaml::Value,
+    plain: &BTreeSet<String>,
+) -> Option<InGuestNamedVolumeMount> {
+    let (source, target, read_only) = match untag_in_guest_compose_value(entry) {
+        serde_yaml::Value::String(entry) => {
+            let parts = entry.split(':').collect::<Vec<_>>();
+            if !(2..=3).contains(&parts.len()) {
+                return None;
+            }
+            let mut read_only = false;
+            let mut access_modes = 0;
+            for mode in parts.get(2).copied().unwrap_or_default().split(',') {
+                match mode {
+                    "" | "cached" | "delegated" | "consistent" => {}
+                    "ro" => {
+                        read_only = true;
+                        access_modes += 1;
+                    }
+                    "rw" => access_modes += 1,
+                    _ => return None,
+                }
+            }
+            if access_modes > 1 {
+                return None;
+            }
+            (parts[0].to_string(), parts[1].to_string(), read_only)
+        }
+        serde_yaml::Value::Mapping(entry) => {
+            let allowed = ["type", "source", "target", "read_only", "consistency"];
+            if entry
+                .keys()
+                .any(|key| key.as_str().is_none_or(|key| !allowed.contains(&key)))
+            {
+                return None;
+            }
+            let field = |name: &str| entry.get(serde_yaml::Value::String(name.to_string()));
+            if field("type").and_then(serde_yaml::Value::as_str) != Some("volume")
+                || field("consistency").is_some_and(|value| value.as_str().is_none())
+            {
+                return None;
+            }
+            let read_only = match field("read_only") {
+                None => false,
+                Some(value) => value.as_bool()?,
+            };
+            (
+                field("source")?.as_str()?.to_string(),
+                field("target")?.as_str()?.to_string(),
+                read_only,
+            )
+        }
+        _ => return None,
+    };
+    (plain.contains(&source) && is_in_guest_named_volume_target(&target)).then_some(
+        InGuestNamedVolumeMount {
+            source,
+            target,
+            read_only,
+        },
+    )
+}
+
+/// Each service's kept named-volume mounts after Compose's ordered merge of the inputs. Compose
+/// merges service mounts by container path, so a later input that mounts something else at the
+/// same path (a bind, say) removes the earlier named volume instead of being dropped beside it.
+fn in_guest_named_volume_mounts(
+    documents: &[serde_yaml::Value],
+    plain: &BTreeSet<String>,
+) -> BTreeMap<String, Vec<InGuestNamedVolumeMount>> {
+    let mut merged: BTreeMap<String, Vec<(String, Option<InGuestNamedVolumeMount>)>> =
+        BTreeMap::new();
+    for document in documents {
+        let Some(services) = untag_in_guest_compose_value(document)
+            .get("services")
+            .map(untag_in_guest_compose_value)
+            .and_then(serde_yaml::Value::as_mapping)
+        else {
+            continue;
+        };
+        for (name, service) in services {
+            let Some(name) = name.as_str() else {
+                continue;
+            };
+            let Some(volumes) = untag_in_guest_compose_value(service).get("volumes") else {
+                continue;
+            };
+            let mounts = merged.entry(name.to_string()).or_default();
+            if let serde_yaml::Value::Tagged(tagged) = volumes {
+                if matches!(tagged.tag.to_string().as_str(), "!reset" | "!override") {
+                    mounts.clear();
+                }
+            }
+            let Some(entries) = untag_in_guest_compose_value(volumes).as_sequence() else {
+                continue;
+            };
+            for entry in entries {
+                let Some(target) = in_guest_compose_mount_target(entry) else {
+                    continue;
+                };
+                let kept = in_guest_named_volume_mount(entry, plain);
+                match mounts.iter_mut().find(|(existing, _)| *existing == target) {
+                    Some(slot) => slot.1 = kept,
+                    None => mounts.push((target, kept)),
+                }
+            }
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(name, mounts)| {
+            (
+                name,
+                mounts
+                    .into_iter()
+                    .filter_map(|(_, mount)| mount)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .filter(|(_, mounts)| !mounts.is_empty())
+        .collect()
+}
+
+/// Whether one container path is, or contains, the other.
+fn in_guest_container_paths_overlap(first: &Path, second: &Path) -> bool {
+    first.starts_with(second) || second.starts_with(first)
 }
 
 fn prepare_sbx_devcontainer_config(
@@ -11452,7 +11775,8 @@ volumes:
         assert!(!rendered.contains("${HOME}"));
         assert!(!rendered.contains(".1password-service-account-token"));
         assert!(!rendered.contains("ignored-db-credential"));
-        assert!(!rendered.contains("postgres-data"));
+        // A connector's plain volume goes with the connector.
+        assert!(!rendered.contains("tailscale-state"));
         assert!(!rendered.contains("127.0.0.1:2222:22"));
         assert!(!rendered.contains("never-render-this-value"));
         assert!(rendered.contains("format: raw"));
@@ -11513,7 +11837,7 @@ volumes:
                 assert!(sequence.is_empty(), "{name}.{key} retained publication");
             }
         }
-        for name in ["postgres", "cloudflared", "tailscale"] {
+        for name in ["cloudflared", "tailscale"] {
             let value = &facade["services"][name]["volumes"];
             let sequence = match value {
                 serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
@@ -11521,6 +11845,31 @@ volumes:
             };
             assert!(sequence.is_empty(), "{name} retained a repository volume");
         }
+        // The dependency keeps only its plain named volume, not its secret bind; the primary's
+        // writable provider-home volume (agentify_codex_auth) stays removed.
+        let postgres_volumes = match &facade["services"]["postgres"]["volumes"] {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden postgres volumes, got {other:?}"),
+        };
+        assert_eq!(postgres_volumes.len(), 1);
+        assert_eq!(postgres_volumes[0]["type"].as_str(), Some("volume"));
+        assert_eq!(
+            postgres_volumes[0]["source"].as_str(),
+            Some("postgres-data")
+        );
+        assert_eq!(
+            postgres_volumes[0]["target"].as_str(),
+            Some("/var/lib/postgresql/data")
+        );
+        assert_eq!(postgres_volumes[0]["read_only"].as_bool(), Some(false));
+        let declared = facade["volumes"].as_mapping().unwrap();
+        assert_eq!(declared.len(), 1);
+        assert!(declared
+            .get(serde_yaml::Value::String("postgres-data".to_string()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .is_empty());
         assert!(matches!(
             facade["services"]["cloudflared"]["profiles"],
             serde_yaml::Value::Tagged(_)
@@ -11541,6 +11890,472 @@ volumes:
         assert!(
             unsigned_environment.is_empty(),
             "an assignment without a workspace consumer must not add Git ownership exceptions"
+        );
+    }
+
+    fn overridden_sequence<'a>(
+        value: &'a serde_yaml::Value,
+        what: &str,
+    ) -> &'a [serde_yaml::Value] {
+        match value {
+            serde_yaml::Value::Tagged(tagged) => tagged.value.as_sequence().unwrap(),
+            other => panic!("expected overridden {what}, got {other:?}"),
+        }
+    }
+
+    fn named_volume(source: &str, target: &str, read_only: bool) -> serde_yaml::Value {
+        InGuestNamedVolumeMount {
+            source: source.to_string(),
+            target: target.to_string(),
+            read_only,
+        }
+        .to_compose()
+    }
+
+    /// MobilBid's devcontainer shape (amidship/mobilbid .devcontainer at b13f751c): the primary,
+    /// rails-app, joins the project default network and an internal browser-display network, and
+    /// reads the display sidecar's X cookie through the plain `browser-xauth` named volume,
+    /// mounted read-only. The facade keeps that volume on both services, read-only on the
+    /// primary, and still drops every bind.
+    #[test]
+    fn test_in_guest_keeps_plain_named_volumes_for_a_mobilbid_shaped_compose() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("mobilbid");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(devcontainer_dir.join("browser-display")).unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{
+  "name": "mobilbid-shaped",
+  "dockerComposeFile": "compose.yaml",
+  "service": "rails-app",
+  "workspaceFolder": "/workspaces/mobilbid",
+  "forwardPorts": [3000],
+  "containerEnv": {
+    "DB_HOST": "postgres",
+    "DISPLAY": "browser-display:99",
+    "E2E_BROWSER_MODE": "headful",
+    "PGPASSWORD": "fixture-only",
+    "PGUSER": "fixture-user",
+    "REDIS_CACHE_NODE_HOST": "cache",
+    "REDIS_CACHE_NODE_PORT": "6379",
+    "REDIS_NODE_ENDPOINT": "redis://redis:6379",
+    "SMTP_ADDRESS": "mailpit",
+    "SMTP_PORT": "1025",
+    "XAUTHORITY": "/browser-xauth/Xauthority"
+  }
+}"#,
+        )
+        .unwrap();
+        let compose = r#"services:
+  rails-app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    init: true
+    shm_size: 1gb
+    group_add: ["2000"]
+    volumes:
+      - ..:/workspaces/mobilbid:cached
+      - browser-xauth:/browser-xauth:ro
+    networks: [default, browser-display]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+      cache: {condition: service_started}
+      mailpit: {condition: service_started}
+      browser-display: {condition: service_healthy}
+  browser-display:
+    build:
+      context: browser-display
+      dockerfile: Dockerfile
+    init: true
+    shm_size: 1gb
+    group_add: ["2000"]
+    volumes:
+      - browser-xauth:/browser-xauth
+    networks: [browser-display]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/headful-display-health"]
+  postgres:
+    image: postgres:16.13-trixie
+    environment:
+      POSTGRES_USER: fixture-user
+      POSTGRES_PASSWORD: fixture-only
+    volumes:
+      - postgres-16-data:/var/lib/postgresql/data
+  redis:
+    image: redis:7.0.15-bookworm
+    volumes:
+      - redis-7-data:/data
+  cache:
+    image: valkey/valkey:8.1.10-trixie
+    volumes:
+      - valkey-8-data:/data
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+volumes:
+  browser-xauth:
+  postgres-16-data:
+  redis-7-data:
+  valkey-8-data:
+networks:
+  default:
+  browser-display:
+    internal: true
+"#;
+        fs::write(devcontainer_dir.join("compose.yaml"), compose).unwrap();
+
+        prepare_in_guest_devcontainer_config(
+            repo_path,
+            &worktree_path,
+            &InGuestFacadePlan::empty_for_tests(),
+        )
+        .unwrap();
+
+        // containerEnv keeps only connectivity names with plain values. The display variables
+        // (and the other non-connectivity names) must come from the project environment.
+        let generated: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(devcontainer_dir.join(SBX_DEVCONTAINER_CONFIG)).unwrap(),
+        )
+        .unwrap();
+        let kept_environment = generated["containerEnv"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kept_environment,
+            [
+                "DB_HOST",
+                "REDIS_CACHE_NODE_HOST",
+                "REDIS_CACHE_NODE_PORT",
+                "SMTP_PORT"
+            ]
+        );
+        assert!(generated.get("forwardPorts").is_none());
+        assert_eq!(generated["runServices"], serde_json::json!(["rails-app"]));
+        let references = generated["dockerComposeFile"].as_array().unwrap();
+        assert_eq!(references.len(), 2);
+
+        // The sanitized input Compose interpolates still carries no repository mount, and keeps
+        // the networks and group_add the display needs.
+        let input: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(devcontainer_dir.join(references[0].as_str().unwrap())).unwrap(),
+        )
+        .unwrap();
+        assert!(input.get("volumes").is_none());
+        for service in input["services"].as_mapping().unwrap().values() {
+            assert!(service.get("volumes").is_none());
+        }
+        for name in ["rails-app", "browser-display"] {
+            assert_eq!(
+                input["services"][name]["group_add"],
+                serde_yaml::from_str::<serde_yaml::Value>("['2000']").unwrap()
+            );
+        }
+        assert_eq!(
+            input["services"]["rails-app"]["networks"],
+            serde_yaml::from_str::<serde_yaml::Value>("[default, browser-display]").unwrap()
+        );
+        assert_eq!(
+            input["networks"]["browser-display"]["internal"].as_bool(),
+            Some(true)
+        );
+        assert!(input["services"]["rails-app"].get("environment").is_none());
+
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        assert!(!rendered.contains("/workspaces/mobilbid:cached"));
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        let declared = facade["volumes"].as_mapping().unwrap();
+        assert_eq!(
+            declared
+                .keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "browser-xauth",
+                "postgres-16-data",
+                "redis-7-data",
+                "valkey-8-data"
+            ]
+        );
+        assert!(declared
+            .values()
+            .all(|definition| definition.as_mapping().is_some_and(|d| d.is_empty())));
+        let rails_volumes =
+            overridden_sequence(&facade["services"]["rails-app"]["volumes"], "rails volumes");
+        assert_eq!(rails_volumes.len(), 3);
+        assert_eq!(rails_volumes[0]["type"].as_str(), Some("bind"));
+        assert_eq!(
+            rails_volumes[0]["source"].as_str(),
+            Some(fs::canonicalize(&worktree_path).unwrap().to_str().unwrap())
+        );
+        assert_eq!(
+            rails_volumes[0]["target"].as_str(),
+            Some("/workspaces/mobilbid")
+        );
+        assert_eq!(
+            rails_volumes[1]["target"].as_str(),
+            Some(CONTAINER_MAIN_GIT_TARGET)
+        );
+        assert_eq!(
+            rails_volumes[2],
+            named_volume("browser-xauth", "/browser-xauth", true)
+        );
+        for (service, expected) in [
+            (
+                "browser-display",
+                vec![named_volume("browser-xauth", "/browser-xauth", false)],
+            ),
+            (
+                "postgres",
+                vec![named_volume(
+                    "postgres-16-data",
+                    "/var/lib/postgresql/data",
+                    false,
+                )],
+            ),
+            ("redis", vec![named_volume("redis-7-data", "/data", false)]),
+            ("cache", vec![named_volume("valkey-8-data", "/data", false)]),
+            ("mailpit", Vec::new()),
+        ] {
+            assert_eq!(
+                overridden_sequence(&facade["services"][service]["volumes"], service),
+                expected.as_slice(),
+                "{service} volumes"
+            );
+        }
+
+        // Opt-in: Compose accepts the exact inputs, keeps the volume on both services, and names
+        // the default network `<project>_default`, which the port proxy prefers.
+        if std::env::var_os("BRANCHBOX_VERIFY_COMPOSE_CONFIG").is_some() {
+            let project = "branchbox-mobilbid-shape-test";
+            let mut command = Command::new("docker");
+            command.arg("compose");
+            for reference in references {
+                command
+                    .arg("-f")
+                    .arg(devcontainer_dir.join(reference.as_str().unwrap()));
+            }
+            let output = command
+                .args(["config", "--format", "json"])
+                .env("COMPOSE_PROJECT_NAME", project)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Compose rejected the facade: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let effective: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let rails = &effective["services"]["rails-app"];
+            let xauth = rails["volumes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|mount| mount["target"] == "/browser-xauth")
+                .unwrap();
+            assert_eq!(xauth["type"], "volume");
+            assert_eq!(xauth["source"], "browser-xauth");
+            assert_eq!(xauth["read_only"], true);
+            assert_eq!(rails["volumes"].as_array().unwrap().len(), 3);
+            let display = effective["services"]["browser-display"]["volumes"]
+                .as_array()
+                .unwrap();
+            assert_eq!(display.len(), 1);
+            assert_eq!(display[0]["source"], "browser-xauth");
+            assert!(display[0]
+                .get("read_only")
+                .is_none_or(|value| value == false));
+            assert_eq!(
+                effective["volumes"]["browser-xauth"]["name"],
+                format!("{project}_browser-xauth")
+            );
+            assert_eq!(
+                effective["networks"]["default"]["name"],
+                format!("{project}_default")
+            );
+            assert_eq!(effective["networks"]["browser-display"]["internal"], true);
+            assert!(rails["networks"].get("default").is_some());
+            assert!(rails["networks"].get("browser-display").is_some());
+            assert_eq!(rails["group_add"], serde_json::json!(["2000"]));
+            for (name, service) in effective["services"].as_object().unwrap() {
+                assert!(service.get("ports").is_none(), "{name} published a port");
+            }
+        }
+    }
+
+    /// Only plain, project-scoped named volumes survive. Binds, tmpfs, anonymous volumes,
+    /// volumes with any top-level configuration and reserved platform names stay removed, a
+    /// later input that mounts something else at the same path wins, and the primary keeps
+    /// only read-only volumes away from its signed mounts.
+    #[test]
+    fn test_in_guest_named_volume_rules_keep_only_plain_project_volumes() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+        let worktree_path = repo_path.join("app");
+        let devcontainer_dir = worktree_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        let first: serde_yaml::Value = serde_yaml::from_str(
+            r#"services:
+  app:
+    image: alpine:3.19
+    volumes:
+      - shared:/shared:ro
+      - scratch:/home/vscode/.codex
+      - shared:/workspaces/app/node_modules:ro
+      - shared:/run/branchbox/leases/extra:ro
+      - shared:/opt/lease/nested:ro
+      - shared:/:ro
+      - ./host:/host:ro
+      - /etc:/etc-host:ro
+  worker:
+    image: alpine:3.19
+    volumes:
+      - shared:/shared
+      - scratch:/scratch:rw,cached
+      - configured:/configured
+      - renamed:/renamed
+      - later-configured:/later-configured
+      - branchbox-tool-requests-0123:/spool
+      - type: volume
+        source: shared
+        target: /long
+        read_only: true
+      - type: volume
+        source: shared
+        target: /nocopy
+        volume: {nocopy: true}
+      - type: tmpfs
+        target: /tmp/scratch
+      - type: bind
+        source: ./src
+        target: /src
+      - shared:/relabel:z
+      - shared:/conflict:ro,rw
+      - "${VOLUME:-shared}:/interpolated"
+      - shared:/target/$HOME
+      - /anonymous
+      - shared:/replaced
+volumes:
+  shared:
+  scratch: {}
+  configured:
+    driver: local
+    driver_opts: {type: none, o: bind, device: /etc}
+  renamed:
+    name: fixed-name
+  later-configured:
+  branchbox-tool-requests-0123:
+"#,
+        )
+        .unwrap();
+        let second: serde_yaml::Value = serde_yaml::from_str(
+            r#"services:
+  worker:
+    volumes:
+      - ./bind:/replaced
+volumes:
+  later-configured:
+    labels: {owner: repository}
+"#,
+        )
+        .unwrap();
+        let documents = [first, second];
+
+        let plain = in_guest_plain_named_volumes(&documents);
+        assert_eq!(
+            plain.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["scratch", "shared"]
+        );
+        let mounts = in_guest_named_volume_mounts(&documents, &plain);
+        assert_eq!(
+            mounts["worker"],
+            [
+                InGuestNamedVolumeMount {
+                    source: "shared".to_string(),
+                    target: "/shared".to_string(),
+                    read_only: false,
+                },
+                InGuestNamedVolumeMount {
+                    source: "scratch".to_string(),
+                    target: "/scratch".to_string(),
+                    read_only: false,
+                },
+                InGuestNamedVolumeMount {
+                    source: "shared".to_string(),
+                    target: "/long".to_string(),
+                    read_only: true,
+                },
+            ]
+        );
+
+        let lease_source = repo_path.join("lease-file");
+        fs::write(&lease_source, "lease\n").unwrap();
+        let lease_mounts = [(lease_source, PathBuf::from("/opt/lease"))];
+        prepare_outer_tunnel_compose_override(
+            repo_path,
+            &worktree_path,
+            &devcontainer_dir,
+            Some("app"),
+            "/workspaces/app",
+            &documents,
+            &InGuestComposeAssignment {
+                project_environment: None,
+                service_images: &BTreeMap::new(),
+                workspace_consumer: false,
+                private_stage: None,
+                lease_mounts: &lease_mounts,
+                spool_volumes: &[],
+            },
+        )
+        .unwrap();
+        let rendered = fs::read_to_string(devcontainer_dir.join(SBX_COMPOSE_OVERRIDE)).unwrap();
+        for removed in [
+            "/etc",
+            "./host",
+            "./src",
+            "./bind",
+            "fixed-name",
+            "configured",
+            "branchbox-tool-requests-0123",
+            "tmpfs",
+            "nocopy",
+            "${",
+            "/home/vscode/.codex",
+            "node_modules",
+        ] {
+            assert!(
+                !rendered.contains(removed),
+                "{removed} survived: {rendered}"
+            );
+        }
+        let facade: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        let app = overridden_sequence(&facade["services"]["app"]["volumes"], "app volumes");
+        assert_eq!(app.len(), 4, "{rendered}");
+        assert_eq!(app[2]["target"].as_str(), Some("/opt/lease"));
+        assert_eq!(app[2]["read_only"].as_bool(), Some(true));
+        assert_eq!(app[3], named_volume("shared", "/shared", true));
+        let worker = overridden_sequence(&facade["services"]["worker"]["volumes"], "worker");
+        assert_eq!(
+            worker,
+            [
+                named_volume("shared", "/shared", false),
+                named_volume("scratch", "/scratch", false),
+                named_volume("shared", "/long", true),
+            ]
+        );
+        assert_eq!(
+            facade["volumes"]
+                .as_mapping()
+                .unwrap()
+                .keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .collect::<Vec<_>>(),
+            ["scratch", "shared"]
         );
     }
 

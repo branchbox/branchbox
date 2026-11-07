@@ -23,7 +23,13 @@ test "$(sha256sum "$BBX_LIVE_ROOT/branchbox" | cut -d' ' -f1)" = "$BBX_BINARY_SH
 BBX_BINARY="$BBX_LIVE_ROOT/branchbox"
 BBX_IMAGE="$(docker image inspect node:24-slim --format '{{index .RepoDigests 0}}')"
 test -n "$BBX_IMAGE"
-export BBX_LIVE_ROOT BBX_IMAGE
+# The published-port proxy is launched with --pull=never from a signed local image.
+BBX_PROXY_TAG="${BBX_PROXY_TAG:-alpine/socat:1.8.1.3}"
+docker image inspect "$BBX_PROXY_TAG" >/dev/null 2>&1 || docker pull --quiet "$BBX_PROXY_TAG" >/dev/null
+BBX_PROXY_IMAGE="$(docker image inspect "$BBX_PROXY_TAG" --format '{{.Id}}')"
+test -n "$BBX_PROXY_IMAGE"
+BBX_HOST_PORT="${BBX_HOST_PORT:-43127}"
+export BBX_LIVE_ROOT BBX_IMAGE BBX_PROXY_IMAGE
 
 runtime_command() {
   setpriv --reuid "$BBX_RUNTIME_UID" --regid "$BBX_RUNTIME_GID" \
@@ -55,6 +61,10 @@ cleanup() {
       done || true
   fi
   if test -n "$compose_project"; then
+    docker ps -aq --filter "label=io.branchbox.compose_project=$compose_project" |
+      while IFS= read -r container; do
+        test -z "$container" || docker rm -f "$container" >/dev/null
+      done || true
     docker ps -aq --filter "label=com.docker.compose.project=$compose_project" |
       while IFS= read -r container; do
         test -z "$container" || docker rm -f "$container" >/dev/null
@@ -100,20 +110,40 @@ cat > "$repository/.devcontainer/devcontainer.json" <<'JSON'
   "forwardPorts": [31337]
 }
 JSON
+# The primary joins its project default network and an internal sidecar network, and reads a
+# file the sidecar writes into a plain named volume. It serves that file on its published port,
+# so one request proves the proxy chose a publishable network and the volume reached both.
 cat > "$repository/.devcontainer/compose.yaml" <<'YAML'
 name: hostile-compose-name
 services:
   app:
     image: "${REPO_IMAGE:?discarded-source-image}"
-    command: ["sleep", "3600"]
+    command:
+      - node
+      - -e
+      - "require('http').createServer((request, response) => { try { response.end(require('fs').readFileSync('/shared/sidecar.txt')); } catch (error) { response.statusCode = 503; response.end('missing'); } }).listen(3000)"
     environment:
       HOST_AUTH: "${HOST_AUTH:?discarded-source-environment}"
     volumes:
       - "${HOST_AUTH:?discarded-source-volume}:/host-auth:ro"
+      - shared:/shared:ro
     ports:
       - "31337:3000"
+    networks: [default, backplane]
+    depends_on: [writer]
+  writer:
+    image: "${REPO_IMAGE:?discarded-sidecar-image}"
+    command: ["sh", "-c", "echo written-by-sidecar > /shared/sidecar.txt && exec sleep 3600"]
+    volumes:
+      - shared:/shared
+    networks: [backplane]
   proxy:
     image: cloudflare/cloudflared:latest
+volumes:
+  shared:
+networks:
+  backplane:
+    internal: true
 YAML
 cat > "$repository/.devcontainer/compose.extra.yaml" <<'YAML'
 services:
@@ -130,14 +160,17 @@ jq -n \
   --arg repository "$repository" \
   --arg revision "$revision" \
   --arg image "$BBX_IMAGE" \
+  --arg proxy_image "$BBX_PROXY_IMAGE" \
+  --argjson host_port "$BBX_HOST_PORT" \
   --arg credential "$credential" \
   --arg credential_digest "$credential_digest" \
   '{
     version:"3",run_id:"signed_v3_live_run",lease_id:"signed_v3_live_assignment",
     outer_runtime_id:"disposable_linux_ci",workspace:$workspace,
     repository:{path:$repository,revision:$revision},
-    task_branch:"feature/live",tunnel_placement:"outer",published_ports:[],
-    service_images:{app:$image},workspace_consumer:{uid:1000,gid:1000},
+    task_branch:"feature/live",tunnel_placement:"outer",
+    published_ports:[{host:$host_port,runtime:3000}],port_proxy_image:$proxy_image,
+    service_images:{app:$image,writer:$image},workspace_consumer:{uid:1000,gid:1000},
     leases:[
       {lease_id:"outer_tunnel",scope:"platform-tunnel",consumer:"outer-connector",materializations:[]},
       {lease_id:"bound_fixture",scope:"provider-credential",consumer:"coding-agent",
@@ -247,14 +280,36 @@ test "$container_gid" = 1000
 test "$(docker exec "$container_id" cat /tmp/branchbox-signed-fixture)" = signed-fixture
 coding_uid="$(runtime_command env COMPOSE_PROJECT_NAME="$managed_project" devcontainer exec --workspace-folder "$worktree" --config "$stage/.devcontainer.json" id -u)"
 test "$coding_uid" = 1000
-jq -e --arg worktree "$worktree" --arg git "$repository/.git" --arg credential "$credential" '
+jq -e --arg worktree "$worktree" --arg git "$repository/.git" --arg credential "$credential" \
+  --arg shared "${compose_project}_shared" --arg compose_project "$compose_project" '
   .[0] as $container |
-  ($container.Mounts | length) == 3 and
-  ([$container.Mounts[].Source] | sort) == ([$worktree,$git,$credential] | sort) and
+  ($container.Mounts | length) == 4 and
+  ([$container.Mounts[] | select(.Type == "bind") | .Source] | sort) == ([$worktree,$git,$credential] | sort) and
   ([$container.Mounts[] | select(.Source == $credential) | .RW] == [false]) and
+  ([$container.Mounts[] | select(.Type == "volume") | {Name, Destination, RW, Driver}] ==
+    [{Name:$shared,Destination:"/shared",RW:false,Driver:"local"}]) and
   ($container.HostConfig.PortBindings | length) == 0 and
+  ([$container.NetworkSettings.Networks | keys[]] | sort) == ([($compose_project + "_backplane"), ($compose_project + "_default")] | sort) and
   ($container.Config.Env | map(select(test("HOST_AUTH|TUNNEL_TOKEN"))) | length) == 0
 ' "$BBX_LIVE_ROOT/container-inspect.json"
+test "$(docker network inspect "${compose_project}_backplane" --format '{{.Internal}}')" = true
+writer_ids="$(docker ps -q --filter "label=com.docker.compose.project=$compose_project" --filter "label=com.docker.compose.service=writer")"
+test "$(printf '%s\n' "$writer_ids" | sed '/^$/d' | wc -l)" = 1
+docker inspect "$writer_ids" | jq -e --arg shared "${compose_project}_shared" '
+  [.[0].Mounts[] | {Type, Name, Destination, RW}] == [{Type:"volume",Name:$shared,Destination:"/shared",RW:true}]
+'
+# The primary sits on the project default network and the internal backplane. The proxy must
+# join the default network only, and the primary serves the file the sidecar wrote.
+proxy_name="branchbox-in-guest-${compose_project}-port-3000"
+test "$(docker inspect "$proxy_name" --format '{{index .Config.Labels "io.branchbox.compose_project"}}')" = "$compose_project"
+test "$(docker inspect "$proxy_name" --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}} {{end}}')" = "${compose_project}_default "
+served=""
+for _ in $(seq 1 60); do
+  served="$(curl -fsS --max-time 2 "http://127.0.0.1:${BBX_HOST_PORT}/" 2>/dev/null || true)"
+  test "$served" != written-by-sidecar || break
+  sleep 1
+done
+test "$served" = written-by-sidecar
 echo "live-start-boundary=verified"
 
 # The coding UID can change the shared Git config and worktree attributes. An unguarded status,
@@ -303,6 +358,7 @@ test ! -e "$stage"
 test ! -e "$credential"
 test -z "$(docker ps -aq --filter "label=devcontainer.local_folder=$worktree")"
 test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$compose_project")"
+test -z "$(docker ps -aq --filter "label=io.branchbox.compose_project=$compose_project")"
 test -z "$(docker network ls -q --filter "label=com.docker.compose.project=$compose_project")"
 test -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$compose_project")"
 test -z "$(runtime_command git -C "$repository" branch --list feature/live)"
