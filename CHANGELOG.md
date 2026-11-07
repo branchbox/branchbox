@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### CLI and core
 
+- The in-guest published-port proxy now joins one network when the primary container is on two
+  or more. It used to join every network ID into one string, which named no network, so a primary
+  on its project network and an internal sidecar network could not start. The proxy prefers
+  `<compose project>_default`, otherwise the first network Docker reports as not internal, and a
+  primary on internal networks only fails startup naming them.
+
+- Managed in-guest starts keep plain named volumes, so services can share files inside the guest
+  (for example a display sidecar's X cookie). A volume is kept when every Compose input declares it
+  with an empty definition and the service mounts it in short or long form. Every service keeps
+  it; the primary keeps it only read-only, after its signed mounts and away from their paths.
+  Compose creates these volumes per run project and teardown removes them. Binds, tmpfs, anonymous
+  volumes and volumes with a driver, driver options, a name, labels or `external` stay removed or
+  refused.
+
 - Managed in-guest starts no longer write the VS Code editor customization
   (`.vscode/settings.json`) into the task worktree. That `.vscode/` appeared after the preparation
   receipt was measured, stayed owned by the runtime user in delegated v3 workspaces, showed up as

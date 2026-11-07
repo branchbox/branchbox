@@ -135,9 +135,12 @@ form `sha256:<64 lowercase hexadecimal characters>` is also accepted.
 When preloaded service mode publishes one or more ports, `port_proxy_image` is required and follows
 the same immutable-reference rules. BranchBox inspects that exact image locally before startup and
 passes it as an argument to the out-of-Compose loopback proxy launch with Docker `--pull=never`.
-This closes the only image path outside the generated Compose facade. A version 2 assignment may
-also set `port_proxy_image` independently of `service_images` for legacy parsing, but cannot launch
-a managed devcontainer.
+This closes the only image path outside the generated Compose facade. The proxy joins one network
+of the inspected primary container: `<compose project>_default` when the primary is attached to it
+and it is not internal, otherwise the first attached network that Docker reports as not internal.
+A primary attached only to internal networks fails startup, naming the networks it is on. A
+version 2 assignment may also set `port_proxy_image` independently of `service_images` for legacy
+parsing, but cannot launch a managed devcontainer.
 
 BranchBox writes the assigned `image`, resets the repository `build`, and sets `pull_policy: never`
 for each bound service. It also removes devcontainer `build` and `features`, disables remote-user UID
@@ -310,6 +313,18 @@ status.
   names, or any other writable entry under the managed namespace. Docker's `Mounts[].Name` is the
   signed volume identity; its engine-private physical `Source` path is never treated as a consumer
   mount or exposed to the container.
+- Repository mounts stay untrusted. The only ones the generated facade keeps are plain named
+  volumes: every Compose input declares the volume with an empty top-level definition (no driver,
+  driver options, name, labels or `external`), and the service mounts it in short
+  (`name:/target[:ro]`) or long (`type: volume`) form at a literal, normalized path. Compose creates
+  these volumes inside the guest under the run's project, and teardown removes and residue-checks
+  them with the project. Every service keeps its plain named volumes. The primary keeps only
+  read-only ones, appended after its signed mounts and never at, inside or above the workspace
+  folder, the Git metadata mount, a lease or spool target, `/workspaces` or `/run/branchbox`.
+  Binds, tmpfs, anonymous volumes, configured or `external` volumes and names starting with
+  `branchbox` stay removed or refused. Final inspection accepts a read-only `local` named volume on
+  the primary whose `Source` is Docker's own `<data root>/volumes/<name>/_data`; a writable or
+  non-local volume below Docker's state directory is still refused.
 - Request spools enforce a non-root consumer UID, one same-consumer live socket endpoint, immutable
   binding/capability files, regular non-symlink request files, mode `0600`, at most 16 pending files,
   256 KiB per request, and 1 MiB total. BranchBox resolves the actual provider user from

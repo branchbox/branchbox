@@ -24,6 +24,8 @@
 | Managed in-guest startup fails on a secondary volume `${VAR:?}` even though a facade clears the volume | Compose interpolates each source file before merging `!override` | Give the Dev Containers CLI private sanitized copies of every Compose input, with repository mounts and publications removed before interpolation; keep signed mounts only in the final facade |
 | Managed in-guest dependency env or service label copies a runtime-process variable | Compose interpolates retained fields before the signed facade merges, and the CLI inherits its process environment | Reject ambient `$VAR` or `${VAR}` in every retained sanitized field; preserve static dependency env and use `$$` for container-side shell expansion |
 | Managed in-guest Compose executes a repository-selected host binary | Compose `provider.type` runs outside containers during lifecycle commands | Reject every Compose `provider` service before staging CLI inputs, including services with signed preloaded images |
+| Managed in-guest primary on two networks fails at the published-port proxy | The proxy joined every network ID into one string, naming no network | List one `ID name` line per network; prefer `<project>_default`, else the first network Docker reports as not internal; refuse when every network is internal |
+| Managed in-guest sidecar's shared file (an X cookie) never reaches the primary | The facade cleared every service's volumes, plain named volumes included | Keep plain named volumes (empty declaration in every input) on every service, read-only on the primary after its signed mounts; final inspection accepts only a read-only local volume below Docker's state directory |
 
 ## Feature workflow + harness reliability
 

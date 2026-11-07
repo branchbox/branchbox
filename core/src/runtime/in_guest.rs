@@ -162,7 +162,39 @@ runtime_port="$5"
 proxy_image="$6"
 pull_policy="$7"
 compose_project="$8"
-network_id=$("$docker_bin" inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' "$container_id" | head -n 1)
+# One "<network ID> <network name>" line per attached network. A primary on two
+# networks has two lines; joining their IDs would name no network at all.
+networks=$("$docker_bin" inspect -f '{{range $name, $network := .NetworkSettings.Networks}}{{$network.NetworkID}} {{$name}}{{println}}{{end}}' "$container_id")
+default_network="${compose_project}_default"
+network_id=""
+# Prefer the project's default network; otherwise take the first network Docker
+# reports as not internal, because an internal network cannot publish a port.
+for preference in default other; do
+  while read -r listed_network_id listed_network_name extra; do
+    test -n "$listed_network_id" || continue
+    if test -z "$listed_network_name" || test -n "$extra"; then
+      echo "Primary container network listing is malformed: '$listed_network_id $listed_network_name $extra'" >&2
+      exit 75
+    fi
+    if test "$preference" = default && test "$listed_network_name" != "$default_network"; then
+      continue
+    fi
+    if test "$preference" = other && test "$listed_network_name" = "$default_network"; then
+      continue
+    fi
+    internal=$("$docker_bin" network inspect -f '{{.Internal}}' "$listed_network_id")
+    if test "$internal" = false; then
+      network_id="$listed_network_id"
+      break 2
+    fi
+  done <<EOF
+$networks
+EOF
+done
+if test -z "$network_id"; then
+  echo "Primary container has no non-internal network for the published-port proxy (default '$default_network'; attached: $(printf '%s' "$networks" | tr '\n' ' '))" >&2
+  exit 75
+fi
 target_host=$("$docker_bin" inspect -f '{{.Name}}' "$container_id")
 target_host=${target_host#/}
 if "$docker_bin" inspect "$proxy_name" >/dev/null 2>&1; then
@@ -5830,9 +5862,21 @@ fn validate_container_inspection(
                      destination '{destination}'; signed mounts: [{signed}]"
                 )));
             }
-            if (!exact_request_volume && contains_supervisor_mount(source, &allowed_sources))
-                || contains_supervisor_mount(destination, &BTreeSet::new())
-            {
+            // A local named volume's data lives below Docker's own state directory
+            // (`/var/lib/docker/volumes/<name>/_data` by default), which the supervisor
+            // markers would otherwise refuse. Docker chose that path, not the repository, so
+            // a read-only one is judged by its name; its destination is still checked below.
+            let docker_managed_source = !exact_request_volume
+                && signed_expectation.is_none()
+                && is_read_only_local_named_volume(mount);
+            let source_is_supervisor = if exact_request_volume {
+                false
+            } else if docker_managed_source {
+                contains_supervisor_mount(signed_source, &BTreeSet::new())
+            } else {
+                contains_supervisor_mount(source, &allowed_sources)
+            };
+            if source_is_supervisor || contains_supervisor_mount(destination, &BTreeSet::new()) {
                 return Err(Error::validation(
                     "In-guest devcontainer resolved a supervisor socket or credential-directory mount",
                 ));
@@ -5976,6 +6020,29 @@ fn contains_supervisor_mount(value: &str, allowed_sources: &BTreeSet<PathBuf>) -
         || ((normalized == "/run/agentify-runtime"
             || normalized.starts_with("/run/agentify-runtime/"))
             && !allowed_sources.contains(Path::new(value)))
+}
+
+/// A read-only mount of a local-driver named volume, whose source is the volume's own data
+/// directory as Docker reports it (`<data root>/volumes/<name>/_data`).
+fn is_read_only_local_named_volume(mount: &serde_json::Value) -> bool {
+    let field = |name: &str| mount.get(name).and_then(serde_json::Value::as_str);
+    let Some(name) = field("Name") else {
+        return false;
+    };
+    let source = Path::new(field("Source").unwrap_or_default());
+    field("Type") == Some("volume")
+        && field("Driver") == Some("local")
+        && mount.get("RW").and_then(serde_json::Value::as_bool) == Some(false)
+        && !name.is_empty()
+        && name.len() <= 255
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        && source.is_absolute()
+        && source
+            .components()
+            .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
+        && source.ends_with(Path::new("volumes").join(name).join("_data"))
 }
 
 fn effective_workspace_folder(config: &DevcontainerConfig, worktree_path: &Path) -> String {
@@ -8629,6 +8696,85 @@ mod tests {
         .unwrap();
     }
 
+    /// The facade gives the primary a repository named volume only read-only (MobilBid's
+    /// `browser-xauth`). Docker reports its source below its own state directory, which must not
+    /// be mistaken for a supervisor mount; anything else there stays refused.
+    #[test]
+    fn accepts_only_a_read_only_local_named_volume_below_docker_state() {
+        let inspection = |mount: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!([{
+                "HostConfig": {
+                    "Privileged": false,
+                    "PidMode": "",
+                    "IpcMode": "private",
+                    "SecurityOpt": ["seccomp=builtin"]
+                },
+                "Mounts": [
+                    {"Type": "bind", "Source": "/workspace/mobilbid",
+                     "Destination": "/workspaces/mobilbid", "RW": true},
+                    mount
+                ],
+                "Config": {"Env": []}
+            }]))
+            .unwrap()
+        };
+        let name = "branchbox-0123456789abcdef_browser-xauth";
+        let volume = serde_json::json!({
+            "Type": "volume",
+            "Name": name,
+            "Source": format!("/var/lib/docker/volumes/{name}/_data"),
+            "Destination": "/browser-xauth",
+            "Driver": "local",
+            "Mode": "z",
+            "RW": false,
+            "Propagation": ""
+        });
+        validate_container_inspection(
+            &inspection(volume.clone()),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        let mut refused = Vec::new();
+        let mut writable = volume.clone();
+        writable["RW"] = serde_json::json!(true);
+        refused.push(writable);
+        let mut other_driver = volume.clone();
+        other_driver["Driver"] = serde_json::json!("example-remote");
+        refused.push(other_driver);
+        let mut other_source = volume.clone();
+        other_source["Source"] = serde_json::json!("/var/lib/docker/volumes/other/_data");
+        refused.push(other_source);
+        let mut socket = volume.clone();
+        socket["Source"] = serde_json::json!("/var/run/docker.sock");
+        refused.push(socket);
+        let mut traversal = volume.clone();
+        traversal["Source"] =
+            serde_json::json!(format!("/var/lib/docker/volumes/../volumes/{name}/_data"));
+        refused.push(traversal);
+        let mut supervisor_destination = volume.clone();
+        supervisor_destination["Destination"] = serde_json::json!("/var/run/docker.sock");
+        refused.push(supervisor_destination);
+        let mut lease_destination = volume.clone();
+        lease_destination["Destination"] = serde_json::json!("/run/branchbox/leases/extra");
+        refused.push(lease_destination);
+        let mut bind = volume;
+        bind["Type"] = serde_json::json!("bind");
+        refused.push(bind);
+        for mount in refused {
+            assert!(
+                validate_container_inspection(
+                    &inspection(mount.clone()),
+                    &BTreeMap::new(),
+                    &BTreeSet::new()
+                )
+                .is_err(),
+                "accepted {mount}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_a_primary_container_without_the_managed_seccomp_profile() {
         let inspection = serde_json::json!([{
@@ -9181,6 +9327,8 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("ps --filter"));
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("ExposedPorts"));
         assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("candidate_id"));
+        // Joining every network ID on one line names no network once the primary has two.
+        assert!(!IN_GUEST_PORT_PROXY_SCRIPT.contains("{{.NetworkID}}{{end}}"));
     }
 
     #[cfg(unix)]
@@ -9196,9 +9344,13 @@ raise SystemExit("AF_VSOCK unexpectedly opened")
 if test "$1" = inspect; then
   test "$2" = -f || exit 1
   case "$3" in
-    *NetworkID*) printf '%s\n' network_123 ;;
+    *NetworkID*) printf '%s\n' 'network_123 branchbox-123abc_default' ;;
     *Name*) printf '%s\n' /primary ;;
   esac
+  exit 0
+fi
+if test "$1" = network; then
+  printf '%s\n' false
   exit 0
 fi
 if test "$1" = rm; then
@@ -9243,6 +9395,109 @@ printf '%s\n' "$*" > '{}'
         assert!(legacy.contains(&format!(" {LEGACY_PORT_PROXY_IMAGE} -dd ")));
     }
 
+    /// A primary attached to two networks, as MobilBid's rails-app is (the project default
+    /// network plus an internal browser-display network), must give the proxy exactly one
+    /// network that can publish a port. Docker lists networks in name order, so the internal
+    /// `<project>_browser-display` comes first and must not be chosen.
+    #[cfg(unix)]
+    #[test]
+    fn published_port_proxy_picks_one_publishable_network_for_a_multi_network_primary() {
+        let root = tempfile::tempdir().unwrap();
+        let docker = root.path().join("docker");
+        let networks = root.path().join("networks");
+        let invocation = root.path().join("proxy-invocation");
+        fs::write(
+            &docker,
+            format!(
+                r#"#!/bin/sh
+if test "$1" = inspect; then
+  test "$2" = -f || exit 1
+  case "$3" in
+    *NetworkID*) cat '{}' ;;
+    *Name*) printf '%s\n' /rails-app ;;
+  esac
+  exit 0
+fi
+if test "$1" = network; then
+  test "$2" = inspect || exit 1
+  test "$3" = -f || exit 1
+  case "$5" in
+    *internal*) printf '%s\n' true ;;
+    *) printf '%s\n' false ;;
+  esac
+  exit 0
+fi
+if test "$1" = rm; then
+  exit 0
+fi
+printf '%s\n' "$*" > '{}'
+"#,
+                networks.display(),
+                invocation.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&docker).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&docker, permissions).unwrap();
+        let provider = InGuestRuntimeProvider {
+            devcontainer: PathBuf::from("devcontainer"),
+            docker,
+            timeout: PathBuf::from("timeout"),
+        };
+        let port = RuntimePort {
+            host: 43000,
+            runtime: 3000,
+        };
+        let image = format!("registry.example/runtime/proxy@sha256:{}", "f".repeat(64));
+
+        fs::write(
+            &networks,
+            "net_internal_display branchbox-run_browser-display\nnet_default branchbox-run_default\n",
+        )
+        .unwrap();
+        provider
+            .reconcile_port_proxy("branchbox-run", "rails_app_123", port, Some(&image))
+            .unwrap();
+        let chosen = fs::read_to_string(&invocation).unwrap();
+        assert!(chosen.contains(" --network net_default -p 127.0.0.1:43000:3000 "));
+        assert!(!chosen.contains("net_internal_display"));
+        assert!(chosen.contains(" TCP:rails-app:3000"));
+
+        // Without a project default network (for example, networks with explicit names), the
+        // first network Docker reports as not internal is used, never a joined ID.
+        fs::write(
+            &networks,
+            "net_internal_a shared-a\nnet_external_b shared-b\nnet_external_c shared-c\n",
+        )
+        .unwrap();
+        provider
+            .reconcile_port_proxy("branchbox-run", "rails_app_123", port, Some(&image))
+            .unwrap();
+        let chosen = fs::read_to_string(&invocation).unwrap();
+        assert!(chosen.contains(" --network net_external_b -p "));
+        assert!(!chosen.contains("net_external_c"));
+
+        // Only internal networks: refuse with the cause instead of starting a proxy that cannot
+        // publish.
+        fs::remove_file(&invocation).unwrap();
+        fs::write(
+            &networks,
+            "net_internal_display branchbox-run_browser-display\n",
+        )
+        .unwrap();
+        let error = provider
+            .reconcile_port_proxy("branchbox-run", "rails_app_123", port, Some(&image))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no non-internal network"), "{error}");
+        assert!(error.contains("branchbox-run_default"), "{error}");
+        assert!(
+            !invocation.exists(),
+            "a proxy started without a usable network"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn published_port_proxy_never_replaces_a_different_project() {
@@ -9258,10 +9513,14 @@ printf '%s\n' "$*" > '{}'
 if test "$1" = inspect; then
   if test "$2" != -f && test "$2" != --format; then exit 0; fi
   case "$3" in
-    *NetworkID*) printf '%s\n' network_123 ;;
+    *NetworkID*) printf '%s\n' 'network_123 branchbox-owned_default' ;;
     *Name*) printf '%s\n' /primary ;;
     *compose_project*) cat '{}' ;;
   esac
+  exit 0
+fi
+if test "$1" = network; then
+  printf '%s\n' false
   exit 0
 fi
 if test "$1" = ps; then
